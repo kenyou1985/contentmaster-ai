@@ -1,0 +1,34 @@
+========================================
+  ContentMaster AI - 运行说明
+========================================
+
+如果遇到 PowerShell 执行策略错误，请使用以下方法：
+
+方法 1: 使用批处理文件（推荐）
+----------------------------------------
+直接双击运行：启动服务器.cmd
+
+方法 2: 使用命令提示符 (CMD)
+----------------------------------------
+1. 按 Win+R，输入 cmd，按回车
+2. 切换到项目目录：
+   cd /d "E:\360MoveData\Users\Lenovo\Desktop\myAI\contentmaster-ai -new"
+3. 运行：
+   npm run dev
+
+方法 3: 临时修改 PowerShell 执行策略
+----------------------------------------
+1. 以管理员身份打开 PowerShell
+2. 运行：
+   Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+3. 输入 Y 确认
+4. 然后运行：npm run dev
+
+方法 4: 使用 npm.cmd 完整路径
+----------------------------------------
+在 PowerShell 中运行：
+& "C:\Program Files\nodejs\npm.cmd" run dev
+
+========================================
+服务器启动后，访问：http://localhost:3000
+========================================
