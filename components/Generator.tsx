@@ -17,7 +17,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
   const MIN_FIN_SCRIPT_CHARS = 7500; // 30 min * 250 chars/min
   const MAX_FIN_SCRIPT_CHARS = 10000; // 40 min * 250 chars/min
   const MIN_NEWS_SCRIPT_CHARS = 4500; // 15 min * 300 chars/min
-  const MAX_NEWS_SCRIPT_CHARS = 7500; // 25 min * 300 chars/min
+  const MAX_NEWS_SCRIPT_CHARS = 8000; // 上限8000字，约26-27分钟
   const MAX_SCRIPT_CONTINUATIONS = 3;
   const REVENGE_SHORT_MIN = 13500; // 15 min * 900 chars/min
   const REVENGE_SHORT_MAX = 27000; // 30 min * 900 chars/min
@@ -287,6 +287,12 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
             .replace(/^\s*今天的課到這裡.*$/gm, '')
             .replace(/^\s*今天的课到这里.*$/gm, '')
             .replace(/^\s*咱們下期再見.*$/gm, '')
+            .replace(/下期再見/gi, '')
+            .replace(/下期再见/gi, '')
+            .replace(/感謝收看/gi, '')
+            .replace(/感谢收看/gi, '')
+            .replace(/謝謝觀看/gi, '')
+            .replace(/谢谢观看/gi, '')
             .replace(/^\s*===\s*summary\s*===.*$/gmi, '')
             .replace(/^\s*summary[:：].*$/gmi, '')
             .replace(/^\s*總結[:：].*$/gmi, '')
@@ -306,6 +312,39 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
             slice.lastIndexOf('?')
         );
         return (lastPunct > 0 ? slice.slice(0, lastPunct + 1) : slice).trim();
+    };
+
+    // 检查内容是否已经有收尾的迹象
+    const hasEndingIndicators = (text: string): boolean => {
+        const endingPatterns = [
+            /下期再見/i,
+            /下期再见/i,
+            /咱們下期再見/i,
+            /我们下期再见/i,
+            /感謝收看/i,
+            /感谢收看/i,
+            /謝謝觀看/i,
+            /谢谢观看/i,
+            /今天就到這裡/i,
+            /今天就到这里/i,
+            /今天的評論就到這裡/i,
+            /今天的评论就到这里/i,
+            /總結來說/i,
+            /总结来说/i,
+            /綜上所述/i,
+            /综上所述/i,
+            /總而言之/i,
+            /总而言之/i
+        ];
+        return endingPatterns.some(pattern => pattern.test(text));
+    };
+
+    // 检查内容是否完整且字数合理（用于新闻评论）
+    const isContentComplete = (text: string, minChars: number, maxChars: number): boolean => {
+        const cleaned = sanitizeTtsScript(text);
+        const length = cleaned.length;
+        // 字数在合理范围内（4000-8000）且已有收尾迹象
+        return length >= 4000 && length <= maxChars && hasEndingIndicators(cleaned);
     };
 
     const getCtaKeyword = (topic: string) => {
@@ -393,42 +432,73 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
                         : niche === NicheType.FINANCE_CRYPTO
                             ? MAX_FIN_SCRIPT_CHARS
                             : MAX_NEWS_SCRIPT_CHARS;
-                while (localContent.length < minChars && continueCount < MAX_SCRIPT_CONTINUATIONS) {
-                    continueCount += 1;
-                    const context = localContent.slice(-2000);
-                    const continuePrompt = [
-                        niche === NicheType.GENERAL_VIRAL
-                            ? '請用第一人稱續寫新聞評論，保持評論員的犀利與獨家視角，不要重覆前文。'
-                            : '請續寫以下內容，保持原風格與第一人稱口吻，不要重覆前文。',
-                        '不要出現「下課」「今天的課到這裡」等收尾語。',
-                        '輸出第一行必須是「-----」，下一行直接續寫正文。',
-                        `要求：全文至少 ${minChars} 字，且不超過 ${maxChars} 字。`,
-                        '',
-                        '【上文】',
-                        context
-                    ].join('\n');
+                
+                // 对于新闻评论，先检查是否已经完整（有收尾且字数合理）
+                if (niche === NicheType.GENERAL_VIRAL && isContentComplete(localContent, minChars, maxChars)) {
+                    // 内容已经完整，直接进入收尾阶段，不再续写
+                    console.log('[Generator] Content already complete, skipping continuation');
+                } else {
+                    // 需要续写的情况
+                    while (localContent.length < minChars && localContent.length < maxChars && continueCount < MAX_SCRIPT_CONTINUATIONS) {
+                        // 对于新闻评论，每次续写前都检查是否已经完整
+                        if (niche === NicheType.GENERAL_VIRAL && isContentComplete(localContent, minChars, maxChars)) {
+                            console.log('[Generator] Content became complete during continuation, stopping');
+                            break;
+                        }
+                        
+                        continueCount += 1;
+                        const context = localContent.slice(-2000);
+                        const continuePrompt = [
+                            niche === NicheType.GENERAL_VIRAL
+                                ? '請用第一人稱續寫新聞評論，保持評論員的犀利與獨家視角，不要重覆前文。嚴禁出現「下期再見」「感謝收看」等收尾語，除非內容已經完整且需要最終收尾。'
+                                : '請續寫以下內容，保持原風格與第一人稱口吻，不要重覆前文。',
+                            '不要出現「下課」「今天的課到這裡」等收尾語。',
+                            '輸出第一行必須是「-----」，下一行直接續寫正文。',
+                            `要求：全文至少 ${minChars} 字，且不超過 ${maxChars} 字。`,
+                            '',
+                            '【上文】',
+                            context
+                        ].join('\n');
 
-                    await streamContentGeneration(
-                        continuePrompt,
-                        config.systemInstruction,
-                        appendChunk
-                    );
+                        await streamContentGeneration(
+                            continuePrompt,
+                            config.systemInstruction,
+                            appendChunk
+                        );
+                        
+                        // 如果已经超过上限，停止续写
+                        if (localContent.length >= maxChars) {
+                            break;
+                        }
+                    }
                 }
 
                 if (niche === NicheType.GENERAL_VIRAL) {
-                    const endPrompt = [
-                        '請用第一人稱收尾，結尾要升華點題並形成明確觀點收束。',
-                        '輸出第一行必須是「-----」，下一行直接續寫正文。',
-                        '不要標題、不要段落標記、不要元信息。',
-                        '',
-                        localContent.slice(-2000)
-                    ].join('\n');
+                    // 检查内容是否已经有收尾
+                    const cleanedBeforeEnd = sanitizeTtsScript(localContent);
+                    const hasEnding = hasEndingIndicators(cleanedBeforeEnd);
+                    
+                    // 如果已经有收尾且字数合理，就不再额外收尾
+                    if (hasEnding && cleanedBeforeEnd.length >= 4000 && cleanedBeforeEnd.length <= maxChars) {
+                        console.log('[Generator] Content already has ending, skipping additional ending');
+                    } else if (localContent.length < maxChars - 500) {
+                        // 只有在未达到上限且没有收尾时才进行收尾
+                        const endPrompt = [
+                            '請用第一人稱收尾，結尾要升華點題並形成明確觀點收束。',
+                            '輸出第一行必須是「-----」，下一行直接續寫正文。',
+                            '不要標題、不要段落標記、不要元信息。',
+                            '嚴禁出現「下期再見」「感謝收看」等收尾語，只需自然升華點題即可。',
+                            `注意：總字數不得超過 ${maxChars} 字，請簡潔收尾。`,
+                            '',
+                            localContent.slice(-2000)
+                        ].join('\n');
 
-                    await streamContentGeneration(
-                        endPrompt,
-                        config.systemInstruction,
-                        appendChunk
-                    );
+                        await streamContentGeneration(
+                            endPrompt,
+                            config.systemInstruction,
+                            appendChunk
+                        );
+                    }
                 }
 
                 let cleaned = sanitizeTtsScript(localContent);
@@ -460,7 +530,14 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
                         return newArr;
                     });
                 } else {
-                    localContent = cleaned;
+                    // 新闻评论：确保不超过上限，但优先保证完整性
+                    if (cleaned.length > maxChars) {
+                        // 如果超过上限，截断到上限，但尽量在句号处截断
+                        const capped = truncateToMax(cleaned, maxChars);
+                        localContent = capped;
+                    } else {
+                        localContent = cleaned;
+                    }
                     setGeneratedContents(prev => {
                         const newArr = [...prev];
                         if (newArr[index]) {
