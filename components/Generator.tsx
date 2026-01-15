@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { NicheType, Topic, GeneratedContent, GenerationStatus, TcmSubModeId, FinanceSubModeId, RevengeSubModeId, StoryLanguage, StoryDuration } from '../types';
+import { ApiProvider, NicheType, Topic, GeneratedContent, GenerationStatus, TcmSubModeId, FinanceSubModeId, RevengeSubModeId, StoryLanguage, StoryDuration } from '../types';
 import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES } from '../constants';
 import { NicheSelector } from './NicheSelector';
 import { generateTopics, streamContentGeneration } from '../services/geminiService';
@@ -8,9 +8,10 @@ import JSZip from 'jszip';
 
 interface GeneratorProps {
   apiKey: string;
+  provider: ApiProvider;
 }
 
-export const Generator: React.FC<GeneratorProps> = ({ apiKey }) => {
+export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
   const MIN_TCM_SCRIPT_CHARS = 7500; // 30 min * 250 chars/min
   const MAX_TCM_SCRIPT_CHARS = 10000; // 40 min * 250 chars/min
   const MIN_FIN_SCRIPT_CHARS = 7500; // 30 min * 250 chars/min
@@ -146,8 +147,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey }) => {
 
     // Initialize API
     const { initializeGemini } = await import('../services/geminiService');
-    const storedBaseUrl = localStorage.getItem('GEMINI_BASE_URL') || 'https://yunwu.ai';
-    initializeGemini(apiKey, storedBaseUrl);
+    initializeGemini(apiKey, { provider });
     
     setStatus(GenerationStatus.PLANNING);
     setErrorMsg('');
@@ -176,6 +176,9 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey }) => {
         // 1. User Input
         if (inputVal) {
             prompt = prompt.replace('{input}', inputVal);
+            if (niche === NicheType.FINANCE_CRYPTO) {
+                prompt += `\n\n# 關鍵詞強制規則\n所有輸出標題必須包含關鍵詞「${inputVal}」，不得省略或替換。`;
+            }
         } else {
             prompt = prompt.replace(/.*\{input\}.*\n?/g, '').replace('{input}', '');
         }
@@ -232,8 +235,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey }) => {
 
     // Initialize API
     const { initializeGemini } = await import('../services/geminiService');
-    const storedBaseUrl = localStorage.getItem('GEMINI_BASE_URL') || 'https://yunwu.ai';
-    initializeGemini(apiKey, storedBaseUrl);
+    initializeGemini(apiKey, { provider });
 
     setStatus(GenerationStatus.WRITING);
     setErrorMsg('');
@@ -577,8 +579,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey }) => {
 
       // Initialize API
       const { initializeGemini } = await import('../services/geminiService');
-      const storedBaseUrl = localStorage.getItem('GEMINI_BASE_URL') || 'https://yunwu.ai';
-      initializeGemini(apiKey, storedBaseUrl);
+      initializeGemini(apiKey, { provider });
 
       const currentContent = generatedContents[viewIndex];
       const subModeConfig = getCurrentSubModeConfig();

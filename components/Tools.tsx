@@ -1,14 +1,15 @@
 import React, { useState } from 'react';
-import { ToolMode, NicheType } from '../types';
+import { ToolMode, NicheType, ApiProvider } from '../types';
 import { NICHES } from '../constants';
 import { streamContentGeneration } from '../services/geminiService';
 import { FileText, Maximize2, RefreshCw, Scissors, ArrowRight, Copy, ChevronDown } from 'lucide-react';
 
 interface ToolsProps {
   apiKey: string;
+  provider: ApiProvider;
 }
 
-export const Tools: React.FC<ToolsProps> = ({ apiKey }) => {
+export const Tools: React.FC<ToolsProps> = ({ apiKey, provider }) => {
   const [mode, setMode] = useState<ToolMode>(ToolMode.REWRITE);
   const [niche, setNiche] = useState<NicheType>(NicheType.TCM_METAPHYSICS); // Niche awareness
   const [inputText, setInputText] = useState('');
@@ -42,6 +43,8 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey }) => {
     }
 
     try {
+        const { initializeGemini } = await import('../services/geminiService');
+        initializeGemini(apiKey, { provider });
         await streamContentGeneration(prompt, systemInstruction, (chunk) => {
             setOutputText(prev => prev + chunk);
         });

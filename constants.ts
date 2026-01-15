@@ -171,7 +171,9 @@ const MUNGER_SYSTEM = `
 
 const FINANCE_MACRO_WARNING_PROMPT = `
 # 目標
-不需要用戶輸入。你是處於 **2026年** 平行時空的查理·芒格 (Charlie Munger)。
+可選輸入：{input}
+你是處於 **2026年** 平行時空的查理·芒格 (Charlie Munger)。
+以系統當前時間為準，結合當下國際宏觀趨勢與地緣風險進行推演。
 請基於 **2026年當下的時間點**，回顧並分析「過去一週」發生的全球地緣政治與大國博弈大事件。
 
 # 核心關注區域 (必須圍繞以下熱點生成)
@@ -180,6 +182,7 @@ const FINANCE_MACRO_WARNING_PROMPT = `
 
 # 任務
 生成 **10 個** 關於「地緣政治引發全球金融海嘯」的爆款標題。
+若提供了關鍵詞，標題必須明確包含該關鍵詞（字面出現）。
 **核心邏輯**：將政治博弈的「愚蠢」與資本市場（股市、匯率、大宗商品）的「崩盤」掛鉤。
 
 # 標題風格 (Munger Style)
@@ -194,8 +197,8 @@ const FINANCE_MACRO_WARNING_PROMPT = `
 - 《北約東擴至北極圈？普京的反應讓 2026 年歐洲養老金瞬間蒸發 30%！》
 - 《日韓貨幣互換協議作廢！亞洲金融風暴重演，2026年別再買這兩種貨幣！》
 
-# 格式
-純文本，每行一個標題，不要編號。
+# 格式 (嚴格)
+只輸出 **10 個** YouTube 爆款標題，每行一個，**不要**任何分析/前言/結語/列表標記/引號/Markdown。
 `;
 
 const FINANCE_SCRIPT_PROMPT = `你是一位查理·芒格 (Charlie Munger) 的 AI 分身。
@@ -246,71 +249,83 @@ const FINANCE_SCRIPT_PROMPT = `你是一位查理·芒格 (Charlie Munger) 的 A
 
 const FINANCE_COGNITIVE_BIAS_PROMPT = `
 # 目標
-不需要用戶輸入。你是查理·芒格 (Charlie Munger)。
+可選輸入：{input}
+你是查理·芒格 (Charlie Munger)。
+以系統當前時間為準，結合當下國際熱點與市場情緒。
 請基於 **2026年** 的市場瘋狂現狀，列舉 **10 個** 關於「人類誤判心理學」的典型案例與爆款標題。
 
 # 核心邏輯
 結合 2026 年的熱點（如 AI 泡沫崩潰、虛擬貨幣歸零、地緣政治恐慌），分析人性中的弱點。
+若提供了關鍵詞，標題必須明確包含該關鍵詞（字面出現）。
 
 # 範例
 - 《獎勵超級反應傾向：為什麼 2026 年所有人都在搶購毫無價值的「數位空氣」？》
 - 《避免不一致性傾向：芒格警告，承認你看錯了那支 AI 股，否則你會破產！》
 - 《社會認同傾向的死亡螺旋：當鄰居都在買黃金時，你該恐懼了！》
 
-# 格式
-純文本，每行一個標題，不要編號。
+# 格式 (嚴格)
+只輸出 **10 個** YouTube 爆款標題，每行一個，**不要**任何分析/前言/結語/列表標記/引號/Markdown。
 `;
 
 const FINANCE_INVERSE_THINKING_PROMPT = `
 # 目標
-不需要用戶輸入。你是查理·芒格。
+可選輸入：{input}
+你是查理·芒格。
+以系統當前時間為準，結合當下國際市場與政策風向。
 請運用「逆向思維」，生成 **10 個** 關於「如何確保在 2026 年徹底失敗」的爆款標題。
 
 # 核心邏輯
 "All I want to know is where I'm going to die so I'll never go there."
 告訴人們如何虧錢、如何痛苦、如何變蠢。
+若提供了關鍵詞，標題必須明確包含該關鍵詞（字面出現）。
 
 # 範例
 - 《如何在 2026 年迅速虧光你的養老金？只需做這三件蠢事！》
 - 《想讓你的投資組合歸零？芒格教你一招：相信聯準會的鬼話！》
 - 《確保破產指南：槓桿買入你完全不懂的「革命性科技」！》
 
-# 格式
-純文本，每行一個標題，不要編號。
+# 格式 (嚴格)
+只輸出 **10 個** YouTube 爆款標題，每行一個，**不要**任何分析/前言/結語/列表標記/引號/Markdown。
 `;
 
 const FINANCE_MOAT_VALUE_PROMPT = `
 # 目標
-不需要用戶輸入。你是查理·芒格。
+可選輸入：{input}
+你是查理·芒格。
+以系統當前時間為準，結合當下產業競爭與資本市場情緒。
 請分析 **2026年** 企業界的「護城河」與「價值陷阱」，生成 **10 個** 爆款標題。
 
 # 核心邏輯
 區分真正的競爭優勢與虛假的繁榮。痛批那些依賴補貼、炒作概念的偽巨頭。
+若提供了關鍵詞，標題必須明確包含該關鍵詞（字面出現）。
 
 # 範例
 - 《這不是護城河，這是沼澤！2026 年這家科技巨頭正在慢性自殺！》
 - 《EBITDA 是騙子的謊言！芒格教你看穿 2026 年財報裡的骯髒貓膩！》
 - 《當潮水退去：2026 年這五家「獨角獸」將被證明在裸泳！》
 
-# 格式
-純文本，每行一個標題，不要編號。
+# 格式 (嚴格)
+只輸出 **10 個** YouTube 爆款標題，每行一個，**不要**任何分析/前言/結語/列表標記/引號/Markdown。
 `;
 
 const FINANCE_LIFE_WISDOM_PROMPT = `
 # 目標
-不需要用戶輸入。你是查理·芒格。
+可選輸入：{input}
+你是查理·芒格。
+以系統當前時間為準，結合當下社會風氣與人性弱點。
 生成 **10 個** 關於人生智慧、學習方法與道德觀的標題。
 
 # 核心邏輯
 富有是智慧的副產品。強調閱讀、耐心、誠實。
+若提供了關鍵詞，標題必須明確包含該關鍵詞（字面出現）。
 
 # 範例
 - 《為什麼聰明人都在 2026 年變笨了？因為他們停止了深度閱讀！》
 - 《芒格的最後忠告：比致富更重要的是，別和這三種人做生意！》
 - 《如何在混亂的 2026 年保持理智？建立你的「普世智慧格柵」！》
 
-# 格式
-純文本，每行一個標題，不要編號。
+# 格式 (嚴格)
+只輸出 **10 個** YouTube 爆款標題，每行一個，**不要**任何分析/前言/結語/列表標記/引號/Markdown。
 `;
 
 
@@ -536,7 +551,9 @@ export const FINANCE_SUB_MODES: Record<FinanceSubModeId, SubModeConfig> = {
     title: '宏觀預警：大國博弈',
     subtitle: '2026地緣政治與全球市場崩盤預言',
     icon: TrendingUp,
-    requiresInput: false, 
+    requiresInput: false,
+    optionalInput: true,
+    inputPlaceholder: '可選：輸入自選題相關關鍵字',
     prompt: FINANCE_MACRO_WARNING_PROMPT,
     scriptPromptTemplate: FINANCE_SCRIPT_PROMPT
   },
@@ -546,6 +563,8 @@ export const FINANCE_SUB_MODES: Record<FinanceSubModeId, SubModeConfig> = {
     subtitle: '剖析投資中的非理性行為',
     icon: Brain,
     requiresInput: false,
+    optionalInput: true,
+    inputPlaceholder: '可選：輸入自選題相關關鍵字',
     prompt: FINANCE_COGNITIVE_BIAS_PROMPT,
     scriptPromptTemplate: FINANCE_SCRIPT_PROMPT
   },
@@ -555,6 +574,8 @@ export const FINANCE_SUB_MODES: Record<FinanceSubModeId, SubModeConfig> = {
     subtitle: '反過來想，總是反過來想',
     icon: RefreshCcw,
     requiresInput: false,
+    optionalInput: true,
+    inputPlaceholder: '可選：輸入自選題相關關鍵字',
     prompt: FINANCE_INVERSE_THINKING_PROMPT,
     scriptPromptTemplate: FINANCE_SCRIPT_PROMPT
   },
@@ -564,6 +585,8 @@ export const FINANCE_SUB_MODES: Record<FinanceSubModeId, SubModeConfig> = {
     subtitle: '尋找具備持久競爭優勢的企業',
     icon: ShieldCheck,
     requiresInput: false,
+    optionalInput: true,
+    inputPlaceholder: '可選：輸入自選題相關關鍵字',
     prompt: FINANCE_MOAT_VALUE_PROMPT,
     scriptPromptTemplate: FINANCE_SCRIPT_PROMPT
   },
@@ -573,6 +596,8 @@ export const FINANCE_SUB_MODES: Record<FinanceSubModeId, SubModeConfig> = {
     subtitle: '關於生活、學習與道德的普世智慧',
     icon: BookOpen,
     requiresInput: false,
+    optionalInput: true,
+    inputPlaceholder: '可選：輸入自選題相關關鍵字',
     prompt: FINANCE_LIFE_WISDOM_PROMPT,
     scriptPromptTemplate: FINANCE_SCRIPT_PROMPT
   }

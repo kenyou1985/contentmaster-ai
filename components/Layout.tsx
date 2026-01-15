@@ -1,5 +1,6 @@
 import React from 'react';
-import { Settings, Cpu, PenTool, Layout as LayoutIcon, ExternalLink, Server, Zap } from 'lucide-react';
+import { Settings, Cpu, PenTool, Layout as LayoutIcon, ExternalLink, Zap } from 'lucide-react';
+import { ApiProvider } from '../types';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -7,8 +8,8 @@ interface LayoutProps {
   setActiveTab: (tab: 'generate' | 'tools') => void;
   apiKey: string;
   setApiKey: (key: string) => void;
-  baseUrl: string;
-  setBaseUrl: (url: string) => void;
+  provider: ApiProvider;
+  setProvider: (provider: ApiProvider) => void;
 }
 
 export const Layout: React.FC<LayoutProps> = ({ 
@@ -17,11 +18,12 @@ export const Layout: React.FC<LayoutProps> = ({
   setActiveTab, 
   apiKey, 
   setApiKey,
-  baseUrl,
-  setBaseUrl
+  provider,
+  setProvider
 }) => {
   const [showKeyInput, setShowKeyInput] = React.useState(!apiKey);
   const isYunwuKey = apiKey?.trim().startsWith('sk-');
+  const isGoogleKey = apiKey?.trim().startsWith('AIza');
 
   return (
     <div className="min-h-screen flex flex-col bg-[#020617] text-slate-100 relative overflow-x-hidden">
@@ -84,61 +86,67 @@ export const Layout: React.FC<LayoutProps> = ({
         <div className="bg-gradient-to-r from-amber-950/40 to-slate-950 border-b border-amber-500/20 px-4 py-4 backdrop-blur-md relative z-40 animate-in fade-in slide-in-from-top-2">
           <div className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
             
-            {/* API Key Input */}
-            <div className="flex-1 space-y-1">
-                <label className="text-xs text-amber-500/80 font-semibold uppercase tracking-wider flex items-center gap-1">
-                    <Settings size={12} /> API Key
-                    {isYunwuKey && (
-                        <span className="ml-2 bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded text-[10px] flex items-center gap-1 inline-block border border-emerald-500/30">
-                           <Zap size={8} fill="currentColor" /> Yunwu AI Auto-Config
-                        </span>
-                    )}
-                </label>
-                <input 
-                    type="password" 
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder="輸入 Key (默認使用 Yunwu AI，sk- 開頭自動切換)"
-                    className={`w-full bg-slate-900/50 border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 transition-all ${
-                        isYunwuKey 
-                        ? 'border-emerald-500/50 focus:border-emerald-500/80 focus:ring-emerald-500/20 text-emerald-100'
-                        : 'border-slate-700/60 focus:border-amber-500/50 focus:ring-amber-500/20 text-slate-200'
-                    }`}
-                />
-            </div>
+            {/* Provider + API Key */}
+            <div className="flex-1 space-y-3">
+                <div className="space-y-1">
+                    <label className="text-xs text-slate-400 font-semibold uppercase tracking-wider flex items-center gap-1">
+                        <Settings size={12} /> API 服務
+                    </label>
+                    <select
+                        value={provider}
+                        onChange={(e) => setProvider(e.target.value as ApiProvider)}
+                        className="w-full bg-slate-900/50 border border-slate-700/60 rounded-md px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20"
+                    >
+                        <option value="yunwu">Yunwu.ai（sk- 開頭）</option>
+                        <option value="google">Google Gemini（AIza 開頭）</option>
+                    </select>
+                </div>
 
-            {/* Base URL Input */}
-            <div className="flex-1 flex gap-3 items-end">
-                <div className="flex-1 space-y-1">
-                    <label className="text-xs text-slate-500 font-semibold uppercase tracking-wider flex items-center gap-1">
-                        <Server size={12} /> Base URL (Optional)
+                <div className="space-y-1">
+                    <label className="text-xs text-amber-500/80 font-semibold uppercase tracking-wider flex items-center gap-1">
+                        <Settings size={12} /> API Key
+                        {isYunwuKey && (
+                            <span className="ml-2 bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded text-[10px] flex items-center gap-1 inline-block border border-emerald-500/30">
+                               <Zap size={8} fill="currentColor" /> Yunwu AI Auto-Config
+                            </span>
+                        )}
+                        {isGoogleKey && (
+                            <span className="ml-2 bg-indigo-500/20 text-indigo-400 px-1.5 py-0.5 rounded text-[10px] flex items-center gap-1 inline-block border border-indigo-500/30">
+                               <Zap size={8} fill="currentColor" /> Google Gemini Auto-Config
+                            </span>
+                        )}
                     </label>
                     <input 
-                        type="text" 
-                        value={baseUrl}
-                        onChange={(e) => setBaseUrl(e.target.value)}
-                        placeholder={isYunwuKey ? "已自動設定為 Yunwu AI" : "默認: https://yunwu.ai"}
-                        disabled={isYunwuKey}
-                        className="w-full bg-slate-900/50 border border-slate-700/60 rounded-md px-3 py-2 text-sm focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20 text-slate-200 placeholder-slate-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                        type="password" 
+                        value={apiKey}
+                        onChange={(e) => setApiKey(e.target.value)}
+                        placeholder={provider === 'google' ? '輸入 Google Key (AIza 開頭)' : '輸入 Yunwu Key (sk- 開頭)'}
+                        className={`w-full bg-slate-900/50 border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 transition-all ${
+                            isYunwuKey 
+                            ? 'border-emerald-500/50 focus:border-emerald-500/80 focus:ring-emerald-500/20 text-emerald-100'
+                            : isGoogleKey
+                                ? 'border-indigo-500/50 focus:border-indigo-500/80 focus:ring-indigo-500/20 text-indigo-100'
+                                : 'border-slate-700/60 focus:border-amber-500/50 focus:ring-amber-500/20 text-slate-200'
+                        }`}
                     />
                 </div>
-                
+            </div>
+
+            <div className="flex-1 flex flex-col items-end gap-3 justify-end">
+                <div className="text-xs text-slate-500 flex justify-end gap-4 flex-wrap">
+                    <a href="https://yunwu.apifox.cn/" target="_blank" rel="noreferrer" className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1">
+                        Yunwu API 文檔 <ExternalLink size={10} />
+                    </a>
+                    <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1">
+                        獲取官方 Key <ExternalLink size={10} />
+                    </a>
+                </div>
                 <button 
                     onClick={() => setShowKeyInput(false)}
                     className="h-[38px] px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-md text-sm border border-slate-700 transition-colors whitespace-nowrap"
                 >
                     完成
                 </button>
-            </div>
-            
-            <div className="md:col-span-2 text-xs text-slate-500 flex justify-end gap-4 flex-wrap">
-                 <span>默認使用 Yunwu.ai (輸入 sk- 開頭的 Key 自動切換)</span>
-                 <a href="https://yunwu.apifox.cn/" target="_blank" rel="noreferrer" className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1">
-                    Yunwu API 文檔 <ExternalLink size={10} />
-                </a>
-                 <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1">
-                    獲取官方 Key <ExternalLink size={10} />
-                </a>
             </div>
 
           </div>

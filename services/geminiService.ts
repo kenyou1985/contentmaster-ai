@@ -2,17 +2,34 @@
 // Based on Python implementation: https://yunwu.ai/v1/chat/completions
 
 const YUNWU_BASE_URL = "https://yunwu.ai";
-const DEFAULT_MODEL = "gemini-3-pro-preview-thinking";
+const GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com";
+const DEFAULT_YUNWU_MODEL = "gemini-3-pro-preview-thinking";
+const GOOGLE_PRIMARY_MODEL = "gemini-3-pro-preview";
+const GOOGLE_FALLBACK_MODEL = "gemini-3-flash-preview";
+
+type Provider = 'yunwu' | 'google';
 
 // Store API Key and Base URL
 let apiKey: string | null = null;
 let baseUrl: string = YUNWU_BASE_URL;
+let provider: Provider = 'yunwu';
+let model: string = DEFAULT_YUNWU_MODEL;
 
-export const initializeGemini = (key: string, customBaseUrl?: string) => {
+export const initializeGemini = (
+  key: string, 
+  options?: { provider?: Provider; baseUrl?: string; model?: string }
+) => {
   apiKey = key.trim();
-  baseUrl = customBaseUrl?.trim() || YUNWU_BASE_URL;
-  baseUrl = baseUrl.replace(/\/$/, ""); // Remove trailing slash
-  console.log(`[Gemini Service] Initialized with Base URL: ${baseUrl}`);
+  provider = options?.provider || (apiKey.startsWith('AIza') ? 'google' : 'yunwu');
+  if (provider === 'google') {
+    baseUrl = GOOGLE_BASE_URL;
+    model = options?.model || GOOGLE_PRIMARY_MODEL;
+  } else {
+    baseUrl = options?.baseUrl?.trim() || YUNWU_BASE_URL;
+    model = options?.model || DEFAULT_YUNWU_MODEL;
+  }
+  baseUrl = baseUrl.replace(/\/$/, "");
+  console.log(`[Gemini Service] Initialized (${provider}) with Base URL: ${baseUrl}, model: ${model}`);
 };
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -64,10 +81,17 @@ async function callYunwuAPI(
     // Try to get from localStorage
     if (typeof window !== 'undefined' && window.localStorage) {
       const storedKey = window.localStorage.getItem('GEMINI_API_KEY');
-      const storedUrl = window.localStorage.getItem('GEMINI_BASE_URL');
+      const storedProvider = window.localStorage.getItem('GEMINI_PROVIDER') as Provider | null;
       if (storedKey) {
         apiKey = storedKey;
-        baseUrl = storedUrl || YUNWU_BASE_URL;
+        provider = storedProvider === 'google' ? 'google' : 'yunwu';
+        if (provider === 'google') {
+          baseUrl = GOOGLE_BASE_URL;
+          model = GOOGLE_PRIMARY_MODEL;
+        } else {
+          baseUrl = YUNWU_BASE_URL;
+          model = DEFAULT_YUNWU_MODEL;
+        }
         baseUrl = baseUrl.replace(/\/$/, "");
       }
     }
@@ -90,7 +114,7 @@ async function callYunwuAPI(
   messages.push({ role: "user", content: prompt });
 
   const payload = {
-    model: DEFAULT_MODEL,
+    model: model,
     messages: messages,
     temperature: temperature,
     max_tokens: maxTokens,
@@ -120,16 +144,101 @@ async function callYunwuAPI(
   return await response.json();
 }
 
+async function callGoogleAPI(
+  modelName: string,
+  prompt: string,
+  systemInstruction: string,
+  temperature: number = 0.85,
+  maxTokens: number = 8192
+): Promise<any> {
+  if (!apiKey) {
+    throw new Error("API Key 未設置。請在設置中輸入您的 API Key。");
+  }
+
+  const payload: Record<string, any> = {
+    contents: [
+      {
+        role: "user",
+        parts: [{ text: prompt }]
+      }
+    ],
+    generationConfig: {
+      temperature,
+      maxOutputTokens: maxTokens
+    }
+  };
+
+  if (systemInstruction) {
+    payload.systemInstruction = {
+      parts: [{ text: systemInstruction }]
+    };
+  }
+
+  const response = await fetch(
+    `${GOOGLE_BASE_URL}/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    let errorMsg = `HTTP ${response.status}: ${errorText}`;
+    if (response.status === 401 || response.status === 403) {
+      errorMsg = "API Key 無效或未授權。請檢查您的 API Key。";
+    } else if (response.status === 429) {
+      errorMsg = "API 配額已用完，請稍後再試。";
+    }
+    throw new Error(errorMsg);
+  }
+
+  return await response.json();
+}
+
+async function callGoogleWithFallback(
+  prompt: string,
+  systemInstruction: string,
+  temperature: number,
+  maxTokens: number,
+  preferredModel?: string
+): Promise<any> {
+  const primaryModel = preferredModel || model || GOOGLE_PRIMARY_MODEL;
+  try {
+    return await retryOperation(() => callGoogleAPI(primaryModel, prompt, systemInstruction, temperature, maxTokens));
+  } catch (error) {
+    if (primaryModel !== GOOGLE_FALLBACK_MODEL) {
+      console.warn(`[Gemini Service] Google model failed, switching to fallback: ${GOOGLE_FALLBACK_MODEL}`);
+      const fallbackResponse = await retryOperation(() => callGoogleAPI(GOOGLE_FALLBACK_MODEL, prompt, systemInstruction, temperature, maxTokens));
+      model = GOOGLE_FALLBACK_MODEL;
+      return fallbackResponse;
+    }
+    throw error;
+  }
+}
+
+const extractGoogleText = (response: any): string => {
+  const parts = response?.candidates?.[0]?.content?.parts;
+  if (!parts || !Array.isArray(parts)) return '';
+  return parts.map((p: any) => p?.text || '').join('');
+};
+
 export const generateTopics = async (
   prompt: string, 
   systemInstruction: string,
-  modelName: string = DEFAULT_MODEL
+  modelName?: string
 ): Promise<string[]> => {
   return retryOperation(async () => {
     try {
-      const response = await callYunwuAPI(prompt, systemInstruction, 0.9, 4096, false);
-      
-      const content = response.choices?.[0]?.message?.content || "";
+      let content = "";
+      if (provider === 'google') {
+        const response = await callGoogleWithFallback(prompt, systemInstruction, 0.9, 4096, modelName);
+        content = extractGoogleText(response);
+      } else {
+        const response = await callYunwuAPI(prompt, systemInstruction, 0.9, 4096, false);
+        content = response.choices?.[0]?.message?.content || "";
+      }
       if (!content) {
         throw new Error("API 返回了空響應。請檢查 API Key 和配置。");
       }
@@ -159,7 +268,7 @@ export const streamContentGeneration = async (
   prompt: string,
   systemInstruction: string,
   onChunk: (chunk: string) => void,
-  modelName: string = DEFAULT_MODEL
+  modelName?: string
 ) => {
   return retryOperation(async () => {
     try {
@@ -167,10 +276,17 @@ export const streamContentGeneration = async (
         // Try to get from localStorage
         if (typeof window !== 'undefined' && window.localStorage) {
           const storedKey = window.localStorage.getItem('GEMINI_API_KEY');
-          const storedUrl = window.localStorage.getItem('GEMINI_BASE_URL');
+          const storedProvider = window.localStorage.getItem('GEMINI_PROVIDER') as Provider | null;
           if (storedKey) {
             apiKey = storedKey;
-            baseUrl = storedUrl || YUNWU_BASE_URL;
+            provider = storedProvider === 'google' ? 'google' : 'yunwu';
+            if (provider === 'google') {
+              baseUrl = GOOGLE_BASE_URL;
+              model = GOOGLE_PRIMARY_MODEL;
+            } else {
+              baseUrl = YUNWU_BASE_URL;
+              model = DEFAULT_YUNWU_MODEL;
+            }
             baseUrl = baseUrl.replace(/\/$/, "");
           }
         }
@@ -178,6 +294,16 @@ export const streamContentGeneration = async (
         if (!apiKey) {
           throw new Error("API Key 未設置。請在設置中輸入您的 API Key。");
         }
+      }
+
+      if (provider === 'google') {
+        const response = await callGoogleWithFallback(prompt, systemInstruction, 0.85, 8192, modelName);
+        const content = extractGoogleText(response);
+        if (!content) {
+          throw new Error("API 返回了空響應。請檢查 API Key 和配置。");
+        }
+        onChunk(content);
+        return;
       }
 
       const headers: Record<string, string> = {
@@ -192,7 +318,7 @@ export const streamContentGeneration = async (
       messages.push({ role: "user", content: prompt });
 
       const payload = {
-        model: DEFAULT_MODEL,
+        model: model,
         messages: messages,
         temperature: 0.85,
         max_tokens: 8192,

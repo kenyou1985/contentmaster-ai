@@ -94,3 +94,5 @@ export enum ToolMode {
   SUMMARIZE = 'SUMMARIZE',
   POLISH = 'POLISH'
 }
+
+export type ApiProvider = 'yunwu' | 'google';
