@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ApiProvider, NicheType, Topic, GeneratedContent, GenerationStatus, TcmSubModeId, FinanceSubModeId, RevengeSubModeId, StoryLanguage, StoryDuration } from '../types';
-import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES } from '../constants';
+import { ApiProvider, NicheType, Topic, GeneratedContent, GenerationStatus, TcmSubModeId, FinanceSubModeId, RevengeSubModeId, NewsSubModeId, StoryLanguage, StoryDuration } from '../types';
+import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES } from '../constants';
 import { NicheSelector } from './NicheSelector';
 import { generateTopics, streamContentGeneration } from '../services/geminiService';
 import { Sparkles, Calendar, Loader2, Download, Eye, Zap, AlertTriangle, Copy, Check, Globe, Clock, PlusCircle } from 'lucide-react';
@@ -16,6 +16,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
   const MAX_TCM_SCRIPT_CHARS = 10000; // 40 min * 250 chars/min
   const MIN_FIN_SCRIPT_CHARS = 7500; // 30 min * 250 chars/min
   const MAX_FIN_SCRIPT_CHARS = 10000; // 40 min * 250 chars/min
+  const MIN_NEWS_SCRIPT_CHARS = 4500; // 15 min * 300 chars/min
+  const MAX_NEWS_SCRIPT_CHARS = 7500; // 25 min * 300 chars/min
   const MAX_SCRIPT_CONTINUATIONS = 3;
   const REVENGE_SHORT_MIN = 13500; // 15 min * 900 chars/min
   const REVENGE_SHORT_MAX = 27000; // 30 min * 900 chars/min
@@ -30,6 +32,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
   const [tcmSubMode, setTcmSubMode] = useState<TcmSubModeId>(TcmSubModeId.TIME_TABOO);
   const [financeSubMode, setFinanceSubMode] = useState<FinanceSubModeId>(FinanceSubModeId.MACRO_WARNING);
   const [revengeSubMode, setRevengeSubMode] = useState<RevengeSubModeId>(RevengeSubModeId.CULTURAL_ORIGINAL);
+  const [newsSubMode, setNewsSubMode] = useState<NewsSubModeId>(NewsSubModeId.GEO_POLITICS);
   
   // Revenge Story Settings
   const [storyLanguage, setStoryLanguage] = useState<StoryLanguage>(StoryLanguage.ENGLISH);
@@ -63,13 +66,14 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
   useEffect(() => {
     setInputVal('');
     setTopics([]);
-  }, [niche, tcmSubMode, financeSubMode, revengeSubMode]);
+  }, [niche, tcmSubMode, financeSubMode, revengeSubMode, newsSubMode]);
 
   // SAFE ACCESS HELPER
   const getCurrentSubModeConfig = () => {
     if (niche === NicheType.TCM_METAPHYSICS) return TCM_SUB_MODES[tcmSubMode];
     if (niche === NicheType.FINANCE_CRYPTO) return FINANCE_SUB_MODES[financeSubMode];
     if (niche === NicheType.STORY_REVENGE) return REVENGE_SUB_MODES[revengeSubMode];
+    if (niche === NicheType.GENERAL_VIRAL) return NEWS_SUB_MODES[newsSubMode];
     return null;
   };
 
@@ -77,6 +81,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
      if (niche === NicheType.TCM_METAPHYSICS) return TCM_SUB_MODES;
      if (niche === NicheType.FINANCE_CRYPTO) return FINANCE_SUB_MODES;
      if (niche === NicheType.STORY_REVENGE) return REVENGE_SUB_MODES;
+     if (niche === NicheType.GENERAL_VIRAL) return NEWS_SUB_MODES;
      return null;
   };
 
@@ -366,7 +371,9 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
             );
 
             const shouldEnforceLength =
-                niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO;
+                niche === NicheType.TCM_METAPHYSICS ||
+                niche === NicheType.FINANCE_CRYPTO ||
+                niche === NicheType.GENERAL_VIRAL;
             const isRevengeShort =
                 niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.SHORT;
             const isRevengeLong =
@@ -374,13 +381,25 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
 
             if (shouldEnforceLength) {
                 let continueCount = 0;
-                const minChars = niche === NicheType.TCM_METAPHYSICS ? MIN_TCM_SCRIPT_CHARS : MIN_FIN_SCRIPT_CHARS;
-                const maxChars = niche === NicheType.TCM_METAPHYSICS ? MAX_TCM_SCRIPT_CHARS : MAX_FIN_SCRIPT_CHARS;
+                const minChars =
+                    niche === NicheType.TCM_METAPHYSICS
+                        ? MIN_TCM_SCRIPT_CHARS
+                        : niche === NicheType.FINANCE_CRYPTO
+                            ? MIN_FIN_SCRIPT_CHARS
+                            : MIN_NEWS_SCRIPT_CHARS;
+                const maxChars =
+                    niche === NicheType.TCM_METAPHYSICS
+                        ? MAX_TCM_SCRIPT_CHARS
+                        : niche === NicheType.FINANCE_CRYPTO
+                            ? MAX_FIN_SCRIPT_CHARS
+                            : MAX_NEWS_SCRIPT_CHARS;
                 while (localContent.length < minChars && continueCount < MAX_SCRIPT_CONTINUATIONS) {
                     continueCount += 1;
                     const context = localContent.slice(-2000);
                     const continuePrompt = [
-                        '請續寫以下內容，保持原風格與第一人稱口吻，不要重覆前文。',
+                        niche === NicheType.GENERAL_VIRAL
+                            ? '請用第一人稱續寫新聞評論，保持評論員的犀利與獨家視角，不要重覆前文。'
+                            : '請續寫以下內容，保持原風格與第一人稱口吻，不要重覆前文。',
                         '不要出現「下課」「今天的課到這裡」等收尾語。',
                         '輸出第一行必須是「-----」，下一行直接續寫正文。',
                         `要求：全文至少 ${minChars} 字，且不超過 ${maxChars} 字。`,
@@ -391,6 +410,22 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
 
                     await streamContentGeneration(
                         continuePrompt,
+                        config.systemInstruction,
+                        appendChunk
+                    );
+                }
+
+                if (niche === NicheType.GENERAL_VIRAL) {
+                    const endPrompt = [
+                        '請用第一人稱收尾，結尾要升華點題並形成明確觀點收束。',
+                        '輸出第一行必須是「-----」，下一行直接續寫正文。',
+                        '不要標題、不要段落標記、不要元信息。',
+                        '',
+                        localContent.slice(-2000)
+                    ].join('\n');
+
+                    await streamContentGeneration(
+                        endPrompt,
                         config.systemInstruction,
                         appendChunk
                     );
@@ -412,6 +447,18 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
                             return newArr;
                         });
                     }
+                } else if (niche === NicheType.FINANCE_CRYPTO) {
+                    localContent = cleaned;
+                    setGeneratedContents(prev => {
+                        const newArr = [...prev];
+                        if (newArr[index]) {
+                            newArr[index] = {
+                                ...newArr[index],
+                                content: localContent
+                            };
+                        }
+                        return newArr;
+                    });
                 } else {
                     localContent = cleaned;
                     setGeneratedContents(prev => {
@@ -721,6 +768,9 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
                     } else if (niche === NicheType.STORY_REVENGE) {
                         activeModeId = revengeSubMode;
                         setActiveFunc = setRevengeSubMode;
+                    } else if (niche === NicheType.GENERAL_VIRAL) {
+                        activeModeId = newsSubMode;
+                        setActiveFunc = setNewsSubMode;
                     }
 
                     const isSelected = activeModeId === mode.id;

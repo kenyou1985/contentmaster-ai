@@ -41,6 +41,14 @@ export enum RevengeSubModeId {
   ADAPTATION = 'ADAPTATION'
 }
 
+// News Commentary Sub-categories
+export enum NewsSubModeId {
+  GEO_POLITICS = 'GEO_POLITICS',
+  GLOBAL_MARKETS = 'GLOBAL_MARKETS',
+  TECH_INDUSTRY = 'TECH_INDUSTRY',
+  SOCIAL_RISK = 'SOCIAL_RISK'
+}
+
 // Revenge Story Settings
 export enum StoryLanguage {
   ENGLISH = 'English',

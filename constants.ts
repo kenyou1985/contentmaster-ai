@@ -1,4 +1,4 @@
-import { NicheConfig, NicheType, TcmSubModeId, FinanceSubModeId, RevengeSubModeId, SubModeConfig } from './types';
+import { NicheConfig, NicheType, TcmSubModeId, FinanceSubModeId, RevengeSubModeId, NewsSubModeId, SubModeConfig } from './types';
 import { Skull, HeartCrack, ScanFace, Coins, AlertOctagon, TrendingUp, Brain, RefreshCcw, ShieldCheck, BookOpen, Calculator, Globe, Sword, Clapperboard } from 'lucide-react';
 
 // ==========================================
@@ -470,12 +470,84 @@ const REVENGE_CONTINUE_PROMPT = `
 `;
 
 // ==========================================
-// 4. OTHER NICHES PROMPTS
+// 4. NEWS COMMENTARY (VIRAL REPLACEMENT)
 // ==========================================
 
-const GENERAL_VIRAL_PROMPT = `
-你是頂級自媒體操盤手。針對 {input} 生成 10 個利用人性弱點（貪婪、恐懼、好奇）的爆款標題。
-格式：純文本，每行一個標題。
+const NEWS_COMMENTARY_SYSTEM = `
+你是一位**國際新聞評論員**，風格犀利、角度獨家，善於拆解地緣政治、金融市場與科技產業的權力博弈。
+你只輸出繁體中文（Traditional Chinese）。
+評論要求：信息密度高、觀點鮮明、帶有判斷力，但避免陰謀論式的胡亂推測。
+`;
+
+const NEWS_GEO_POLITICS_PROMPT = `
+# 目標
+可選輸入：{input}
+以系統當前時間為準（2026 年），針對「地緣政治/軍事衝突/外交對峙」生成 **10 個** 爆款 YouTube 標題。
+總統設定：美國現任總統為 **特朗普**，不得出現拜登。
+優先關注：格陵蘭島、委內瑞拉、伊朗、美國、俄羅斯、中國、以色列、台灣、新加坡、韓國、日本、菲律賓。
+若提供關鍵詞，標題必須明確包含該關鍵詞（字面出現）。
+
+# 風格
+新聞評論員獨家視角，犀利辣評，強調事件背後的權力結構與利益交換。
+
+# 格式 (嚴格)
+只輸出 10 個標題，每行一個，無編號、無前言、無分析。
+`;
+
+const NEWS_GLOBAL_MARKETS_PROMPT = `
+# 目標
+可選輸入：{input}
+以系統當前時間為準（2026 年），針對「全球市場/金融風險/資本流向」生成 **10 個** 爆款 YouTube 標題。
+總統設定：美國現任總統為 **特朗普**，不得出現拜登。
+優先關注：美國、沙烏地、伊朗、委內瑞拉、格陵蘭相關能源與航運風險、台灣、日本、韓國、新加坡。
+若提供關鍵詞，標題必須明確包含該關鍵詞（字面出現）。
+
+# 風格
+像資深金融評論員一樣，擅長抓住情緒拐點與市場恐慌。
+
+# 格式 (嚴格)
+只輸出 10 個標題，每行一個，無編號、無前言、無分析。
+`;
+
+const NEWS_TECH_INDUSTRY_PROMPT = `
+# 目標
+可選輸入：{input}
+以系統當前時間為準（2026 年），針對「科技產業/AI/晶片/平台壟斷」生成 **10 個** 爆款 YouTube 標題。
+總統設定：美國現任總統為 **特朗普**，不得出現拜登。
+優先關注：美國、中國、歐盟、台灣、日本、韓國、新加坡對 AI/晶片/平台的管制與衝突。
+若提供關鍵詞，標題必須明確包含該關鍵詞（字面出現）。
+
+# 風格
+評論員辣評，揭示技術敘事背後的商業控制與監管風向。
+
+# 格式 (嚴格)
+只輸出 10 個標題，每行一個，無編號、無前言、無分析。
+`;
+
+const NEWS_SOCIAL_RISK_PROMPT = `
+# 目標
+可選輸入：{input}
+以系統當前時間為準（2026 年），針對「社會風險/公共安全/能源與供應鏈」生成 **10 個** 爆款 YouTube 標題。
+總統設定：美國現任總統為 **特朗普**，不得出現拜登。
+優先關注：伊朗、委內瑞拉、紅海/霍爾木茲海峽、美國供應鏈、台灣、日本、韓國、新加坡。
+若提供關鍵詞，標題必須明確包含該關鍵詞（字面出現）。
+
+# 風格
+評論員獨家視角，強調風險如何外溢影響普通人。
+
+# 格式 (嚴格)
+只輸出 10 個標題，每行一個，無編號、無前言、無分析。
+`;
+
+const NEWS_SCRIPT_PROMPT = `
+你是一位國際新聞評論員，請就選題「{topic}」輸出 15-25 分鐘的深度評論文案（約每分鐘 300 字）。
+
+【要求】
+1. 使用第一人稱，評論員獨家視角切入，語氣偏激犀利、觀點明確。
+2. 內容聚焦國際新聞與宏觀趨勢，獨特視角帶出判斷與立場，避免空泛、不要流水帳。
+3. 結尾要升華點題，形成明確觀點收束。
+4. 只輸出正文，不要標題、不要分段標記、不要 Markdown。
+5. 使用繁體中文。
 `;
 
 // ==========================================
@@ -627,6 +699,53 @@ export const REVENGE_SUB_MODES: Record<RevengeSubModeId, SubModeConfig> = {
   }
 };
 
+export const NEWS_SUB_MODES: Record<NewsSubModeId, SubModeConfig> = {
+  [NewsSubModeId.GEO_POLITICS]: {
+    id: NewsSubModeId.GEO_POLITICS,
+    title: '地緣衝突：權力博弈',
+    subtitle: '國際衝突與外交對峙的深度辣評',
+    icon: Globe,
+    requiresInput: false,
+    optionalInput: true,
+    inputPlaceholder: '可選：輸入事件/地區/人物關鍵字',
+    prompt: NEWS_GEO_POLITICS_PROMPT,
+    scriptPromptTemplate: NEWS_SCRIPT_PROMPT
+  },
+  [NewsSubModeId.GLOBAL_MARKETS]: {
+    id: NewsSubModeId.GLOBAL_MARKETS,
+    title: '全球市場：資本風暴',
+    subtitle: '金融風險與市場情緒的高能解讀',
+    icon: TrendingUp,
+    requiresInput: false,
+    optionalInput: true,
+    inputPlaceholder: '可選：輸入市場/資產/機構關鍵字',
+    prompt: NEWS_GLOBAL_MARKETS_PROMPT,
+    scriptPromptTemplate: NEWS_SCRIPT_PROMPT
+  },
+  [NewsSubModeId.TECH_INDUSTRY]: {
+    id: NewsSubModeId.TECH_INDUSTRY,
+    title: '科技產業：規則重寫',
+    subtitle: 'AI、晶片與平台壟斷的評論視角',
+    icon: Brain,
+    requiresInput: false,
+    optionalInput: true,
+    inputPlaceholder: '可選：輸入公司/技術/平台關鍵字',
+    prompt: NEWS_TECH_INDUSTRY_PROMPT,
+    scriptPromptTemplate: NEWS_SCRIPT_PROMPT
+  },
+  [NewsSubModeId.SOCIAL_RISK]: {
+    id: NewsSubModeId.SOCIAL_RISK,
+    title: '社會風險：安全外溢',
+    subtitle: '能源、供應鏈與公共安全風險',
+    icon: AlertOctagon,
+    requiresInput: false,
+    optionalInput: true,
+    inputPlaceholder: '可選：輸入風險事件/議題關鍵字',
+    prompt: NEWS_SOCIAL_RISK_PROMPT,
+    scriptPromptTemplate: NEWS_SCRIPT_PROMPT
+  }
+};
+
 export const NICHES: Record<NicheType, NicheConfig> = {
   [NicheType.TCM_METAPHYSICS]: {
     id: NicheType.TCM_METAPHYSICS,
@@ -657,11 +776,11 @@ export const NICHES: Record<NicheType, NicheConfig> = {
   },
   [NicheType.GENERAL_VIRAL]: {
     id: NicheType.GENERAL_VIRAL,
-    name: '爆款文案 (Viral)',
+    name: '新聞熱點 (News)',
     icon: '🔥',
-    description: '通用爆款風格：情緒煽動、神轉折、金句頻出。',
-    systemInstruction: '你是頂級新媒體主編。',
-    topicPromptTemplate: GENERAL_VIRAL_PROMPT,
-    scriptPromptTemplate: `請就選題「{topic}」撰寫一篇 8000 字的爆款文章。`
+    description: '新聞評論員視角：獨家辣評國際熱點與權力博弈。',
+    systemInstruction: NEWS_COMMENTARY_SYSTEM,
+    topicPromptTemplate: NEWS_GEO_POLITICS_PROMPT,
+    scriptPromptTemplate: NEWS_SCRIPT_PROMPT
   }
 };
