@@ -115,27 +115,24 @@ const TCM_KARMA_EROTIC_PROMPT = `
 
 const TCM_FACE_READING_PROMPT = `
 # 目標
-用戶輸入：{input} (關於面相特徵或問題)。
-你是倪海廈。
+不需要用戶輸入。你是倪海廈。
 生成 10 個關於面相的爆款標題。
 強調「相由心生」但「命由天定」的宿命感。
-格式：純文本，每行一個標題。
+格式：純文本，每行一個標題，不要編號。
 `;
 
 const TCM_FENG_SHUI_PROMPT = `
 # 目標
-用戶輸入：{input} (關於家居或環境)。
-你是倪海廈。結合物理學解釋風水。
+不需要用戶輸入。你是倪海廈。結合物理學解釋風水。
 生成 10 個風水標題。
-格式：純文本，每行一個標題。
+格式：純文本，每行一個標題，不要編號。
 `;
 
 const TCM_DEBUNK_PROMPT = `
 # 目標
-用戶輸入：{input} (關於西醫或健康迷思)。
-你是倪海廈。痛批西醫，宣揚經方。
+不需要用戶輸入。你是倪海廈。痛批西醫，宣揚經方。
 生成 10 個闢謠/抨擊標題。
-格式：純文本，每行一個標題。
+格式：純文本，每行一個標題，不要編號。
 `;
 
 // ==========================================
@@ -470,8 +467,7 @@ export const TCM_SUB_MODES: Record<TcmSubModeId, SubModeConfig> = {
     title: '面相解密：富貴與貧賤',
     subtitle: '從五官特徵看透人心與命運',
     icon: ScanFace,
-    requiresInput: true,
-    inputPlaceholder: '輸入面相特徵 (如: 斷眉)',
+    requiresInput: false,
     prompt: TCM_FACE_READING_PROMPT
   },
   [TcmSubModeId.FENG_SHUI]: {
@@ -479,8 +475,7 @@ export const TCM_SUB_MODES: Record<TcmSubModeId, SubModeConfig> = {
     title: '科學風水：磁場與環境',
     subtitle: '用熱力學與光學破解風水迷思',
     icon: Globe,
-    requiresInput: true,
-    inputPlaceholder: '輸入家居佈局 (如: 穿堂煞)',
+    requiresInput: false,
     prompt: TCM_FENG_SHUI_PROMPT
   },
   [TcmSubModeId.TCM_DEBUNK]: {
@@ -488,8 +483,7 @@ export const TCM_SUB_MODES: Record<TcmSubModeId, SubModeConfig> = {
     title: '中醫闢謠：經方與西醫',
     subtitle: '倪師視角痛批西醫治療謬誤',
     icon: AlertOctagon, // Corrected from OctagonAlert to AlertOctagon
-    requiresInput: true,
-    inputPlaceholder: '輸入病症或療法 (如: 化療)',
+    requiresInput: false,
     prompt: TCM_DEBUNK_PROMPT
   }
 };
