@@ -11,6 +11,18 @@ interface GeneratorProps {
 }
 
 export const Generator: React.FC<GeneratorProps> = ({ apiKey }) => {
+  const MIN_TCM_SCRIPT_CHARS = 7500; // 30 min * 250 chars/min
+  const MAX_TCM_SCRIPT_CHARS = 10000; // 40 min * 250 chars/min
+  const MIN_FIN_SCRIPT_CHARS = 9000; // keep finance longer
+  const MAX_FIN_SCRIPT_CHARS = 12000;
+  const MAX_SCRIPT_CONTINUATIONS = 3;
+  const REVENGE_SHORT_MIN = 13500; // 15 min * 900 chars/min
+  const REVENGE_SHORT_MAX = 27000; // 30 min * 900 chars/min
+  const REVENGE_LONG_CN_MIN = 18000; // 60 min * 300 chars/min
+  const REVENGE_LONG_CN_MAX = 21000; // 70 min * 300 chars/min
+  const REVENGE_LONG_EN_MIN = 54000; // 60 min * 900 chars/min
+  const REVENGE_LONG_EN_MAX = 63000; // ~70 min buffer
+  const MAX_REVENGE_CONTINUATIONS = 4;
   const [niche, setNiche] = useState<NicheType>(NicheType.TCM_METAPHYSICS);
   
   // Sub-mode states
@@ -73,6 +85,12 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey }) => {
     return true; // Default input required for other niches
   };
 
+  const shouldShowInput = () => {
+    const config = getCurrentSubModeConfig();
+    if (config) return config.requiresInput || config.optionalInput;
+    return true;
+  };
+
   const getInputPlaceholder = () => {
       const config = getCurrentSubModeConfig();
       if (config) return config.inputPlaceholder || "輸入關鍵詞";
@@ -97,7 +115,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey }) => {
 
       // Fallback
       if (!msg) msg = JSON.stringify(err);
-      
+
       // Convert to lowercase for easier matching
       const msgLower = msg.toLowerCase();
 
@@ -156,8 +174,10 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey }) => {
         
         // --- Input Injection Logic ---
         // 1. User Input
-        if (subModeConfig.requiresInput) {
+        if (inputVal) {
             prompt = prompt.replace('{input}', inputVal);
+        } else {
+            prompt = prompt.replace(/.*\{input\}.*\n?/g, '').replace('{input}', '');
         }
         
         // 2. Story Specific Injection
@@ -231,6 +251,78 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey }) => {
     
     // 3. Process in Parallel (Promise.all)
     // We map each topic to a promise that handles its own generation lifecycle
+    const sanitizeTtsScript = (raw: string) => {
+        if (!raw) return '';
+        let text = raw
+            .replace(/^\s*#{1,6}\s+/gm, '')
+            .replace(/^\s*[-*+•]\s+/gm, '')
+            .replace(/^\s*\d+\.\s+/gm, '')
+            .replace(/[<>`*_~]/g, '')
+            .replace(/^\s*《.*?》\s*$/gm, '')
+            .replace(/^\s*【.*?】\s*$/gm, '')
+            .replace(/^\s*\(.*?\)\s*$/gm, '')
+            .replace(/^\s*（.*?）\s*$/gm, '')
+            .replace(/^\s*全[書书]完.*$/gm, '')
+            .replace(/^\s*完[结結]語.*$/gm, '')
+            .replace(/^\s*后记.*$/gm, '')
+            .replace(/^\s*附註.*$/gm, '')
+            .replace(/^\s*注釋.*$/gm, '')
+            .replace(/^\s*旁白.*$/gm, '')
+            .replace(/^\s*第\s*[一二三四五六七八九十百千0-9]+\s*章[:：]?\s*.*$/gm, '')
+            .replace(/^\s*第\s*[一二三四五六七八九十百千0-9]+\s*節[:：]?\s*.*$/gm, '')
+            .replace(/^\s*Chapter\s*\d+[:：]?\s*.*$/gmi, '')
+            .replace(/^\s*Part\s*\d+[:：]?\s*.*$/gmi, '')
+            .replace(/^\s*章节[:：]?\s*.*$/gm, '')
+            .replace(/^\s*Story Continuation.*$/gmi, '')
+            .replace(/^\s*Target Language.*$/gmi, '')
+            .replace(/^\s*Continuation.*$/gmi, '')
+            .replace(/^\s*下課.*$/gm, '')
+            .replace(/^\s*今天的課到這裡.*$/gm, '')
+            .replace(/^\s*今天的课到这里.*$/gm, '')
+            .replace(/^\s*咱們下期再見.*$/gm, '')
+            .replace(/^\s*===\s*summary\s*===.*$/gmi, '')
+            .replace(/^\s*summary[:：].*$/gmi, '')
+            .replace(/^\s*總結[:：].*$/gmi, '')
+            .replace(/^\s*总结[:：].*$/gmi, '');
+        return text.trim();
+    };
+
+    const truncateToMax = (text: string, maxChars: number) => {
+        if (text.length <= maxChars) return text;
+        const slice = text.slice(0, maxChars);
+        const lastPunct = Math.max(
+            slice.lastIndexOf('。'),
+            slice.lastIndexOf('！'),
+            slice.lastIndexOf('？'),
+            slice.lastIndexOf('.'),
+            slice.lastIndexOf('!'),
+            slice.lastIndexOf('?')
+        );
+        return (lastPunct > 0 ? slice.slice(0, lastPunct + 1) : slice).trim();
+    };
+
+    const getCtaKeyword = (topic: string) => {
+        const keywordMap: Array<{ match: RegExp; word: string }> = [
+            { match: /病|醫|療|藥|痛|癌|症|保健|養生/, word: '安康' },
+            { match: /財|錢|富|貴|破財|投資|股|金|銀/, word: '聚財' },
+            { match: /家|婚|夫妻|子女|父母|親|緣/, word: '家和' },
+            { match: /風水|宅|屋|房|門|窗|床|擺件/, word: '鎮宅' },
+            { match: /禁忌|避|凶|災|厄|煞/, word: '避厄' },
+            { match: /運|命|改命|時辰|日子|黃曆/, word: '轉運' }
+        ];
+
+        for (const rule of keywordMap) {
+            if (rule.match.test(topic)) return rule.word;
+        }
+
+        const fallback = ['平安', '安好', '吉祥', '順遂', '福安', '清心', '護身', '守正'];
+        let hash = 0;
+        for (let i = 0; i < topic.length; i += 1) {
+            hash = (hash * 31 + topic.charCodeAt(i)) % fallback.length;
+        }
+        return fallback[hash] || '平安';
+    };
+
     const generationPromises = selectedTopics.map(async (topic, index) => {
         // Determine the correct script template
         let scriptTemplate = config.scriptPromptTemplate;
@@ -250,10 +342,9 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey }) => {
         }
         
         try {
-            await streamContentGeneration(
-                prompt,
-                config.systemInstruction,
-                (chunk) => {
+            let localContent = '';
+            const appendChunk = (chunk: string) => {
+                localContent += chunk;
                     setGeneratedContents(prev => {
                         const newArr = [...prev];
                         if (newArr[index]) {
@@ -264,8 +355,175 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey }) => {
                         }
                         return newArr;
                     });
-                }
+            };
+
+            await streamContentGeneration(
+                prompt,
+                config.systemInstruction,
+                appendChunk
             );
+
+            const shouldEnforceLength =
+                niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO;
+            const isRevengeShort =
+                niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.SHORT;
+            const isRevengeLong =
+                niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.LONG;
+
+            if (shouldEnforceLength) {
+                let continueCount = 0;
+                const minChars = niche === NicheType.TCM_METAPHYSICS ? MIN_TCM_SCRIPT_CHARS : MIN_FIN_SCRIPT_CHARS;
+                const maxChars = niche === NicheType.TCM_METAPHYSICS ? MAX_TCM_SCRIPT_CHARS : MAX_FIN_SCRIPT_CHARS;
+                while (localContent.length < minChars && continueCount < MAX_SCRIPT_CONTINUATIONS) {
+                    continueCount += 1;
+                    const context = localContent.slice(-2000);
+                    const continuePrompt = [
+                        '請續寫以下內容，保持原風格與第一人稱口吻，不要重覆前文。',
+                        '不要出現「下課」「今天的課到這裡」等收尾語。',
+                        '輸出第一行必須是「-----」，下一行直接續寫正文。',
+                        `要求：全文至少 ${minChars} 字，且不超過 ${maxChars} 字。`,
+                        '',
+                        '【上文】',
+                        context
+                    ].join('\n');
+
+                    await streamContentGeneration(
+                        continuePrompt,
+                        config.systemInstruction,
+                        appendChunk
+                    );
+                }
+
+                let cleaned = sanitizeTtsScript(localContent);
+                const capped = truncateToMax(cleaned, maxChars);
+                if (capped !== localContent) {
+                    localContent = capped;
+                    setGeneratedContents(prev => {
+                        const newArr = [...prev];
+                        if (newArr[index]) {
+                            newArr[index] = {
+                                ...newArr[index],
+                                content: localContent
+                            };
+                        }
+                        return newArr;
+                    });
+                }
+
+                // Append CTA for TCM niche
+                if (niche === NicheType.TCM_METAPHYSICS) {
+                    const ctaWord = getCtaKeyword(topic.title);
+                    const cta = `\n\n如果覺得今天倪師講的這番話對你有幫助，請動動你的手，點個讚、訂閱並轉發。如果你聽懂了，請在留言區打一個「${ctaWord}」或留一句祈福的話，為自己與家人積聚正向磁場。`;
+                    localContent = `${localContent}${cta}`;
+                    setGeneratedContents(prev => {
+                        const newArr = [...prev];
+                        if (newArr[index]) {
+                            newArr[index] = {
+                                ...newArr[index],
+                                content: localContent
+                            };
+                        }
+                        return newArr;
+                    });
+                }
+            }
+
+            if (isRevengeShort || isRevengeLong) {
+                const isEnglish = storyLanguage === StoryLanguage.ENGLISH;
+                const minChars = isRevengeLong
+                    ? (isEnglish ? REVENGE_LONG_EN_MIN : REVENGE_LONG_CN_MIN)
+                    : REVENGE_SHORT_MIN;
+                const maxChars = isRevengeLong
+                    ? (isEnglish ? REVENGE_LONG_EN_MAX : REVENGE_LONG_CN_MAX)
+                    : REVENGE_SHORT_MAX;
+
+                let continueCount = 0;
+                let ended = false;
+                const cnLongFlavor = isRevengeLong && !isEnglish
+                    ? '加強細節描寫與氛圍鋪陳，融入禁忌、暗黑、情色擦邊元素，但保持故事合理與連貫。'
+                    : '';
+                while (localContent.length < minChars && continueCount < MAX_REVENGE_CONTINUATIONS) {
+                    continueCount += 1;
+                    const context = localContent.slice(-2500);
+                    const continuePrompt = [
+                        isEnglish
+                            ? 'Continue the story in first person. Start your output with a single line of "-----" and then continue immediately. Use a brief, natural transition sentence and move the plot forward. Do not repeat earlier content. Do not output any meta text.'
+                            : '請用第一人稱續寫故事。輸出第一行必須是「-----」，下一行直接續寫正文。使用簡短自然的過渡句直接銜接情節，保持原有風格與節奏，不要重覆前文。不要輸出任何元信息。',
+                        cnLongFlavor,
+                        isEnglish
+                            ? `Requirement: total length at least ${minChars} characters; keep it within about ${maxChars} characters if possible.`
+                            : `要求：全文至少 ${minChars} 字，盡量控制在 ${maxChars} 字左右。`,
+                        '',
+                        context
+                    ].join('\n');
+
+                    await streamContentGeneration(
+                        continuePrompt,
+                        config.systemInstruction,
+                        appendChunk
+                    );
+                }
+
+                if (!ended) {
+                    const endPrompt = [
+                        isEnglish
+                            ? 'Conclude the story now with a clear, final ending. Start your output with a single line of "-----" and then continue immediately. Keep first person and do not add any headings or summaries. Make sure it reads like a complete short story.'
+                            : '請用第一人稱收尾。輸出第一行必須是「-----」，下一行直接續寫正文。給出清楚結局，不要標題或總結。',
+                        cnLongFlavor,
+                        '',
+                        localContent.slice(-2500)
+                    ].join('\n');
+
+                    await streamContentGeneration(
+                        endPrompt,
+                        config.systemInstruction,
+                        appendChunk
+                    );
+                    ended = true;
+                }
+
+                let cleaned = sanitizeTtsScript(localContent);
+                if (isEnglish) {
+                    cleaned = cleaned
+                        .split('\n')
+                        .filter(line => !/[\u4e00-\u9fff]/.test(line))
+                        .join('\n');
+                }
+                localContent = cleaned;
+
+                // Generate a short Chinese summary and append
+                let summaryText = '';
+                await streamContentGeneration(
+                    [
+                        '請用中文輸出 2-4 句的簡短故事總結，不得超過 200 字。',
+                        '只輸出總結內容，不要標題、不要符號、不要前言後語。',
+                        '禁止輸出例如「Suggested Title Options」或任何非故事總結內容。',
+                        '',
+                        localContent.slice(-3000)
+                    ].join('\n'),
+                    '你是中文摘要助手。',
+                    (chunk) => {
+                        summaryText += chunk;
+                    }
+                );
+
+                summaryText = summaryText
+                    .replace(/[\r\n]+/g, ' ')
+                    .replace(/^\s+|\s+$/g, '')
+                    .slice(0, 200);
+
+                const finalContent = `${localContent}\n\n=== SUMMARY ===\n${summaryText}`;
+                setGeneratedContents(prev => {
+                    const newArr = [...prev];
+                    if (newArr[index]) {
+                        newArr[index] = {
+                            ...newArr[index],
+                            content: finalContent
+                        };
+                    }
+                    return newArr;
+                });
+            }
         } catch (err: any) {
             console.error(`Error generating topic ${topic.title}`, err);
              setGeneratedContents(prev => {
@@ -534,7 +792,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey }) => {
         {/* Input Area (Conditional) */}
         <div className="flex flex-col md:flex-row gap-4 items-start">
             <div className="flex-1 w-full">
-                {isInputRequired() ? (
+                {shouldShowInput() ? (
                     <div className="animate-in fade-in duration-300">
                         <label className="block text-sm text-slate-400 mb-2">
                              {getInputPlaceholder()}
@@ -689,17 +947,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey }) => {
                                 </h3>
                                 
                                 <div className="flex items-center gap-2 flex-shrink-0">
-                                    {/* Continue Generation Button (Only for supported niches) */}
-                                    {niche === NicheType.STORY_REVENGE && !activeIndices.has(viewIndex) && (
-                                        <button
-                                            onClick={handleContinueGeneration}
-                                            className="p-2 bg-indigo-900/50 hover:bg-indigo-800 border border-indigo-500/30 text-indigo-300 hover:text-white rounded-md transition-all flex items-center gap-2 text-xs"
-                                            title="生成下一章 (Next Part)"
-                                        >
-                                            <PlusCircle size={14} />
-                                            續寫
-                                        </button>
-                                    )}
+                                    {/* Continue button removed: auto-continue only */}
 
                                     <button
                                         onClick={() => handleCopy(generatedContents[viewIndex].content, viewIndex)}

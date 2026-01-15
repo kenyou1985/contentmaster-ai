@@ -22,7 +22,8 @@ export enum TcmSubModeId {
   KARMA_EROTIC = 'KARMA_EROTIC',
   FACE_READING = 'FACE_READING',
   FENG_SHUI = 'FENG_SHUI',
-  TCM_DEBUNK = 'TCM_DEBUNK'
+  TCM_DEBUNK = 'TCM_DEBUNK',
+  DIET_HEALTH = 'DIET_HEALTH'
 }
 
 // Finance (Munger) Sub-categories
@@ -61,6 +62,7 @@ export interface SubModeConfig {
   subtitle: string;
   icon: any; 
   requiresInput: boolean; 
+  optionalInput?: boolean;
   inputPlaceholder?: string;
   prompt: string;
   scriptPromptTemplate?: string;
