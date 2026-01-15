@@ -13,8 +13,8 @@ interface GeneratorProps {
 export const Generator: React.FC<GeneratorProps> = ({ apiKey }) => {
   const MIN_TCM_SCRIPT_CHARS = 7500; // 30 min * 250 chars/min
   const MAX_TCM_SCRIPT_CHARS = 10000; // 40 min * 250 chars/min
-  const MIN_FIN_SCRIPT_CHARS = 9000; // keep finance longer
-  const MAX_FIN_SCRIPT_CHARS = 12000;
+  const MIN_FIN_SCRIPT_CHARS = 7500; // 30 min * 250 chars/min
+  const MAX_FIN_SCRIPT_CHARS = 10000; // 40 min * 250 chars/min
   const MAX_SCRIPT_CONTINUATIONS = 3;
   const REVENGE_SHORT_MIN = 13500; // 15 min * 900 chars/min
   const REVENGE_SHORT_MAX = 27000; // 30 min * 900 chars/min
@@ -395,9 +395,23 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey }) => {
                 }
 
                 let cleaned = sanitizeTtsScript(localContent);
-                const capped = truncateToMax(cleaned, maxChars);
-                if (capped !== localContent) {
-                    localContent = capped;
+                if (niche === NicheType.TCM_METAPHYSICS) {
+                    const capped = truncateToMax(cleaned, maxChars);
+                    if (capped !== localContent) {
+                        localContent = capped;
+                        setGeneratedContents(prev => {
+                            const newArr = [...prev];
+                            if (newArr[index]) {
+                                newArr[index] = {
+                                    ...newArr[index],
+                                    content: localContent
+                                };
+                            }
+                            return newArr;
+                        });
+                    }
+                } else {
+                    localContent = cleaned;
                     setGeneratedContents(prev => {
                         const newArr = [...prev];
                         if (newArr[index]) {
