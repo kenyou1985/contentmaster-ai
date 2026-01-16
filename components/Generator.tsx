@@ -286,9 +286,9 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
             .replace(/^\s*下課.*$/gm, '')
             .replace(/^\s*今天的課到這裡.*$/gm, '')
             .replace(/^\s*今天的课到这里.*$/gm, '')
+            // 保留"下期再见"作为收尾语，不清理
             .replace(/^\s*咱們下期再見.*$/gm, '')
-            .replace(/下期再見/gi, '')
-            .replace(/下期再见/gi, '')
+            // 移除其他收尾语，但保留"下期再见"
             .replace(/感謝收看/gi, '')
             .replace(/感谢收看/gi, '')
             .replace(/謝謝觀看/gi, '')
@@ -314,37 +314,38 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
         return (lastPunct > 0 ? slice.slice(0, lastPunct + 1) : slice).trim();
     };
 
-    // 检查内容是否已经有收尾的迹象
+    // 检查内容是否已经有收尾的迹象（检查原始文本，不清理）
     const hasEndingIndicators = (text: string): boolean => {
         const endingPatterns = [
             /下期再見/i,
             /下期再见/i,
+            /下期見/i,
+            /下期见/i,
             /咱們下期再見/i,
+            /咱们下期再见/i,
+            /咱們下期見/i,
+            /咱们下期见/i,
+            /我們下期再見/i,
             /我们下期再见/i,
-            /感謝收看/i,
-            /感谢收看/i,
-            /謝謝觀看/i,
-            /谢谢观看/i,
-            /今天就到這裡/i,
-            /今天就到这里/i,
-            /今天的評論就到這裡/i,
-            /今天的评论就到这里/i,
-            /總結來說/i,
-            /总结来说/i,
-            /綜上所述/i,
-            /综上所述/i,
-            /總而言之/i,
-            /总而言之/i
+            /我們下期見/i,
+            /我们下期见/i
         ];
         return endingPatterns.some(pattern => pattern.test(text));
     };
 
     // 检查内容是否完整且字数合理（用于新闻评论）
+    // 当出现收尾语且字数>=4000时，认为内容已完整
     const isContentComplete = (text: string, minChars: number, maxChars: number): boolean => {
+        // 检查原始文本是否有收尾语
+        const hasEnding = hasEndingIndicators(text);
+        if (!hasEnding) {
+            return false;
+        }
+        // 检查字数（使用清理后的文本计算）
         const cleaned = sanitizeTtsScript(text);
         const length = cleaned.length;
-        // 字数在合理范围内（4000-8000）且已有收尾迹象
-        return length >= 4000 && length <= maxChars && hasEndingIndicators(cleaned);
+        // 有收尾语且字数>=4000，认为内容完整（不限制上限，优先保证完整性）
+        return length >= 4000;
     };
 
     const getCtaKeyword = (topic: string) => {
@@ -439,22 +440,32 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
                     console.log('[Generator] Content already complete, skipping continuation');
                 } else {
                     // 需要续写的情况
-                    while (localContent.length < minChars && localContent.length < maxChars && continueCount < MAX_SCRIPT_CONTINUATIONS) {
+                    while (localContent.length < minChars && continueCount < MAX_SCRIPT_CONTINUATIONS) {
                         // 对于新闻评论，每次续写前都检查是否已经完整
                         if (niche === NicheType.GENERAL_VIRAL && isContentComplete(localContent, minChars, maxChars)) {
                             console.log('[Generator] Content became complete during continuation, stopping');
                             break;
                         }
                         
+                        // 对于新闻评论，如果字数已经达到4000以上，停止续写，进入强制收尾阶段
+                        if (niche === NicheType.GENERAL_VIRAL) {
+                            const cleanedLength = sanitizeTtsScript(localContent).length;
+                            if (cleanedLength >= 4000 && !hasEndingIndicators(localContent)) {
+                                console.log('[Generator] Content reached 4000+ chars, stopping continuation to force ending');
+                                break;
+                            }
+                        }
+                        
                         continueCount += 1;
                         const context = localContent.slice(-2000);
+                        const currentLength = sanitizeTtsScript(localContent).length;
                         const continuePrompt = [
                             niche === NicheType.GENERAL_VIRAL
-                                ? '請用第一人稱續寫新聞評論，保持評論員的犀利與獨家視角，不要重覆前文。嚴禁出現「下期再見」「感謝收看」等收尾語，除非內容已經完整且需要最終收尾。'
+                                ? `請用第一人稱續寫新聞評論，保持評論員的犀利與獨家視角，不要重覆前文。當前已寫${currentLength}字，如果內容充分完整且達到4000字以上，可以自然收尾並以「下期再見」「我們下期見」或「咱們下期再見」結束。如果內容尚不完整，請繼續深入分析，暫時不要收尾。`
                                 : '請續寫以下內容，保持原風格與第一人稱口吻，不要重覆前文。',
-                            '不要出現「下課」「今天的課到這裡」等收尾語。',
+                            '不要出現「下課」「今天的課到這裡」等其他收尾語。',
                             '輸出第一行必須是「-----」，下一行直接續寫正文。',
-                            `要求：全文至少 ${minChars} 字，且不超過 ${maxChars} 字。`,
+                            `目標字數：至少 ${minChars} 字，當前已${currentLength}字。`,
                             '',
                             '【上文】',
                             context
@@ -466,30 +477,36 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
                             appendChunk
                         );
                         
-                        // 如果已经超过上限，停止续写
-                        if (localContent.length >= maxChars) {
+                        // 对于新闻评论，检查是否已经出现"下期再见"，如果是则立即停止
+                        if (niche === NicheType.GENERAL_VIRAL && hasEndingIndicators(localContent)) {
+                            console.log('[Generator] Detected "下期再见" during continuation, stopping immediately');
                             break;
                         }
                     }
                 }
 
                 if (niche === NicheType.GENERAL_VIRAL) {
-                    // 检查内容是否已经有收尾
+                    // 检查内容是否已经完整（有收尾语且字数>=4000）
+                    const hasEnding = hasEndingIndicators(localContent);
                     const cleanedBeforeEnd = sanitizeTtsScript(localContent);
-                    const hasEnding = hasEndingIndicators(cleanedBeforeEnd);
                     
-                    // 如果已经有收尾且字数合理，就不再额外收尾
-                    if (hasEnding && cleanedBeforeEnd.length >= 4000 && cleanedBeforeEnd.length <= maxChars) {
-                        console.log('[Generator] Content already has ending, skipping additional ending');
-                    } else if (localContent.length < maxChars - 500) {
-                        // 只有在未达到上限且没有收尾时才进行收尾
+                    if (isContentComplete(localContent, minChars, maxChars)) {
+                        // 内容已完整（有收尾语且字数>=4000），直接结束，不做任何额外操作
+                        console.log('[Generator] Content is complete with ending and sufficient length, finishing');
+                    } else if (hasEnding && cleanedBeforeEnd.length < 4000) {
+                        // 有收尾语但字数不足4000，警告但不续写（避免循环）
+                        console.log('[Generator] Warning: Content has ending but length < 4000, skipping to avoid loop');
+                    } else if (cleanedBeforeEnd.length >= 4000) {
+                        // 字数已经达到4000以上但没有收尾语，必须强制收尾
+                        console.log('[Generator] Content reached 4000+ chars without ending, forcing conclusion');
                         const endPrompt = [
-                            '請用第一人稱收尾，結尾要升華點題並形成明確觀點收束。',
-                            '輸出第一行必須是「-----」，下一行直接續寫正文。',
+                            '請用第一人稱對上述內容進行總結收尾，結尾要升華點題並形成明確觀點收束。',
+                            '最後必須以「下期再見」或「咱們下期再見」或「我們下期見」作為結尾語。',
+                            '輸出第一行必須是「-----」，下一行直接續寫收尾段落。',
                             '不要標題、不要段落標記、不要元信息。',
-                            '嚴禁出現「下期再見」「感謝收看」等收尾語，只需自然升華點題即可。',
-                            `注意：總字數不得超過 ${maxChars} 字，請簡潔收尾。`,
+                            '收尾段落控制在300-500字之內，要簡潔有力、點題升華。',
                             '',
+                            '【需要收尾的內容】',
                             localContent.slice(-2000)
                         ].join('\n');
 
@@ -530,13 +547,30 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
                         return newArr;
                     });
                 } else {
-                    // 新闻评论：确保不超过上限，但优先保证完整性
-                    if (cleaned.length > maxChars) {
-                        // 如果超过上限，截断到上限，但尽量在句号处截断
-                        const capped = truncateToMax(cleaned, maxChars);
-                        localContent = capped;
+                    // 新闻评论：优先保证内容完整性
+                    if (niche === NicheType.GENERAL_VIRAL) {
+                        // 检查是否有"下期再见"收尾
+                        const hasEnding = hasEndingIndicators(cleaned);
+                        if (hasEnding) {
+                            // 有收尾语，保留完整内容，即使超过8000字
+                            console.log('[Generator] Content has proper ending, keeping full content even if exceeds limit');
+                            localContent = cleaned;
+                        } else if (cleaned.length > maxChars) {
+                            // 没有收尾语且超过上限（不应该发生），截断到上限
+                            console.log('[Generator] Content exceeds limit without ending, truncating');
+                            const capped = truncateToMax(cleaned, maxChars);
+                            localContent = capped;
+                        } else {
+                            localContent = cleaned;
+                        }
                     } else {
-                        localContent = cleaned;
+                        // 其他类型内容的处理
+                        if (cleaned.length > maxChars) {
+                            const capped = truncateToMax(cleaned, maxChars);
+                            localContent = capped;
+                        } else {
+                            localContent = cleaned;
+                        }
                     }
                     setGeneratedContents(prev => {
                         const newArr = [...prev];
