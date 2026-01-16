@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { ApiProvider, NicheType, Topic, GeneratedContent, GenerationStatus, TcmSubModeId, FinanceSubModeId, RevengeSubModeId, NewsSubModeId, StoryLanguage, StoryDuration } from '../types';
 import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES } from '../constants';
 import { NicheSelector } from './NicheSelector';
-import { generateTopics, streamContentGeneration } from '../services/geminiService';
+import { generateTopics, streamContentGeneration, initializeGemini } from '../services/geminiService';
 import { Sparkles, Calendar, Loader2, Download, Eye, Zap, AlertTriangle, Copy, Check, Globe, Clock, PlusCircle } from 'lucide-react';
 import JSZip from 'jszip';
 
@@ -151,7 +151,6 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
     }
 
     // Initialize API
-    const { initializeGemini } = await import('../services/geminiService');
     initializeGemini(apiKey, { provider });
     
     setStatus(GenerationStatus.PLANNING);
@@ -239,7 +238,6 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
     }
 
     // Initialize API
-    const { initializeGemini } = await import('../services/geminiService');
     initializeGemini(apiKey, { provider });
 
     setStatus(GenerationStatus.WRITING);
@@ -261,42 +259,76 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
     const sanitizeTtsScript = (raw: string) => {
         if (!raw) return '';
         let text = raw
+            // 移除Markdown标题标记
             .replace(/^\s*#{1,6}\s+/gm, '')
+            // 移除列表标记
             .replace(/^\s*[-*+•]\s+/gm, '')
             .replace(/^\s*\d+\.\s+/gm, '')
-            .replace(/[<>`*_~]/g, '')
-            .replace(/^\s*《.*?》\s*$/gm, '')
-            .replace(/^\s*【.*?】\s*$/gm, '')
+            // 移除所有Markdown特殊符号
+            .replace(/\*\*/g, '')
+            .replace(/\*/g, '')
+            .replace(/__/g, '')
+            .replace(/_/g, '')
+            .replace(/~~/g, '')
+            .replace(/~/g, '')
+            .replace(/`/g, '')
+            .replace(/</g, '')
+            .replace(/>/g, '')
+            .replace(/\|/g, '')
+            .replace(/\\/g, '')
+            // 移除括号内的描述性内容（场景、动作描述）
+            .replace(/（[^）]{0,100}?）/g, '')
+            .replace(/\([^)]{0,100}?\)/g, '')
+            .replace(/【[^】]{0,100}?】/g, '')
+            .replace(/《[^》]{0,100}?》/g, '')
+            // 移除整行的括号内容
             .replace(/^\s*\(.*?\)\s*$/gm, '')
             .replace(/^\s*（.*?）\s*$/gm, '')
+            // 移除结尾标记
             .replace(/^\s*全[書书]完.*$/gm, '')
             .replace(/^\s*完[结結]語.*$/gm, '')
             .replace(/^\s*后记.*$/gm, '')
+            .replace(/^\s*後記.*$/gm, '')
             .replace(/^\s*附註.*$/gm, '')
             .replace(/^\s*注釋.*$/gm, '')
-            .replace(/^\s*旁白.*$/gm, '')
+            .replace(/^\s*旁白[:：].*$/gm, '')
+            // 移除章节标题
             .replace(/^\s*第\s*[一二三四五六七八九十百千0-9]+\s*章[:：]?\s*.*$/gm, '')
             .replace(/^\s*第\s*[一二三四五六七八九十百千0-9]+\s*節[:：]?\s*.*$/gm, '')
             .replace(/^\s*Chapter\s*\d+[:：]?\s*.*$/gmi, '')
             .replace(/^\s*Part\s*\d+[:：]?\s*.*$/gmi, '')
             .replace(/^\s*章节[:：]?\s*.*$/gm, '')
+            // 移除续写标记
             .replace(/^\s*Story Continuation.*$/gmi, '')
             .replace(/^\s*Target Language.*$/gmi, '')
             .replace(/^\s*Continuation.*$/gmi, '')
+            .replace(/^\s*-----+\s*$/gm, '')
+            // 移除下课等收尾语（但保留"下期再见"）
+            // 移除提前出现的收尾语（会在合适的时候重新添加）
             .replace(/^\s*下課.*$/gm, '')
+            .replace(/^\s*散會.*$/gm, '')
+            .replace(/^\s*散会.*$/gm, '')
             .replace(/^\s*今天的課到這裡.*$/gm, '')
             .replace(/^\s*今天的课到这里.*$/gm, '')
-            // 保留"下期再见"作为收尾语，不清理
+            .replace(/^\s*今天就到這.*$/gm, '')
+            .replace(/^\s*今天就到这.*$/gm, '')
             .replace(/^\s*咱們下期再見.*$/gm, '')
-            // 移除其他收尾语，但保留"下期再见"
+            .replace(/^\s*咱们下期再见.*$/gm, '')
+            .replace(/^\s*咱們下次.*$/gm, '')
+            .replace(/^\s*咱们下次.*$/gm, '')
             .replace(/感謝收看/gi, '')
             .replace(/感谢收看/gi, '')
             .replace(/謝謝觀看/gi, '')
             .replace(/谢谢观看/gi, '')
+            // 移除摘要标记
             .replace(/^\s*===\s*summary\s*===.*$/gmi, '')
             .replace(/^\s*summary[:：].*$/gmi, '')
             .replace(/^\s*總結[:：].*$/gmi, '')
-            .replace(/^\s*总结[:：].*$/gmi, '');
+            .replace(/^\s*总结[:：].*$/gmi, '')
+            // 移除多余空行
+            .replace(/\n\s*\n\s*\n+/g, '\n\n')
+            .replace(/^\s+/gm, '')
+            .replace(/\s+$/gm, '');
         return text.trim();
     };
 

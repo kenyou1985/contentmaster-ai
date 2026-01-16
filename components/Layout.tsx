@@ -34,7 +34,7 @@ export const Layout: React.FC<LayoutProps> = ({
       </div>
 
       {/* Header */}
-      <header className="border-b border-slate-800/60 bg-slate-950/70 backdrop-blur-xl sticky top-0 z-50 shadow-sm shadow-black/20">
+      <header className="flex-shrink-0 border-b border-slate-800/60 bg-slate-950/70 backdrop-blur-xl sticky top-0 z-50 shadow-sm shadow-black/20">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="bg-indigo-500/10 p-2 rounded-lg border border-indigo-500/20">
@@ -154,18 +154,9 @@ export const Layout: React.FC<LayoutProps> = ({
       )}
 
       {/* Main Content */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 lg:p-8 relative z-10">
+      <main className="flex-1 flex-shrink-0 max-w-7xl w-full mx-auto p-4 md:p-6 lg:p-8 relative z-10">
         {children}
       </main>
-      
-      {/* Footer */}
-      <footer className="border-t border-slate-800/50 py-8 text-center text-slate-500 text-sm relative z-10 bg-slate-950/30">
-        <p className="flex items-center justify-center gap-2">
-            <span>Powered by Gemini 3</span>
-            <span className="w-1 h-1 rounded-full bg-slate-600" />
-            <span>2026 Edition (Traditional Chinese)</span>
-        </p>
-      </footer>
     </div>
   );
 };
