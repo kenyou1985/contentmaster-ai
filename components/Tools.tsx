@@ -16,6 +16,40 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider }) => {
   const [outputText, setOutputText] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
 
+  // 清理Markdown格式符号，输出纯文本（保留编号格式）
+  const cleanMarkdownFormat = (text: string, mode?: ToolMode): string => {
+    if (!text) return '';
+    let cleaned = text
+      // 移除Markdown标题标记
+      .replace(/^#{1,6}\s+/gm, '')
+      // 移除所有Markdown特殊符号
+      .replace(/\*\*/g, '') // 移除 **粗体**
+      .replace(/\*/g, '') // 移除 *斜体*（但要保留编号中的点，所以先处理**）
+      .replace(/__/g, '') // 移除 __粗体__
+      .replace(/_/g, '') // 移除 _斜体_
+      .replace(/~~/g, '') // 移除 ~~删除线~~
+      .replace(/~/g, '') // 移除 ~删除线~
+      .replace(/`/g, '') // 移除 `代码`
+      .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1') // 移除链接格式，保留文本
+      .replace(/\[([^\]]+)\]/g, '$1') // 移除引用链接格式
+      .replace(/<[^>]+>/g, '') // 移除HTML标签
+      // 移除无序列表标记（保留编号格式）
+      .replace(/^\s*[-*+•]\s+/gm, '');
+    
+    // 对于摘要模式，保留编号格式（1. 2. 3.等）
+    if (mode === ToolMode.SUMMARIZE) {
+      // 不移除编号，只清理其他格式
+    } else {
+      // 其他模式移除编号格式
+      cleaned = cleaned.replace(/^\s*\d+\.\s+/gm, '');
+    }
+    
+    return cleaned
+      // 清理多余空行
+      .replace(/\n\s*\n\s*\n+/g, '\n\n')
+      .trim();
+  };
+
   // 检查是否有提前的收尾词（字数不足时不应该出现）
   const hasPrematureEnding = (text: string): boolean => {
     const endingKeywords = [
@@ -220,23 +254,23 @@ ${inputSection}
 ${inputSection}
 
 ## Goals
-從 ${nicheConfig.name} 領域專家的視角，為上述文本生成完整的 YouTube 視頻內容包裝方案。
+從 ${nicheConfig.name} 領域專家的視角，為上述文本生成完整的 YouTube 視頻內容包裝方案，包括標題、簡介、標籤和封面設計方案。
 
 ## Output Requirements（必須繁體中文輸出）
 
 請按照以下格式輸出：
 
-**核心主題：**
+核心主題：
 用一句話概括這篇文章在講什麼，要精準且吸引人。
 
-**YouTube 爆款標題（5個）：**
+YouTube 爆款標題（5個）：
 1. [標題1 - 融入 ${nicheConfig.name} 的專業術語，40-60字]
 2. [標題2 - 使用數字或疑問句增強吸引力]
 3. [標題3 - 帶有情緒張力或懸念感]
 4. [標題4 - 結合熱點或爭議性話題]
 5. [標題5 - 直擊痛點或提供解決方案]
 
-**視頻簡介：**
+視頻簡介：
 [開場鉤子1-2句話]
 
 核心要點：
@@ -248,19 +282,60 @@ ${inputSection}
 
 [結尾CTA - 呼籲訂閱/評論/分享]
 
-**熱門標籤：**
+熱門標籤：
 #標籤1 #標籤2 #標籤3 #標籤4 #標籤5 #標籤6 #標籤7 #標籤8 #標籤9 #標籤10
 
 【標籤語言規則】
-- ⚠️ **標籤語言必須與文案內容語言一致**
+- ⚠️ 標籤語言必須與文案內容語言一致
 - 如果文案是繁體中文，標籤必須全部使用繁體中文（如 #倪海廈 #中醫玄學 #風水）
 - 如果文案是簡體中文，標籤必須全部使用簡體中文
 - 如果文案是英文，標籤才使用英文
 - 包含 ${nicheConfig.name} 領域專屬標籤和通用熱門標籤
 - 禁止中英文混合標籤
 
+封面設計方案：
+
+AI 圖片提示詞（5個）：
+1. [提示詞1 - 描述封面視覺元素，適合 Midjourney/Stable Diffusion，英文或中文]
+2. [提示詞2 - 強調核心概念和情緒張力]
+3. [提示詞3 - 突出關鍵人物或場景]
+4. [提示詞4 - 展現衝突或對比]
+5. [提示詞5 - 營造懸念或神秘感]
+
+封面標題文案（5個，每個分上中下三行）：
+1. 
+   上行：[核心概念，不超過10字]
+   中行：[關鍵信息，不超過10字]
+   下行：[行動呼籲或懸念，不超過10字]
+
+2. 
+   上行：[核心概念，不超過10字]
+   中行：[關鍵信息，不超過10字]
+   下行：[行動呼籲或懸念，不超過10字]
+
+3. 
+   上行：[核心概念，不超過10字]
+   中行：[關鍵信息，不超過10字]
+   下行：[行動呼籲或懸念，不超過10字]
+
+4. 
+   上行：[核心概念，不超過10字]
+   中行：[關鍵信息，不超過10字]
+   下行：[行動呼籲或懸念，不超過10字]
+
+5. 
+   上行：[核心概念，不超過10字]
+   中行：[關鍵信息，不超過10字]
+   下行：[行動呼籲或懸念，不超過10字]
+
+【封面設計要求】
+- 圖片提示詞要具體描述視覺元素、色彩、構圖、風格
+- 封面標題文案必須從內容核心提煉，每行不超過10個字
+- 標題文案要簡潔有力，具有視覺衝擊力
+- 上中下三行要有邏輯層次：上行吸引注意，中行傳達核心，下行引發行動
+
 ## Output Format
-請嚴格按照上述格式輸出，使用繁體中文，無需額外解釋或分析。`;
+請嚴格按照上述格式輸出，使用繁體中文，無需額外解釋或分析。嚴禁使用 **、*、__、~~ 等 Markdown 特殊符號。`;
         case ToolMode.POLISH:
                 return `### 任務指令：文本潤色與優化
 
@@ -360,7 +435,7 @@ ${needsMore ?
         const initialPrompt = generateInitialPrompt(mode, originalLength);
         await streamContentGeneration(initialPrompt, systemInstruction, (chunk) => {
             localOutput += chunk;
-            setOutputText(localOutput);
+            setOutputText(cleanMarkdownFormat(localOutput, mode));
         });
         
         // 检查是否需要续写（摘要模式不需要续写）
@@ -371,7 +446,7 @@ ${needsMore ?
                 
                 // 添加分隔符
                 localOutput += '\n\n-----\n\n';
-                setOutputText(localOutput);
+                setOutputText(cleanMarkdownFormat(localOutput, mode));
                 
                 // 生成续写prompt
                 const continuePrompt = generateContinuePrompt(localOutput, mode, originalLength);
@@ -379,7 +454,7 @@ ${needsMore ?
                 // 续写
                 await streamContentGeneration(continuePrompt, systemInstruction, (chunk) => {
                     localOutput += chunk;
-                    setOutputText(localOutput);
+                    setOutputText(cleanMarkdownFormat(localOutput, mode));
                 });
             }
             
@@ -436,19 +511,31 @@ ${needsMore ?
                 ))}
            </div>
 
-           {/* Niche Context Selector */}
-           <div className="relative group min-w-[200px]">
-               <label className="text-[10px] uppercase font-bold text-slate-500 mb-1 ml-1 tracking-wider">語氣 / 賽道</label>
-               <select 
-                    value={niche} 
-                    onChange={(e) => setNiche(e.target.value as NicheType)}
-                    className="w-full appearance-none bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+           <div className="flex items-center gap-4 w-full md:w-auto">
+               {/* Niche Context Selector */}
+               <div className="relative group min-w-[200px] flex-1 md:flex-none">
+                   <label className="text-[10px] uppercase font-bold text-slate-500 mb-1 ml-1 tracking-wider">語氣 / 賽道</label>
+                   <select 
+                        value={niche} 
+                        onChange={(e) => setNiche(e.target.value as NicheType)}
+                        className="w-full appearance-none bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                   >
+                       {Object.values(NICHES).map(n => (
+                           <option key={n.id} value={n.id}>{n.icon} {n.name}</option>
+                       ))}
+                   </select>
+                   <ChevronDown className="absolute right-3 top-8 text-slate-500 pointer-events-none" size={14} />
+               </div>
+
+               {/* Generate Button */}
+               <button 
+                   onClick={handleAction}
+                   disabled={isGenerating || !inputText}
+                   className="flex items-center gap-2 px-4 md:px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg shadow-lg shadow-indigo-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all hover:scale-105 active:scale-95 whitespace-nowrap"
                >
-                   {Object.values(NICHES).map(n => (
-                       <option key={n.id} value={n.id}>{n.icon} {n.name}</option>
-                   ))}
-               </select>
-               <ChevronDown className="absolute right-3 top-8 text-slate-500 pointer-events-none" size={14} />
+                   <ArrowRight size={18} />
+                   <span className="hidden sm:inline">生成</span>
+               </button>
            </div>
        </div>
 
@@ -480,27 +567,25 @@ ${needsMore ?
                 </label>
                 <div className="flex-1 bg-slate-950 border border-slate-800 rounded-xl p-4 text-slate-200 overflow-y-auto whitespace-pre-wrap leading-relaxed relative custom-scrollbar">
                     {outputText}
-                    {isGenerating && <span className="inline-block w-2 h-4 bg-indigo-500 ml-1 animate-pulse" />}
-                    {!outputText && !isGenerating && <div className="absolute inset-0 flex items-center justify-center text-slate-600 text-sm">結果將顯示於此</div>}
+                    {isGenerating && (
+                        <>
+                            {!outputText && (
+                                <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-sm">
+                                    <div className="flex items-center gap-2">
+                                        <span className="inline-block w-2 h-4 bg-indigo-500 animate-pulse" />
+                                        <span>生成中...</span>
+                                    </div>
+                                </div>
+                            )}
+                            {outputText && <span className="inline-block w-2 h-4 bg-indigo-500 ml-1 animate-pulse" />}
+                        </>
+                    )}
+                    {!outputText && !isGenerating && (
+                        <div className="absolute inset-0 flex items-center justify-center text-slate-600 text-sm">
+                            結果將顯示於此
+                        </div>
+                    )}
                 </div>
-
-                <div className="absolute top-1/2 -left-3 md:-left-3 transform -translate-y-1/2 z-10 hidden md:block">
-                     <button 
-                        onClick={handleAction}
-                        disabled={isGenerating || !inputText}
-                        className="bg-indigo-600 hover:bg-indigo-500 text-white p-3 rounded-full shadow-xl shadow-indigo-900/50 disabled:opacity-50 transition-all hover:scale-110 active:scale-95"
-                    >
-                        <ArrowRight size={20} />
-                    </button>
-                </div>
-                {/* Mobile FAB */}
-                 <button 
-                        onClick={handleAction}
-                        disabled={isGenerating || !inputText}
-                        className="md:hidden absolute bottom-4 right-4 bg-indigo-600 hover:bg-indigo-500 text-white p-4 rounded-full shadow-xl shadow-indigo-900/50 disabled:opacity-50"
-                    >
-                        <ArrowRight size={24} />
-                    </button>
             </div>
        </div>
     </div>

@@ -41,6 +41,9 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
   const [inputVal, setInputVal] = useState('');
   const [topics, setTopics] = useState<Topic[]>([]);
   const [status, setStatus] = useState<GenerationStatus>(GenerationStatus.IDLE);
+  // Adaptation mode: store adapted content
+  const [adaptedContent, setAdaptedContent] = useState('');
+  const [isAdapting, setIsAdapting] = useState(false);
   
   // Stores the content of all articles
   const [generatedContents, setGeneratedContents] = useState<GeneratedContent[]>([]);
@@ -66,6 +69,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
   useEffect(() => {
     setInputVal('');
     setTopics([]);
+    setAdaptedContent('');
+    setIsAdapting(false);
   }, [niche, tcmSubMode, financeSubMode, revengeSubMode, newsSubMode]);
 
   // SAFE ACCESS HELPER
@@ -221,6 +226,242 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
     }
   };
 
+  // Handle adaptation for ShadowWriter mode
+  const handleAdaptContent = async () => {
+    if (!apiKey || !apiKey.trim()) {
+      setErrorMsg("請先在設置中輸入您的 API Key。");
+      return;
+    }
+
+    if (!inputVal || !inputVal.trim()) {
+      setErrorMsg("請輸入需要改編的原文內容。");
+      return;
+    }
+
+    // Initialize API
+    initializeGemini(apiKey, { provider });
+    
+    setIsAdapting(true);
+    setAdaptedContent('');
+    setErrorMsg('');
+
+    // Calculate source text length
+    const sourceLength = inputVal.trim().length;
+    const targetLength = Math.max(sourceLength, Math.floor(sourceLength * 1.1)); // At least same length, or 10% more
+    const minLength = Math.floor(sourceLength * 0.95); // 95% of source as minimum
+    const maxLength = Math.floor(sourceLength * 1.5); // 150% of source as maximum
+
+    const config = NICHES[niche];
+    if (!config) {
+      setErrorMsg("配置錯誤：找不到該賽道配置");
+      return;
+    }
+
+    // ShadowWriter system prompt - Structure Preservation Mode
+    const shadowWriterSystemPrompt = `**Role:** You are **ShadowWriter (暗影写手)**, an elite story architect specializing in deep rewriting while preserving original structure and paragraphs.
+
+**Core Objective:** Deeply rewrite the source material paragraph by paragraph, maintaining the exact same structure, paragraph breaks, and narrative flow. Change only the wording, expressions, and details to pass originality checks, while keeping the story structure identical.
+
+🧠 **Core Competencies (核心能力)**
+
+1. **Structure Preservation (結構保持 - CRITICAL)**
+   - **MUST preserve**: Original paragraph structure, paragraph breaks, narrative sequence
+   - **MUST preserve**: Story flow, scene order, character introduction order
+   - **DO NOT**: Change narrative structure, add flashbacks, or rearrange content
+   - **DO NOT**: Merge or split paragraphs
+
+2. **Deep Rewriting (深度洗稿)**
+   - **Word Replacement**: Replace every sentence with different wording while keeping the same meaning
+   - **Expression Enhancement**: Use more vivid, emotional expressions
+   - **Detail Expansion**: Add more descriptive details within the same paragraph structure
+   - **Synonym Usage**: Use synonyms and alternative phrasings throughout
+
+3. **Humanization (擬人化)**
+   - Use colloquialisms, slang, inner monologues
+   - Show, Don't Tell: Use actions and descriptions
+   - Natural, human-like narration
+
+**Output Language**: Use target language (${storyLanguage}) for all creative content.
+**Output Format**: ONLY pure rewritten content. NO technical markers, NO meta-commentary, NO explanations.`;
+
+    try {
+      let localContent = '';
+      const MAX_CONTINUATIONS = 20; // Increased for long texts
+      let continuationCount = 0;
+      let isFinished = false;
+
+      const appendChunk = (chunk: string) => {
+        localContent += chunk;
+        setAdaptedContent(localContent);
+      };
+
+      // Helper to clean content for length calculation
+      const getCleanLength = (text: string): number => {
+        return text.replace(/^-----+\s*$/gm, '').replace(/\n-----+\n/g, '\n').replace(/\s+/g, '').length;
+      };
+
+      // Helper to estimate progress in source text based on adapted content length
+      const estimateSourceProgress = (adaptedLength: number, sourceLength: number): number => {
+        // Rough estimation: if adapted is X% of target, we've covered about X% of source
+        const progressRatio = Math.min(adaptedLength / sourceLength, 1);
+        return Math.floor(sourceLength * progressRatio);
+      };
+
+      // Split source text into paragraphs for reference
+      const sourceParagraphs = inputVal.split(/\n\s*\n/).filter(p => p.trim().length > 0);
+      const sourceParagraphCount = sourceParagraphs.length;
+
+      // Initial adaptation - rewrite from beginning
+      const initialPrompt = `# ShadowWriter 深度洗稿任務（結構保持模式）
+
+## 原始素材完整內容 (Complete Source Material)
+${inputVal}
+
+## 洗稿要求 (Rewriting Requirements)
+
+### 核心原則 (CRITICAL RULES)
+1. **結構保持**：必須完全保持原文的段落結構、段落順序、段落數量
+2. **逐段洗稿**：按照原文的段落順序，逐段進行深度洗稿
+3. **字數保證**：每個段落洗稿後的字數應該接近或略多於原文對應段落
+4. **不改變結構**：嚴禁合併段落、拆分段落、改變段落順序
+
+### 字數要求 (CRITICAL)
+- **原文字數**：${sourceLength} 字
+- **目標字數**：${targetLength} 字（必須達到或超過原文字數）
+- **最小字數**：${minLength} 字（不得少於原文的 95%）
+- **段落數量**：原文共 ${sourceParagraphCount} 個段落，必須保持相同數量
+
+### 洗稿策略 (Rewriting Strategy)
+1. **詞彙替換**：將每個句子用不同的詞彙和表達方式重寫，保持相同意思
+2. **句式變換**：改變句子結構（主動變被動、長句變短句、短句合併等）
+3. **細節擴充**：在保持段落結構的前提下，適當增加描述性細節
+4. **語氣調整**：使用更生動、更情緒化的表達方式
+5. **同義替換**：大量使用同義詞、近義詞替換原有詞彙
+
+### 輸出要求
+- 目標語言：${storyLanguage}
+- **逐段洗稿**：按照原文段落順序，逐段輸出洗稿後的內容
+- **保持段落**：每個段落之間用空行分隔，保持原文的段落結構
+- **續寫標記**：如果一次性無法完成全部內容，在最後一個完整段落後輸出「-----」（5個橫線），系統會自動續寫
+- **禁止提前收尾**：在未完成全部段落洗稿前，嚴禁使用任何收尾語
+- **絕對純淨輸出**：只輸出洗稿後的內容，嚴禁輸出任何技術標記、元信息或解釋
+
+## 開始洗稿
+請從第一段開始，按照原文的段落順序，逐段進行深度洗稿。`;
+
+      await streamContentGeneration(
+        initialPrompt,
+        shadowWriterSystemPrompt,
+        appendChunk
+      );
+
+      // Continuation loop - continue rewriting remaining paragraphs
+      while (continuationCount < MAX_CONTINUATIONS && !isFinished) {
+        // Wait a bit for content to settle
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Clean content for length calculation
+        const cleanedContent = localContent.replace(/^-----+\s*$/gm, '').replace(/\n-----+\n/g, '\n');
+        const currentLength = getCleanLength(cleanedContent);
+        
+        // Estimate how much of source we've covered
+        const estimatedSourceProgress = estimateSourceProgress(currentLength, sourceLength);
+        const remainingSourceLength = sourceLength - estimatedSourceProgress;
+        
+        console.log(`[Adaptation] Current: ${currentLength} chars, Source: ${sourceLength} chars, Progress: ~${Math.floor((currentLength / sourceLength) * 100)}%`);
+
+        // Check if we've covered enough content
+        if (currentLength >= minLength && currentLength >= sourceLength * 0.9) {
+          // Close to or exceeding source length, check if we need to finish
+          if (currentLength >= sourceLength * 0.95) {
+            console.log(`[Adaptation] Content length ${currentLength} meets requirement, finishing`);
+            isFinished = true;
+            break;
+          }
+        }
+
+        // Continue rewriting if not enough length
+        if (currentLength < minLength || currentLength < sourceLength * 0.9) {
+          continuationCount += 1;
+          
+          // Get the last part of adapted content for context
+          const adaptedContext = cleanedContent.slice(-3000);
+          
+          // More accurate estimation: use paragraph-based progress
+          const adaptedParagraphs = cleanedContent.split(/\n\s*\n/).filter(p => p.trim().length > 0);
+          const adaptedParagraphCount = adaptedParagraphs.length;
+          
+          // Estimate progress based on paragraph count
+          const paragraphProgress = Math.min(adaptedParagraphCount / sourceParagraphCount, 0.95);
+          const sourceStartIndex = Math.floor(paragraphProgress * inputVal.length);
+          const remainingSource = inputVal.slice(sourceStartIndex);
+          
+          // Get next portion of source (enough for continuation)
+          const sourceContext = remainingSource.slice(0, Math.min(8000, remainingSource.length));
+          
+          const continuePrompt = `# 繼續洗稿任務（比對原文續寫）
+
+你正在逐段洗稿一個故事，當前已洗稿 ${currentLength} 字，原文共 ${sourceLength} 字。
+
+## 進度狀態
+- 已洗稿字數：${currentLength} 字
+- 目標字數：${targetLength} 字（原文 ${sourceLength} 字）
+- 已洗稿段落：約 ${adaptedParagraphCount} 個段落
+- 原文總段落：${sourceParagraphCount} 個段落
+- 預計進度：約 ${Math.floor((currentLength / sourceLength) * 100)}%
+- 仍需洗稿：約 ${remainingSourceLength} 字
+
+## 原文剩餘部分（必須比對此部分繼續洗稿）
+以下是原文中尚未洗稿的部分，你必須按照此部分的內容和段落結構進行洗稿：
+
+${sourceContext}
+
+## 已洗稿內容（最後 3000 字，供參考上下文和銜接）
+${adaptedContext}
+
+## 洗稿要求（CRITICAL）
+1. **比對原文洗稿**：必須比對上述「原文剩餘部分」，按照原文的段落順序逐段洗稿
+2. **保持段落結構**：必須保持原文的段落結構、段落順序、段落數量
+3. **字數保證**：每個段落洗稿後的字數應該接近或略多於原文對應段落
+4. **逐段完成**：必須完成原文剩餘部分的所有段落洗稿
+5. **續寫標記**：如果本次輸出無法完成全部剩餘內容，在最後一個完整段落後輸出「-----」（5個橫線）
+6. **禁止提前收尾**：在未完成全部段落洗稿前，嚴禁使用任何收尾語（如「完結」「結局」「結束」「全書完」等）
+7. **輸出格式**：輸出第一行必須是「-----」，下一行直接開始洗稿剩餘段落
+8. **保持連貫**：確保與前文自然銜接，保持故事連貫
+
+## 開始繼續洗稿
+請從「-----」下一行開始，比對「原文剩餘部分」，按照原文的段落順序繼續逐段進行深度洗稿。`;
+
+          await streamContentGeneration(
+            continuePrompt,
+            shadowWriterSystemPrompt,
+            appendChunk
+          );
+        } else {
+          // Already reached minimum length
+          isFinished = true;
+          break;
+        }
+      }
+
+      // Clean up continuation markers (-----)
+      localContent = localContent
+        .replace(/^-----+\s*$/gm, '') // Remove standalone ----- lines
+        .replace(/\n-----+\n/g, '\n') // Remove ----- between lines
+        .replace(/-----+/g, '') // Remove any remaining -----
+        .replace(/\n\s*\n\s*\n+/g, '\n\n') // Clean up multiple blank lines
+        .trim();
+      
+      setAdaptedContent(localContent);
+
+    } catch (err: any) {
+      console.error(err);
+      setErrorMsg(parseErrorMessage(err));
+    } finally {
+      setIsAdapting(false);
+    }
+  };
+
   const toggleTopic = (id: string) => {
     setTopics(topics.map(t => t.id === id ? { ...t, selected: !t.selected } : t));
   };
@@ -259,6 +500,22 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
     const sanitizeTtsScript = (raw: string) => {
         if (!raw) return '';
         let text = raw
+            // 移除引擎输出标记和技术性说明
+            .replace(/\[END OF ENGINE OUTPUT\]/gi, '')
+            .replace(/\[ENGINE OUTPUT\]/gi, '')
+            .replace(/\[END OF OUTPUT\]/gi, '')
+            .replace(/\[OUTPUT\]/gi, '')
+            .replace(/\[END\]/gi, '')
+            .replace(/\[COMPLETE\]/gi, '')
+            .replace(/\[FINISHED\]/gi, '')
+            .replace(/\[DONE\]/gi, '')
+            // 移除所有方括号内的技术性说明（但保留对话中的方括号内容，通过更精确的匹配）
+            .replace(/\[[A-Z\s]+\]/gi, '') // 移除全大写的技术标记
+            .replace(/\[[^\]]*ENGINE[^\]]*\]/gi, '')
+            .replace(/\[[^\]]*OUTPUT[^\]]*\]/gi, '')
+            .replace(/\[[^\]]*END[^\]]*\]/gi, '')
+            .replace(/\[[^\]]*COMPLETE[^\]]*\]/gi, '')
+            .replace(/\[[^\]]*FINISH[^\]]*\]/gi, '')
             // 移除Markdown标题标记
             .replace(/^\s*#{1,6}\s+/gm, '')
             // 移除列表标记
@@ -303,6 +560,15 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
             .replace(/^\s*Target Language.*$/gmi, '')
             .replace(/^\s*Continuation.*$/gmi, '')
             .replace(/^\s*-----+\s*$/gm, '')
+            // 移除技术性提示词和元信息
+            .replace(/^\s*Note[:：].*$/gmi, '')
+            .replace(/^\s*提示[:：].*$/gmi, '')
+            .replace(/^\s*提示词[:：].*$/gmi, '')
+            .replace(/^\s*Prompt[:：].*$/gmi, '')
+            .replace(/^\s*Instruction[:：].*$/gmi, '')
+            .replace(/^\s*指令[:：].*$/gmi, '')
+            .replace(/^\s*要求[:：].*$/gmi, '')
+            .replace(/^\s*Requirement[:：].*$/gmi, '')
             // 移除下课等收尾语（但保留"下期再见"）
             // 移除提前出现的收尾语（会在合适的时候重新添加）
             .replace(/^\s*下課.*$/gm, '')
@@ -420,6 +686,31 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
              prompt = prompt.replace('{duration}', storyDuration);
         }
         
+        // Determine system instruction based on mode
+        let systemInstruction = config.systemInstruction;
+        // For Adaptation mode, use ShadowWriter system prompt
+        if (niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION) {
+            // ShadowWriter system prompt with language injection
+            systemInstruction = `**Role:** You are **ShadowWriter (暗影写手)**, an elite story architect who excels in human psychology, creative writing, and traffic algorithms. You specialize in transforming plain, fragmented, or reused source material into high-completion-rate, high-emotional-value "revenge thrillers" that pass originality checks.
+
+**Core Objective:** Deeply "rewrite" and adapt input source material (Raw Text) to make it logically tighter, emotionally more extreme, and original enough to pass plagiarism checks, while preserving core satisfaction points.
+
+🧠 **Core Competencies (核心能力)**
+
+1. **Emotion Amplification (情绪增压 - Dopamine Engineering)**
+   - **Hate-Building (仇恨铺垫)**: Must use detailed descriptions (micro-expressions, malicious language, unfair treatment) to make the villain extremely hateful.
+   - **Cold Logic (冷静执行)**: The revenge process must showcase the protagonist's high intelligence or patience. No mindless venting. Emphasize "dimensional reduction" or "using others to kill."
+   - **The Climax (核爆时刻)**: The ending must be devastating yet logical (Pro/Nuclear Revenge), delivering extreme satisfaction through karmic retribution.
+
+2. **Humanization & De-duplication (拟人化与去重)**
+   - **Anti-AI Tone**: Prohibit textbook-style flat narration. Use extensive colloquialisms, slang, inner monologues, and parenthetical asides.
+   - **Show, Don't Tell**: Don't say "I'm angry." Show through actions and descriptions.
+   - **Structure Shift**: Disrupt the original narrative structure. Use flashback or interleaving techniques to completely change the article's fingerprint.
+
+**Output Language**: Use target language (${storyLanguage}) for all creative content.
+**Output Format**: ONLY pure TTS voice content. NO technical markers, NO meta-commentary, NO explanations.`;
+        }
+        
         try {
             let localContent = '';
             const appendChunk = (chunk: string) => {
@@ -438,7 +729,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
 
             await streamContentGeneration(
                 prompt,
-                config.systemInstruction,
+                systemInstruction,
                 appendChunk
             );
 
@@ -505,7 +796,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
 
                         await streamContentGeneration(
                             continuePrompt,
-                            config.systemInstruction,
+                            systemInstruction,
                             appendChunk
                         );
                         
@@ -544,7 +835,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
 
                         await streamContentGeneration(
                             endPrompt,
-                            config.systemInstruction,
+                            systemInstruction,
                             appendChunk
                         );
                     }
@@ -555,17 +846,17 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
                     const capped = truncateToMax(cleaned, maxChars);
                     if (capped !== localContent) {
                         localContent = capped;
-                        setGeneratedContents(prev => {
-                            const newArr = [...prev];
-                            if (newArr[index]) {
-                                newArr[index] = {
-                                    ...newArr[index],
+                    setGeneratedContents(prev => {
+                        const newArr = [...prev];
+                        if (newArr[index]) {
+                            newArr[index] = {
+                                ...newArr[index],
                                     content: localContent
-                                };
-                            }
-                            return newArr;
-                        });
-                    }
+                            };
+                        }
+                        return newArr;
+                    });
+                }
                 } else if (niche === NicheType.FINANCE_CRYPTO) {
                     localContent = cleaned;
                     setGeneratedContents(prev => {
@@ -665,7 +956,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
 
                     await streamContentGeneration(
                         continuePrompt,
-                        config.systemInstruction,
+                        systemInstruction,
                         appendChunk
                     );
                 }
@@ -682,7 +973,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
 
                     await streamContentGeneration(
                         endPrompt,
-                        config.systemInstruction,
+                        systemInstruction,
                         appendChunk
                     );
                     ended = true;
@@ -812,9 +1103,21 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
       // 5. Stream Generation
       try {
           const config = NICHES[niche];
+          // Determine system instruction based on mode
+          let systemInstruction = config.systemInstruction;
+          // For Adaptation mode, use ShadowWriter system prompt
+          if (niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION) {
+              systemInstruction = `**Role:** You are **ShadowWriter (暗影写手)**, an elite story architect who excels in human psychology, creative writing, and traffic algorithms. You specialize in transforming plain, fragmented, or reused source material into high-completion-rate, high-emotional-value "revenge thrillers" that pass originality checks.
+
+**Core Objective:** Deeply "rewrite" and adapt input source material (Raw Text) to make it logically tighter, emotionally more extreme, and original enough to pass plagiarism checks, while preserving core satisfaction points.
+
+**Output Language**: Use target language (${storyLanguage}) for all creative content.
+**Output Format**: ONLY pure TTS voice content. NO technical markers, NO meta-commentary, NO explanations.`;
+          }
+          
           await streamContentGeneration(
               prompt,
-              config.systemInstruction,
+              systemInstruction,
               (chunk) => {
                   setGeneratedContents(prev => {
                       const newArr = [...prev];
@@ -998,9 +1301,52 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
         )}
 
         {/* Input Area (Conditional) */}
+        {niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION ? (
+          // Adaptation Mode: Large textarea input + output area
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="block text-sm text-slate-400 font-medium">
+                輸入原文 (Source Text)
+              </label>
+              <textarea
+                value={inputVal}
+                onChange={(e) => setInputVal(e.target.value)}
+                placeholder="請在此粘貼需要改編的原文內容..."
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-slate-100 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all resize-none custom-scrollbar h-[300px]"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="block text-sm text-slate-400 font-medium flex items-center justify-between">
+                <span>改編結果 (Adapted Content)</span>
+                {adaptedContent && (
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(adaptedContent);
+                    }}
+                    className="text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1"
+                  >
+                    <Copy size={12} /> 複製
+                  </button>
+                )}
+              </label>
+              <div className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-slate-200 h-[300px] overflow-y-auto whitespace-pre-wrap leading-relaxed custom-scrollbar">
+                {adaptedContent || (isAdapting ? (
+                  <div className="flex items-center gap-2 text-slate-500">
+                    <Loader2 className="animate-spin" size={16} />
+                    <span>正在改編中...</span>
+                  </div>
+                ) : (
+                  <div className="text-slate-600 text-sm">改編後的內容將顯示於此</div>
+                ))}
+                {isAdapting && adaptedContent && <span className="inline-block w-2 h-4 bg-indigo-500 ml-1 animate-pulse" />}
+              </div>
+            </div>
+          </div>
+        ) : (
+          // Normal Mode: Original input layout
         <div className="flex flex-col md:flex-row gap-4 items-start">
             <div className="flex-1 w-full">
-                {shouldShowInput() ? (
+              {shouldShowInput() ? (
                     <div className="animate-in fade-in duration-300">
                         <label className="block text-sm text-slate-400 mb-2">
                              {getInputPlaceholder()}
@@ -1038,11 +1384,35 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
                 {isInputRequired() ? '預測選題' : '一鍵生成爆款Hooks'}
             </button>
         </div>
+        )}
+
+        {/* Adaptation Mode Button */}
+        {niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION && (
+          <div className="flex justify-end mt-4">
+            <button 
+              onClick={handleAdaptContent}
+              disabled={isAdapting || !inputVal.trim()}
+              className={`px-8 py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg shadow-emerald-900/20 flex items-center justify-center gap-2 transition-all transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:transform-none`}
+            >
+              {isAdapting ? (
+                <>
+                  <Loader2 className="animate-spin" />
+                  正在改編中...
+                </>
+              ) : (
+                <>
+                  開始改編
+                  <Zap size={18} fill="currentColor" />
+                </>
+              )}
+            </button>
+          </div>
+        )}
 
         {errorMsg && <div className="mt-4 p-3 bg-red-900/20 border border-red-800 text-red-200 rounded-lg text-sm flex items-center gap-2 animate-in fade-in slide-in-from-top-2"><AlertTriangle size={16}/> {errorMsg}</div>}
 
-        {/* Topics List */}
-        {topics.length > 0 && (
+        {/* Topics List - Hide in Adaptation Mode */}
+        {topics.length > 0 && !(niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION) && (
             <div className="mt-8 animate-in slide-in-from-bottom-4 duration-500">
                 <div className="flex justify-between items-center mb-3">
                     <span className="text-sm text-slate-400">
