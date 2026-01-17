@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ApiProvider, NicheType, Topic, GeneratedContent, GenerationStatus, TcmSubModeId, FinanceSubModeId, RevengeSubModeId, NewsSubModeId, StoryLanguage, StoryDuration } from '../types';
-import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES } from '../constants';
+import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE } from '../constants';
 import { NicheSelector } from './NicheSelector';
 import { generateTopics, streamContentGeneration, initializeGemini } from '../services/geminiService';
 import { Sparkles, Calendar, Loader2, Download, Eye, Zap, AlertTriangle, Copy, Check, Globe, Clock, PlusCircle } from 'lucide-react';
@@ -245,11 +245,33 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
     setAdaptedContent('');
     setErrorMsg('');
 
-    // Calculate source text length
-    const sourceLength = inputVal.trim().length;
-    const targetLength = Math.max(sourceLength, Math.floor(sourceLength * 1.1)); // At least same length, or 10% more
-    const minLength = Math.floor(sourceLength * 0.95); // 95% of source as minimum
-    const maxLength = Math.floor(sourceLength * 1.5); // 150% of source as maximum
+    // Length control helper (IMPORTANT: must use SAME rule for source & output)
+    // DO NOT strip all whitespace/newlines, otherwise length control will be wrong and cause expansion.
+    const getControlLength = (text: string): number => {
+      const cleaned = (text || '')
+        .replace(/\r\n/g, '\n')
+        // Remove statistics/markers if they appear in output (shouldn't, but be safe)
+        .replace(/\[字數統計[^\]]*\]/gi, '')
+        .replace(/字數統計[：:][^\n]*/gi, '')
+        .replace(/已洗稿[：:][^\n]*/gi, '')
+        .replace(/原文字數[：:][^\n]*/gi, '')
+        .replace(/目標字數[：:][^\n]*/gi, '')
+        .replace(/進度[：:][^\n]*/gi, '')
+        .replace(/還需[：:][^\n]*/gi, '')
+        // Remove continuation markers
+        .replace(/^-----+\s*$/gm, '')
+        .replace(/\n-----+\n/g, '\n');
+      return cleaned.length;
+    };
+
+    // Calculate source text length - 像素级洗稿，严格一比一输出
+    const sourceLength = getControlLength(inputVal.trimEnd());
+    const targetLength = sourceLength; // 目标就是原文长度
+    const tolerance = Math.ceil(sourceLength * 0.01); // 1% tolerance - 极严格
+    const minLength = sourceLength - tolerance; // 最少少1%
+    const maxLength = sourceLength + tolerance; // 最多多1%
+    
+    console.log(`[Adaptation] Source: ${sourceLength} chars, ULTRA STRICT Target: ${sourceLength} ±${tolerance} (${minLength}-${maxLength})`);
 
     const config = NICHES[niche];
     if (!config) {
@@ -257,200 +279,312 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
       return;
     }
 
-    // ShadowWriter system prompt - Structure Preservation Mode
-    const shadowWriterSystemPrompt = `**Role:** You are **ShadowWriter (暗影写手)**, an elite story architect specializing in deep rewriting while preserving original structure and paragraphs.
+    // ShadowWriter system prompt - ULTRA STRICT 1:1 Rewriting Mode
+    const shadowWriterSystemPrompt = `**Role:** You are **ShadowWriter (暗影写手)**, a word-level content rewriter.
 
-**Core Objective:** Deeply rewrite the source material paragraph by paragraph, maintaining the exact same structure, paragraph breaks, and narrative flow. Change only the wording, expressions, and details to pass originality checks, while keeping the story structure identical.
+**ABSOLUTE IRON-CLAD RULES (绝对铁律):**
 
-🧠 **Core Competencies (核心能力)**
+🚫 **EXPANSION IS FORBIDDEN (扩写=失败)**
+- You are NOT a writer, you are a WORD REPLACER
+- You CANNOT add ANY new content
+- You CANNOT elaborate or explain ANYTHING
+- You CANNOT add descriptions
+- You CANNOT expand sentences
+- You can ONLY replace words with synonyms
 
-1. **Structure Preservation (結構保持 - CRITICAL)**
-   - **MUST preserve**: Original paragraph structure, paragraph breaks, narrative sequence
-   - **MUST preserve**: Story flow, scene order, character introduction order
-   - **DO NOT**: Change narrative structure, add flashbacks, or rearrange content
-   - **DO NOT**: Merge or split paragraphs
+🎯 **1:1 CHARACTER COUNT RULE (一比一字数铁律)**
+- Input: ${sourceLength} chars → Output: MUST be ${sourceLength} chars (±${tolerance} ONLY)
+- If input paragraph = 100 chars → output = 97-103 chars MAXIMUM
+- Count every character in real-time
+- If approaching ${maxLength}, STOP IMMEDIATELY
 
-2. **Deep Rewriting (深度洗稿)**
-   - **Word Replacement**: Replace every sentence with different wording while keeping the same meaning
-   - **Expression Enhancement**: Use more vivid, emotional expressions
-   - **Detail Expansion**: Add more descriptive details within the same paragraph structure
-   - **Synonym Usage**: Use synonyms and alternative phrasings throughout
+📏 **YOUR MISSION:**
+Replace words while keeping EXACT same length. That's ALL.
 
-3. **Humanization (擬人化)**
-   - Use colloquialisms, slang, inner monologues
-   - Show, Don't Tell: Use actions and descriptions
-   - Natural, human-like narration
+✅ **ONLY Allowed Actions:**
+1. Replace word with synonym (例：很好 → 非常好，极好 → 很好)
+2. Change sentence structure (例：他走了 → 走了的是他)
+3. Reorder words (例：我很生气 → 生气的我)
 
-**Output Language**: Use target language (${storyLanguage}) for all creative content.
-**Output Format**: ONLY pure rewritten content. NO technical markers, NO meta-commentary, NO explanations.`;
+❌ **ABSOLUTELY FORBIDDEN:**
+- Adding ANY new sentence
+- Adding ANY new word not in original
+- Adding ANY description
+- Adding ANY elaboration
+- Using closing phrases like "下课", "散会", "再见" in middle of content
+- Any expansion whatsoever
+
+🔴 **CRITICAL:**
+- DO NOT add ending phrases until the VERY END
+- DO NOT write "下课", "散会", "各位再见" in the middle
+- These phrases ONLY appear at the absolute final conclusion
+
+**Output Language**: ${storyLanguage}
+**Output**: ONLY the rewritten text. NO technical notes.`;
 
     try {
       let localContent = '';
-      const MAX_CONTINUATIONS = 20; // Increased for long texts
-      let continuationCount = 0;
+      const MAX_SEGMENTS = 50; // Maximum number of segments to process
+      let segmentIndex = 0;
       let isFinished = false;
 
-      const appendChunk = (chunk: string) => {
-        localContent += chunk;
-        setAdaptedContent(localContent);
+      // Helper to remove premature ending phrases (移除提前出现的收尾词汇)
+      const removePrematureEndings = (text: string, isMiddleSegment: boolean): string => {
+        if (!isMiddleSegment) return text; // Only clean middle segments
+        
+        // List of ending phrases that should NOT appear in middle segments
+        const endingPhrases = [
+          /好了[，,、。\s]*今天[就的]?[講讲][到这這][里裡儿兒]?/gi,
+          /下課了?[，,。\s]*/gi,
+          /散會了?[，,。\s]*/gi,
+          /今天[就的]?[到这這][里裡儿兒]?了?/gi,
+          /各位[同学同學]?再見/gi,
+          /後會有期/gi,
+          /后会有期/gi,
+          /咱們[就的]?[到这這][里裡儿兒]?/gi,
+          /下次再[講讲聊見见]/gi,
+          /我們今天[就的]?[講讲]?[到这這][里裡儿兒]?/gi
+        ];
+        
+        let cleaned = text;
+        for (const phrase of endingPhrases) {
+          cleaned = cleaned.replace(phrase, '');
+        }
+        
+        return cleaned;
+      };
+      
+      // Helper to clean final output (remove all stats and technical markers)
+      const cleanFinalOutput = (text: string): string => {
+        return text
+          // Remove statistics blocks
+          .replace(/\[字數統計[^\]]*\]/gi, '')
+          .replace(/字數統計[：:][^\n]*/gi, '')
+          .replace(/已洗稿[：:][^\n]*/gi, '')
+          .replace(/原文字數[：:][^\n]*/gi, '')
+          .replace(/目標字數[：:][^\n]*/gi, '')
+          .replace(/進度[：:][^\n]*/gi, '')
+          .replace(/還需[：:][^\n]*/gi, '')
+          .replace(/當前字數[：:][^\n]*/gi, '')
+          .replace(/剩餘字數[：:][^\n]*/gi, '')
+          .replace(/字數對比[：:][^\n]*/gi, '')
+          // Remove continuation markers
+          .replace(/^-----+\s*$/gm, '')
+          .replace(/\n-----+\n/g, '\n')
+          .replace(/-----+/g, '')
+          // Clean up multiple blank lines
+          .replace(/\n\s*\n\s*\n+/g, '\n\n')
+          .trim();
       };
 
-      // Helper to clean content for length calculation
-      const getCleanLength = (text: string): number => {
-        return text.replace(/^-----+\s*$/gm, '').replace(/\n-----+\n/g, '\n').replace(/\s+/g, '').length;
-      };
-
-      // Helper to estimate progress in source text based on adapted content length
-      const estimateSourceProgress = (adaptedLength: number, sourceLength: number): number => {
-        // Rough estimation: if adapted is X% of target, we've covered about X% of source
-        const progressRatio = Math.min(adaptedLength / sourceLength, 1);
-        return Math.floor(sourceLength * progressRatio);
-      };
-
-      // Split source text into paragraphs for reference
+      // Split source text into paragraphs
       const sourceParagraphs = inputVal.split(/\n\s*\n/).filter(p => p.trim().length > 0);
       const sourceParagraphCount = sourceParagraphs.length;
+      
+      // STRICT strategy: process 1-2 paragraphs at a time for precise control
+      const paragraphsPerSegment = Math.min(2, sourceParagraphCount); // Maximum 2 paragraphs per segment
+      const totalSegments = Math.ceil(sourceParagraphCount / paragraphsPerSegment);
+      
+      console.log(`[Adaptation] Total paragraphs: ${sourceParagraphCount}, Processing ${paragraphsPerSegment} per segment, Total segments: ${totalSegments}`);
 
-      // Initial adaptation - rewrite from beginning
-      const initialPrompt = `# ShadowWriter 深度洗稿任務（結構保持模式）
-
-## 原始素材完整內容 (Complete Source Material)
-${inputVal}
-
-## 洗稿要求 (Rewriting Requirements)
-
-### 核心原則 (CRITICAL RULES)
-1. **結構保持**：必須完全保持原文的段落結構、段落順序、段落數量
-2. **逐段洗稿**：按照原文的段落順序，逐段進行深度洗稿
-3. **字數保證**：每個段落洗稿後的字數應該接近或略多於原文對應段落
-4. **不改變結構**：嚴禁合併段落、拆分段落、改變段落順序
-
-### 字數要求 (CRITICAL)
-- **原文字數**：${sourceLength} 字
-- **目標字數**：${targetLength} 字（必須達到或超過原文字數）
-- **最小字數**：${minLength} 字（不得少於原文的 95%）
-- **段落數量**：原文共 ${sourceParagraphCount} 個段落，必須保持相同數量
-
-### 洗稿策略 (Rewriting Strategy)
-1. **詞彙替換**：將每個句子用不同的詞彙和表達方式重寫，保持相同意思
-2. **句式變換**：改變句子結構（主動變被動、長句變短句、短句合併等）
-3. **細節擴充**：在保持段落結構的前提下，適當增加描述性細節
-4. **語氣調整**：使用更生動、更情緒化的表達方式
-5. **同義替換**：大量使用同義詞、近義詞替換原有詞彙
-
-### 輸出要求
-- 目標語言：${storyLanguage}
-- **逐段洗稿**：按照原文段落順序，逐段輸出洗稿後的內容
-- **保持段落**：每個段落之間用空行分隔，保持原文的段落結構
-- **續寫標記**：如果一次性無法完成全部內容，在最後一個完整段落後輸出「-----」（5個橫線），系統會自動續寫
-- **禁止提前收尾**：在未完成全部段落洗稿前，嚴禁使用任何收尾語
-- **絕對純淨輸出**：只輸出洗稿後的內容，嚴禁輸出任何技術標記、元信息或解釋
-
-## 開始洗稿
-請從第一段開始，按照原文的段落順序，逐段進行深度洗稿。`;
-
-      await streamContentGeneration(
-        initialPrompt,
-        shadowWriterSystemPrompt,
-        appendChunk
-      );
-
-      // Continuation loop - continue rewriting remaining paragraphs
-      while (continuationCount < MAX_CONTINUATIONS && !isFinished) {
-        // Wait a bit for content to settle
-        await new Promise(resolve => setTimeout(resolve, 500));
+      // Segment-based rewriting: process paragraphs in segments
+      while (segmentIndex < totalSegments && !isFinished) {
+        const startParaIndex = segmentIndex * paragraphsPerSegment;
+        const endParaIndex = Math.min(startParaIndex + paragraphsPerSegment, sourceParagraphCount);
+        const currentSegmentParagraphs = sourceParagraphs.slice(startParaIndex, endParaIndex);
+        const segmentSourceText = currentSegmentParagraphs.join('\n\n');
         
-        // Clean content for length calculation
-        const cleanedContent = localContent.replace(/^-----+\s*$/gm, '').replace(/\n-----+\n/g, '\n');
-        const currentLength = getCleanLength(cleanedContent);
+        // Calculate current length and progress
+        const currentLength = getControlLength(localContent);
+        const lengthDiff = currentLength - sourceLength;
+        const progress = (endParaIndex / sourceParagraphCount) * 100;
         
-        // Estimate how much of source we've covered
-        const estimatedSourceProgress = estimateSourceProgress(currentLength, sourceLength);
-        const remainingSourceLength = sourceLength - estimatedSourceProgress;
+        console.log(`[Adaptation] Segment ${segmentIndex + 1}/${totalSegments}: Para ${startParaIndex + 1}-${endParaIndex}/${sourceParagraphCount} (${progress.toFixed(1)}%), Current: ${currentLength}/${sourceLength} chars, Diff: ${lengthDiff > 0 ? '+' : ''}${lengthDiff}`);
         
-        console.log(`[Adaptation] Current: ${currentLength} chars, Source: ${sourceLength} chars, Progress: ~${Math.floor((currentLength / sourceLength) * 100)}%`);
-
-        // Check if we've covered enough content
-        if (currentLength >= minLength && currentLength >= sourceLength * 0.9) {
-          // Close to or exceeding source length, check if we need to finish
-          if (currentLength >= sourceLength * 0.95) {
-            console.log(`[Adaptation] Content length ${currentLength} meets requirement, finishing`);
-            isFinished = true;
-            break;
-          }
-        }
-
-        // Continue rewriting if not enough length
-        if (currentLength < minLength || currentLength < sourceLength * 0.9) {
-          continuationCount += 1;
-          
-          // Get the last part of adapted content for context
-          const adaptedContext = cleanedContent.slice(-3000);
-          
-          // More accurate estimation: use paragraph-based progress
-          const adaptedParagraphs = cleanedContent.split(/\n\s*\n/).filter(p => p.trim().length > 0);
-          const adaptedParagraphCount = adaptedParagraphs.length;
-          
-          // Estimate progress based on paragraph count
-          const paragraphProgress = Math.min(adaptedParagraphCount / sourceParagraphCount, 0.95);
-          const sourceStartIndex = Math.floor(paragraphProgress * inputVal.length);
-          const remainingSource = inputVal.slice(sourceStartIndex);
-          
-          // Get next portion of source (enough for continuation)
-          const sourceContext = remainingSource.slice(0, Math.min(8000, remainingSource.length));
-          
-          const continuePrompt = `# 繼續洗稿任務（比對原文續寫）
-
-你正在逐段洗稿一個故事，當前已洗稿 ${currentLength} 字，原文共 ${sourceLength} 字。
-
-## 進度狀態
-- 已洗稿字數：${currentLength} 字
-- 目標字數：${targetLength} 字（原文 ${sourceLength} 字）
-- 已洗稿段落：約 ${adaptedParagraphCount} 個段落
-- 原文總段落：${sourceParagraphCount} 個段落
-- 預計進度：約 ${Math.floor((currentLength / sourceLength) * 100)}%
-- 仍需洗稿：約 ${remainingSourceLength} 字
-
-## 原文剩餘部分（必須比對此部分繼續洗稿）
-以下是原文中尚未洗稿的部分，你必須按照此部分的內容和段落結構進行洗稿：
-
-${sourceContext}
-
-## 已洗稿內容（最後 3000 字，供參考上下文和銜接）
-${adaptedContext}
-
-## 洗稿要求（CRITICAL）
-1. **比對原文洗稿**：必須比對上述「原文剩餘部分」，按照原文的段落順序逐段洗稿
-2. **保持段落結構**：必須保持原文的段落結構、段落順序、段落數量
-3. **字數保證**：每個段落洗稿後的字數應該接近或略多於原文對應段落
-4. **逐段完成**：必須完成原文剩餘部分的所有段落洗稿
-5. **續寫標記**：如果本次輸出無法完成全部剩餘內容，在最後一個完整段落後輸出「-----」（5個橫線）
-6. **禁止提前收尾**：在未完成全部段落洗稿前，嚴禁使用任何收尾語（如「完結」「結局」「結束」「全書完」等）
-7. **輸出格式**：輸出第一行必須是「-----」，下一行直接開始洗稿剩餘段落
-8. **保持連貫**：確保與前文自然銜接，保持故事連貫
-
-## 開始繼續洗稿
-請從「-----」下一行開始，比對「原文剩餘部分」，按照原文的段落順序繼續逐段進行深度洗稿。`;
-
-          await streamContentGeneration(
-            continuePrompt,
-            shadowWriterSystemPrompt,
-            appendChunk
-          );
-        } else {
-          // Already reached minimum length
+        // CRITICAL: Stop immediately if we've reached or exceeded source length
+        if (currentLength >= sourceLength) {
+          console.log(`[Adaptation] STOP: Already reached source length (${currentLength}/${sourceLength})`);
           isFinished = true;
           break;
         }
+        
+        // Stop if we've exceeded 98% of source and processed most content
+        if (currentLength >= sourceLength * 0.98 && endParaIndex >= sourceParagraphCount * 0.90) {
+          console.log(`[Adaptation] STOP: At 98% length and 90% content processed`);
+          isFinished = true;
+          break;
+        }
+        
+        // CRITICAL: Stop if we approach max tolerance
+        if (currentLength >= maxLength * 0.85) {
+          console.log(`[Adaptation] STOP: Approaching max tolerance (${currentLength}/${maxLength})`);
+          isFinished = true;
+          break;
+        }
+        
+        // Calculate segment-specific character counts (same metric as global control)
+        const segmentSourceLength = getControlLength(segmentSourceText);
+        const targetSegmentLength = segmentSourceLength; // 1:1 target
+        const segmentTolerance = Math.ceil(segmentSourceLength * 0.03); // 3% per segment
+        
+        const segmentPrompt = `# 洗稿任務（第 ${startParaIndex + 1}-${endParaIndex} 段，共 ${sourceParagraphCount} 段）
+
+⚠️ **字數鐵律** ⚠️
+本段原文：${segmentSourceLength} 字 → 你的輸出：${targetSegmentLength} 字（±${segmentTolerance}）
+超過 ${targetSegmentLength + segmentTolerance} 字 = 失敗
+
+📊 **進度：${Math.floor((currentLength / sourceLength) * 100)}%**（已完成 ${currentLength}/${sourceLength} 字）
+
+---
+
+## 【原文段落】（${segmentSourceLength} 字）
+${segmentSourceText}
+
+---
+
+## 🚫 **絕對禁止（違反=失敗）**
+
+1. **禁止添加任何內容**：不要加新句子、新詞、新描述
+2. **禁止擴寫**：不要解釋、不要展開、不要詳細說明
+3. **禁止收尾詞彙**：嚴禁使用「下課」「散會」「再見」「後會有期」「今天就講到這」等結束語
+4. **禁止改變長度**：輸出必須和原文一樣長
+
+## ✅ **只准做的事**
+
+- 替換詞彙（很好→非常好、因為→由於）
+- 改變句式（主動→被動、長句→短句）
+- 調整語序（他很生氣→生氣的他）
+
+## 📝 **輸出格式**
+
+- 純文本
+- 保持段落結構
+- 段落間空一行
+- 不要有任何技術說明
+
+---
+
+立即輸出洗稿內容：`;
+
+        // Generate into a segment buffer first, enforce HARD caps (segment + global),
+        // then append. This prevents uncontrolled expansion even if the model ignores instructions.
+        let segmentOut = '';
+        const segmentMaxLength = targetSegmentLength + segmentTolerance;
+        const maxTokens = Math.min(2048, Math.max(256, Math.ceil(segmentMaxLength * 1.2) + 64));
+
+        const onSegmentChunk = (chunk: string) => {
+          const globalRemaining = maxLength - getControlLength(localContent);
+          const segmentRemaining = segmentMaxLength - getControlLength(segmentOut);
+          const remaining = Math.min(globalRemaining, segmentRemaining);
+          if (remaining <= 0) return;
+          const safeChunk = chunk.length > remaining ? chunk.slice(0, remaining) : chunk;
+          segmentOut += safeChunk;
+          setAdaptedContent(localContent + segmentOut);
+        };
+
+        await streamContentGeneration(segmentPrompt, shadowWriterSystemPrompt, onSegmentChunk, undefined, {
+          temperature: 0.2,
+          maxTokens
+        });
+
+        localContent += segmentOut;
+        setAdaptedContent(localContent);
+        
+        // Wait a bit for content to settle
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // CRITICAL: Remove premature ending phrases from middle segments
+        const isMiddleSegment = endParaIndex < sourceParagraphCount;
+        if (isMiddleSegment) {
+          const beforeClean = localContent;
+          localContent = removePrematureEndings(localContent, true);
+          if (beforeClean !== localContent) {
+            console.log(`[Adaptation] ⚠️ Removed premature ending phrases from segment ${segmentIndex + 1}`);
+            setAdaptedContent(localContent);
+          }
+        }
+        
+        // Check length after this segment
+        const newLength = getControlLength(localContent);
+        const newLengthDiff = newLength - sourceLength;
+        const newProgress = (endParaIndex / sourceParagraphCount) * 100;
+        
+        // Calculate expected vs actual length ratio
+        const expectedLength = Math.floor((endParaIndex / sourceParagraphCount) * sourceLength);
+        const lengthRatio = newLength / expectedLength;
+        
+        console.log(`[Adaptation] ✓ Segment ${segmentIndex + 1} done: ${newLength}/${sourceLength} chars (${newProgress.toFixed(1)}% content), Diff: ${newLengthDiff > 0 ? '+' : ''}${newLengthDiff}, Ratio: ${lengthRatio.toFixed(2)}`);
+        
+        // ⚠️ ALERT: If length is growing too fast (超过预期比例), warn
+        if (lengthRatio > 1.15) {
+          console.log(`[Adaptation] ⚠️ WARNING: Length growing too fast! Ratio: ${lengthRatio.toFixed(2)} (expected ~1.0)`);
+        }
+        
+        // CRITICAL STOP CONDITIONS (严格停止条件)
+        
+        // 0. EMERGENCY: If length ratio exceeds 1.2x, STOP immediately (防止失控)
+        if (lengthRatio > 1.2) {
+          console.log(`[Adaptation] 🚨 EMERGENCY STOP: Length ratio ${lengthRatio.toFixed(2)} > 1.2, expansion detected!`);
+          isFinished = true;
+          break;
+        }
+        
+        // 1. If we've reached or exceeded source length, STOP immediately
+        if (newLength >= sourceLength) {
+          console.log(`[Adaptation] ✋ STOP: Reached source length (${newLength}/${sourceLength})`);
+          isFinished = true;
+          break;
+        }
+        
+        // 2. If we've exceeded 97% and processed 80% of content, STOP
+        if (newLength >= sourceLength * 0.97 && endParaIndex >= sourceParagraphCount * 0.80) {
+          console.log(`[Adaptation] ✋ STOP: At 97% length, 80% content done`);
+          isFinished = true;
+          break;
+        }
+        
+        // 3. If we approach max tolerance, STOP
+        if (newLength >= maxLength * 0.85) {
+          console.log(`[Adaptation] ✋ STOP: Approaching max tolerance (${newLength}/${maxLength})`);
+          isFinished = true;
+          break;
+        }
+        
+        // 4. If all content processed, STOP
+        if (endParaIndex >= sourceParagraphCount) {
+          console.log(`[Adaptation] ✋ STOP: All content processed`);
+          isFinished = true;
+          break;
+        }
+        
+        segmentIndex++;
       }
 
-      // Clean up continuation markers (-----)
-      localContent = localContent
-        .replace(/^-----+\s*$/gm, '') // Remove standalone ----- lines
-        .replace(/\n-----+\n/g, '\n') // Remove ----- between lines
-        .replace(/-----+/g, '') // Remove any remaining -----
-        .replace(/\n\s*\n\s*\n+/g, '\n\n') // Clean up multiple blank lines
-        .trim();
+      // Check final result and add ending ONLY if we have remaining content
+      const finalLength = getControlLength(localContent);
+      const finalLengthDiff = finalLength - sourceLength;
+      const processedParaCount = Math.min(segmentIndex * paragraphsPerSegment + paragraphsPerSegment, sourceParagraphCount);
+      const remainingParaCount = sourceParagraphCount - processedParaCount;
+      
+      console.log(`[Adaptation] Final check: ${finalLength}/${sourceLength} chars (Diff: ${finalLengthDiff > 0 ? '+' : ''}${finalLengthDiff}), Processed: ${processedParaCount}/${sourceParagraphCount} paragraphs`);
+      
+      // NOTE: Fallback "remaining paragraphs" generation is DISABLED.
+      // It often causes duplication/expansion by reintroducing previous context and breaking 1:1 length control.
+      
+      // Final cleanup: remove all statistics and technical markers
+      localContent = cleanFinalOutput(localContent);
+      
+      // Final validation and reporting
+      const absoluteFinalLength = getControlLength(localContent);
+      const absoluteFinalDiff = absoluteFinalLength - sourceLength;
+      const diffPercentage = ((absoluteFinalDiff / sourceLength) * 100).toFixed(2);
+      
+      console.log(`[Adaptation] ✅ COMPLETED!`);
+      console.log(`[Adaptation] Source: ${sourceLength} chars`);
+      console.log(`[Adaptation] Output: ${absoluteFinalLength} chars`);
+      console.log(`[Adaptation] Diff: ${absoluteFinalDiff > 0 ? '+' : ''}${absoluteFinalDiff} chars (${absoluteFinalDiff > 0 ? '+' : ''}${diffPercentage}%)`);
+      console.log(`[Adaptation] Target range: ${minLength}-${maxLength} chars (±${tolerance})`);
+      console.log(`[Adaptation] Status: ${absoluteFinalLength >= minLength && absoluteFinalLength <= maxLength ? '✅ PASS' : '❌ OUT OF RANGE'}`);
       
       setAdaptedContent(localContent);
 

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { ToolMode, NicheType, ApiProvider } from '../types';
 import { NICHES } from '../constants';
 import { streamContentGeneration, initializeGemini } from '../services/geminiService';
-import { FileText, Maximize2, RefreshCw, Scissors, ArrowRight, Copy, ChevronDown } from 'lucide-react';
+import { FileText, Maximize2, RefreshCw, Scissors, ArrowRight, Copy, ChevronDown, Video } from 'lucide-react';
 
 interface ToolsProps {
   apiKey: string;
@@ -30,16 +30,28 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider }) => {
       .replace(/~~/g, '') // 移除 ~~删除线~~
       .replace(/~/g, '') // 移除 ~删除线~
       .replace(/`/g, '') // 移除 `代码`
-      .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1') // 移除链接格式，保留文本
-      .replace(/\[([^\]]+)\]/g, '$1') // 移除引用链接格式
-      .replace(/<[^>]+>/g, '') // 移除HTML标签
-      // 移除无序列表标记（保留编号格式）
-      .replace(/^\s*[-*+•]\s+/gm, '');
+      .replace(/<[^>]+>/g, ''); // 移除HTML标签
+    
+    // 对于脚本模式，保留方括号格式（如[序號]、[名稱]等）
+    if (mode === ToolMode.SCRIPT) {
+      // 保留方括号格式，只移除链接格式
+      cleaned = cleaned.replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1'); // 移除链接格式，保留文本
+      // 不移除方括号格式，保留[序號]、[名稱]等
+    } else {
+      // 其他模式移除方括号格式
+      cleaned = cleaned
+        .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1') // 移除链接格式，保留文本
+        .replace(/\[([^\]]+)\]/g, '$1'); // 移除引用链接格式
+    }
+    
+    // 移除无序列表标记（保留编号格式）
+    cleaned = cleaned.replace(/^\s*[-*+•]\s+/gm, '');
     
     // 对于摘要模式，保留编号格式（1. 2. 3.等）
     if (mode === ToolMode.SUMMARIZE) {
       // 不移除编号，只清理其他格式
-    } else {
+    } else if (mode !== ToolMode.SCRIPT) {
+      // 脚本模式也保留编号格式（镜头序号）
       // 其他模式移除编号格式
       cleaned = cleaned.replace(/^\s*\d+\.\s+/gm, '');
     }
@@ -67,11 +79,137 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider }) => {
     return endingKeywords.some(pattern => pattern.test(text));
   };
 
+  // 检测并清理不完整的镜头（脚本模式专用）
+  const cleanIncompleteShot = (text: string): { cleaned: string; lastShotNumber: number; needsRework: boolean } => {
+    // 匹配镜头格式：镜头[数字] 或 鏡頭[数字]
+    const shotPattern = /(?:镜头|鏡頭)(\d+)/g;
+    const shots: Array<{ number: number; startIndex: number }> = [];
+    let match;
+    const shotMatches: RegExpExecArray[] = [];
+    
+    // 收集所有镜头匹配
+    while ((match = shotPattern.exec(text)) !== null) {
+      shotMatches.push(match);
+      shots.push({ 
+        number: parseInt(match[1]), 
+        startIndex: match.index 
+      });
+    }
+    
+    if (shots.length === 0) {
+      return { cleaned: text, lastShotNumber: 0, needsRework: false };
+    }
+    
+    // 检查最后一个镜头是否完整
+    const lastShot = shots[shots.length - 1];
+    const lastShotStart = lastShot.startIndex;
+    // 查找最后一个镜头的结束位置（下一个镜头开始或文本末尾）
+    let lastShotEnd = text.length;
+    // 检查是否有角色信息或场景信息开始
+    const roleInfoIndex = text.indexOf('[角色信息]', lastShotStart);
+    const sceneInfoIndex = text.indexOf('[场景信息]', lastShotStart);
+    const sceneInfoIndex2 = text.indexOf('[場景信息]', lastShotStart);
+    
+    if (roleInfoIndex > lastShotStart && roleInfoIndex < lastShotEnd) {
+      lastShotEnd = roleInfoIndex;
+    }
+    if (sceneInfoIndex > lastShotStart && sceneInfoIndex < lastShotEnd) {
+      lastShotEnd = sceneInfoIndex;
+    }
+    if (sceneInfoIndex2 > lastShotStart && sceneInfoIndex2 < lastShotEnd) {
+      lastShotEnd = sceneInfoIndex2;
+    }
+    
+    const lastShotContent = text.substring(lastShotStart, lastShotEnd);
+    
+    // 检查是否包含所有必需字段（支持繁体和简体）
+    const requiredFields = [
+      { zh: '镜头文案', tw: '鏡頭文案' },
+      { zh: '图片提示词', tw: '圖片提示詞' },
+      { zh: '视频提示词', tw: '視頻提示詞' },
+      { zh: '景别', tw: '景別' },
+      { zh: '语音分镜', tw: '語音分鏡' },
+      { zh: '音效', tw: '音效' }
+    ];
+    
+    const hasAllFields = requiredFields.every(field => 
+      lastShotContent.includes(field.zh) || lastShotContent.includes(field.tw)
+    );
+    
+    // 检查最后一个字段（音效）是否完整（有值，不是空行）
+    const hasCompleteLastField = /音效:\s*[^\n\r]+/.test(lastShotContent) || /音效:\s*[^\n\r]+/.test(lastShotContent);
+    
+    // 检查镜头内容是否被截断（如果最后一个镜头内容很短，可能被截断）
+    const isTruncated = lastShotContent.length < 100; // 如果最后一个镜头内容少于100字符，可能被截断
+    
+    if (!hasAllFields || !hasCompleteLastField || isTruncated) {
+      // 删除不完整的最后一个镜头
+      const cleaned = text.substring(0, lastShotStart).trim();
+      return { cleaned, lastShotNumber: lastShot.number, needsRework: true };
+    }
+    
+    return { cleaned: text, lastShotNumber: lastShot.number, needsRework: false };
+  };
+
   // 检查内容是否完整（是否有明确的结尾）
   const isContentComplete = (text: string, mode: ToolMode, originalLength: number): boolean => {
     if (mode === ToolMode.SUMMARIZE) {
       // 摘要模式：检查是否有标签部分（表示完整输出）
       return text.includes('熱門標籤') || text.includes('#');
+    }
+    
+    if (mode === ToolMode.SCRIPT) {
+      // 脚本模式：检查是否包含角色信息和场景信息，以及镜头数量
+      const hasRoleInfo = text.includes('[角色信息]') || text.includes('[角色信息]');
+      const hasSceneInfo = text.includes('[場景信息]') || text.includes('[场景信息]');
+      // 检查镜头数量（支持繁体和简体）
+      const shotCount = (text.match(/鏡頭\d+|镜头\d+/g) || []).length;
+      // 检查是否有未完成的标记（------表示还需要续写）
+      const hasIncompleteMarker = text.includes('------');
+      
+      // 如果镜头数量为0，说明还没开始输出，不算完整
+      if (shotCount === 0) return false;
+      
+      // 如果检测到角色信息或场景信息，但还有未完成标记，说明不完整
+      if (hasIncompleteMarker) return false;
+      
+      // 检查最后一个镜头是否完整（如果最后一个镜头不完整，即使有角色信息也不算完整）
+      const { needsRework } = cleanIncompleteShot(text);
+      if (needsRework) return false;
+      
+      // 如果检测到角色信息或场景信息，检查它们是否出现在所有镜头完成之后
+      if (hasRoleInfo || hasSceneInfo) {
+        // 找到最后一个镜头的结束位置
+        const lastShotMatch = text.match(/(?:镜头|鏡頭)(\d+)/g);
+        if (lastShotMatch && lastShotMatch.length > 0) {
+          const lastShotNumber = parseInt(lastShotMatch[lastShotMatch.length - 1].replace(/(?:镜头|鏡頭)/, ''));
+          const lastShotPattern = new RegExp(`(?:镜头|鏡頭)${lastShotNumber}[\\s\\S]*?(?=\\[角色信息\\]|\\[场景信息\\]|\\[場景信息\\]|$)`, 'i');
+          const lastShotSection = text.match(lastShotPattern);
+          
+          // 检查最后一个镜头部分是否完整（包含所有必需字段）
+          if (lastShotSection) {
+            const lastShotContent = lastShotSection[0];
+            const requiredFields = [
+              { zh: '镜头文案', tw: '鏡頭文案' },
+              { zh: '图片提示词', tw: '圖片提示詞' },
+              { zh: '视频提示词', tw: '視頻提示詞' },
+              { zh: '景别', tw: '景別' },
+              { zh: '语音分镜', tw: '語音分鏡' },
+              { zh: '音效', tw: '音效' }
+            ];
+            const hasAllFields = requiredFields.every(field => 
+              lastShotContent.includes(field.zh) || lastShotContent.includes(field.tw)
+            );
+            const hasCompleteLastField = /音效:\s*[^\n\r]+/.test(lastShotContent);
+            
+            // 如果最后一个镜头不完整，即使有角色信息也不算完整
+            if (!hasAllFields || !hasCompleteLastField) return false;
+          }
+        }
+      }
+      
+      // 脚本完整需要：有角色信息、有场景信息、镜头数量合理（不超过60个）、没有未完成标记、所有镜头都完整
+      return hasRoleInfo && hasSceneInfo && shotCount > 0 && shotCount <= 60;
     }
     
     // 其他模式：检查字数和结尾完整性
@@ -363,14 +501,153 @@ ${inputSection}
 
 ## Output Format
 請直接輸出潤色後的純淨最終版本，保持簡潔連貫流暢，無需標註修改痕跡或解釋。嚴禁使用「## 」「### 」「修改說明：」「（）」「**」等任何標記。`;
+        case ToolMode.SCRIPT:
+                // 检测语言（简单判断：如果包含中文字符，认为是中文）
+                const isChinese = /[\u4e00-\u9fff]/.test(inputText);
+                const minChars = isChinese ? 150 : 450;
+                const maxChars = isChinese ? 250 : 800;
+                
+                return `### 任务指令：视频脚本生成
+
+${inputSection}
+
+## 原文字数统计
+原文共 ${originalLength} 字
+
+## Goals
+将上述文本内容转换为适合语音视频制作的脚本模板，包含镜头分镜、图片提示词、视频提示词、语音分镜和音效设计。
+
+## 输出要求（CRITICAL）
+
+### 镜头数量限制
+- 镜头总数不得超过 60 个
+- 根据原文长度和内容密度合理分配镜头数量
+- 每个镜头对应一段连续的文本内容
+
+### 镜头格式（每个镜头必须包含以下所有字段）
+
+镜头[序号]
+镜头文案: [角色名]-[语气词]："[这里填入原文的连续长段落，${isChinese ? '中文' : '英文'}（${minChars}-${maxChars}字），无动作描述，纯净文本]"
+图片提示词: [景别], [画面描述], [环境描述]
+视频提示词: [秒数]s: [画面描述], [运镜方式]
+景别: [全景/中景/特写]
+语音分镜: [角色名]
+音效: [具体的音效名]
+
+### 角色信息（在所有镜头输出完毕后输出）
+⚠️ **关键要求**：只有在所有镜头都输出完成后，才能输出角色信息和场景信息。严禁在镜头未完成时输出角色信息和场景信息。
+
+根据内容分析，提取所有出现的角色，严格按照以下格式输出：
+
+[角色信息]
+[名称]医生
+[别名]倪医生，主播
+[描述]一位55岁中年男性，身高175cm，一头整齐的黑白相间短发，身材适中，穿着一身深灰色的传统长衫（或中山装），面容清癯，眼神深邃且坚定，有一种看透世事的智慧感。
+
+[名称]... (其他角色)
+
+⚠️ **格式要求（CRITICAL）**：
+1. 严格按照上述格式，每个字段前必须有[名称]、[别名]、[描述]标记
+2. 不要添加任何额外的说明、标题、解释或注释
+3. 不要输出"镜头"、"脚本"、"已完成"等任何模板之前的信息
+4. 每个角色之间用空行分隔
+5. 只输出角色信息，格式必须完全一致
+
+### 场景信息（在角色信息之后输出）
+根据内容分析，提取所有出现的场景，严格按照以下格式输出：
+
+[场景信息]
+[名称]场景-室内
+[别名]无
+[描述]古色古香的书房或诊室，背景有书架、医学经络图、毛笔字画，光线柔和庄重。
+
+[名称]... (其他场景)
+
+⚠️ **格式要求（CRITICAL）**：
+1. 严格按照上述格式，每个字段前必须有[名称]、[别名]、[描述]标记
+2. 不要添加任何额外的说明、标题、解释或注释
+3. 不要重复输出角色信息或镜头信息
+4. 每个场景之间用空行分隔
+5. 只输出场景信息，格式必须完全一致
+
+## 详细要求
+
+### 镜头文案
+- 必须是原文的连续长段落，不要拆分过细
+- ${isChinese ? '中文' : '英文'}内容：每个镜头 ${minChars}-${maxChars} 字
+- 无动作描述，纯净文本，适合 TTS 语音合成
+- 格式：[角色名]-[语气词]："[文本内容]"
+- 语气词限定：只能使用以下六种之一：高兴、愤怒、悲伤、害怕、惊讶、平静
+
+### 图片提示词
+- 必须适合 AI 绘图工具（Midjourney/Stable Diffusion/DALL-E）
+- 包含：景别（全景/中景/特写）、画面描述、环境描述
+- 描述要具体、视觉化，包含色彩、构图、光线等元素
+- 根据 ${nicheConfig.name} 领域特色设计视觉风格
+
+### 视频提示词
+- 格式：[秒数]s: [画面描述], [运镜方式]
+- 秒数：根据文案长度合理分配（通常 5-15 秒）
+- 运镜方式：推拉摇移、固定机位、跟随、环绕等
+- 画面描述：简洁描述该时段的视觉重点
+
+### 景别
+- 必须是：全景、中景、特写 三者之一
+- 根据内容重点选择合适的景别
+
+### 语音分镜
+- 标注该镜头的主要说话角色
+- 如果没有明确角色，使用"旁白"或"解说"
+
+### 音效
+- 具体的音效名称，如：背景音乐、键盘敲击声、脚步声、环境音等
+- 如果不需要音效，标注"无"或"背景音乐"
+
+## 输出格式示例
+
+镜头1
+镜头文案: 医生-平静："[150-250字的中文文本或450-800字的英文文本]"
+图片提示词: 中景, 一位中年男性医生坐在古色古香的书房中, 背景有书架和医学图谱, 柔和的光线
+视频提示词: 8s: 医生平静讲述, 固定机位
+景别: 中景
+语音分镜: 医生
+音效: 背景音乐
+
+镜头2
+...
+
+[角色信息]
+[名称]医生
+[别名]倪医生，主播
+[描述]一位55岁中年男性，身高175cm，一头整齐的黑白相间短发，身材适中，穿着一身深灰色的传统长衫（或中山装），面容清癯，眼神深邃且坚定，有一种看透世事的智慧感。
+
+[场景信息]
+[名称]场景-室内
+[别名]无
+[描述]古色古香的书房或诊室，背景有书架、医学经络图、毛笔字画，光线柔和庄重。
+
+## Output Format
+请严格按照上述格式输出，使用简体中文（角色和场景描述部分），镜头文案保持原文语言。严禁使用 **、*、__、~~ 等 Markdown 特殊符号。
+
+## 续写规则
+- 如果一次性无法完成全部脚本，在最后一个完整镜头后输出「------」（6个横线），系统会自动续写
+- 续写时从「------」下一行开始，继续输出下一个镜头
+- 必须完成所有镜头、角色信息和场景信息才算完整
+
+## 角色信息和场景信息输出要求（CRITICAL）
+- 所有镜头输出完毕后，接着输出角色信息和场景信息
+- 严格按照格式输出，不要增加或减少任何信息
+- 不要输出任何模板之前的信息（如"镜头"、"脚本"等）
+- 不要添加任何说明、标题或解释
+- 只输出角色信息和场景信息，格式必须完全一致`;
             default:
                 return '';
         }
     };
 
     // 生成续写prompt
-    const generateContinuePrompt = (currentContent: string, mode: ToolMode, originalLength: number): string => {
-        const context = currentContent.slice(-1000); // 取最后1000字作为上下文
+    const generateContinuePrompt = (currentContent: string, mode: ToolMode, originalLength: number, cleanInfo?: { cleaned: string; lastShotNumber: number; needsRework: boolean } | null): string => {
+        const context = currentContent.slice(-2000); // 取最后2000字作为上下文（脚本模式需要更多上下文）
         const currentLength = currentContent.length;
         
         if (mode === ToolMode.REWRITE || mode === ToolMode.POLISH) {
@@ -423,6 +700,136 @@ ${needsMore ?
 - 可以使用適當的收尾語和互動引導`}
 - **TTS 純淨輸出**：嚴禁輸出括號內的描述詞、**、*等特殊符號
 - 第一行必須是「-----」，第二行開始直接續寫`;
+        } else if (mode === ToolMode.SCRIPT) {
+            // 检测语言
+            const isChinese = /[\u4e00-\u9fff]/.test(inputText);
+            const minChars = isChinese ? 150 : 450;
+            const maxChars = isChinese ? 250 : 800;
+            
+            // 统计已完成的镜头数量
+            const shotCount = (currentContent.match(/鏡頭\d+|镜头\d+/g) || []).length;
+            const hasRoleInfo = currentContent.includes('[角色信息]') || currentContent.includes('[角色信息]');
+            const hasSceneInfo = currentContent.includes('[場景信息]') || currentContent.includes('[场景信息]');
+            
+            // 估算还需要多少镜头（基于原文长度和已完成内容）
+            const estimatedTotalShots = Math.min(60, Math.ceil(originalLength / (isChinese ? 200 : 600)));
+            const remainingShots = Math.max(0, estimatedTotalShots - shotCount);
+            
+            // 检查是否需要重新输出不完整的镜头
+            const needsRework = cleanInfo?.needsRework || false;
+            const lastShotNumber = cleanInfo?.lastShotNumber || shotCount;
+            
+            let reworkInstruction = '';
+            if (needsRework) {
+                reworkInstruction = `\n\n【重要：重新输出不完整镜头】
+检测到镜头${lastShotNumber}输出不完整（缺少必需字段或字段未完成）。
+请从「------」下一行开始，重新完整输出镜头${lastShotNumber}，包含所有必需字段：
+- 镜头${lastShotNumber}
+- 镜头文案: [角色名]-[语气词]："[完整文本]"
+- 图片提示词: [景别], [画面描述], [环境描述]
+- 视频提示词: [秒数]s: [画面描述], [运镜方式]
+- 景别: [全景/中景/特写]
+- 语音分镜: [角色名]
+- 音效: [具体的音效名]
+
+输出完镜头${lastShotNumber}后，如果还有剩余镜头，继续输出下一个镜头。`;
+            }
+            
+            // 检查是否所有镜头都已完成（必须达到或超过预计数量，且最后一个镜头完整）
+            const allShotsComplete = shotCount >= estimatedTotalShots && !cleanInfo?.needsRework;
+            
+            let roleSceneInstruction = '';
+            // 只有在所有镜头都完成后，才输出角色信息和场景信息
+            if (allShotsComplete && !hasRoleInfo && !hasSceneInfo) {
+                roleSceneInstruction = `\n\n【输出角色信息和场景信息 - 所有镜头已完成】
+⚠️ 重要：所有镜头（${shotCount}个）已输出完成，现在必须输出角色信息和场景信息。
+
+严格按照以下格式输出，不要增加或减少任何信息，也不要输出任何其他内容：
+
+[角色信息]
+[名称]医生
+[别名]倪医生，主播
+[描述]一位55岁中年男性，身高175cm，一头整齐的黑白相间短发，身材适中，穿着一身深灰色的传统长衫（或中山装），面容清癯，眼神深邃且坚定，有一种看透世事的智慧感。
+
+[名称]... (其他角色)
+
+[场景信息]
+[名称]场景-室内
+[别名]无
+[描述]古色古香的书房或诊室，背景有书架、医学经络图、毛笔字画，光线柔和庄重。
+
+[名称]... (其他场景)
+
+⚠️ 格式要求（CRITICAL）：
+1. 严格按照上述格式，每个字段前必须有[名称]、[别名]、[描述]标记
+2. 不要添加任何额外的说明、标题、解释或注释
+3. 不要输出"镜头"、"脚本"、"已完成"等任何模板之前的信息
+4. 角色信息和场景信息之间用空行分隔
+5. 每个角色或场景之间用空行分隔
+6. 只输出角色信息和场景信息，格式必须完全一致`;
+            } else if (allShotsComplete && hasRoleInfo && !hasSceneInfo) {
+                roleSceneInstruction = `\n\n【输出场景信息 - 所有镜头已完成】
+角色信息已完成，现在需要输出场景信息。
+
+严格按照以下格式输出，不要增加或减少任何信息：
+
+[场景信息]
+[名称]场景-室内
+[别名]无
+[描述]古色古香的书房或诊室，背景有书架、医学经络图、毛笔字画，光线柔和庄重。
+
+[名称]... (其他场景)
+
+⚠️ 注意：只输出场景信息，严格按照格式，不要输出任何其他内容。`;
+            } else if (allShotsComplete && !hasRoleInfo && hasSceneInfo) {
+                roleSceneInstruction = `\n\n【输出角色信息 - 所有镜头已完成】
+场景信息已完成，现在需要输出角色信息。
+
+严格按照以下格式输出，不要增加或减少任何信息：
+
+[角色信息]
+[名称]医生
+[别名]倪医生，主播
+[描述]一位55岁中年男性，身高175cm，一头整齐的黑白相间短发，身材适中，穿着一身深灰色的传统长衫（或中山装），面容清癯，眼神深邃且坚定，有一种看透世事的智慧感。
+
+[名称]... (其他角色)
+
+⚠️ 注意：只输出角色信息，严格按照格式，不要输出任何其他内容。`;
+            }
+            
+            return `继续完成视频脚本生成，保持格式一致。
+
+【已完成部分（末尾）】
+${context}
+
+【进度统计】
+- 原文：${originalLength} 字
+- 已完成镜头：${shotCount} 个
+- 预计总镜头：约 ${estimatedTotalShots} 个（不超过60个）
+- 还需完成：约 ${remainingShots} 个镜头
+- 角色信息：${hasRoleInfo ? '✓ 已完成' : '✗ 未完成'}
+- 场景信息：${hasSceneInfo ? '✓ 已完成' : '✗ 未完成'}${reworkInstruction}${roleSceneInstruction}
+
+【续写要求（CRITICAL）】${!needsRework && !roleSceneInstruction ? `
+1. **继续输出镜头**：从「------」下一行开始，继续输出下一个镜头
+2. **镜头格式**：必须包含所有字段（镜头序号、镜头文案、图片提示词、视频提示词、景别、语音分镜、音效）
+3. **镜头文案**：
+   - ${isChinese ? '中文' : '英文'}内容：每个镜头 ${minChars}-${maxChars} 字
+   - 格式：[角色名]-[语气词]："[文本内容]"
+   - 语气词限定：只能使用以下六种之一：高兴、愤怒、悲伤、害怕、惊讶、平静
+   - 必须是原文的连续长段落，无动作描述，纯净文本
+4. **图片提示词**：适合 AI 绘图工具，包含景别、画面描述、环境描述
+5. **视频提示词**：格式 [秒数]s: [画面描述], [运镜方式]
+6. **景别**：必须是 全景、中景、特写 三者之一
+7. **完成标记**：
+   - 如果本次输出无法完成全部镜头，在最后一个完整镜头后输出「------」（6个横线）
+   - ⚠️ **严禁提前输出角色信息和场景信息**：只有在所有镜头（${estimatedTotalShots}个）都输出完成后，才能输出角色信息和场景信息
+   - 如果所有内容都已完成，不需要输出「------」` : ''}
+
+【输出格式】
+第一行必须是「------」，第二行开始直接输出。
+
+请使用简体中文输出（角色和场景描述部分），镜头文案保持原文语言。严禁使用 **、*、__、~~ 等 Markdown 特殊符号。`;
         }
         
         return '';
@@ -444,12 +851,24 @@ ${needsMore ?
                 continuationCount++;
                 console.log(`[Tools] Content incomplete, continuing (${continuationCount}/${MAX_CONTINUATIONS})...`);
                 
-                // 添加分隔符
-                localOutput += '\n\n-----\n\n';
+                // 脚本模式：检测并清理不完整的镜头
+                let cleanInfo: { cleaned: string; lastShotNumber: number; needsRework: boolean } | null = null;
+                if (mode === ToolMode.SCRIPT) {
+                    cleanInfo = cleanIncompleteShot(localOutput);
+                    if (cleanInfo.needsRework) {
+                        console.log(`[Tools] Detected incomplete shot ${cleanInfo.lastShotNumber}, cleaning and reworking...`);
+                        localOutput = cleanInfo.cleaned;
+                        setOutputText(cleanMarkdownFormat(localOutput, mode));
+                    }
+                }
+                
+                // 添加分隔符（脚本模式使用------，其他模式使用-----）
+                const separator = mode === ToolMode.SCRIPT ? '\n\n------\n\n' : '\n\n-----\n\n';
+                localOutput += separator;
                 setOutputText(cleanMarkdownFormat(localOutput, mode));
                 
-                // 生成续写prompt
-                const continuePrompt = generateContinuePrompt(localOutput, mode, originalLength);
+                // 生成续写prompt（传入清理后的内容和是否需要重新输出镜头的信息）
+                const continuePrompt = generateContinuePrompt(localOutput, mode, originalLength, cleanInfo);
                 
                 // 续写
                 await streamContentGeneration(continuePrompt, systemInstruction, (chunk) => {
@@ -457,6 +876,16 @@ ${needsMore ?
                     setOutputText(cleanMarkdownFormat(localOutput, mode));
                 });
             }
+            
+            // 清理续写分隔符（脚本模式使用------，其他模式使用-----）
+            if (mode === ToolMode.SCRIPT) {
+                localOutput = localOutput.replace(/\n*------\n*/g, '\n\n');
+            } else {
+                localOutput = localOutput.replace(/\n*-----\n*/g, '\n\n');
+            }
+            // 清理多余空行
+            localOutput = localOutput.replace(/\n\s*\n\s*\n+/g, '\n\n').trim();
+            setOutputText(cleanMarkdownFormat(localOutput, mode));
             
             if (isContentComplete(localOutput, mode, originalLength)) {
                 console.log('[Tools] Content generation complete');
@@ -495,6 +924,7 @@ ${needsMore ?
                     { id: ToolMode.EXPAND, label: '深度擴寫', icon: <Maximize2 size={16} /> },
                     { id: ToolMode.SUMMARIZE, label: '摘要總結', icon: <Scissors size={16} /> },
                     { id: ToolMode.POLISH, label: '潤色優化', icon: <FileText size={16} /> },
+                    { id: ToolMode.SCRIPT, label: '腳本輸出', icon: <Video size={16} /> },
                 ].map((tool) => (
                     <button
                         key={tool.id}
@@ -512,19 +942,19 @@ ${needsMore ?
            </div>
 
            <div className="flex items-center gap-4 w-full md:w-auto">
-               {/* Niche Context Selector */}
+           {/* Niche Context Selector */}
                <div className="relative group min-w-[200px] flex-1 md:flex-none">
-                   <label className="text-[10px] uppercase font-bold text-slate-500 mb-1 ml-1 tracking-wider">語氣 / 賽道</label>
-                   <select 
-                        value={niche} 
-                        onChange={(e) => setNiche(e.target.value as NicheType)}
-                        className="w-full appearance-none bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
-                   >
-                       {Object.values(NICHES).map(n => (
-                           <option key={n.id} value={n.id}>{n.icon} {n.name}</option>
-                       ))}
-                   </select>
-                   <ChevronDown className="absolute right-3 top-8 text-slate-500 pointer-events-none" size={14} />
+               <label className="text-[10px] uppercase font-bold text-slate-500 mb-1 ml-1 tracking-wider">語氣 / 賽道</label>
+               <select 
+                    value={niche} 
+                    onChange={(e) => setNiche(e.target.value as NicheType)}
+                    className="w-full appearance-none bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+               >
+                   {Object.values(NICHES).map(n => (
+                       <option key={n.id} value={n.id}>{n.icon} {n.name}</option>
+                   ))}
+               </select>
+               <ChevronDown className="absolute right-3 top-8 text-slate-500 pointer-events-none" size={14} />
                </div>
 
                {/* Generate Button */}
@@ -583,7 +1013,7 @@ ${needsMore ?
                     {!outputText && !isGenerating && (
                         <div className="absolute inset-0 flex items-center justify-center text-slate-600 text-sm">
                             結果將顯示於此
-                        </div>
+                </div>
                     )}
                 </div>
             </div>

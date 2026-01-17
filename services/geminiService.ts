@@ -268,7 +268,8 @@ export const streamContentGeneration = async (
   prompt: string,
   systemInstruction: string,
   onChunk: (chunk: string) => void,
-  modelName?: string
+  modelName?: string,
+  options?: { temperature?: number; maxTokens?: number }
 ) => {
   return retryOperation(async () => {
     try {
@@ -296,8 +297,11 @@ export const streamContentGeneration = async (
         }
       }
 
+      const temperature = options?.temperature ?? 0.85;
+      const maxTokens = options?.maxTokens ?? 8192;
+
       if (provider === 'google') {
-        const response = await callGoogleWithFallback(prompt, systemInstruction, 0.85, 8192, modelName);
+        const response = await callGoogleWithFallback(prompt, systemInstruction, temperature, maxTokens, modelName);
         const content = extractGoogleText(response);
         if (!content) {
           throw new Error("API 返回了空響應。請檢查 API Key 和配置。");
@@ -320,8 +324,8 @@ export const streamContentGeneration = async (
       const payload = {
         model: model,
         messages: messages,
-        temperature: 0.85,
-        max_tokens: 8192,
+        temperature: temperature,
+        max_tokens: maxTokens,
         stream: true
       };
 

@@ -100,7 +100,8 @@ export enum ToolMode {
   REWRITE = 'REWRITE',
   EXPAND = 'EXPAND',
   SUMMARIZE = 'SUMMARIZE',
-  POLISH = 'POLISH'
+  POLISH = 'POLISH',
+  SCRIPT = 'SCRIPT'
 }
 
 export type ApiProvider = 'yunwu' | 'google';
