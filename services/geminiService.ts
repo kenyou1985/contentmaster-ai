@@ -49,7 +49,10 @@ async function retryOperation<T>(operation: () => Promise<T>, retries = 3, delay
       msg.includes('network') || 
       msg.includes('fetch failed') ||
       msg.includes('overloaded') ||
-      msg.includes('failed to fetch');
+      msg.includes('failed to fetch') ||
+      msg.includes('http2') ||
+      msg.includes('protocol error') ||
+      msg.includes('err_http2');
 
     if (retries > 0 && isRetryable) {
       console.warn(`[Gemini Service] Retrying API call... Attempts left: ${retries}. Waiting ${delay}ms. Error: ${msg}`);
@@ -125,8 +128,17 @@ async function callYunwuAPI(
     method: 'POST',
     headers: headers,
     body: JSON.stringify(payload),
-    timeout: 300000 // 5 minutes for long content
-  } as any);
+    timeout: 300000, // 5 minutes for long content
+    // Fix HTTP2 protocol errors by disabling keepalive
+    keepalive: false,
+  } as any).catch((fetchError: any) => {
+    // Handle network errors including HTTP2 protocol errors
+    const errorMsg = fetchError?.message || String(fetchError);
+    if (errorMsg.includes('ERR_HTTP2_PROTOCOL_ERROR') || errorMsg.includes('HTTP2')) {
+      throw new Error('HTTP2协议错误，可能是网络连接不稳定，系统将自动重试');
+    }
+    throw fetchError;
+  });
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -179,9 +191,18 @@ async function callGoogleAPI(
     {
       method: 'POST',
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      // Fix HTTP2 protocol errors by disabling keepalive
+      keepalive: false,
     }
-  );
+  ).catch((fetchError: any) => {
+    // Handle network errors including HTTP2 protocol errors
+    const errorMsg = fetchError?.message || String(fetchError);
+    if (errorMsg.includes('ERR_HTTP2_PROTOCOL_ERROR') || errorMsg.includes('HTTP2')) {
+      throw new Error('HTTP2协议错误，可能是网络连接不稳定，系统将自动重试');
+    }
+    throw fetchError;
+  });
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -333,6 +354,15 @@ export const streamContentGeneration = async (
         method: 'POST',
         headers: headers,
         body: JSON.stringify(payload),
+        // Fix HTTP2 protocol errors by disabling keepalive
+        keepalive: false,
+      }).catch((fetchError: any) => {
+        // Handle network errors including HTTP2 protocol errors
+        const errorMsg = fetchError?.message || String(fetchError);
+        if (errorMsg.includes('ERR_HTTP2_PROTOCOL_ERROR') || errorMsg.includes('HTTP2')) {
+          throw new Error('HTTP2协议错误，可能是网络连接不稳定，系统将自动重试');
+        }
+        throw fetchError;
       });
 
       if (!response.ok) {
