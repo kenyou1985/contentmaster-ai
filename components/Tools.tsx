@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { ToolMode, NicheType, ApiProvider } from '../types';
 import { NICHES } from '../constants';
 import { streamContentGeneration, initializeGemini } from '../services/geminiService';
-import { FileText, Maximize2, RefreshCw, Scissors, ArrowRight, Copy, ChevronDown, Video } from 'lucide-react';
+import { fetchYouTubeTranscript, extractYouTubeVideoId, isYouTubeLink } from '../services/youtubeService';
+import { FileText, Maximize2, RefreshCw, Scissors, ArrowRight, Copy, ChevronDown, Video, Download } from 'lucide-react';
 
 interface ToolsProps {
   apiKey: string;
@@ -15,6 +16,10 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider }) => {
   const [inputText, setInputText] = useState('');
   const [outputText, setOutputText] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isExtractingTranscript, setIsExtractingTranscript] = useState(false);
+  // ⚠️ RapidAPI版本 - 请将下面的 URL 替换为您部署 GAS_RapidAPI集成版.gs 后的新 URL
+  // 示例：https://script.google.com/macros/s/AKfycby.../exec
+  const [gasApiUrl, setGasApiUrl] = useState<string>('https://script.google.com/macros/s/AKfycbylTL8WWoBBcYo5LaXGsIoUiBVxWVFLEcaH4cMuXbnB2UEQ-tsUI6jqYS8tcYT0wxQaqA/exec'); // ⚠️⚠️⚠️ 必须填入您的实际GAS部署URL，否则无法使用！
 
   // 清理Markdown格式符号，输出纯文本（保留编号格式）
   const cleanMarkdownFormat = (text: string, mode?: ToolMode): string => {
@@ -430,26 +435,62 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider }) => {
     return hasProperEnding && notTruncated;
   };
 
-  // 检测是否为YouTube链接
-  const isYouTubeLink = (text: string): boolean => {
-    const youtubePatterns = [
-      /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,
-      /youtube\.com\/watch\?.*v=([a-zA-Z0-9_-]{11})/,
-    ];
-    return youtubePatterns.some(pattern => pattern.test(text));
-  };
-
-  // 提取YouTube视频ID
-  const extractYouTubeVideoId = (url: string): string | null => {
-    const patterns = [
-      /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,
-      /youtube\.com\/watch\?.*v=([a-zA-Z0-9_-]{11})/,
-    ];
-    for (const pattern of patterns) {
-      const match = url.match(pattern);
-      if (match) return match[1];
+  // 提取YouTube字幕
+  const handleExtractTranscript = async () => {
+    const videoId = extractYouTubeVideoId(inputText.trim());
+    if (!videoId) {
+      setOutputText('❌ 无法识别YouTube视频链接，请检查链接格式。');
+      return;
     }
-    return null;
+    
+    setIsExtractingTranscript(true);
+    setOutputText('⏳ 正在提取YouTube视频字幕，请稍候...');
+    
+    try {
+      const result = await fetchYouTubeTranscript(videoId, gasApiUrl || undefined);
+      
+      if (result.success && result.transcript) {
+        // 将字幕显示在输入框中
+        setInputText(result.transcript);
+        setOutputText('✅ 字幕提取成功！已自动填入输入框，您可以选择处理模式后点击生成按钮。');
+        console.log(`[Tools] YouTube字幕提取成功，长度: ${result.transcript.length}字`);
+      } else {
+        // 字幕提取失败，提供手动操作指南
+        const manualGuide = `❌ 自动提取字幕失败
+
+📋 请手动提取字幕（2分钟完成）：
+
+**方法1：使用 YouTube 内置字幕**
+1. 打开视频：https://www.youtube.com/watch?v=${videoId}
+2. 点击视频下方的 "..." 菜单
+3. 选择 "显示转录文本" 或 "Show transcript"
+4. 复制全部文本
+5. 粘贴到输入框中（可以保留或删除 YouTube 链接）
+
+**方法2：使用在线工具**
+• DownSub: https://downsub.com/
+• SaveSubs: https://savesubs.com/
+• 粘贴视频链接，下载 TXT 格式字幕
+• 复制内容到输入框
+
+**方法3：使用浏览器扩展**
+• Video Transcript（Chrome）
+• YouTube Transcript（Firefox）
+
+---
+失败原因：${result.error || '未知'}
+
+💡 提示：手动提取后，自动字幕功能仍在开发调试中。`;
+        
+        setOutputText(manualGuide);
+        console.error('[Tools] YouTube字幕提取失败:', result.error);
+      }
+    } catch (error: any) {
+      setOutputText(`❌ 字幕提取异常：${error.message}\n\n请尝试手动复制YouTube字幕。`);
+      console.error('[Tools] YouTube字幕提取异常:', error);
+    } finally {
+      setIsExtractingTranscript(false);
+    }
   };
 
   const handleAction = async () => {
@@ -468,14 +509,14 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider }) => {
     const isYouTube = isYouTubeLink(inputText.trim());
     const videoId = isYouTube ? extractYouTubeVideoId(inputText.trim()) : null;
     
-    // 如果只有 YouTube 链接，没有其他文本内容，直接提示用户
+    // 如果只有 YouTube 链接，没有其他文本内容，提示用户点击"提取字幕"按钮
     if (isYouTube && videoId) {
       const textWithoutLink = inputText.trim().replace(/https?:\/\/(www\.)?(youtube\.com|youtu\.be)[^\s]*/gi, '').trim();
       
       // 如果移除链接后没有其他文本，说明只有链接
       if (!textWithoutLink || textWithoutLink.length < 10) {
         setIsGenerating(false);
-        setOutputText(`📺 YouTube 視頻處理指南\n\n檢測到您輸入的是 YouTube 視頻鏈接：\n${inputText.trim()}\n\n---\n\n⚠️ **為什麼需要手動複製字幕？**\n\n由於瀏覽器安全限制（CORS 政策）和 YouTube 的 API 要求，前端應用無法直接訪問 YouTube 視頻的轉錄內容。要實現自動提取需要：\n\n• 後端服務器（處理 CORS 和 API 認證）\n• YouTube Data API v3 授權\n• OAuth 2.0 認證流程\n\n因此，目前最簡單可靠的方式是手動複製字幕。\n\n---\n\n📋 **操作步驟**\n\n1️⃣ **獲取視頻轉錄文本**\n   • 打開上述 YouTube 視頻\n   • 點擊視頻下方的「⋯」菜單\n   • 選擇「顯示轉錄」或「字幕」\n   • 複製完整的轉錄文本（可以全選複製）\n\n2️⃣ **粘貼轉錄文本**\n   • 將轉錄文本粘貼到「原始文本」輸入框\n   • 可以保留或刪除 YouTube 鏈接（系統會自動識別）\n   • 選擇處理模式（改寫/擴寫/摘要/潤色/腳本輸出）\n\n3️⃣ **開始處理**\n   • 點擊生成按鈕\n   • 系統會根據您選擇的模式處理文本\n\n---\n\n💡 **小技巧**\n• 如果視頻有自動生成的字幕，通常質量也很好\n• 可以將鏈接和文本一起粘貼，系統會自動識別並處理文本\n• 複製時可以包含時間戳，系統會自動過濾\n\n🔮 **未來改進**\n如果後續添加後端服務支持，將可以實現一鍵自動提取功能。`);
+        setOutputText(`📺 檢測到 YouTube 視頻鏈接\n\n視頻ID: ${videoId}\n\n💡 請點擊輸入框旁的「提取字幕」按鈕，系統將自動提取視頻字幕並填入輸入框。\n\n⚠️ 注意：需要在設置中配置 Google Apps Script API URL 才能使用自動提取功能。`);
         return;
       }
     }
@@ -1572,9 +1613,21 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 h-[600px]">
             {/* Input */}
             <div className="flex flex-col gap-2">
-          <label className="text-sm font-medium text-slate-400 flex items-center gap-2">
-            <span>原始文本</span>
-            <span className="text-xs text-slate-600">（支持 YouTube 鏈接自動提取）</span>
+          <label className="text-sm font-medium text-slate-400 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span>原始文本</span>
+              <span className="text-xs text-slate-600">（支持 YouTube 鏈接自動提取）</span>
+            </div>
+            {isYouTubeLink(inputText.trim()) && (
+              <button
+                onClick={handleExtractTranscript}
+                disabled={isExtractingTranscript}
+                className="flex items-center gap-1 px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-md shadow disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+              >
+                <Download size={14} />
+                <span>{isExtractingTranscript ? '提取中...' : '提取字幕'}</span>
+              </button>
+            )}
           </label>
                 <textarea 
                     value={inputText}
