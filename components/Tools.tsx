@@ -1542,12 +1542,12 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
 
            <div className="flex items-center gap-4 w-full md:w-auto">
            {/* Niche Context Selector */}
-               <div className="relative group min-w-[200px] flex-1 md:flex-none">
+               <div className="relative group w-[180px] md:w-[180px] md:ml-auto">
                <label className="text-base font-extrabold text-emerald-400 mb-1 ml-1 tracking-wide">選擇賽道</label>
                <select 
                     value={niche} 
                     onChange={(e) => setNiche(e.target.value as NicheType)}
-                    className="w-full appearance-none bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 cursor-pointer"
+                    className="w-full appearance-none bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 font-bold focus:outline-none focus:border-emerald-500 cursor-pointer"
                >
                    {Object.values(NICHES).map(n => (
                        <option key={n.id} value={n.id}>{n.icon} {n.name}</option>
