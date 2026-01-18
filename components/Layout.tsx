@@ -29,7 +29,7 @@ export const Layout: React.FC<LayoutProps> = ({
     <div className="min-h-screen flex flex-col bg-[#020617] text-slate-100 relative overflow-x-hidden">
       {/* Ambient Background Effects */}
       <div className="fixed inset-0 pointer-events-none z-0">
-          <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-indigo-900/10 rounded-full blur-[120px]" />
+          <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-emerald-900/10 rounded-full blur-[120px]" />
           <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-emerald-900/10 rounded-full blur-[120px]" />
       </div>
 
@@ -37,10 +37,10 @@ export const Layout: React.FC<LayoutProps> = ({
       <header className="flex-shrink-0 border-b border-slate-800/60 bg-slate-950/70 backdrop-blur-xl sticky top-0 z-50 shadow-sm shadow-black/20">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="bg-indigo-500/10 p-2 rounded-lg border border-indigo-500/20">
-                <Cpu className="w-5 h-5 text-indigo-400" />
+            <div className="bg-emerald-500/10 p-2 rounded-lg border border-emerald-500/20">
+                <Cpu className="w-5 h-5 text-emerald-400" />
             </div>
-            <span className="font-bold text-lg tracking-tight text-slate-100">Content<span className="text-indigo-500">Master</span> AI</span>
+            <span className="font-bold text-lg tracking-tight text-slate-100">Content<span className="text-emerald-500">Master</span> AI</span>
           </div>
           
           <div className="flex items-center gap-4">
@@ -49,7 +49,7 @@ export const Layout: React.FC<LayoutProps> = ({
               <button
                 onClick={() => setActiveTab('generate')}
                 className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200 ${
-                  activeTab === 'generate' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                  activeTab === 'generate' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
                 }`}
               >
                 <div className="flex items-center gap-2">
@@ -60,7 +60,7 @@ export const Layout: React.FC<LayoutProps> = ({
               <button
                 onClick={() => setActiveTab('tools')}
                 className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200 ${
-                  activeTab === 'tools' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                  activeTab === 'tools' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
                 }`}
               >
                 <div className="flex items-center gap-2">
@@ -72,7 +72,7 @@ export const Layout: React.FC<LayoutProps> = ({
 
             <button 
                 onClick={() => setShowKeyInput(!showKeyInput)}
-                className={`p-2 rounded-lg transition-all border ${!apiKey ? 'bg-amber-500/10 border-amber-500/50 text-amber-400 animate-pulse' : 'border-transparent text-slate-400 hover:text-indigo-400 hover:bg-slate-800'}`}
+                className={`p-2 rounded-lg transition-all border ${!apiKey ? 'bg-amber-500/10 border-amber-500/50 text-amber-400 animate-pulse' : 'border-transparent text-slate-400 hover:text-emerald-400 hover:bg-slate-800'}`}
                 title="API 設定"
             >
                 <Settings className="w-5 h-5" />
@@ -95,7 +95,7 @@ export const Layout: React.FC<LayoutProps> = ({
                     <select
                         value={provider}
                         onChange={(e) => setProvider(e.target.value as ApiProvider)}
-                        className="w-full bg-slate-900/50 border border-slate-700/60 rounded-md px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20"
+                        className="w-full bg-slate-900/50 border border-slate-700/60 rounded-md px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20"
                     >
                         <option value="yunwu">Yunwu.ai（sk- 開頭）</option>
                         <option value="google">Google Gemini（AIza 開頭）</option>
@@ -111,7 +111,7 @@ export const Layout: React.FC<LayoutProps> = ({
                             </span>
                         )}
                         {isGoogleKey && (
-                            <span className="ml-2 bg-indigo-500/20 text-indigo-400 px-1.5 py-0.5 rounded text-[10px] flex items-center gap-1 inline-block border border-indigo-500/30">
+                            <span className="ml-2 bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded text-[10px] flex items-center gap-1 inline-block border border-emerald-500/30">
                                <Zap size={8} fill="currentColor" /> Google Gemini Auto-Config
                             </span>
                         )}
@@ -125,7 +125,7 @@ export const Layout: React.FC<LayoutProps> = ({
                             isYunwuKey 
                             ? 'border-emerald-500/50 focus:border-emerald-500/80 focus:ring-emerald-500/20 text-emerald-100'
                             : isGoogleKey
-                                ? 'border-indigo-500/50 focus:border-indigo-500/80 focus:ring-indigo-500/20 text-indigo-100'
+                                ? 'border-emerald-500/50 focus:border-emerald-500/80 focus:ring-emerald-500/20 text-emerald-100'
                                 : 'border-slate-700/60 focus:border-amber-500/50 focus:ring-amber-500/20 text-slate-200'
                         }`}
                     />
@@ -134,10 +134,10 @@ export const Layout: React.FC<LayoutProps> = ({
 
             <div className="flex-1 flex flex-col items-end gap-3 justify-end">
                 <div className="text-xs text-slate-500 flex justify-end gap-4 flex-wrap">
-                    <a href="https://yunwu.apifox.cn/" target="_blank" rel="noreferrer" className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1">
+                    <a href="https://yunwu.apifox.cn/" target="_blank" rel="noreferrer" className="text-emerald-400 hover:text-emerald-300 flex items-center gap-1">
                         Yunwu API 文檔 <ExternalLink size={10} />
                     </a>
-                    <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1">
+                    <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-emerald-400 hover:text-emerald-300 flex items-center gap-1">
                         獲取官方 Key <ExternalLink size={10} />
                     </a>
                 </div>

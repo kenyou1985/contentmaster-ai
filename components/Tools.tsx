@@ -520,29 +520,63 @@ ${inputText}
             : `## Input Data
 ${inputText}`;
 
+    // 检测输入语言（简单判断：如果包含中文字符，认为是中文；否则认为是英文）
+    const hasChinese = /[\u4e00-\u9fff]/.test(inputText);
+    const hasEnglish = /[a-zA-Z]/.test(inputText);
+    let inputLanguage = '繁體中文'; // 默认繁体中文
+    
+    if (!hasChinese && hasEnglish) {
+      // 纯英文
+      inputLanguage = 'English';
+    } else if (hasChinese && hasEnglish) {
+      // 中英混合，判断哪个占比更多
+      const chineseCount = (inputText.match(/[\u4e00-\u9fff]/g) || []).length;
+      const englishCount = (inputText.match(/[a-zA-Z]/g) || []).length;
+      if (englishCount > chineseCount * 2) {
+        inputLanguage = 'English (主要)';
+      } else if (chineseCount > 0) {
+        inputLanguage = '繁體中文 (主要)';
+      }
+    }
+    
+    console.log(`[Tools] 检测输入语言: ${inputLanguage}, 中文字符数: ${(inputText.match(/[\u4e00-\u9fff]/g) || []).length}, 英文字符数: ${(inputText.match(/[a-zA-Z]/g) || []).length}`);
+
     switch (mode) {
         case ToolMode.REWRITE:
-                return `### 任務指令：文本改寫與重構
+                return `### 任務指令：文本洗稿與像素級改編
 
 ${inputSection}
 
 ## 原文字數統計
 原文共 ${originalLength} 字
 
-## Goals
-對上述文本進行深度改寫，使其在表達上與原文完全不同，但核心事實和觀點保持一致。
+## 語言一致性要求（CRITICAL - 最高優先級）
+⚠️ **輸入語言：${inputLanguage}**
+⚠️ **輸出語言必須與輸入語言完全一致**
+- 如果原文是英文，洗稿後的文本也必須是英文
+- 如果原文是中文，洗稿後的文本也必須是中文
+- 如果原文是中英混合，洗稿後也必須保持相同的語言比例和風格
+- **絕對禁止語言轉換**（如英文變中文、中文變英文）
+
+## 洗稿策略（CRITICAL）
+⚠️ **像素級模仿 - 1比1復刻原文框架**
+- **洗稿為主，弱改編**：保持原文的敘事結構、情節發展、人物關係、時間線完全不變
+- **框架100%復刻**：開頭-發展-高潮-結尾的結構必須與原文一致
+- **情節1比1對應**：每個情節點、每個轉折、每個細節都必須在洗稿版本中找到對應
+- **只改表達方式**：僅替換詞彙、調整句式、變換表達角度，但不改變內容實質
+- **禁止深度改編**：禁止添加新情節、刪除原有情節、改變情節順序、修改人物設定
 
 ## Style Context
-請以 ${nicheConfig.name} 的風格和語氣進行改寫，融入該領域的專業術語和表達方式。
+請以 ${nicheConfig.name} 的風格和語氣進行洗稿，融入該領域的專業術語和表達方式。
 
 ## Constraints & Rules
 1. **詞彙替換**：使用同義詞或更高級的詞彙替換原有詞彙，避免重複。
 2. **句式變換**：將主動句改為被動句，長句拆短，短句合併，改變敘述語序。
-3. **結構調整**：在不影響邏輯的前提下，調整段落或論點的順序。
+3. **框架鎖定**：在不影響邏輯的前提下，可以微調句子順序，但絕不改變段落結構和情節順序。
 4. **去AI味**：避免使用死板的翻譯腔，增加口語化或更自然的連接詞（如"其實"、"換句話說"、"說白了"）。
 5. **完整性**：絕對不能丟失原文的關鍵數據、專有名詞和核心論點。
-6. **賽道風格融合**：確保改寫後的文本符合 ${nicheConfig.name} 的獨特語氣和表達習慣。
-7. **字數保持（重要）**：改寫後的文本字數必須 >= ${originalLength} 字，不得縮減內容。原文有5000字，改寫後也要保持5000字左右的篇幅。
+6. **賽道風格融合**：確保洗稿後的文本符合 ${nicheConfig.name} 的獨特語氣和表達習慣。
+7. **字數保持（重要）**：洗稿後的文本字數必須 >= ${originalLength * 0.9} 字（至少保持原文90%的長度），不得大幅縮減內容。
 8. **禁止提前收尾（關鍵）**：
    - ⚠️ **一次性輸出不可能完成全部內容，系統會自動續寫**
    - 在首次輸出時，**嚴禁使用任何收尾語**（如「下課」「散會」「下期再見」等）
@@ -554,8 +588,15 @@ ${inputSection}
    - 嚴禁輸出章節標記、段落編號、說明文字、注釋或元信息
    - 只輸出純粹的第一人稱語音文稿內容，適合直接 TTS 配音
 
+## 零解釋輸出規則（CRITICAL - 絕對禁止違反）
+⚠️ **從第一個字就開始洗稿內容，禁止任何前置內容**
+- ❌ 禁止輸出：「這裡為您提供...」「以下是改寫後的內容」「根據您的要求...」等任何說明文字
+- ❌ 禁止輸出：「---」「##」「標題：」等任何分隔符、標題、標記
+- ❌ 禁止輸出：「改寫如下：」「洗稿版本：」「最終版本：」等任何引導語
+- ✅ 正確做法：直接從故事的第一句話開始輸出，零解釋，零標記，純文本
+
 ## Output Format
-請直接輸出改寫後的純淨文本，保持簡潔連貫流暢，無需解釋或分析。嚴禁使用「## 」「### 」「1. 」「【】」「（）」「**」等任何標記。`;
+**立即開始輸出洗稿內容（使用 ${inputLanguage}），從故事的第一個字開始，不要有任何前置說明、標題、分隔符或解釋。**`;
         case ToolMode.EXPAND:
                 const targetMinLength = Math.floor(originalLength * 1.5);
                 const targetMaxLength = Math.floor(originalLength * 2);
@@ -566,6 +607,14 @@ ${inputSection}
 ## 原文字數統計
 原文共 ${originalLength} 字
 目標字數：${targetMinLength}-${targetMaxLength} 字（1.5-2倍擴寫）
+
+## 語言一致性要求（CRITICAL - 最高優先級）
+⚠️ **輸入語言：${inputLanguage}**
+⚠️ **輸出語言必須與輸入語言完全一致**
+- 如果原文是英文，擴寫後的文本也必須是英文
+- 如果原文是中文，擴寫後的文本也必須是中文
+- 如果原文是中英混合，擴寫後也必須保持相同的語言比例和風格
+- **絕對禁止語言轉換**（如英文變中文、中文變英文）
 
 ## Goals
 將提供的簡短文本或大綱擴展為一篇內容詳實、邏輯嚴密的深度文章，融入 ${nicheConfig.name} 的專業視角。
@@ -589,7 +638,7 @@ ${inputSection}
 - **TTS 純淨輸出**：嚴禁輸出括號內的描述詞、**、*等特殊符號、章節標記、段落編號、說明文字或注釋。
 
 ## Output Format
-直接輸出擴寫後的完整純淨文章，保持簡潔連貫流暢，無需分段標記或元信息。嚴禁使用「## 」「### 」「第一章」「（）」「**」等標記。`;
+直接輸出擴寫後的完整純淨文章（使用 ${inputLanguage} 輸出），保持簡潔連貫流暢，無需分段標記或元信息。嚴禁使用「## 」「### 」「第一章」「（）」「**」等標記。`;
         case ToolMode.SUMMARIZE:
                 return `### 任務指令：YouTube 內容摘要與優化
 
@@ -699,6 +748,14 @@ ${inputSection}
 ## 原文字數統計
 原文共 ${originalLength} 字
 
+## 語言一致性要求（CRITICAL - 最高優先級）
+⚠️ **輸入語言：${inputLanguage}**
+⚠️ **輸出語言必須與輸入語言完全一致**
+- 如果原文是英文，潤色後的文本也必須是英文
+- 如果原文是中文，潤色後的文本也必須是中文
+- 如果原文是中英混合，潤色後也必須保持相同的語言比例和風格
+- **絕對禁止語言轉換**（如英文變中文、中文變英文）
+
 ## Goals
 像一位嚴厲的文字編輯一樣，以 ${nicheConfig.name} 領域的專業標準優化這段文本，使其更具專業感、流暢感和高級感。
 
@@ -709,7 +766,7 @@ ${inputSection}
 4. **精簡冗餘**：刪除囉嗦的重複表達，使句子更乾練有力。
 5. **語氣統一**：確保全文語氣一致（根據原文判斷是商務風、學術風還是文學風），並強化 ${nicheConfig.name} 的獨特風格。
 6. **邏輯流暢**：優化句子之間的銜接，確保思路連貫、層次分明。
-7. **字數保持**：潤色後的字數應與原文相當（約 ${originalLength} 字），不要大幅縮減或擴充。
+7. **字數保持**：潤色後的字數應與原文相當（約 ${originalLength * 0.9}-${originalLength * 1.1} 字），不要大幅縮減或擴充。
 8. **禁止提前收尾**：首次輸出時嚴禁使用「下課」「散會」等收尾語，保持內容連貫流暢。
 9. **TTS 純淨輸出（關鍵）**：嚴禁輸出括號內的描述詞、**、*等特殊符號，只輸出純粹的第一人稱語音文稿。
 
@@ -717,12 +774,12 @@ ${inputSection}
 在"信（準確）、達（通順）、雅（優美）"三個維度上都必須有明顯提升，同時保持 ${nicheConfig.name} 的專業風範。
 
 ## Output Format
-請直接輸出潤色後的純淨最終版本，保持簡潔連貫流暢，無需標註修改痕跡或解釋。嚴禁使用「## 」「### 」「修改說明：」「（）」「**」等任何標記。`;
+請直接輸出潤色後的純淨最終版本（使用 ${inputLanguage} 輸出），保持簡潔連貫流暢，無需標註修改痕跡或解釋。嚴禁使用「## 」「### 」「修改說明：」「（）」「**」等任何標記。`;
         case ToolMode.SCRIPT:
                 // 检测语言（简单判断：如果包含中文字符，认为是中文）
                 const isChinese = /[\u4e00-\u9fff]/.test(inputText);
-                const minChars = isChinese ? 200 : 450;
-                const maxChars = isChinese ? 250 : 800;
+                const minChars = 200; // 统一字数要求：200-300字
+                const maxChars = 300; // 统一字数要求：200-300字
                 
                 return `### 任务指令：视频脚本生成
 
@@ -730,6 +787,61 @@ ${inputSection}
 
 ## 原文字数统计
 原文共 ${originalLength} 字
+
+## ⚠️ 格式铁律（CRITICAL - 最高优先级 - 违反即失败）
+
+### 角色信息和场景信息格式 - 写死格式，100%模板复刻
+
+**⚠️⚠️⚠️ 每个字段必须独占一行，禁止放在同一行！⚠️⚠️⚠️**
+
+**角色信息正确格式（写死，不可更改）：**
+
+[角色信息]
+[名称]医生
+[别名]倪医生，主播
+[描述]一位55岁中年男性，身高175cm，一头整齐的黑白相间短发，身材适中，穿着一身深灰色的传统长衫（或中山装），面容清癯，眼神深邃且坚定，有一种看透世事的智慧感。
+
+[名称]助手
+[别名]小李，助理
+[描述]一位30岁左右的年轻女性，身着白色工作服，表情专注认真。
+
+**场景信息正确格式（写死，不可更改）：**
+
+[场景信息]
+[名称]场景-室内
+[别名]无
+[描述]古色古香的书房或诊室，背景有书架、医学经络图、毛笔字画，光线柔和庄重。
+
+[名称]场景-户外
+[别名]无
+[描述]自然风光，山水画卷般的场景，展现天人合一的理念。
+
+**❌❌❌ 绝对禁止的错误格式（违反即失败）：**
+
+错误示例1（字段在同一行）：
+❌ [名称]医生[别名]倪医生，主播[描述]一位55岁...
+
+错误示例2（使用其他标题）：
+❌ 【脚本角色清单】
+❌ 角色1:、角色2:
+
+错误示例3（使用其他字段）：
+❌ 性别:、年龄:、外貌特征:、性格特征:、语言风格:
+
+错误示例4（字段不完整）：
+❌ [名称]医生
+❌ [别名]倪医生
+❌ （缺少[描述]字段）
+
+**✅✅✅ 必须遵守的规则（写死，不可违反）：**
+1. ✅ 第一行必须是 [角色信息] 或 [场景信息]
+2. ✅ 每个角色/场景必须包含三个字段：[名称]、[别名]、[描述]
+3. ✅ **每个字段必须独占一行**（[名称]一行、[别名]一行、[描述]一行）
+4. ✅ 字段格式：[字段名]内容（字段名用方括号，后面直接跟内容，不换行）
+5. ✅ 每个角色/场景之间用空行分隔
+6. ✅ [描述]字段必须详细（角色至少50字，场景至少30字）
+7. ✅ 禁止增加或减少字段
+8. ✅ 禁止使用任何其他格式
 
 ## Goals
 将上述文本内容转换为适合语音视频制作的脚本模板，包含镜头分镜、图片提示词、视频提示词、语音分镜和音效设计。
@@ -744,7 +856,7 @@ ${inputSection}
 ### 镜头格式（每个镜头必须包含以下所有字段，严格按照此格式）
 
 镜头[序号]
-镜头文案: [角色名]-[语气词]："[⚠️ 这里必须填入原文的连续长段落，100%原文还原，一个字都不能改，${isChinese ? '中文' : '英文'}（${minChars}-${maxChars}字），无动作描述，纯净文本]"
+镜头文案: [角色名]-[语气词]："[⚠️ 这里必须填入原文的连续长段落，100%原文还原，一个字都不能改，200-300字，无动作描述，纯净文本]"
 图片提示词: [景别], [画面描述], [环境描述]
 视频提示词: [秒数]s: [画面描述], [运镜方式]
 景别: [全景/中景/特写]
@@ -775,10 +887,11 @@ ${inputSection}
 - **必须从原文中直接复制粘贴，不能有任何改动**
 
 **格式要求：**
-- ${isChinese ? '中文' : '英文'}内容：每个镜头 ${minChars}-${maxChars} 字
+- 每个镜头文案必须：200-300字（严格控制字数）
 - 无动作描述，纯净文本，适合 TTS 语音合成
 - 格式：[角色名]-[语气词]："[原文文本内容，100%还原]"
 - 语气词限定：只能使用以下六种之一：高兴、愤怒、悲伤、害怕、惊讶、平静
+- ⚠️ **字数铁律**：每个镜头文案必须在200-300字之间，不能过短或过长
 
 ### 图片提示词
 - 必须适合 AI 绘图工具（Midjourney/Stable Diffusion/DALL-E）
@@ -804,10 +917,10 @@ ${inputSection}
 - 具体的音效名称，如：背景音乐、键盘敲击声、脚步声、环境音等
 - 如果不需要音效，标注"无"或"背景音乐"
 
-## 完整输出格式示例
+## 完整输出格式示例（必须严格遵守）
 
 镜头1
-镜头文案: 医生-平静："[200-250字的中文文本或450-800字的英文文本]"
+镜头文案: 医生-平静："[200-300字的原文文本，100%还原，一个字都不能改]"
 图片提示词: 中景, 一位中年男性医生坐在古色古香的书房中, 背景有书架和医学图谱, 柔和的光线
 视频提示词: 8s: 医生平静讲述, 固定机位
 景别: 中景
@@ -815,26 +928,100 @@ ${inputSection}
 音效: 背景音乐
 
 镜头2
-...
+镜头文案: 医生-平静："[200-300字的原文文本，100%还原，一个字都不能改]"
+图片提示词: 中景, 医生讲解医学知识, 手指指向经络图, 书房环境
+视频提示词: 10s: 医生讲解示范, 缓慢推近
+景别: 中景
+语音分镜: 医生
+音效: 背景音乐
 
-... (循环直到原文结束) ...
+... (继续输出所有镜头，直到原文全部转换完毕) ...
+
+⚠️ **镜头文案字数铁律**：每个镜头文案必须严格控制在200-300字之间！
 
 [角色信息]
 [名称]医生
 [别名]倪医生，主播
 [描述]一位55岁中年男性，身高175cm，一头整齐的黑白相间短发，身材适中，穿着一身深灰色的传统长衫（或中山装），面容清癯，眼神深邃且坚定，有一种看透世事的智慧感。
 
-[名称]... (其他角色)
+[名称]助手
+[别名]小李，助理
+[描述]一位30岁左右的年轻女性，身着白色工作服，表情专注认真。
 
 [场景信息]
 [名称]场景-室内
 [别名]无
 [描述]古色古香的书房或诊室，背景有书架、医学经络图、毛笔字画，光线柔和庄重。
 
-[名称]... (其他场景)
+[名称]场景-户外
+[别名]无
+[描述]自然风光，山水画卷般的场景，展现天人合一的理念。
 
-## Output Format
-请严格按照上述格式输出，使用简体中文，镜头文案保持原文语言。严禁使用 **、*、__、~~ 等 Markdown 特殊符号。
+⚠️ **格式铁律（再次强调 - 写死格式）**：
+- ✅ 必须使用 [角色信息] 和 [场景信息] 作为标题
+- ✅ 必须使用 [名称]、[别名]、[描述] 三个字段
+- ✅ **每个字段必须独占一行**（不能写成 [名称]医生[别名]倪医生[描述]...）
+- ✅ 字段格式：[字段名]内容（方括号+字段名+内容，不换行）
+- ✅ 每个角色/场景之间用空行分隔
+- ✅ 禁止使用任何其他格式
+
+❌ **错误示例（绝对禁止）**：
+[名称]医生[别名]倪医生，主播[描述]一位55岁...  ← 这是错误的！所有字段挤在一行！
+
+✅ **正确示例**：
+[名称]医生
+[别名]倪医生，主播
+[描述]一位55岁...  ← 这是正确的！每个字段独占一行！
+
+## Output Format（输出格式 - CRITICAL - 写死格式）
+
+**必须严格按照以下顺序和格式输出：**
+
+1. **镜头信息**（按序号从1开始）
+   - 镜头[序号]
+   - 镜头文案: [角色名]-[语气词]："[原文内容100%还原]"
+   - 图片提示词: [内容]
+   - 视频提示词: [内容]
+   - 景别: [全景/中景/特写]
+   - 语音分镜: [角色名]
+   - 音效: [音效名]
+   - （空行分隔）
+
+2. **角色信息**（所有镜头完成后 - 写死格式）
+   [角色信息]
+   [名称]角色名
+   [别名]别名1，别名2
+   [描述]详细描述（至少50字）
+   （空行）
+   [名称]下一个角色名
+   [别名]别名
+   [描述]详细描述
+   
+   ⚠️ **每个字段必须独占一行！不能写成：[名称]角色名[别名]别名[描述]描述**
+
+3. **场景信息**（角色信息完成后 - 写死格式）
+   [场景信息]
+   [名称]场景名
+   [别名]别名或"无"
+   [描述]详细描述（至少30字）
+   （空行）
+   [名称]下一个场景名
+   [别名]别名或"无"
+   [描述]详细描述
+   
+   ⚠️ **每个字段必须独占一行！不能写成：[名称]场景名[别名]无[描述]描述**
+
+**格式铁律（违反即失败 - 写死，不可更改）：**
+- ✅ 角色信息必须用 [角色信息] 开头，不是【脚本角色清单】
+- ✅ 场景信息必须用 [场景信息] 开头，不是【脚本场景清单】
+- ✅ 必须用 [名称]、[别名]、[描述] 三个字段，不是"角色1:"、"性别:"、"年龄:"
+- ✅ **每个字段必须独占一行**（这是最容易犯的错误！）
+- ✅ 字段格式：[字段名]内容（方括号+字段名+内容，不换行）
+- ✅ 每个角色/场景之间用空行分隔
+- ✅ 使用简体中文输出（镜头文案保持原文语言）
+- ❌ 严禁使用 **、*、__、~~ 等 Markdown 特殊符号
+- ❌ 严禁使用任何不在模板中的格式
+- ❌ **严禁将所有字段挤在一行**
 
 ## 续写规则
 - 如果一次性无法完成全部脚本，在最后一个完整镜头后输出「----」（4个横线），系统会自动续写
@@ -860,12 +1047,17 @@ ${inputSection}
 
 [名称]... (如果原文中有其他角色，继续列出)
 
-⚠️ **格式要求（绝对铁律）**：
+⚠️ **格式要求（绝对铁律 - 写死格式）**：
 - **必须使用 [角色信息] 作为开头标记**
 - **必须使用 [名称]、[别名]、[描述] 三个字段标记，不能增加或减少**
+- **每个字段必须独占一行**（不能写成 [名称]医生[别名]...[描述]...）
+- **字段格式：[字段名]内容**（方括号+字段名+内容，不换行）
+- **[描述] 字段必须输出详细内容**：包含年龄、性别、身高、外貌、穿着、性格等（至少50字）
 - 内容必须根据原文提取或合理推断
 - 每个角色之间用空行分隔
 - **禁止输出任何其他格式的角色信息**
+- **禁止省略 [描述] 字段或输出空内容**
+- **禁止将所有字段挤在一行**
 
 ### 场景信息格式（CRITICAL - 严格按照此格式，禁止使用其他格式）
 
@@ -881,12 +1073,17 @@ ${inputSection}
 
 [名称]... (如果原文中有其他场景，继续列出)
 
-⚠️ **格式要求（绝对铁律）**：
+⚠️ **格式要求（绝对铁律 - 写死格式）**：
 - **必须使用 [场景信息] 作为开头标记**
 - **必须使用 [名称]、[别名]、[描述] 三个字段标记，不能增加或减少**
+- **每个字段必须独占一行**（不能写成 [名称]场景-室内[别名]无[描述]...）
+- **字段格式：[字段名]内容**（方括号+字段名+内容，不换行）
+- **[描述] 字段必须输出详细内容**：包含场景类型、环境特点、视觉元素、氛围等（至少30字）
 - 内容必须根据原文提取或合理推断
 - 每个场景之间用空行分隔
 - **禁止输出任何其他格式的场景信息**
+- **禁止省略 [描述] 字段或输出空内容**
+- **禁止将所有字段挤在一行**
 
 ## 输出要求（CRITICAL - 绝对禁止违反）
 - **严禁重复输出已完成的镜头，每个镜头编号只能出现一次**
@@ -992,7 +1189,8 @@ ${needsMore ?
                 : '0';
             
             // 估算还需要多少镜头（基于原文长度和已完成内容）
-            const estimatedTotalShots = Math.min(60, Math.ceil(originalLength / (isChinese ? 200 : 600)));
+            // 统一字数要求：每个镜头200-300字，取中间值250字来估算
+            const estimatedTotalShots = Math.min(60, Math.ceil(originalLength / 250));
             const remainingShots = Math.max(0, estimatedTotalShots - shotCount);
             
             // 检查是否需要重新输出不完整的镜头
@@ -1052,15 +1250,27 @@ ${needsMore ?
 
 [名称]... (如果原文中有其他场景，继续列出，每个场景必须包含[名称]、[别名]、[描述]三个字段)
 
-⚠️ **格式要求（CRITICAL - 绝对铁律）**：
+⚠️ **格式要求（CRITICAL - 绝对铁律 - 写死格式）**：
 1. **必须使用 [角色信息] 作为开头标记**
 2. **必须使用 [场景信息] 作为开头标记**
 3. **每个角色/场景必须且只能包含三个字段：[名称]、[别名]、[描述]**
-4. **禁止增加任何其他字段（如性别、年龄、外貌特征等）**
-5. **禁止使用任何其他格式（如角色1:、场景1:等）**
-6. **内容必须从原文中提取或合理推断**
-7. 每个角色/场景之间用空行分隔
-8. **⚠️⚠️⚠️ 输出完场景信息的最后一个[描述]字段后，立即停止，不要输出任何其他内容，包括镜头、说明文字、注释等，任务完成！⚠️⚠️⚠️**`;
+4. **⚠️⚠️⚠️ 每个字段必须独占一行 ⚠️⚠️⚠️**
+   - ❌ 错误：[名称]医生[别名]倪医生[描述]一位55岁...（所有字段在一行）
+   - ✅ 正确：
+     [名称]医生
+     [别名]倪医生
+     [描述]一位55岁...（每个字段独占一行）
+5. **字段格式：[字段名]内容**（方括号+字段名+内容，不换行）
+6. **[描述] 字段必须输出详细内容**：
+   - 角色描述：年龄、性别、身高、外貌、穿着、性格等（至少50字）
+   - 场景描述：场景类型、环境特点、视觉元素、氛围等（至少30字）
+7. **禁止省略 [描述] 字段或输出空内容**
+8. **禁止增加任何其他字段（如性别、年龄、外貌特征等作为单独字段）**
+9. **禁止使用任何其他格式（如角色1:、场景1:等）**
+10. **禁止将所有字段挤在一行**
+11. **内容必须从原文中提取或合理推断**
+12. 每个角色/场景之间用空行分隔
+13. **⚠️⚠️⚠️ 输出完场景信息的最后一个[描述]字段后，立即停止，不要输出任何其他内容，包括镜头、说明文字、注释等，任务完成！⚠️⚠️⚠️**`;
             }
             
             return `继续完成视频脚本生成，保持格式一致。
@@ -1115,7 +1325,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
    - **前面的镜头文案和原文一致，后面的也必须和原文一致，不能有任何变化**
    - **续写时同样适用：镜头16、镜头17、镜头18...所有后续镜头都必须100%原文还原**
 4. **镜头文案格式**：
-   - ${isChinese ? '中文' : '英文'}内容：每个镜头 ${minChars}-${maxChars} 字
+   - **字数铁律**：每个镜头文案必须严格控制在200-300字之间
    - 格式：[角色名]-[语气词]："[原文文本内容，100%还原]"
    - 语气词限定：只能使用以下六种之一：高兴、愤怒、悲伤、害怕、惊讶、平静
    - 必须是原文的连续长段落，无动作描述，纯净文本
@@ -1320,7 +1530,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                         onClick={() => setMode(tool.id as ToolMode)}
                         className={`px-4 py-2 rounded-lg border flex items-center gap-2 transition-all whitespace-nowrap text-sm font-medium ${
                             mode === tool.id 
-                            ? 'bg-indigo-600 text-white border-indigo-500 shadow-md' 
+                            ? 'bg-emerald-600 text-white border-emerald-500 shadow-md' 
                             : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'
                         }`}
                     >
@@ -1333,11 +1543,11 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
            <div className="flex items-center gap-4 w-full md:w-auto">
            {/* Niche Context Selector */}
                <div className="relative group min-w-[200px] flex-1 md:flex-none">
-               <label className="text-[10px] uppercase font-bold text-slate-500 mb-1 ml-1 tracking-wider">語氣 / 賽道</label>
+               <label className="text-base font-extrabold text-emerald-400 mb-1 ml-1 tracking-wide">選擇賽道</label>
                <select 
                     value={niche} 
                     onChange={(e) => setNiche(e.target.value as NicheType)}
-                    className="w-full appearance-none bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                    className="w-full appearance-none bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 cursor-pointer"
                >
                    {Object.values(NICHES).map(n => (
                        <option key={n.id} value={n.id}>{n.icon} {n.name}</option>
@@ -1350,7 +1560,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                <button 
                    onClick={handleAction}
                    disabled={isGenerating || !inputText}
-                   className="flex items-center gap-2 px-4 md:px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg shadow-lg shadow-indigo-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all hover:scale-105 active:scale-95 whitespace-nowrap"
+                   className="flex items-center gap-2 px-4 md:px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-medium rounded-lg shadow-lg shadow-emerald-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all hover:scale-105 active:scale-95 whitespace-nowrap"
                >
                    <ArrowRight size={18} />
                    <span className="hidden sm:inline">生成</span>
@@ -1370,7 +1580,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
             placeholder="請在此粘貼您的內容或 YouTube 鏈接..."
-                    className="flex-1 bg-slate-800/50 border border-slate-700 rounded-xl p-4 text-slate-200 resize-none focus:outline-none focus:ring-1 focus:ring-indigo-500 leading-relaxed custom-scrollbar"
+                    className="flex-1 bg-slate-800/50 border border-slate-700 rounded-xl p-4 text-slate-200 resize-none focus:outline-none focus:ring-1 focus:ring-emerald-500 leading-relaxed custom-scrollbar"
                 />
             </div>
 
@@ -1379,7 +1589,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                 <label className="text-sm font-medium text-slate-400 flex justify-between items-center">
                     <span>生成結果</span>
                     {outputText && (
-                        <button onClick={copyToClipboard} className="text-xs flex items-center gap-1 text-indigo-400 hover:text-indigo-300">
+                        <button onClick={copyToClipboard} className="text-xs flex items-center gap-1 text-emerald-400 hover:text-emerald-300">
                             <Copy size={12} /> 複製
                         </button>
                     )}
@@ -1391,12 +1601,12 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                             {!outputText && (
                                 <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-sm">
                                     <div className="flex items-center gap-2">
-                                        <span className="inline-block w-2 h-4 bg-indigo-500 animate-pulse" />
+                                        <span className="inline-block w-2 h-4 bg-emerald-500 animate-pulse" />
                                         <span>生成中...</span>
-                                    </div>
-                                </div>
+                </div>
+                </div>
                             )}
-                            {outputText && <span className="inline-block w-2 h-4 bg-indigo-500 ml-1 animate-pulse" />}
+                            {outputText && <span className="inline-block w-2 h-4 bg-emerald-500 ml-1 animate-pulse" />}
                         </>
                     )}
                     {!outputText && !isGenerating && (

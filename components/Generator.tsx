@@ -1318,7 +1318,7 @@ ${segmentSourceText}
       {/* 1. Select Niche */}
       <section>
         <h2 className="text-lg font-medium text-slate-300 mb-4 flex items-center gap-2">
-          <span className="bg-indigo-600 w-6 h-6 rounded-full flex items-center justify-center text-xs text-white">1</span>
+          <span className="bg-emerald-600 w-6 h-6 rounded-full flex items-center justify-center text-xs text-white">1</span>
           選擇賽道 (Select Track)
         </h2>
         <NicheSelector selectedNiche={niche} onSelect={setNiche} />
@@ -1327,7 +1327,7 @@ ${segmentSourceText}
       {/* 2. Planning Phase */}
       <section className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6">
          <h2 className="text-lg font-medium text-slate-300 mb-6 flex items-center gap-2">
-          <span className="bg-indigo-600 w-6 h-6 rounded-full flex items-center justify-center text-xs text-white">2</span>
+          <span className="bg-emerald-600 w-6 h-6 rounded-full flex items-center justify-center text-xs text-white">2</span>
           策劃選題 (Plan Topics)
         </h2>
         
@@ -1361,12 +1361,12 @@ ${segmentSourceText}
                             onClick={() => setActiveFunc(mode.id)}
                             className={`p-3 rounded-lg border text-left transition-all relative overflow-hidden ${
                                 isSelected 
-                                ? 'bg-indigo-900/40 border-indigo-500 ring-1 ring-indigo-500' 
+                                ? 'bg-emerald-900/40 border-emerald-500 ring-1 ring-emerald-500' 
                                 : 'bg-slate-800/40 border-slate-700 hover:bg-slate-800 hover:border-slate-600'
                             }`}
                         >
                             <div className="flex items-center gap-2 mb-2">
-                                <Icon size={18} className={isSelected ? 'text-indigo-400' : 'text-slate-400'} />
+                                <Icon size={18} className={isSelected ? 'text-emerald-400' : 'text-slate-400'} />
                                 <span className={`text-xs font-bold ${isSelected ? 'text-white' : 'text-slate-300'}`}>
                                     {mode.title.split('：')[0].split('(')[0]}
                                 </span>
@@ -1384,7 +1384,7 @@ ${segmentSourceText}
         {niche === NicheType.STORY_REVENGE && (
              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6 animate-in fade-in duration-300 bg-slate-800/30 p-4 rounded-xl border border-slate-700/50">
                 <div className="space-y-2">
-                    <label className="text-xs font-bold text-indigo-400 flex items-center gap-1">
+                    <label className="text-xs font-bold text-emerald-400 flex items-center gap-1">
                         <Globe size={14} /> 目標語言 (Target Language)
                     </label>
                     <div className="grid grid-cols-3 md:grid-cols-5 gap-2">
@@ -1394,7 +1394,7 @@ ${segmentSourceText}
                                 onClick={() => setStoryLanguage(lang)}
                                 className={`px-2 py-1.5 rounded text-xs border transition-all ${
                                     storyLanguage === lang 
-                                    ? 'bg-indigo-600 text-white border-indigo-500' 
+                                    ? 'bg-emerald-600 text-white border-emerald-500' 
                                     : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'
                                 }`}
                              >
@@ -1405,7 +1405,7 @@ ${segmentSourceText}
                 </div>
 
                 <div className="space-y-2">
-                    <label className="text-xs font-bold text-indigo-400 flex items-center gap-1">
+                    <label className="text-xs font-bold text-emerald-400 flex items-center gap-1">
                         <Clock size={14} /> 故事時長 (Story Duration)
                     </label>
                     <div className="flex gap-2">
@@ -1413,7 +1413,7 @@ ${segmentSourceText}
                             onClick={() => setStoryDuration(StoryDuration.SHORT)}
                             className={`flex-1 px-3 py-1.5 rounded text-xs border transition-all ${
                                 storyDuration === StoryDuration.SHORT 
-                                ? 'bg-indigo-600 text-white border-indigo-500' 
+                                ? 'bg-emerald-600 text-white border-emerald-500' 
                                 : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'
                             }`}
                          >
@@ -1423,7 +1423,7 @@ ${segmentSourceText}
                             onClick={() => setStoryDuration(StoryDuration.LONG)}
                             className={`flex-1 px-3 py-1.5 rounded text-xs border transition-all ${
                                 storyDuration === StoryDuration.LONG 
-                                ? 'bg-indigo-600 text-white border-indigo-500' 
+                                ? 'bg-emerald-600 text-white border-emerald-500' 
                                 : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'
                             }`}
                          >
@@ -1446,7 +1446,7 @@ ${segmentSourceText}
                 value={inputVal}
                 onChange={(e) => setInputVal(e.target.value)}
                 placeholder="請在此粘貼需要改編的原文內容..."
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-slate-100 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all resize-none custom-scrollbar h-[300px]"
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-slate-100 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all resize-none custom-scrollbar h-[300px]"
               />
             </div>
             <div className="space-y-2">
@@ -1457,7 +1457,7 @@ ${segmentSourceText}
                     onClick={() => {
                       navigator.clipboard.writeText(adaptedContent);
                     }}
-                    className="text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1"
+                    className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
                   >
                     <Copy size={12} /> 複製
                   </button>
@@ -1472,7 +1472,7 @@ ${segmentSourceText}
                 ) : (
                   <div className="text-slate-600 text-sm">改編後的內容將顯示於此</div>
                 ))}
-                {isAdapting && adaptedContent && <span className="inline-block w-2 h-4 bg-indigo-500 ml-1 animate-pulse" />}
+                {isAdapting && adaptedContent && <span className="inline-block w-2 h-4 bg-emerald-500 ml-1 animate-pulse" />}
               </div>
             </div>
           </div>
@@ -1492,18 +1492,18 @@ ${segmentSourceText}
                                 value={inputVal}
                                 onChange={(e) => setInputVal(e.target.value)}
                                 placeholder={getInputPlaceholder()}
-                                className="w-full bg-slate-800 border border-slate-700 rounded-lg pl-10 pr-4 py-3 text-slate-100 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all"
+                                className="w-full bg-slate-800 border border-slate-700 rounded-lg pl-10 pr-4 py-3 text-slate-100 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
                             />
                         </div>
                     </div>
                 ) : (
-                    <div className="p-4 bg-indigo-900/20 border border-indigo-500/30 rounded-lg flex items-center gap-3 animate-in fade-in duration-300">
-                        <div className="bg-indigo-600/20 p-2 rounded-full">
-                            <Sparkles className="text-indigo-400 w-5 h-5" />
+                    <div className="p-4 bg-emerald-900/20 border border-emerald-500/30 rounded-lg flex items-center gap-3 animate-in fade-in duration-300">
+                        <div className="bg-emerald-600/20 p-2 rounded-full">
+                            <Sparkles className="text-emerald-400 w-5 h-5" />
                         </div>
                         <div>
-                            <p className="text-indigo-200 text-sm font-medium">智能生成就緒</p>
-                            <p className="text-indigo-300/60 text-xs">此模式無需輸入，AI 將自動根據核心邏輯生成爆款選題。</p>
+                            <p className="text-emerald-200 text-sm font-medium">智能生成就緒</p>
+                            <p className="text-emerald-300/60 text-xs">此模式無需輸入，AI 將自動根據核心邏輯生成爆款選題。</p>
                         </div>
                     </div>
                 )}
@@ -1512,7 +1512,7 @@ ${segmentSourceText}
             <button 
                 onClick={handlePlanTopics}
                 disabled={status === GenerationStatus.PLANNING}
-                className={`mt-0 md:mt-7 px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 w-full md:w-auto justify-center whitespace-nowrap shadow-lg shadow-indigo-900/20`}
+                className={`mt-0 md:mt-7 px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-medium rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 w-full md:w-auto justify-center whitespace-nowrap shadow-lg shadow-emerald-900/20`}
             >
                 {status === GenerationStatus.PLANNING ? <Loader2 className="animate-spin" /> : <Sparkles />}
                 {isInputRequired() ? '預測選題' : '一鍵生成爆款Hooks'}
@@ -1555,7 +1555,7 @@ ${segmentSourceText}
                             : "選擇要生成的長文 (約 8000 字/篇):"
                         }
                     </span>
-                    <span className="text-sm text-indigo-400 font-medium">已選 {topics.filter(t => t.selected).length} 個</span>
+                    <span className="text-sm text-emerald-400 font-medium">已選 {topics.filter(t => t.selected).length} 個</span>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[350px] overflow-y-auto pr-2 custom-scrollbar mb-6">
                     {topics.map(topic => (
@@ -1564,11 +1564,11 @@ ${segmentSourceText}
                             onClick={() => toggleTopic(topic.id)}
                             className={`p-4 rounded-lg border cursor-pointer transition-all flex items-start gap-3 group ${
                                 topic.selected 
-                                ? 'bg-indigo-900/30 border-indigo-500/50 shadow-inner' 
+                                ? 'bg-emerald-900/30 border-emerald-500/50 shadow-inner' 
                                 : 'bg-slate-800 border-slate-700 opacity-70 hover:opacity-100 hover:border-slate-500'
                             }`}
                         >
-                            <div className={`w-5 h-5 rounded border mt-0.5 flex items-center justify-center flex-shrink-0 transition-colors ${topic.selected ? 'bg-indigo-600 border-indigo-600' : 'border-slate-500 group-hover:border-slate-400'}`}>
+                            <div className={`w-5 h-5 rounded border mt-0.5 flex items-center justify-center flex-shrink-0 transition-colors ${topic.selected ? 'bg-emerald-600 border-emerald-600' : 'border-slate-500 group-hover:border-slate-400'}`}>
                                 {topic.selected && <Sparkles size={12} className="text-white" />}
                             </div>
                             <span className="text-sm text-slate-200 leading-snug font-medium">{topic.title}</span>
@@ -1604,12 +1604,12 @@ ${segmentSourceText}
         <section className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 min-h-[600px] flex flex-col animate-in fade-in duration-500">
              <div className="flex flex-wrap justify-between items-center mb-4 gap-4">
                 <h2 className="text-lg font-medium text-slate-300 flex items-center gap-2">
-                    <span className="bg-indigo-600 w-6 h-6 rounded-full flex items-center justify-center text-xs text-white">3</span>
+                    <span className="bg-emerald-600 w-6 h-6 rounded-full flex items-center justify-center text-xs text-white">3</span>
                     即時編輯器 (Live Editor)
                     {activeIndices.size > 0 && <span className="text-xs text-emerald-400 animate-pulse font-mono">({activeIndices.size} writing...)</span>}
                 </h2>
                 {status === GenerationStatus.COMPLETED && (
-                    <button onClick={downloadAll} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-md border border-slate-700 text-sm flex items-center gap-2 text-indigo-400 hover:text-indigo-300 transition-all shadow-sm">
+                    <button onClick={downloadAll} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-md border border-slate-700 text-sm flex items-center gap-2 text-emerald-400 hover:text-emerald-300 transition-all shadow-sm">
                         <Download size={16} />
                         打包下載 (.zip)
                     </button>
@@ -1625,7 +1625,7 @@ ${segmentSourceText}
                             onClick={() => setViewIndex(idx)}
                             className={`p-3 rounded-lg border text-sm cursor-pointer transition-all hover:bg-slate-800 ${
                             idx === viewIndex
-                                ? 'bg-indigo-900/40 border-indigo-500 shadow-md ring-1 ring-indigo-500/50' 
+                                ? 'bg-emerald-900/40 border-emerald-500 shadow-md ring-1 ring-emerald-500/50' 
                                 : 'bg-slate-800/30 border-slate-700 opacity-80'
                         }`}>
                             <div className="flex items-center justify-between gap-2 mb-1">
@@ -1638,9 +1638,9 @@ ${segmentSourceText}
                                             <div className="w-1.5 h-1.5 bg-white rounded-full" />
                                         </div>
                                     )}
-                                    <span className={`font-mono text-xs ${idx === viewIndex ? 'text-indigo-200' : 'text-slate-400'}`}>Topic {idx + 1}</span>
+                                    <span className={`font-mono text-xs ${idx === viewIndex ? 'text-emerald-200' : 'text-slate-400'}`}>Topic {idx + 1}</span>
                                 </div>
-                                {idx === viewIndex && <Eye size={14} className="text-indigo-400" />}
+                                {idx === viewIndex && <Eye size={14} className="text-emerald-400" />}
                             </div>
                             <p className={`line-clamp-2 ${idx === viewIndex ? 'text-white font-medium' : 'text-slate-400'}`}>{item.topic}</p>
                             <p className="text-xs mt-2 opacity-50 font-mono text-right">{item.content.length} characters</p>
@@ -1674,7 +1674,7 @@ ${segmentSourceText}
 
                             <div className="whitespace-pre-wrap leading-relaxed tracking-wide text-slate-300">
                                 {generatedContents[viewIndex].content}
-                                {activeIndices.has(viewIndex) && <span className="inline-block w-2 h-4 bg-indigo-500 ml-1 animate-pulse" />}
+                                {activeIndices.has(viewIndex) && <span className="inline-block w-2 h-4 bg-emerald-500 ml-1 animate-pulse" />}
                             </div>
                         </div>
                     ) : (

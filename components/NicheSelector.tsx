@@ -19,15 +19,15 @@ export const NicheSelector: React.FC<NicheSelectorProps> = ({ selectedNiche, onS
             onClick={() => onSelect(niche.id)}
             className={`relative p-4 rounded-xl border text-left transition-all duration-200 hover:scale-[1.02] ${
               isSelected
-                ? 'bg-indigo-900/20 border-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.2)]'
+                ? 'bg-emerald-900/20 border-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.2)]'
                 : 'bg-slate-800/50 border-slate-700 hover:border-slate-600'
             }`}
           >
             <div className="flex items-start justify-between mb-2">
               <span className="text-2xl">{niche.icon}</span>
-              {isSelected && <CheckCircle2 className="w-5 h-5 text-indigo-400" />}
+              {isSelected && <CheckCircle2 className="w-5 h-5 text-emerald-400" />}
             </div>
-            <h3 className={`font-semibold ${isSelected ? 'text-indigo-300' : 'text-slate-200'}`}>
+            <h3 className={`font-semibold ${isSelected ? 'text-emerald-300' : 'text-slate-200'}`}>
               {niche.name}
             </h3>
             <p className="text-xs text-slate-400 mt-1 line-clamp-2">
