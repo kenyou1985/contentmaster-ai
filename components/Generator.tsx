@@ -3,8 +3,10 @@ import { ApiProvider, NicheType, Topic, GeneratedContent, GenerationStatus, TcmS
 import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE } from '../constants';
 import { NicheSelector } from './NicheSelector';
 import { generateTopics, streamContentGeneration, initializeGemini } from '../services/geminiService';
-import { Sparkles, Calendar, Loader2, Download, Eye, Zap, AlertTriangle, Copy, Check, Globe, Clock, PlusCircle } from 'lucide-react';
+import { Sparkles, Calendar, Loader2, Download, Eye, Zap, AlertTriangle, Copy, Check, Globe, Clock, PlusCircle, History } from 'lucide-react';
 import JSZip from 'jszip';
+import { saveHistory, getHistory, getHistoryKey, deleteHistory, HistoryRecord } from '../services/historyService';
+import { HistorySelector } from './HistorySelector';
 
 interface GeneratorProps {
   apiKey: string;
@@ -57,6 +59,11 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
   const [errorMsg, setErrorMsg] = useState('');
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  
+  // 历史记录相关状态
+  const [showHistorySelector, setShowHistorySelector] = useState(false);
+  const [historyRecords, setHistoryRecords] = useState<HistoryRecord[]>([]);
+  const [pendingSubModeChange, setPendingSubModeChange] = useState<{ niche: NicheType; submode: string } | null>(null);
 
   // Auto-scroll logic
   useEffect(() => {
@@ -65,13 +72,85 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
     }
   }, [generatedContents, viewIndex, activeIndices]);
 
+  // 处理子模式切换（带历史记录选择）
+  const handleSubModeChange = (nicheType: NicheType, submodeId: string, setFunc: (id: any) => void) => {
+    const historyKey = `${nicheType}_${submodeId}`;
+    const records = getHistory('generator', historyKey);
+    
+    if (records.length > 0) {
+      // 有历史记录，显示选择器
+      setHistoryRecords(records);
+      setPendingSubModeChange({ niche: nicheType, submode: submodeId });
+      setShowHistorySelector(true);
+    } else {
+      // 没有历史记录，直接切换
+      setFunc(submodeId);
+      setInputVal('');
+      setTopics([]);
+      setAdaptedContent('');
+      setIsAdapting(false);
+    }
+  };
+  
+  // 处理历史记录选择
+  const handleHistorySelect = (record: HistoryRecord) => {
+    if (pendingSubModeChange) {
+      // 切换子模式
+      if (pendingSubModeChange.niche === NicheType.TCM_METAPHYSICS) {
+        setTcmSubMode(pendingSubModeChange.submode as TcmSubModeId);
+      } else if (pendingSubModeChange.niche === NicheType.FINANCE_CRYPTO) {
+        setFinanceSubMode(pendingSubModeChange.submode as FinanceSubModeId);
+      } else if (pendingSubModeChange.niche === NicheType.STORY_REVENGE) {
+        setRevengeSubMode(pendingSubModeChange.submode as RevengeSubModeId);
+      } else if (pendingSubModeChange.niche === NicheType.GENERAL_VIRAL) {
+        setNewsSubMode(pendingSubModeChange.submode as NewsSubModeId);
+      }
+      
+      // 加载历史记录内容
+      // 解析合并的内容（用分隔符分开）
+      const contentParts = record.content.split(/\n\n={50,}\n\n/);
+      const parsedContents: GeneratedContent[] = [];
+      
+      contentParts.forEach((part) => {
+        const match = part.match(/^===\s*(.+?)\s*===\n\n([\s\S]*)$/);
+        if (match) {
+          parsedContents.push({
+            topic: match[1],
+            content: match[2],
+          });
+        } else if (part.trim()) {
+          // 如果没有标题，使用元数据中的主题或默认标题
+          const topic = record.metadata?.topic?.split('; ')[parsedContents.length] || `历史记录 ${parsedContents.length + 1}`;
+          parsedContents.push({
+            topic,
+            content: part.trim(),
+          });
+        }
+      });
+      
+      if (parsedContents.length > 0) {
+        setGeneratedContents(parsedContents);
+        setViewIndex(0);
+        setStatus(GenerationStatus.COMPLETED);
+      }
+      
+      if (record.metadata?.input) {
+        setInputVal(record.metadata.input);
+      }
+      
+      setPendingSubModeChange(null);
+    }
+  };
+  
   // Reset input when niche or submode changes
   useEffect(() => {
-    setInputVal('');
-    setTopics([]);
-    setAdaptedContent('');
-    setIsAdapting(false);
-  }, [niche, tcmSubMode, financeSubMode, revengeSubMode, newsSubMode]);
+    if (!showHistorySelector) {
+      setInputVal('');
+      setTopics([]);
+      setAdaptedContent('');
+      setIsAdapting(false);
+    }
+  }, [niche, tcmSubMode, financeSubMode, revengeSubMode, newsSubMode, showHistorySelector]);
 
   // SAFE ACCESS HELPER
   const getCurrentSubModeConfig = () => {
@@ -1179,6 +1258,30 @@ ${segmentSourceText}
     await Promise.all(generationPromises);
 
     setStatus(GenerationStatus.COMPLETED);
+    
+    // 保存历史记录：将所有生成的内容合并保存
+    try {
+      const subModeConfig = getCurrentSubModeConfig();
+      if (subModeConfig && generatedContents.length > 0) {
+        const historyKey = `${niche}_${subModeConfig.id}`;
+        // 将所有生成的内容合并为一个文本（用分隔符分开）
+        const combinedContent = generatedContents
+          .filter(item => item.content && item.content.trim())
+          .map((item, index) => `=== ${item.topic} ===\n\n${item.content}`)
+          .join('\n\n' + '='.repeat(50) + '\n\n');
+        
+        if (combinedContent.trim()) {
+          saveHistory('generator', historyKey, combinedContent, {
+            topic: generatedContents.map(item => item.topic).join('; '),
+            input: inputVal,
+            count: generatedContents.length,
+          });
+          console.log('[Generator] 历史记录已保存，共', generatedContents.length, '篇文章');
+        }
+      }
+    } catch (error) {
+      console.error('[Generator] 保存历史记录失败:', error);
+    }
   };
 
   const handleContinueGeneration = async () => {
@@ -1355,10 +1458,14 @@ ${segmentSourceText}
 
                     const isSelected = activeModeId === mode.id;
                     
+                    // 检查是否有历史记录
+                    const historyKey = `${niche}_${mode.id}`;
+                    const hasHistory = getHistory('generator', historyKey).length > 0;
+                    
                     return (
                         <button
                             key={mode.id}
-                            onClick={() => setActiveFunc(mode.id)}
+                            onClick={() => handleSubModeChange(niche, mode.id, setActiveFunc)}
                             className={`p-3 rounded-lg border text-left transition-all relative overflow-hidden ${
                                 isSelected 
                                 ? 'bg-emerald-900/40 border-emerald-500 ring-1 ring-emerald-500' 
@@ -1370,6 +1477,9 @@ ${segmentSourceText}
                                 <span className={`text-xs font-bold ${isSelected ? 'text-white' : 'text-slate-300'}`}>
                                     {mode.title.split('：')[0].split('(')[0]}
                                 </span>
+                                {hasHistory && (
+                                    <History size={12} className="text-emerald-400" title="有历史记录" />
+                                )}
                             </div>
                             <p className="text-[10px] text-slate-500 leading-tight">
                                 {mode.subtitle}
@@ -1688,6 +1798,27 @@ ${segmentSourceText}
                 </div>
              </div>
         </section>
+      )}
+      
+      {/* 历史记录选择器 */}
+      {showHistorySelector && (
+        <HistorySelector
+          records={historyRecords}
+          onSelect={handleHistorySelect}
+          onClose={() => {
+            setShowHistorySelector(false);
+            setPendingSubModeChange(null);
+            // 如果用户取消，不切换子模式
+          }}
+          onDelete={(timestamp) => {
+            if (pendingSubModeChange) {
+              const historyKey = `${pendingSubModeChange.niche}_${pendingSubModeChange.submode}`;
+              deleteHistory('generator', historyKey, timestamp);
+              setHistoryRecords(getHistory('generator', historyKey));
+            }
+          }}
+          title="選擇歷史記錄"
+        />
       )}
     </div>
   );

@@ -3,7 +3,9 @@ import { ToolMode, NicheType, ApiProvider } from '../types';
 import { NICHES } from '../constants';
 import { streamContentGeneration, initializeGemini } from '../services/geminiService';
 import { fetchYouTubeTranscript, extractYouTubeVideoId, isYouTubeLink } from '../services/youtubeService';
-import { FileText, Maximize2, RefreshCw, Scissors, ArrowRight, Copy, ChevronDown, Video, Download, Plus, X } from 'lucide-react';
+import { FileText, Maximize2, RefreshCw, Scissors, ArrowRight, Copy, ChevronDown, Video, Download, Plus, X, History } from 'lucide-react';
+import { saveHistory, getHistory, deleteHistory, HistoryRecord } from '../services/historyService';
+import { HistorySelector } from './HistorySelector';
 
 interface ToolsProps {
   apiKey: string;
@@ -55,14 +57,55 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider }) => {
     ));
   };
   
-  // 设置模式（更新当前任务）
-  const setMode = (newMode: ToolMode) => {
-    updateActiveTask({ mode: newMode });
+  // 处理模式切换（带历史记录选择）
+  const handleModeChange = (newMode: ToolMode) => {
+    const historyKey = `${newMode}_${activeTask.niche}`;
+    const records = getHistory('tools', historyKey);
+    
+    if (records.length > 0) {
+      setHistoryRecords(records);
+      setPendingModeChange({ mode: newMode, niche: activeTask.niche });
+      setShowHistorySelector(true);
+    } else {
+      updateActiveTask({ mode: newMode });
+    }
   };
   
-  // 设置赛道（更新当前任务）
+  // 处理赛道切换（带历史记录选择）
+  const handleNicheChange = (newNiche: NicheType) => {
+    const historyKey = `${activeTask.mode}_${newNiche}`;
+    const records = getHistory('tools', historyKey);
+    
+    if (records.length > 0) {
+      setHistoryRecords(records);
+      setPendingModeChange({ mode: activeTask.mode, niche: newNiche });
+      setShowHistorySelector(true);
+    } else {
+      updateActiveTask({ niche: newNiche });
+    }
+  };
+  
+  // 设置模式（更新当前任务）- 保持向后兼容
+  const setMode = (newMode: ToolMode) => {
+    handleModeChange(newMode);
+  };
+
+  // 设置赛道（更新当前任务）- 保持向后兼容
   const setNiche = (newNiche: NicheType) => {
-    updateActiveTask({ niche: newNiche });
+    handleNicheChange(newNiche);
+  };
+  
+  // 处理历史记录选择
+  const handleHistorySelect = (record: HistoryRecord) => {
+    if (pendingModeChange) {
+      updateActiveTask({
+        mode: pendingModeChange.mode,
+        niche: pendingModeChange.niche,
+        outputText: record.content,
+        inputText: record.metadata?.input || '',
+      });
+      setPendingModeChange(null);
+    }
   };
   
   // 设置输入文本（更新当前任务）
@@ -88,6 +131,11 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider }) => {
   // ⚠️ RapidAPI版本 - 请将下面的 URL 替换为您部署 GAS_RapidAPI集成版.gs 后的新 URL
   // 示例：https://script.google.com/macros/s/AKfycby.../exec
   const [gasApiUrl, setGasApiUrl] = useState<string>('https://script.google.com/macros/s/AKfycbylTL8WWoBBcYo5LaXGsIoUiBVxWVFLEcaH4cMuXbnB2UEQ-tsUI6jqYS8tcYT0wxQaqA/exec'); // ⚠️⚠️⚠️ 必须填入您的实际GAS部署URL，否则无法使用！
+  
+  // 历史记录相关状态
+  const [showHistorySelector, setShowHistorySelector] = useState(false);
+  const [historyRecords, setHistoryRecords] = useState<HistoryRecord[]>([]);
+  const [pendingModeChange, setPendingModeChange] = useState<{ mode: ToolMode; niche: NicheType } | null>(null);
   
   // 创建新任务
   const createNewTask = () => {
@@ -453,7 +501,28 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider }) => {
   const isContentComplete = (text: string, mode: ToolMode, originalLength: number): boolean => {
     if (mode === ToolMode.SUMMARIZE) {
       // 摘要模式：检查是否有标签部分（表示完整输出）
-      return text.includes('熱門標籤') || text.includes('#');
+      // 如果有"熱門標籤"或"#"，肯定是完整的
+      if (text.includes('熱門標籤') || text.includes('#')) {
+        return true;
+      }
+      // 如果没有标签，但包含关键部分（核心主題、YouTube 爆款標題、視頻簡介、核心要點等），也认为是完整的
+      // 因为有些情况下可能标签部分被省略或格式不同
+      const hasCoreTheme = text.includes('核心主題') || text.includes('核心主题');
+      const hasTitles = text.includes('YouTube 爆款標題') || text.includes('YouTube 爆款标题') || text.includes('標題') || text.includes('标题');
+      const hasDescription = text.includes('視頻簡介') || text.includes('视频简介');
+      const hasKeyPoints = text.includes('核心要點') || text.includes('核心要点');
+      // 如果包含至少3个关键部分，且内容长度合理（至少500字符），认为完整
+      const keyPartsCount = [hasCoreTheme, hasTitles, hasDescription, hasKeyPoints].filter(Boolean).length;
+      if (keyPartsCount >= 2 && text.length >= 500) {
+        console.log('[isContentComplete] 摘要模式：缺少标签但包含关键部分，认为完整');
+        return true;
+      }
+      // 如果内容很长（超过2000字符），即使没有标签也认为是完整的
+      if (text.length >= 2000) {
+        console.log('[isContentComplete] 摘要模式：内容长度足够，认为完整');
+        return true;
+      }
+      return false;
     }
     
     if (mode === ToolMode.SCRIPT) {
@@ -1530,8 +1599,14 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
             updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
         });
         
-        // 检查是否需要续写（摘要模式不需要续写）
-        if (taskMode !== ToolMode.SUMMARIZE) {
+        // 检查是否需要续写（摘要模式不需要续写，但在生成完成后需要保存历史）
+        let shouldSaveHistory = false;
+        
+        if (taskMode === ToolMode.SUMMARIZE) {
+            // 摘要模式：不需要续写，生成完成后立即保存历史记录
+            // 即使 isContentComplete 返回 false，也保存历史记录（因为摘要模式不续写）
+            shouldSaveHistory = localOutput.trim().length > 0;
+        } else {
             while (!isContentComplete(localOutput, taskMode, originalLength) && continuationCount < MAX_CONTINUATIONS) {
                 continuationCount++;
                 console.log(`[Tools] Content incomplete, continuing (${continuationCount}/${MAX_CONTINUATIONS})...`);
@@ -1583,9 +1658,12 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                     }
                 }
             }
-            
-            // 清理续写分隔符（脚本模式使用----，其他模式使用-----）
-            if (taskMode === ToolMode.SCRIPT) {
+            // 非摘要模式：生成完成后检查是否完整
+            shouldSaveHistory = isContentComplete(localOutput, taskMode, originalLength);
+        }
+        
+        // 清理续写分隔符（脚本模式使用----，其他模式使用-----）
+        if (taskMode === ToolMode.SCRIPT) {
                 localOutput = localOutput.replace(/\n*----\n*/g, '\n\n');
                 // 脚本模式：清洗内容，保留镜头、角色信息、场景信息，删除重复镜头
                 localOutput = cleanScriptOutput(localOutput);
@@ -1624,9 +1702,63 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
             localOutput = localOutput.replace(/\n\s*\n\s*\n+/g, '\n\n').trim();
             updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
             
-            if (isContentComplete(localOutput, taskMode, originalLength)) {
-                console.log('[Tools] Content generation complete');
-            } else {
+            // 保存历史记录（所有模式，包括摘要模式）
+            if (shouldSaveHistory && localOutput.trim()) {
+                console.log('[Tools] Content generation complete, saving history...');
+                try {
+                    const historyKey = `${taskMode}_${taskNiche}`;
+                    saveHistory('tools', historyKey, localOutput, {
+                        input: taskInputText,
+                    });
+                    console.log('[Tools] 历史记录已保存:', historyKey);
+                } catch (error) {
+                    console.warn('[Tools] 保存历史记录失败:', error);
+                }
+            }
+            
+            // 脚本模式：生成完成后保存到 localStorage（保持向后兼容）
+            if (taskMode === ToolMode.SCRIPT && localOutput.trim() && isContentComplete(localOutput, taskMode, originalLength)) {
+                console.log('[Tools] Content generation complete (verified)');
+                try {
+                    // 保存最新脚本
+                    localStorage.setItem('lastGeneratedScript', localOutput);
+                    
+                    // 同时保存到历史缓存（最多保留10条）
+                    const historyKey = 'scriptHistory';
+                    const historyStr = localStorage.getItem(historyKey);
+                    let history: Array<{ content: string; timestamp: number }> = [];
+                    
+                    if (historyStr) {
+                        try {
+                            history = JSON.parse(historyStr);
+                            if (!Array.isArray(history)) {
+                                history = [];
+                            }
+                        } catch {
+                            history = [];
+                        }
+                    }
+                    
+                    // 添加新记录到历史（最新的在前）
+                    history.unshift({
+                        content: localOutput,
+                        timestamp: Date.now()
+                    });
+                    
+                    // 只保留最近10条
+                    if (history.length > 10) {
+                        history = history.slice(0, 10);
+                    }
+                    
+                    localStorage.setItem(historyKey, JSON.stringify(history));
+                    console.log('[Tools] Script saved to localStorage');
+                } catch (error) {
+                    console.warn('[Tools] Failed to save script to localStorage:', error);
+                }
+            }
+            
+            // 如果达到最大续写次数但内容不完整，给出提示（非摘要模式）
+            if (taskMode !== ToolMode.SUMMARIZE && !shouldSaveHistory && continuationCount >= MAX_CONTINUATIONS) {
                 console.log('[Tools] Reached max continuations, stopping');
                 
                 // 脚本模式：如果达到最大续写次数但内容不完整，给出提示
@@ -1650,7 +1782,6 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                     }
                 }
             }
-        }
     } catch (e: any) {
         const errorMsg = e?.message || String(e) || '未知錯誤';
         console.error('[Tools] Error:', e);
@@ -1671,6 +1802,53 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
     navigator.clipboard.writeText(outputText);
   };
 
+  // 导出脚本为 txt 文件
+  const exportToTxt = () => {
+    if (!outputText || !outputText.trim()) {
+      alert('没有可导出的内容');
+      return;
+    }
+
+    try {
+      // 创建 Blob 对象
+      const blob = new Blob([outputText], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      
+      // 创建下载链接
+      const a = document.createElement('a');
+      a.href = url;
+      
+      // 根据模式生成文件名
+      let fileName = '脚本';
+      if (mode === ToolMode.SCRIPT) {
+        fileName = '视频脚本';
+      } else if (mode === ToolMode.REWRITE) {
+        fileName = '改写内容';
+      } else if (mode === ToolMode.EXPAND) {
+        fileName = '扩写内容';
+      } else if (mode === ToolMode.SUMMARIZE) {
+        fileName = '摘要总结';
+      } else if (mode === ToolMode.POLISH) {
+        fileName = '润色内容';
+      }
+      
+      // 添加时间戳
+      const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+      a.download = `${fileName}_${timestamp}.txt`;
+      
+      // 触发下载
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      
+      // 释放 URL 对象
+      URL.revokeObjectURL(url);
+    } catch (error: any) {
+      console.error('导出失败:', error);
+      alert(`导出失败: ${error.message || '未知错误'}`);
+    }
+  };
+
   return (
     <div className="max-w-5xl mx-auto space-y-6">
        {/* Settings Bar */}
@@ -1686,7 +1864,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                 ].map((tool) => (
                     <button
                         key={tool.id}
-                        onClick={() => setMode(tool.id as ToolMode)}
+                        onClick={() => handleModeChange(tool.id as ToolMode)}
                         className={`px-4 py-2 rounded-lg border flex items-center gap-2 transition-all whitespace-nowrap text-sm font-medium ${
                             mode === tool.id 
                             ? 'bg-emerald-600 text-white border-emerald-500 shadow-md' 
@@ -1695,6 +1873,9 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                     >
                         {tool.icon}
                         <span>{tool.label}</span>
+                        {getHistory('tools', `${tool.id}_${niche}`).length > 0 && (
+                            <History size={12} className="text-emerald-400" title="有历史记录" />
+                        )}
                     </button>
                 ))}
            </div>
@@ -1705,7 +1886,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                <label className="text-base font-extrabold text-emerald-400 mb-1 ml-1 tracking-wide">選擇賽道</label>
                <select 
                     value={niche} 
-                    onChange={(e) => setNiche(e.target.value as NicheType)}
+                    onChange={(e) => handleNicheChange(e.target.value as NicheType)}
                     className="w-full appearance-none bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 font-bold focus:outline-none focus:border-emerald-500 cursor-pointer"
                >
                    {Object.values(NICHES).map(n => (
@@ -1801,9 +1982,22 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                 <label className="text-sm font-medium text-slate-400 flex justify-between items-center">
                     <span>生成結果</span>
                     {outputText && (
-                        <button onClick={copyToClipboard} className="text-xs flex items-center gap-1 text-emerald-400 hover:text-emerald-300">
-                            <Copy size={12} /> 複製
-                        </button>
+                        <div className="flex items-center gap-2">
+                            <button 
+                                onClick={copyToClipboard} 
+                                className="text-xs flex items-center gap-1 text-emerald-400 hover:text-emerald-300 transition-colors"
+                                title="複製到剪貼板"
+                            >
+                                <Copy size={12} /> 複製
+                            </button>
+                            <button 
+                                onClick={exportToTxt} 
+                                className="text-xs flex items-center gap-1 text-blue-400 hover:text-blue-300 transition-colors"
+                                title="導出為 TXT 文件"
+                            >
+                                <Download size={12} /> 導出 TXT
+                            </button>
+                        </div>
                     )}
                 </label>
                 <div className="flex-1 bg-slate-950 border border-slate-800 rounded-xl p-4 text-slate-200 overflow-y-auto whitespace-pre-wrap leading-relaxed relative custom-scrollbar">
@@ -1829,6 +2023,26 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                 </div>
             </div>
        </div>
+       
+       {/* 历史记录选择器 */}
+       {showHistorySelector && (
+           <HistorySelector
+               records={historyRecords}
+               onSelect={handleHistorySelect}
+               onClose={() => {
+                   setShowHistorySelector(false);
+                   setPendingModeChange(null);
+               }}
+               onDelete={(timestamp) => {
+                   if (pendingModeChange) {
+                       const historyKey = `${pendingModeChange.mode}_${pendingModeChange.niche}`;
+                       deleteHistory('tools', historyKey, timestamp);
+                       setHistoryRecords(getHistory('tools', historyKey));
+                   }
+               }}
+               title="選擇歷史記錄"
+           />
+       )}
     </div>
   );
 };

@@ -1,11 +1,11 @@
 import React from 'react';
-import { Settings, Cpu, PenTool, Layout as LayoutIcon, ExternalLink, Zap } from 'lucide-react';
+import { Settings, Cpu, PenTool, Layout as LayoutIcon, ExternalLink, Zap, Video } from 'lucide-react';
 import { ApiProvider } from '../types';
 
 interface LayoutProps {
   children: React.ReactNode;
-  activeTab: 'generate' | 'tools';
-  setActiveTab: (tab: 'generate' | 'tools') => void;
+  activeTab: 'generate' | 'tools' | 'media';
+  setActiveTab: (tab: 'generate' | 'tools' | 'media') => void;
   apiKey: string;
   setApiKey: (key: string) => void;
   provider: ApiProvider;
@@ -66,6 +66,17 @@ export const Layout: React.FC<LayoutProps> = ({
                 <div className="flex items-center gap-2">
                     <PenTool size={14} />
                     改寫工具
+                </div>
+              </button>
+              <button
+                onClick={() => setActiveTab('media')}
+                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200 ${
+                  activeTab === 'media' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                    <Video size={14} />
+                    媒體生成
                 </div>
               </button>
             </nav>

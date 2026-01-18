@@ -2,11 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { Layout } from './components/Layout';
 import { Generator } from './components/Generator';
 import { Tools } from './components/Tools';
+import { MediaGenerator } from './components/MediaGenerator';
 import { initializeGemini } from './services/geminiService';
 import { ApiProvider } from './types';
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'generate' | 'tools'>('generate');
+  const [activeTab, setActiveTab] = useState<'generate' | 'tools' | 'media'>('generate');
   
   // API Key State
   const [apiKey, setApiKey] = useState(() => {
@@ -70,8 +71,10 @@ const App: React.FC = () => {
     >
       {activeTab === 'generate' ? (
         <Generator apiKey={apiKey} provider={provider} />
-      ) : (
+      ) : activeTab === 'tools' ? (
         <Tools apiKey={apiKey} provider={provider} />
+      ) : (
+        <MediaGenerator apiKey={apiKey} provider={provider} />
       )}
     </Layout>
   );
