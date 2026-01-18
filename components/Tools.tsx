@@ -3,23 +3,127 @@ import { ToolMode, NicheType, ApiProvider } from '../types';
 import { NICHES } from '../constants';
 import { streamContentGeneration, initializeGemini } from '../services/geminiService';
 import { fetchYouTubeTranscript, extractYouTubeVideoId, isYouTubeLink } from '../services/youtubeService';
-import { FileText, Maximize2, RefreshCw, Scissors, ArrowRight, Copy, ChevronDown, Video, Download } from 'lucide-react';
+import { FileText, Maximize2, RefreshCw, Scissors, ArrowRight, Copy, ChevronDown, Video, Download, Plus, X } from 'lucide-react';
 
 interface ToolsProps {
   apiKey: string;
   provider: ApiProvider;
 }
 
+// 任务接口
+interface Task {
+  id: string;
+  mode: ToolMode;
+  niche: NicheType;
+  inputText: string;
+  outputText: string;
+  isGenerating: boolean;
+  isExtractingTranscript: boolean;
+}
+
 export const Tools: React.FC<ToolsProps> = ({ apiKey, provider }) => {
-  const [mode, setMode] = useState<ToolMode>(ToolMode.REWRITE);
-  const [niche, setNiche] = useState<NicheType>(NicheType.TCM_METAPHYSICS); // Niche awareness
-  const [inputText, setInputText] = useState('');
-  const [outputText, setOutputText] = useState('');
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [isExtractingTranscript, setIsExtractingTranscript] = useState(false);
+  // 多任务管理
+  const [tasks, setTasks] = useState<Task[]>([
+    {
+      id: 'task-1',
+      mode: ToolMode.REWRITE,
+      niche: NicheType.TCM_METAPHYSICS,
+      inputText: '',
+      outputText: '',
+      isGenerating: false,
+      isExtractingTranscript: false,
+    }
+  ]);
+  const [activeTaskId, setActiveTaskId] = useState<string>('task-1');
+  
+  // 当前活动任务
+  const activeTask = tasks.find(t => t.id === activeTaskId) || tasks[0];
+  const activeTaskIndex = tasks.findIndex(t => t.id === activeTaskId);
+  
+  // 便捷访问当前任务的状态（保持向后兼容）
+  const mode = activeTask.mode;
+  const niche = activeTask.niche;
+  const inputText = activeTask.inputText;
+  const outputText = activeTask.outputText;
+  const isGenerating = activeTask.isGenerating;
+  const isExtractingTranscript = activeTask.isExtractingTranscript;
+  
+  // 更新当前任务状态
+  const updateActiveTask = (updates: Partial<Task>) => {
+    setTasks(prev => prev.map(task => 
+      task.id === activeTaskId ? { ...task, ...updates } : task
+    ));
+  };
+  
+  // 设置模式（更新当前任务）
+  const setMode = (newMode: ToolMode) => {
+    updateActiveTask({ mode: newMode });
+  };
+  
+  // 设置赛道（更新当前任务）
+  const setNiche = (newNiche: NicheType) => {
+    updateActiveTask({ niche: newNiche });
+  };
+  
+  // 设置输入文本（更新当前任务）
+  const setInputText = (text: string) => {
+    updateActiveTask({ inputText: text });
+  };
+  
+  // 设置输出文本（更新当前任务）
+  const setOutputText = (text: string) => {
+    updateActiveTask({ outputText: text });
+  };
+  
+  // 设置生成状态（更新当前任务）
+  const setIsGenerating = (generating: boolean) => {
+    updateActiveTask({ isGenerating: generating });
+  };
+  
+  // 设置提取状态（更新当前任务）
+  const setIsExtractingTranscript = (extracting: boolean) => {
+    updateActiveTask({ isExtractingTranscript: extracting });
+  };
+  
   // ⚠️ RapidAPI版本 - 请将下面的 URL 替换为您部署 GAS_RapidAPI集成版.gs 后的新 URL
   // 示例：https://script.google.com/macros/s/AKfycby.../exec
   const [gasApiUrl, setGasApiUrl] = useState<string>('https://script.google.com/macros/s/AKfycbylTL8WWoBBcYo5LaXGsIoUiBVxWVFLEcaH4cMuXbnB2UEQ-tsUI6jqYS8tcYT0wxQaqA/exec'); // ⚠️⚠️⚠️ 必须填入您的实际GAS部署URL，否则无法使用！
+  
+  // 创建新任务
+  const createNewTask = () => {
+    const newTask: Task = {
+      id: `task-${Date.now()}`,
+      mode: ToolMode.REWRITE,
+      niche: NicheType.TCM_METAPHYSICS,
+      inputText: '',
+      outputText: '',
+      isGenerating: false,
+      isExtractingTranscript: false,
+    };
+    setTasks(prev => [...prev, newTask]);
+    setActiveTaskId(newTask.id);
+  };
+  
+  // 删除任务
+  const deleteTask = (taskId: string) => {
+    if (tasks.length <= 1) {
+      // 至少保留一个任务
+      return;
+    }
+    setTasks(prev => prev.filter(t => t.id !== taskId));
+    // 如果删除的是当前任务，切换到第一个任务
+    if (taskId === activeTaskId) {
+      const remainingTasks = tasks.filter(t => t.id !== taskId);
+      if (remainingTasks.length > 0) {
+        setActiveTaskId(remainingTasks[0].id);
+      }
+    }
+  };
+  
+  // 切换任务
+  const switchTask = (taskId: string) => {
+    setActiveTaskId(taskId);
+  };
 
   // 清理Markdown格式符号，输出纯文本（保留编号格式）
   const cleanMarkdownFormat = (text: string, mode?: ToolMode): string => {
@@ -494,29 +598,43 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider }) => {
   };
 
   const handleAction = async () => {
-    if (!apiKey || !inputText) return;
+    // ⚠️ 关键：锁定当前任务ID，确保整个生成过程都更新正确的任务
+    const currentTaskId = activeTaskId;
+    const currentTask = tasks.find(t => t.id === currentTaskId);
     
-    setIsGenerating(true);
-    setOutputText('');
+    if (!apiKey || !currentTask || !currentTask.inputText) return;
+    
+    // 使用当前任务的输入文本
+    const taskInputText = currentTask.inputText;
+    const taskMode = currentTask.mode;
+    const taskNiche = currentTask.niche;
+    
+    // 更新特定任务的函数
+    const updateTask = (updates: Partial<Task>) => {
+      setTasks(prev => prev.map(task => 
+        task.id === currentTaskId ? { ...task, ...updates } : task
+      ));
+    };
+    
+    updateTask({ isGenerating: true, outputText: '' });
 
     // 脚本输出模式：不依赖赛道配置，作为独立通用模块
-    const nicheConfig = mode === ToolMode.SCRIPT ? null : NICHES[niche];
+    const nicheConfig = taskMode === ToolMode.SCRIPT ? null : NICHES[taskNiche];
     let localOutput = '';
     const MAX_CONTINUATIONS = 15; // 最大续写次数（增加到15次以支持长文本）
     let continuationCount = 0;
     
     // 检测是否为YouTube链接
-    const isYouTube = isYouTubeLink(inputText.trim());
-    const videoId = isYouTube ? extractYouTubeVideoId(inputText.trim()) : null;
+    const isYouTube = isYouTubeLink(taskInputText.trim());
+    const videoId = isYouTube ? extractYouTubeVideoId(taskInputText.trim()) : null;
     
     // 如果只有 YouTube 链接，没有其他文本内容，提示用户点击"提取字幕"按钮
     if (isYouTube && videoId) {
-      const textWithoutLink = inputText.trim().replace(/https?:\/\/(www\.)?(youtube\.com|youtu\.be)[^\s]*/gi, '').trim();
+      const textWithoutLink = taskInputText.trim().replace(/https?:\/\/(www\.)?(youtube\.com|youtu\.be)[^\s]*/gi, '').trim();
       
       // 如果移除链接后没有其他文本，说明只有链接
       if (!textWithoutLink || textWithoutLink.length < 10) {
-        setIsGenerating(false);
-        setOutputText(`📺 檢測到 YouTube 視頻鏈接\n\n視頻ID: ${videoId}\n\n💡 請點擊輸入框旁的「提取字幕」按鈕，系統將自動提取視頻字幕並填入輸入框。\n\n⚠️ 注意：需要在設置中配置 Google Apps Script API URL 才能使用自動提取功能。`);
+        updateTask({ isGenerating: false, outputText: `📺 檢測到 YouTube 視頻鏈接\n\n視頻ID: ${videoId}\n\n💡 請點擊輸入框旁的「提取字幕」按鈕，系統將自動提取視頻字幕並填入輸入框。\n\n⚠️ 注意：需要在設置中配置 Google Apps Script API URL 才能使用自動提取功能。` });
         return;
       }
     }
@@ -524,7 +642,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider }) => {
     // Inject Niche Persona into the system instruction, enforce Chinese
     // 脚本输出模式：使用通用系统指令，不关联赛道，不进行任何改写或洗稿
     let systemInstruction = '';
-    if (mode === ToolMode.SCRIPT) {
+    if (taskMode === ToolMode.SCRIPT) {
       // 脚本输出模式：通用系统指令，完全独立，不进行任何改写、润色、洗稿或修改
       systemInstruction = `你是一位专业的视频脚本生成助手。你的任务是：
 1. 将原文内容按照指定格式转换为视频脚本
@@ -547,7 +665,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider }) => {
       systemInstruction += `\n\n⚠️ 重要提示：用戶提供了一個 YouTube 視頻鏈接（視頻ID: ${videoId}），同時也提供了轉錄文本。請直接處理轉錄文本內容，忽略鏈接部分。`;
     }
     
-    const originalLength = inputText.length;
+    const originalLength = taskInputText.length;
 
     // 生成初始prompt的函数
     const generateInitialPrompt = (mode: ToolMode, originalLength: number): string => {
@@ -555,15 +673,15 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider }) => {
             ? `## Input Data
 ⚠️ **檢測到 YouTube 視頻鏈接**（視頻ID: ${videoId}）
 
-${inputText}
+${taskInputText}
 
 **注意**：上述輸入包含 YouTube 視頻鏈接和轉錄文本。請直接處理轉錄文本內容，忽略鏈接部分。`
             : `## Input Data
-${inputText}`;
+${taskInputText}`;
 
     // 检测输入语言（简单判断：如果包含中文字符，认为是中文；否则认为是英文）
-    const hasChinese = /[\u4e00-\u9fff]/.test(inputText);
-    const hasEnglish = /[a-zA-Z]/.test(inputText);
+    const hasChinese = /[\u4e00-\u9fff]/.test(taskInputText);
+    const hasEnglish = /[a-zA-Z]/.test(taskInputText);
     let inputLanguage = '繁體中文'; // 默认繁体中文
     
     if (!hasChinese && hasEnglish) {
@@ -580,9 +698,9 @@ ${inputText}`;
       }
     }
     
-    console.log(`[Tools] 检测输入语言: ${inputLanguage}, 中文字符数: ${(inputText.match(/[\u4e00-\u9fff]/g) || []).length}, 英文字符数: ${(inputText.match(/[a-zA-Z]/g) || []).length}`);
+    console.log(`[Tools] 检测输入语言: ${inputLanguage}, 中文字符数: ${(taskInputText.match(/[\u4e00-\u9fff]/g) || []).length}, 英文字符数: ${(taskInputText.match(/[a-zA-Z]/g) || []).length}`);
 
-    switch (mode) {
+    switch (taskMode) {
         case ToolMode.REWRITE:
                 return `### 任務指令：文本洗稿與像素級改編
 
@@ -1406,21 +1524,21 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
         initializeGemini(apiKey, { provider });
         
         // 生成初始内容
-        const initialPrompt = generateInitialPrompt(mode, originalLength);
+        const initialPrompt = generateInitialPrompt(taskMode, originalLength);
         await streamContentGeneration(initialPrompt, systemInstruction, (chunk) => {
             localOutput += chunk;
-            setOutputText(cleanMarkdownFormat(localOutput, mode));
+            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
         });
         
         // 检查是否需要续写（摘要模式不需要续写）
-        if (mode !== ToolMode.SUMMARIZE) {
-            while (!isContentComplete(localOutput, mode, originalLength) && continuationCount < MAX_CONTINUATIONS) {
+        if (taskMode !== ToolMode.SUMMARIZE) {
+            while (!isContentComplete(localOutput, taskMode, originalLength) && continuationCount < MAX_CONTINUATIONS) {
                 continuationCount++;
                 console.log(`[Tools] Content incomplete, continuing (${continuationCount}/${MAX_CONTINUATIONS})...`);
                 
                 // 脚本模式：检测并清理不完整的镜头
                 let cleanInfo: { cleaned: string; lastShotNumber: number; needsRework: boolean } | null = null;
-                if (mode === ToolMode.SCRIPT) {
+                if (taskMode === ToolMode.SCRIPT) {
                     // 计算当前进度
                     const currentShotCount = (localOutput.match(/鏡頭\d+|镜头\d+/g) || []).length;
                     let currentCopiedLength = 0;
@@ -1438,26 +1556,26 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                     if (cleanInfo.needsRework) {
                         console.log(`[Tools] Detected incomplete shot ${cleanInfo.lastShotNumber}, cleaning and reworking...`);
                         localOutput = cleanInfo.cleaned;
-                        setOutputText(cleanMarkdownFormat(localOutput, mode));
+                        updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
                     }
                 }
                 
                 // 添加分隔符（脚本模式使用----，其他模式使用-----）
-                const separator = mode === ToolMode.SCRIPT ? '\n\n----\n\n' : '\n\n-----\n\n';
+                const separator = taskMode === ToolMode.SCRIPT ? '\n\n----\n\n' : '\n\n-----\n\n';
                 localOutput += separator;
-                setOutputText(cleanMarkdownFormat(localOutput, mode));
+                updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
                 
                 // 生成续写prompt（传入清理后的内容和是否需要重新输出镜头的信息，以及原文）
-                const continuePrompt = generateContinuePrompt(localOutput, mode, originalLength, cleanInfo, inputText);
+                const continuePrompt = generateContinuePrompt(localOutput, taskMode, originalLength, cleanInfo, taskInputText);
                 
                 // 续写
                 await streamContentGeneration(continuePrompt, systemInstruction, (chunk) => {
                     localOutput += chunk;
-                    setOutputText(cleanMarkdownFormat(localOutput, mode));
+                    updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
                 });
                 
                 // ⚠️ 关键：每次续写后立即检查是否已输出场景信息
-                if (mode === ToolMode.SCRIPT) {
+                if (taskMode === ToolMode.SCRIPT) {
                     const hasSceneInfo = localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]');
                     if (hasSceneInfo) {
                         console.log('[Tools] 续写中检测到场景信息已输出，立即停止续写！');
@@ -1467,7 +1585,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
             }
             
             // 清理续写分隔符（脚本模式使用----，其他模式使用-----）
-            if (mode === ToolMode.SCRIPT) {
+            if (taskMode === ToolMode.SCRIPT) {
                 localOutput = localOutput.replace(/\n*----\n*/g, '\n\n');
                 // 脚本模式：清洗内容，保留镜头、角色信息、场景信息，删除重复镜头
                 localOutput = cleanScriptOutput(localOutput);
@@ -1504,15 +1622,15 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
             }
             // 清理多余空行
             localOutput = localOutput.replace(/\n\s*\n\s*\n+/g, '\n\n').trim();
-            setOutputText(cleanMarkdownFormat(localOutput, mode));
+            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
             
-            if (isContentComplete(localOutput, mode, originalLength)) {
+            if (isContentComplete(localOutput, taskMode, originalLength)) {
                 console.log('[Tools] Content generation complete');
             } else {
                 console.log('[Tools] Reached max continuations, stopping');
                 
                 // 脚本模式：如果达到最大续写次数但内容不完整，给出提示
-                if (mode === ToolMode.SCRIPT) {
+                if (taskMode === ToolMode.SCRIPT) {
                     // 计算已搬运的原文字数
                     let copiedTextLength = 0;
                     const shotTextPattern = /镜头文案[：:]\s*[^-]+-[^：:]+[：:]\s*[""「"]([\s\S]*?)[""」"]/g;
@@ -1528,7 +1646,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                     if (copiedTextLength < originalLength * 0.95) {
                         const warningMsg = `\n\n⚠️ 注意：已达到最大续写次数（${MAX_CONTINUATIONS}次），但原文可能未完全转换完成。\n\n当前进度：\n- 已完成镜头：${shotCount} 个\n- 已搬运原文：${copiedTextLength}/${originalLength} 字（${copyProgress}%）\n\n如需继续，请点击「----」符号后输入继续指令。`;
                         localOutput += warningMsg;
-                        setOutputText(cleanMarkdownFormat(localOutput, mode));
+                        updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
                     }
                 }
             }
@@ -1539,13 +1657,13 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
         
         // 如果是 YouTube 链接且错误信息提示需要转录文本，显示友好提示
         if (isYouTube && (errorMsg.includes('網絡') || errorMsg.includes('API Key') || errorMsg.includes('連接'))) {
-            setOutputText(`⚠️ YouTube 視頻處理提示\n\n檢測到您輸入的是 YouTube 視頻鏈接。\n\n由於系統無法直接訪問 YouTube 視頻內容，請按以下步驟操作：\n\n1. 打開 YouTube 視頻\n2. 點擊「⋯」菜單 → 選擇「顯示轉錄」或「字幕」\n3. 複製完整的轉錄文本\n4. 將轉錄文本粘貼到此處（可以保留或刪除 YouTube 鏈接）\n5. 再次點擊生成按鈕\n\n或者，如果您已經有轉錄文本，請將文本和鏈接一起粘貼，系統會自動處理文本內容。\n\n---\n\n錯誤詳情：${errorMsg}`);
+            updateTask({ outputText: `⚠️ YouTube 視頻處理提示\n\n檢測到您輸入的是 YouTube 視頻鏈接。\n\n由於系統無法直接訪問 YouTube 視頻內容，請按以下步驟操作：\n\n1. 打開 YouTube 視頻\n2. 點擊「⋯」菜單 → 選擇「顯示轉錄」或「字幕」\n3. 複製完整的轉錄文本\n4. 將轉錄文本粘貼到此處（可以保留或刪除 YouTube 鏈接）\n5. 再次點擊生成按鈕\n\n或者，如果您已經有轉錄文本，請將文本和鏈接一起粘貼，系統會自動處理文本內容。\n\n---\n\n錯誤詳情：${errorMsg}` });
         } else {
             // 显示详细的错误信息
-            setOutputText(`❌ 生成內容時發生錯誤\n\n錯誤信息：${errorMsg}\n\n請檢查：\n1. API Key 是否正確配置\n2. 網絡連接是否正常\n3. API 服務是否可用\n\n如果問題持續，請聯繫技術支持。`);
+            updateTask({ outputText: `❌ 生成內容時發生錯誤\n\n錯誤信息：${errorMsg}\n\n請檢查：\n1. API Key 是否正確配置\n2. 網絡連接是否正常\n3. API 服務是否可用\n\n如果問題持續，請聯繫技術支持。` });
         }
     } finally {
-        setIsGenerating(false);
+        updateTask({ isGenerating: false });
     }
   };
 
@@ -1608,6 +1726,47 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                </button>
            </div>
        </div>
+
+      {/* 任务标签页 */}
+      <div className="flex items-center gap-2 overflow-x-auto pb-2">
+        {tasks.map((task, index) => (
+          <div
+            key={task.id}
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-all whitespace-nowrap ${
+              task.id === activeTaskId
+                ? 'bg-emerald-600/20 border-emerald-500 text-emerald-400'
+                : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:bg-slate-700/50'
+            }`}
+          >
+            <button
+              onClick={() => switchTask(task.id)}
+              className="flex items-center gap-2 text-sm font-medium"
+            >
+              <span>任务 {index + 1}</span>
+              {task.isGenerating && (
+                <span className="inline-block w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+              )}
+            </button>
+            {tasks.length > 1 && (
+              <button
+                onClick={() => deleteTask(task.id)}
+                className="text-slate-500 hover:text-red-400 transition-colors"
+                title="删除任务"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
+        ))}
+        <button
+          onClick={createNewTask}
+          className="flex items-center gap-1 px-3 py-2 rounded-lg border border-slate-700 bg-slate-800/50 text-slate-400 hover:bg-slate-700/50 hover:text-emerald-400 transition-all"
+          title="新建任务"
+        >
+          <Plus size={16} />
+          <span className="text-sm font-medium">新建</span>
+        </button>
+      </div>
 
       {/* Grid: Input and Output */}
        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 h-[600px]">
