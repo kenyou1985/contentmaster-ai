@@ -80,127 +80,158 @@ function extractTranscriptWithRapidApi(videoId) {
     // 构建 RapidAPI 请求 URL
     var apiUrl = 'https://youtube-transcript3.p.rapidapi.com/api/transcript';
     
-    // 构建请求参数（只使用videoId，不指定语言，让API自动选择）
-    var params = {
-      'videoId': videoId
-    };
+    // 构建请求参数（支持多语言，优先中文，其次英文）
+    // 尝试多个语言代码：先不指定语言（让API自动选择），然后尝试zh, zh-CN, en
+    var languages = [null, 'zh', 'zh-CN', 'zh-TW', 'en'];
     
-    // 将参数转换为查询字符串
-    var queryString = Object.keys(params).map(function(key) {
-      return key + '=' + encodeURIComponent(params[key]);
-    }).join('&');
-    
-    var fullUrl = apiUrl + '?' + queryString;
-    Logger.log('请求URL: ' + fullUrl);
-    
-    Logger.log('调用 RapidAPI...');
-    
-    // 发送请求
-    var response = UrlFetchApp.fetch(fullUrl, {
-      method: 'get',
-      muteHttpExceptions: true,
-      headers: {
-        'X-RapidAPI-Host': 'youtube-transcript3.p.rapidapi.com',
-        'X-RapidAPI-Key': RAPIDAPI_KEY
-      }
-    });
-    
-    var statusCode = response.getResponseCode();
-    Logger.log('HTTP Status: ' + statusCode);
-    
-    // 检查响应状态
-    if (statusCode === 403) {
-      return {
-        success: false,
-        error: 'API密钥无效或配额已用完。\n\n请检查：\n1. API密钥是否正确\n2. 是否还有剩余配额\n3. 订阅是否还有效'
-      };
-    }
-    
-    if (statusCode === 404) {
-      return {
-        success: false,
-        error: '未找到字幕。该视频可能：\n1) 没有字幕\n2) 字幕被禁用\n3) 视频不存在或已删除'
-      };
-    }
-    
-    if (statusCode !== 200) {
-      return {
-        success: false,
-        error: 'API调用失败: HTTP ' + statusCode
-      };
-    }
-    
-    // 解析响应
-    var data = JSON.parse(response.getContentText());
-    Logger.log('响应数据类型: ' + typeof data);
-    
-    // 首先检查API是否返回错误
-    if (data.success === false && data.error) {
-      Logger.log('❌ API返回错误: ' + data.error);
-      return {
-        success: false,
-        error: 'RapidAPI服务返回错误：\n' + data.error + '\n\n可能原因：\n1) 该视频没有公开字幕\n2) 字幕语言不匹配\n3) API服务暂时不可用\n\n💡 建议：使用手动复制功能'
-      };
-    }
-    
-    // 处理不同的API响应格式
-    var transcript = '';
-    
-    // 格式1: 数组格式 [{text: "...", start: 0, duration: 5}, ...]
-    if (Array.isArray(data)) {
-      Logger.log('检测到数组格式，共 ' + data.length + ' 个片段');
+    // 依次尝试不同语言，直到成功
+    for (var langIndex = 0; langIndex < languages.length; langIndex++) {
+      var lang = languages[langIndex];
       
-      var texts = [];
-      for (var i = 0; i < data.length; i++) {
-        if (data[i].text) {
-          texts.push(data[i].text);
-        }
-      }
-      transcript = texts.join(' ');
-    }
-    // 格式2: 对象格式 {transcript: [...]}
-    else if (data.transcript && Array.isArray(data.transcript)) {
-      Logger.log('检测到对象格式，共 ' + data.transcript.length + ' 个片段');
+      // 构建请求参数
+      var params = {
+        'videoId': videoId
+      };
       
-      var texts = [];
-      for (var i = 0; i < data.transcript.length; i++) {
-        if (data.transcript[i].text) {
-          texts.push(data.transcript[i].text);
-        }
+      // 如果指定了语言，添加到参数中
+      if (lang) {
+        params['lang'] = lang;
+        Logger.log('尝试语言: ' + lang);
+      } else {
+        Logger.log('尝试自动检测语言（不指定lang参数）');
       }
-      transcript = texts.join(' ');
-    }
-    // 格式3: 直接的文本
-    else if (typeof data === 'string') {
-      Logger.log('检测到字符串格式');
-      transcript = data;
-    }
-    else {
-      Logger.log('未知的响应格式: ' + JSON.stringify(data).substring(0, 200));
+      
+      // 将参数转换为查询字符串
+      var queryString = Object.keys(params).map(function(key) {
+        return key + '=' + encodeURIComponent(params[key]);
+      }).join('&');
+      
+      var fullUrl = apiUrl + '?' + queryString;
+      Logger.log('请求URL: ' + fullUrl);
+      
+      Logger.log('调用 RapidAPI...');
+      
+      // 发送请求
+      var response = UrlFetchApp.fetch(fullUrl, {
+        method: 'get',
+        muteHttpExceptions: true,
+        headers: {
+          'X-RapidAPI-Host': 'youtube-transcript3.p.rapidapi.com',
+          'X-RapidAPI-Key': RAPIDAPI_KEY
+        }
+      });
+      
+      var statusCode = response.getResponseCode();
+      Logger.log('HTTP Status: ' + statusCode);
+      
+      // 检查响应状态
+      if (statusCode === 403) {
+        return {
+          success: false,
+          error: 'API密钥无效或配额已用完。\n\n请检查：\n1. API密钥是否正确\n2. 是否还有剩余配额\n3. 订阅是否还有效'
+        };
+      }
+      
+      if (statusCode === 404) {
+        // 404表示当前语言没有字幕，尝试下一个语言
+        Logger.log('⚠️ 语言 ' + (lang || 'auto') + ' 未找到字幕，尝试下一个语言...');
+        continue;
+      }
+      
+      if (statusCode !== 200) {
+        // 其他错误也尝试下一个语言
+        Logger.log('⚠️ 语言 ' + (lang || 'auto') + ' 请求失败 (HTTP ' + statusCode + ')，尝试下一个语言...');
+        continue;
+      }
+      
+      // 解析响应
+      var responseText = response.getContentText();
+      var data;
+      try {
+        data = JSON.parse(responseText);
+      } catch (e) {
+        Logger.log('❌ JSON解析失败: ' + e.toString());
+        continue; // 尝试下一个语言
+      }
+      
+      Logger.log('响应数据类型: ' + typeof data);
+      
+      // 首先检查API是否返回错误
+      if (data.success === false && data.error) {
+        Logger.log('❌ API返回错误: ' + data.error);
+        // 如果是字幕不可用的错误，尝试下一个语言
+        if (data.error.indexOf('not available') !== -1 || data.error.indexOf('字幕') !== -1) {
+          Logger.log('⚠️ 当前语言字幕不可用，尝试下一个语言...');
+          continue;
+        }
+        // 其他错误直接返回
+        return {
+          success: false,
+          error: 'RapidAPI服务返回错误：\n' + data.error + '\n\n可能原因：\n1) 该视频没有公开字幕\n2) 字幕语言不匹配\n3) API服务暂时不可用\n\n💡 建议：使用手动复制功能'
+        };
+      }
+      
+      // 处理不同的API响应格式
+      var transcript = '';
+      
+      // 格式1: 数组格式 [{text: "...", start: 0, duration: 5}, ...]
+      if (Array.isArray(data)) {
+        Logger.log('检测到数组格式，共 ' + data.length + ' 个片段');
+        
+        var texts = [];
+        for (var i = 0; i < data.length; i++) {
+          if (data[i].text) {
+            texts.push(data[i].text);
+          }
+        }
+        transcript = texts.join(' ');
+      }
+      // 格式2: 对象格式 {transcript: [...]}
+      else if (data.transcript && Array.isArray(data.transcript)) {
+        Logger.log('检测到对象格式，共 ' + data.transcript.length + ' 个片段');
+        
+        var texts = [];
+        for (var i = 0; i < data.transcript.length; i++) {
+          if (data.transcript[i].text) {
+            texts.push(data.transcript[i].text);
+          }
+        }
+        transcript = texts.join(' ');
+      }
+      // 格式3: 直接的文本
+      else if (typeof data === 'string') {
+        Logger.log('检测到字符串格式');
+        transcript = data;
+      }
+      else {
+        Logger.log('未知的响应格式: ' + JSON.stringify(data).substring(0, 200));
+        continue; // 尝试下一个语言
+      }
+      
+      // 清理字幕文本
+      transcript = cleanTranscript(transcript);
+      
+      if (!transcript || transcript.length < 10) {
+        Logger.log('⚠️ 字幕内容为空或过短，尝试下一个语言...');
+        continue;
+      }
+      
+      Logger.log('✅ 字幕提取成功！语言: ' + (lang || 'auto') + ', 长度: ' + transcript.length);
+      
       return {
-        success: false,
-        error: '未知的API响应格式'
+        success: true,
+        transcript: transcript,
+        videoId: videoId,
+        method: 'rapidapi',
+        language: lang || 'auto',
+        length: transcript.length
       };
     }
     
-    // 清理字幕文本
-    transcript = cleanTranscript(transcript);
-    
-    if (!transcript || transcript.length < 10) {
-      return {
-        success: false,
-        error: '字幕内容为空或过短'
-      };
-    }
-    
-    Logger.log('✅ 字幕提取成功！长度: ' + transcript.length);
-    
+    // 所有语言都尝试过了，仍然失败
     return {
-      success: true,
-      transcript: transcript,
-      videoId: videoId,
-      method: 'rapidapi',
-      length: transcript.length
+      success: false,
+      error: '无法提取字幕。\n\n可能原因：\n1) 该视频没有任何公开字幕\n2) 该视频不支持自动字幕生成\n3) 字幕被禁用\n\n💡 建议：请手动复制YouTube字幕'
     };
     
   } catch (error) {
@@ -271,4 +302,44 @@ function testRapidApi() {
   }
   
   Logger.log('\n========== 测试完成 ==========');
+}
+
+// 测试中文视频
+function testChineseVideo() {
+  Logger.log('========== 测试中文视频 ==========');
+  
+  // 检查API密钥
+  if (!RAPIDAPI_KEY || RAPIDAPI_KEY === 'YOUR_RAPIDAPI_KEY_HERE') {
+    Logger.log('❌ 请先配置 RAPIDAPI_KEY');
+    return;
+  }
+  
+  // 用户提供的中文视频ID
+  var chineseVideoId = 'uLz_QF4k1_0';
+  Logger.log('测试视频ID: ' + chineseVideoId);
+  Logger.log('视频链接: https://www.youtube.com/watch?v=' + chineseVideoId);
+  
+  var result = extractTranscriptWithRapidApi(chineseVideoId);
+  
+  if (result.success) {
+    Logger.log('✅✅✅ 成功提取中文字幕！');
+    Logger.log('语言: ' + (result.language || 'auto'));
+    Logger.log('长度: ' + result.length + ' 字');
+    Logger.log('前200字: ' + result.transcript.substring(0, 200) + '...');
+    
+    // 检测是否包含中文字符
+    var hasChinese = /[\u4e00-\u9fff]/.test(result.transcript);
+    if (hasChinese) {
+      Logger.log('✓ 确认包含中文字符');
+    } else {
+      Logger.log('⚠️ 警告：提取的字幕不包含中文字符，可能是其他语言');
+    }
+  } else {
+    Logger.log('❌ 提取失败');
+    Logger.log('错误信息: ' + result.error);
+    Logger.log('\n💡 可能原因：');
+    Logger.log('1) 该视频确实没有公开字幕');
+    Logger.log('2) RapidAPI无法提取该视频的字幕');
+    Logger.log('3) 字幕被禁用或需要登录');
+  }
 }
