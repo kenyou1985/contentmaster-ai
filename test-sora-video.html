@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sora 视频生成 API 测试工具</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+    }
+    
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+      padding: 30px;
+    }
+    
+    h1 {
+      color: #333;
+      margin-bottom: 10px;
+      font-size: 24px;
+    }
+    
+    .subtitle {
+      color: #666;
+      margin-bottom: 30px;
+      font-size: 14px;
+    }
+    
+    .form-group {
+      margin-bottom: 20px;
+    }
+    
+    label {
+      display: block;
+      margin-bottom: 8px;
+      color: #333;
+      font-weight: 500;
+      font-size: 14px;
+    }
+    
+    input, select, textarea {
+      width: 100%;
+      padding: 10px;
+      border: 2px solid #e0e0e0;
+      border-radius: 6px;
+      font-size: 14px;
+      transition: border-color 0.3s;
+    }
+    
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+    
+    textarea {
+      min-height: 100px;
+      font-family: 'Courier New', monospace;
+      resize: vertical;
+    }
+    
+    .button-group {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+    }
+    
+    button {
+      flex: 1;
+      padding: 12px 24px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    
+    .btn-primary {
+      background: #667eea;
+      color: white;
+    }
+    
+    .btn-primary:hover {
+      background: #5568d3;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+    
+    .btn-secondary {
+      background: #f0f0f0;
+      color: #333;
+    }
+    
+    .btn-secondary:hover {
+      background: #e0e0e0;
+    }
+    
+    .result {
+      margin-top: 30px;
+      padding: 20px;
+      background: #f8f9fa;
+      border-radius: 6px;
+      border-left: 4px solid #667eea;
+    }
+    
+    .result h3 {
+      margin-bottom: 10px;
+      color: #333;
+      font-size: 16px;
+    }
+    
+    .result pre {
+      background: #2d2d2d;
+      color: #f8f8f2;
+      padding: 15px;
+      border-radius: 6px;
+      overflow-x: auto;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    
+    .success {
+      border-left-color: #28a745;
+      background: #d4edda;
+    }
+    
+    .error {
+      border-left-color: #dc3545;
+      background: #f8d7da;
+    }
+    
+    .loading {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 3px solid #f3f3f3;
+      border-top: 3px solid #667eea;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+    
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    
+    .info-box {
+      background: #e7f3ff;
+      border-left: 4px solid #2196F3;
+      padding: 15px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+      font-size: 13px;
+      color: #1976D2;
+    }
+    
+    .info-box strong {
+      display: block;
+      margin-bottom: 5px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🎬 Sora 视频生成 API 测试工具</h1>
+    <p class="subtitle">测试 yunwu.ai Sora 视频生成接口配置</p>
+    
+    <div class="info-box">
+      <strong>📝 使用说明：</strong>
+      1. 填写你的 yunwu.ai API Key<br>
+      2. 选择测试模式（文生视频或图生视频）<br>
+      3. 填写必要的参数<br>
+      4. 点击"开始测试"按钮
+    </div>
+    
+    <form id="testForm">
+      <div class="form-group">
+        <label for="apiKey">API Key *</label>
+        <input type="text" id="apiKey" placeholder="输入你的 yunwu.ai API Key" required>
+      </div>
+      
+      <div class="form-group">
+        <label for="testMode">测试模式 *</label>
+        <select id="testMode" required>
+          <option value="text-to-video">文生视频 (Text-to-Video)</option>
+          <option value="image-to-video">图生视频 (Image-to-Video)</option>
+        </select>
+      </div>
+      
+      <div class="form-group">
+        <label for="model">模型 *</label>
+        <select id="model" required>
+          <option value="sora-2">Sora 2</option>
+          <option value="sora-2-pro">Sora 2 Pro</option>
+        </select>
+      </div>
+      
+      <div class="form-group">
+        <label for="prompt">视频提示词 *</label>
+        <textarea id="prompt" placeholder="例如: A beautiful sunset over the ocean, waves gently crashing on the shore, cinematic quality" required></textarea>
+      </div>
+      
+      <div class="form-group" id="imageUrlGroup" style="display: none;">
+        <label for="imageUrl">图片 URL（图生视频需要）</label>
+        <input type="url" id="imageUrl" placeholder="https://example.com/your-image.jpg">
+        <small style="color: #666; font-size: 12px; margin-top: 5px; display: block;">必须是公开可访问的图片 URL</small>
+      </div>
+      
+      <div class="form-group">
+        <label for="orientation">视频方向 *</label>
+        <select id="orientation" required>
+          <option value="landscape">横屏 (Landscape)</option>
+          <option value="portrait">竖屏 (Portrait)</option>
+        </select>
+      </div>
+      
+      <div class="form-group">
+        <label for="size">视频分辨率 *</label>
+        <select id="size" required>
+          <option value="small">720P (Small)</option>
+          <option value="large" selected>1080P (Large)</option>
+        </select>
+      </div>
+      
+      <div class="form-group">
+        <label for="duration">视频时长（秒）*</label>
+        <select id="duration" required>
+          <option value="10" selected>10 秒</option>
+          <option value="15">15 秒</option>
+          <option value="25">25 秒</option>
+        </select>
+      </div>
+      
+      <div class="button-group">
+        <button type="submit" class="btn-primary" id="submitBtn">🚀 开始测试</button>
+        <button type="button" class="btn-secondary" onclick="clearResult()">清除结果</button>
+      </div>
+    </form>
+    
+    <div id="result" style="display: none;"></div>
+  </div>
+  
+  <script>
+    const BASE_URL = 'https://yunwu.ai';
+    
+    // 切换测试模式时显示/隐藏图片 URL 输入框
+    document.getElementById('testMode').addEventListener('change', function(e) {
+      const imageUrlGroup = document.getElementById('imageUrlGroup');
+      if (e.target.value === 'image-to-video') {
+        imageUrlGroup.style.display = 'block';
+        document.getElementById('imageUrl').required = true;
+      } else {
+        imageUrlGroup.style.display = 'none';
+        document.getElementById('imageUrl').required = false;
+      }
+    });
+    
+    // 表单提交
+    document.getElementById('testForm').addEventListener('submit', async function(e) {
+      e.preventDefault();
+      
+      const submitBtn = document.getElementById('submitBtn');
+      const resultDiv = document.getElementById('result');
+      
+      // 获取表单数据
+      const apiKey = document.getElementById('apiKey').value.trim();
+      const testMode = document.getElementById('testMode').value;
+      const model = document.getElementById('model').value;
+      const prompt = document.getElementById('prompt').value.trim();
+      const imageUrl = document.getElementById('imageUrl').value.trim();
+      const orientation = document.getElementById('orientation').value;
+      const size = document.getElementById('size').value;
+      const duration = parseInt(document.getElementById('duration').value);
+      
+      // 验证
+      if (!apiKey) {
+        showResult('error', '错误', '请填写 API Key');
+        return;
+      }
+      
+      if (testMode === 'image-to-video' && !imageUrl) {
+        showResult('error', '错误', '图生视频模式需要提供图片 URL');
+        return;
+      }
+      
+      // 显示加载状态
+      submitBtn.disabled = true;
+      submitBtn.innerHTML = '<span class="loading"></span>测试中...';
+      resultDiv.style.display = 'none';
+      
+      // 构建请求体
+      const requestBody = {
+        model: model,
+        prompt: prompt,
+        orientation: orientation,
+        size: size,
+        duration: duration,
+        watermark: true,
+      };
+      
+      // 图生视频模式：添加 images 字段
+      if (testMode === 'image-to-video') {
+        requestBody.images = [imageUrl];
+      }
+      
+      // 发送请求
+      try {
+        const response = await fetch(`${BASE_URL}/v1/video/create`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(requestBody),
+        });
+        
+        const responseText = await response.text();
+        let responseData;
+        
+        try {
+          responseData = JSON.parse(responseText);
+        } catch {
+          responseData = { raw: responseText };
+        }
+        
+        if (response.ok) {
+          showResult('success', '✅ 请求成功！', {
+            status: response.status,
+            statusText: response.statusText,
+            data: responseData,
+            requestBody: requestBody,
+          });
+          
+          if (responseData.id || responseData.task_id) {
+            console.log('任务 ID:', responseData.id || responseData.task_id);
+            console.log('💡 提示: 如果返回了 task_id，需要使用轮询接口查询任务状态');
+          }
+          
+          if (responseData.url || responseData.video_url) {
+            console.log('视频 URL:', responseData.url || responseData.video_url);
+          }
+        } else {
+          // 检查是否是服务器负载错误
+          const isLoadError = response.status === 500 || 
+            (responseData.error && (
+              typeof responseData.error === 'string' && (
+                responseData.error.includes('负载已饱和') || 
+                responseData.error.includes('saturated') ||
+                responseData.error.includes('负载')
+              )
+            )) ||
+            (responseData.error && typeof responseData.error === 'object' && responseData.error.error && (
+              responseData.error.error.includes('负载已饱和') || 
+              responseData.error.error.includes('saturated') ||
+              responseData.error.error.includes('负载')
+            ));
+          
+          const errorTitle = isLoadError ? '⚠️ 服务器负载饱和（可稍后重试）' : '❌ 请求失败';
+          const errorMessage = isLoadError 
+            ? '这是服务器端的暂时性问题，不是配置错误。\n\n建议：\n1. 等待 30 秒 - 2 分钟后重试\n2. 错峰使用（避开高峰期）\n3. 你的 API 配置是正确的！'
+            : '请检查错误信息';
+          
+          showResult('error', errorTitle, {
+            status: response.status,
+            statusText: response.statusText,
+            error: responseData,
+            requestBody: requestBody,
+            message: errorMessage,
+          });
+        }
+      } catch (error) {
+        showResult('error', '❌ 请求异常', {
+          message: error.message,
+          error: error,
+        });
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '🚀 开始测试';
+      }
+    });
+    
+    function showResult(type, title, data) {
+      const resultDiv = document.getElementById('result');
+      resultDiv.className = `result ${type}`;
+      resultDiv.innerHTML = `
+        <h3>${title}</h3>
+        <pre>${JSON.stringify(data, null, 2)}</pre>
+      `;
+      resultDiv.style.display = 'block';
+    }
+    
+    function clearResult() {
+      document.getElementById('result').style.display = 'none';
+    }
+  </script>
+</body>
+</html>

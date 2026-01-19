@@ -7,6 +7,7 @@ import { FileText, Maximize2, RefreshCw, Scissors, ArrowRight, Copy, ChevronDown
 import { saveHistory, getHistory, deleteHistory, HistoryRecord } from '../services/historyService';
 import { HistorySelector } from './HistorySelector';
 import { useToast } from './Toast';
+import { ProgressBar } from './ProgressBar';
 
 interface ToolsProps {
   apiKey: string;
@@ -140,6 +141,8 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   const [showHistorySelector, setShowHistorySelector] = useState(false);
   const [historyRecords, setHistoryRecords] = useState<HistoryRecord[]>([]);
   const [pendingModeChange, setPendingModeChange] = useState<{ mode: ToolMode; niche: NicheType } | null>(null);
+  // 生成进度
+  const [generationProgress, setGenerationProgress] = useState<{ current: number; total: number } | null>(null);
   
   // 创建新任务
   const createNewTask = () => {
@@ -331,13 +334,45 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
           cleanedLines.push(lines[i]);
           continue;
         }
-        cleanedLines.push(lines[i]);
+        
+        // 修复：如果字段挤在一起（如 [名称]xxx[别名]xxx[描述]xxx），需要拆分
+        const fieldPattern = /\[(名称|名稱|别名|別名|描述)\]([^\[]*)/g;
+        const matches = Array.from(line.matchAll(fieldPattern));
+        
+        if (matches.length > 1) {
+          // 多个字段挤在一行，需要拆分
+          console.log(`[cleanScriptOutput] 角色信息：检测到字段挤在一起，拆分: ${line.substring(0, 50)}...`);
+          matches.forEach(match => {
+            const fieldName = match[1];
+            const fieldContent = match[2].trim();
+            cleanedLines.push(`[${fieldName}]${fieldContent}`);
+          });
+        } else {
+          // 单个字段，正常处理
+          cleanedLines.push(lines[i]);
+        }
         continue;
       }
       
       // 如果在场景信息块内
       if (inSceneInfo) {
-        cleanedLines.push(lines[i]);
+        // 修复：如果字段挤在一起（如 [名称]xxx[别名]xxx[描述]xxx），需要拆分
+        const fieldPattern = /\[(名称|名稱|别名|別名|描述)\]([^\[]*)/g;
+        const matches = Array.from(line.matchAll(fieldPattern));
+        
+        if (matches.length > 1) {
+          // 多个字段挤在一行，需要拆分
+          console.log(`[cleanScriptOutput] 场景信息：检测到字段挤在一起，拆分: ${line.substring(0, 50)}...`);
+          matches.forEach(match => {
+            const fieldName = match[1];
+            const fieldContent = match[2].trim();
+            cleanedLines.push(`[${fieldName}]${fieldContent}`);
+          });
+        } else {
+          // 单个字段，正常处理
+          cleanedLines.push(lines[i]);
+        }
+        
         // 检测场景信息是否已完成（已有至少一个完整的场景条目）
         // 当遇到连续空行或者下一个不相关的内容时，认为场景信息完成
         if (/^\[(描述)\]/.test(line)) {
@@ -386,8 +421,24 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       }
       
       // 如果行包含角色或场景信息字段，也保留
+      // 修复：如果字段挤在一起（如 [名称]xxx[别名]xxx[描述]xxx），需要拆分
       if (/^\[(名称|名稱|别名|別名|描述)\]/.test(line)) {
-        cleanedLines.push(lines[i]);
+        // 检查是否有多个字段挤在一行（如 [名称]医生[别名]倪医生[描述]...）
+        const fieldPattern = /\[(名称|名稱|别名|別名|描述)\]([^\[]*)/g;
+        const matches = Array.from(line.matchAll(fieldPattern));
+        
+        if (matches.length > 1) {
+          // 多个字段挤在一行，需要拆分
+          console.log(`[cleanScriptOutput] 检测到字段挤在一起，拆分: ${line.substring(0, 50)}...`);
+          matches.forEach(match => {
+            const fieldName = match[1];
+            const fieldContent = match[2].trim();
+            cleanedLines.push(`[${fieldName}]${fieldContent}`);
+          });
+        } else {
+          // 单个字段，正常处理
+          cleanedLines.push(lines[i]);
+        }
         continue;
       }
       
@@ -689,13 +740,14 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       ));
     };
     
-    updateTask({ isGenerating: true, outputText: '' });
-
     // 脚本输出模式：不依赖赛道配置，作为独立通用模块
     const nicheConfig = taskMode === ToolMode.SCRIPT ? null : NICHES[taskNiche];
     let localOutput = '';
     const MAX_CONTINUATIONS = 15; // 最大续写次数（增加到15次以支持长文本）
     let continuationCount = 0;
+    
+    updateTask({ isGenerating: true, outputText: '' });
+    setGenerationProgress({ current: 0, total: 100 }); // 初始化进度（基于百分比）
     
     // 检测是否为YouTube链接
     const isYouTube = isYouTubeLink(taskInputText.trim());
@@ -1660,6 +1712,37 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
         await streamContentGeneration(initialPrompt, systemInstruction, (chunk) => {
             localOutput += chunk;
             updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+            
+            // 实时更新生成进度（基于内容长度）
+            const calculateProgress = () => {
+                if (taskMode === ToolMode.SCRIPT) {
+                    // 脚本模式：基于已搬运的原文长度
+                    const shotTextPattern = /镜头文案[：:]\s*[^-]+-[^：:]+[：:]\s*[""「"]([\s\S]*?)[""」"]/g;
+                    const shotTextMatches = localOutput.matchAll(shotTextPattern);
+                    let copiedLength = 0;
+                    for (const match of shotTextMatches) {
+                        if (match[1]) {
+                            copiedLength += match[1].trim().length;
+                        }
+                    }
+                    // 脚本模式：原文搬运进度 + 角色场景信息完成度
+                    const hasRoleInfo = localOutput.includes('[角色信息]');
+                    const hasSceneInfo = localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]');
+                    const textProgress = Math.min(95, (copiedLength / originalLength) * 100);
+                    const roleSceneProgress = (hasRoleInfo ? 2.5 : 0) + (hasSceneInfo ? 2.5 : 0);
+                    return Math.min(100, textProgress + roleSceneProgress);
+                } else {
+                    // 其他模式：基于输出文本长度（估算，假设输出长度约为输入的1.5-3倍）
+                    const estimatedOutputLength = originalLength * (taskMode === ToolMode.EXPAND ? 3 : taskMode === ToolMode.REWRITE ? 1.5 : 1.2);
+                    return Math.min(95, (localOutput.length / estimatedOutputLength) * 100);
+                }
+            };
+            
+            const progress = calculateProgress();
+            setGenerationProgress({ 
+                current: Math.round(progress), 
+                total: 100 
+            });
         });
         
         // 检查是否需要续写（摘要模式不需要续写，但在生成完成后需要保存历史）
@@ -1710,6 +1793,37 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                 await streamContentGeneration(continuePrompt, systemInstruction, (chunk) => {
                     localOutput += chunk;
                     updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                    
+                    // 实时更新生成进度（基于内容长度）
+                    const calculateProgress = () => {
+                        if (taskMode === ToolMode.SCRIPT) {
+                            // 脚本模式：基于已搬运的原文长度
+                            const shotTextPattern = /镜头文案[：:]\s*[^-]+-[^：:]+[：:]\s*[""「"]([\s\S]*?)[""」"]/g;
+                            const shotTextMatches = localOutput.matchAll(shotTextPattern);
+                            let copiedLength = 0;
+                            for (const match of shotTextMatches) {
+                                if (match[1]) {
+                                    copiedLength += match[1].trim().length;
+                                }
+                            }
+                            // 脚本模式：原文搬运进度 + 角色场景信息完成度
+                            const hasRoleInfo = localOutput.includes('[角色信息]');
+                            const hasSceneInfo = localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]');
+                            const textProgress = Math.min(95, (copiedLength / originalLength) * 100);
+                            const roleSceneProgress = (hasRoleInfo ? 2.5 : 0) + (hasSceneInfo ? 2.5 : 0);
+                            return Math.min(100, textProgress + roleSceneProgress);
+                        } else {
+                            // 其他模式：基于输出文本长度（估算）
+                            const estimatedOutputLength = originalLength * (taskMode === ToolMode.EXPAND ? 3 : taskMode === ToolMode.REWRITE ? 1.5 : 1.2);
+                            return Math.min(95, (localOutput.length / estimatedOutputLength) * 100);
+                        }
+                    };
+                    
+                    const progress = calculateProgress();
+                    setGenerationProgress({ 
+                        current: Math.round(progress), 
+                        total: 100 
+                    });
                 });
                 
                 // ⚠️ 关键：每次续写后立即检查是否已输出场景信息
@@ -1874,6 +1988,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
         }
     } finally {
         updateTask({ isGenerating: false });
+        setGenerationProgress(null); // 清除进度
     }
   };
 
@@ -2036,6 +2151,20 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
           <span className="text-sm font-medium">新建</span>
         </button>
       </div>
+
+      {/* 生成进度条 */}
+      {generationProgress && isGenerating && (
+        <div className="mb-4 p-4 bg-slate-800/50 rounded-lg border border-slate-700">
+          <ProgressBar
+            current={generationProgress.current}
+            total={generationProgress.total}
+            label="生成進度"
+            showPercentage={true}
+            showCount={true}
+            color="emerald"
+          />
+        </div>
+      )}
 
       {/* Grid: Input and Output */}
        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 h-[600px]">

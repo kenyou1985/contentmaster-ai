@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ApiProvider, ToolMode, NicheType } from '../types';
-import { generateImage, generateVideo, ImageGenerationOptions, VideoGenerationOptions } from '../services/yunwuService';
+import { generateImage, ImageGenerationOptions } from '../services/yunwuService';
+import { generateTextToVideo, generateImageToVideo, checkVideoTaskStatus, DayuVideoGenerationOptions } from '../services/dayuVideoService';
 import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, FolderOpen, Rocket, Copy, Check, CheckSquare, Square } from 'lucide-react';
 import JSZip from 'jszip';
 import { HistorySelector } from './HistorySelector';
@@ -12,6 +13,8 @@ interface MediaGeneratorProps {
   apiKey: string;
   provider: ApiProvider;
   toast?: ReturnType<typeof useToast>;
+  dayuApiKey?: string; // 大洋芋 API Key（用于视频生成）
+  setDayuApiKey?: (key: string) => void; // 设置大洋芋 API Key
 }
 
 // 镜头数据接口
@@ -30,6 +33,7 @@ interface Shot {
   videoGenerating?: boolean;
   selected?: boolean;
   editing?: boolean;
+  selectedImageIndex?: number; // 选中的图片索引（-1 表示未选中）
 }
 
 // 图片模型配置（根据yunwu.ai文档）
@@ -43,17 +47,18 @@ const IMAGE_MODELS = [
   { id: 'grok-4-image', name: 'Grok 4 Image', endpoint: '/v1/chat/completions' }, // 使用 chat/completions
 ];
 
-// 视频模型配置（根据yunwu.ai文档）
+// 视频模型配置（根据大洋芋 API 文档：https://6ibmqmipvf.apifox.cn/）
 const VIDEO_MODELS = [
-  { id: 'sora-2-all', name: 'Sora 2 All', endpoint: '/v1/videos', duration: 10, supportedDurations: [10, 15, 25], defaultSize: '1080P', supportedSizes: ['720P', '1080P'] }, // 支持 /v1/videos 和 /v1/video/create（自动尝试）
-  { id: 'sora', name: 'Sora', endpoint: '/v1/videos', duration: 10, supportedDurations: [10, 25], defaultSize: '1080P', supportedSizes: ['720P', '1080P'] }, // 使用 /v1/videos 端点
-  { id: 'veo3', name: 'Veo 3', endpoint: '/v1/videos', duration: 10, supportedDurations: [10], defaultSize: '1080P', supportedSizes: ['720P', '1080P'] }, // 使用 /v1/videos 端点
-  { id: 'veo3-fast', name: 'Veo 3 Fast', endpoint: '/v1/videos', duration: 10, supportedDurations: [10], defaultSize: '720P', supportedSizes: ['720P', '1080P'] }, // 使用 /v1/videos 端点
-  { id: 'veo_3_1-fast', name: 'Veo 3.1 Fast', endpoint: '/v1/videos', duration: 10, supportedDurations: [10], defaultSize: '720P', supportedSizes: ['720P', '1080P'] }, // 使用 /v1/videos 端点
-  { id: 'veo_3_1-fast-4K', name: 'Veo 3.1 Fast 4K', endpoint: '/v1/videos', duration: 10, supportedDurations: [10], defaultSize: '1080P', supportedSizes: ['1080P', '4K'] }, // 使用 /v1/videos 端点
-  { id: 'grok-video-3', name: 'Grok Video 3', endpoint: '/v1/video/create', duration: 10, supportedDurations: [10], defaultSize: '1080P', supportedSizes: ['720P', '1080P'] }, // 使用 /v1/video/create 端点
-  { id: 'kling-video-v2.5', name: 'Kling Video v2.5', endpoint: '/v1/videos', duration: 10, supportedDurations: [10], defaultSize: '1080P', supportedSizes: ['720P', '1080P'] }, // 使用 /v1/videos 端点
-  { id: 'seedream-v4', name: 'Seedream v4', endpoint: '/v1/videos', duration: 10, supportedDurations: [10], defaultSize: '1080P', supportedSizes: ['720P', '1080P'] }, // 使用 /v1/videos 端点
+  // 普通模式（3-5分钟，生产力）
+  { id: 'sora2-landscape', name: 'Sora 2 横屏 10秒', duration: 10, supportedDurations: [10], defaultSize: '1080P', supportedSizes: ['720P', '1080P'], orientation: 'landscape' },
+  { id: 'sora2-portrait', name: 'Sora 2 竖屏 10秒', duration: 10, supportedDurations: [10], defaultSize: '1080P', supportedSizes: ['720P', '1080P'], orientation: 'portrait' },
+  { id: 'sora2-landscape-15s', name: 'Sora 2 横屏 15秒', duration: 15, supportedDurations: [15], defaultSize: '1080P', supportedSizes: ['720P', '1080P'], orientation: 'landscape' },
+  { id: 'sora2-portrait-15s', name: 'Sora 2 竖屏 15秒', duration: 15, supportedDurations: [15], defaultSize: '1080P', supportedSizes: ['720P', '1080P'], orientation: 'portrait' },
+  // Pro 模式（15-30分钟，创作）
+  { id: 'sora2-pro-landscape-25s', name: 'Sora 2 Pro 横屏 25秒', duration: 25, supportedDurations: [25], defaultSize: '1080P', supportedSizes: ['1080P'], orientation: 'landscape' },
+  { id: 'sora2-pro-portrait-25s', name: 'Sora 2 Pro 竖屏 25秒', duration: 25, supportedDurations: [25], defaultSize: '1080P', supportedSizes: ['1080P'], orientation: 'portrait' },
+  { id: 'sora2-pro-portrait-hd-15s', name: 'Sora 2 Pro 竖屏 HD 15秒', duration: 15, supportedDurations: [15], defaultSize: '1080P', supportedSizes: ['1080P'], orientation: 'portrait' },
+  { id: 'sora2-pro-landscape-hd-15s', name: 'Sora 2 Pro 横屏 HD 15秒', duration: 15, supportedDurations: [15], defaultSize: '1080P', supportedSizes: ['1080P'], orientation: 'landscape' },
 ];
 
 // 图片比例配置
@@ -83,9 +88,37 @@ const STYLE_LIBRARY = [
   { id: 'illustration', name: '插画风格', prompt: 'illustration style, artistic, hand-drawn' },
 ];
 
-export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider, toast: externalToast }) => {
+export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ 
+  apiKey, 
+  provider, 
+  toast: externalToast,
+  dayuApiKey: externalDayuApiKey,
+  setDayuApiKey: externalSetDayuApiKey,
+}) => {
   const internalToast = useToast();
   const toast = externalToast || internalToast;
+  
+  // 大洋芋 API Key 状态（用于视频生成）
+  const [dayuApiKey, setDayuApiKey] = useState(() => {
+    return localStorage.getItem('DAYU_API_KEY') || externalDayuApiKey || '';
+  });
+  
+  // 同步外部 API Key（如果提供）
+  useEffect(() => {
+    if (externalDayuApiKey !== undefined) {
+      setDayuApiKey(externalDayuApiKey);
+    }
+  }, [externalDayuApiKey]);
+  
+  // 保存到 localStorage
+  useEffect(() => {
+    if (dayuApiKey) {
+      localStorage.setItem('DAYU_API_KEY', dayuApiKey);
+      if (externalSetDayuApiKey) {
+        externalSetDayuApiKey(dayuApiKey);
+      }
+    }
+  }, [dayuApiKey, externalSetDayuApiKey]);
   
   const [scriptText, setScriptText] = useState('');
   const [shots, setShots] = useState<Shot[]>([]);
@@ -96,7 +129,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
   // 视频参数设置
   const [selectedVideoSize, setSelectedVideoSize] = useState<string>(VIDEO_MODELS[0]?.defaultSize || '1080P');
   const [selectedVideoDuration, setSelectedVideoDuration] = useState<number>(VIDEO_MODELS[0]?.duration || 10);
+  const [selectedVideoOrientation, setSelectedVideoOrientation] = useState<string>('landscape'); // 视频方向：landscape 或 portrait
   const [editingShotId, setEditingShotId] = useState<string | null>(null);
+  const [expandedCaptions, setExpandedCaptions] = useState<Set<string>>(new Set()); // 展开的文案ID集合
+  const [expandedImagePrompts, setExpandedImagePrompts] = useState<Set<string>>(new Set()); // 展开的图片提示词ID集合
+  const [expandedVideoPrompts, setExpandedVideoPrompts] = useState<Set<string>>(new Set()); // 展开的视频提示词ID集合
+  const [editingRole, setEditingRole] = useState<{ shotId: string; role: string } | null>(null); // 编辑角色
+  const [editingTone, setEditingTone] = useState<{ shotId: string; tone: string } | null>(null); // 编辑语气
+  const [editingShotType, setEditingShotType] = useState<{ shotId: string; shotType: string } | null>(null); // 编辑景别
   const [enlargedImageUrl, setEnlargedImageUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showScriptInput, setShowScriptInput] = useState(false);
@@ -678,40 +718,77 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
           return;
         }
       } else {
-        // 其他模型或单张图片，正常调用
-        const options: ImageGenerationOptions = {
-          model: selectedImageModel,
-          prompt: finalPrompt,
-          size: imageSize,
-          quality: 'standard',
-          n: generateImageCount, // 生成多张图片
-        };
-        
-        const result = await generateImage(apiKey, options);
-        
-        if (result.success) {
-          // 处理多张图片的情况
-          if (result.data?.data && Array.isArray(result.data.data)) {
-            // OpenAI 格式：data.data 是数组
-            newImageUrls = result.data.data.map((item: any) => item.url || item.b64_json).filter(Boolean);
-          } else if (result.data?.images && Array.isArray(result.data.images)) {
-            // 其他格式：images 数组
-            newImageUrls = result.data.images.map((item: any) => item.url || item).filter(Boolean);
-          } else if (result.url) {
-            // 单张图片
-            newImageUrls = [result.url];
+        // 其他模型：如果生成多张，需要多次调用（因为某些模型可能不支持 n 参数或支持有限）
+        if (generateImageCount > 1) {
+          // 多次调用生成多张图片
+          for (let i = 0; i < generateImageCount; i++) {
+            const options: ImageGenerationOptions = {
+              model: selectedImageModel,
+              prompt: finalPrompt,
+              size: imageSize,
+              quality: 'standard',
+              n: 1, // 每次只生成1张，通过多次调用来生成多张
+            };
+            
+            const result = await generateImage(apiKey, options);
+            
+            if (result.success) {
+              // 处理单张图片的情况
+              if (result.url) {
+                newImageUrls.push(result.url);
+              } else if (result.data?.data && Array.isArray(result.data.data) && result.data.data.length > 0) {
+                // OpenAI 格式：data.data 是数组
+                const urls = result.data.data.map((item: any) => item.url || item.b64_json).filter(Boolean);
+                newImageUrls.push(...urls);
+              } else if (result.data?.images && Array.isArray(result.data.images) && result.data.images.length > 0) {
+                // 其他格式：images 数组
+                const urls = result.data.images.map((item: any) => item.url || item).filter(Boolean);
+                newImageUrls.push(...urls);
+              }
+            } else {
+              console.warn(`第 ${i + 1} 张图片生成失败:`, result.error);
+            }
+            
+            // 延迟避免API限流
+            if (i < generateImageCount - 1) {
+              await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5秒延迟
+            }
           }
         } else {
-          toast.error(`图片生成失败: ${result.error || '未知错误'}`);
-          updateShot(shot.id, { imageGenerating: false });
-          return;
+          // 单张图片，正常调用
+          const options: ImageGenerationOptions = {
+            model: selectedImageModel,
+            prompt: finalPrompt,
+            size: imageSize,
+            quality: 'standard',
+            n: 1,
+          };
+          
+          const result = await generateImage(apiKey, options);
+          
+          if (result.success) {
+            // 处理单张图片的情况
+            if (result.url) {
+              newImageUrls = [result.url];
+            } else if (result.data?.data && Array.isArray(result.data.data) && result.data.data.length > 0) {
+              // OpenAI 格式：data.data 是数组
+              newImageUrls = result.data.data.map((item: any) => item.url || item.b64_json).filter(Boolean);
+            } else if (result.data?.images && Array.isArray(result.data.images) && result.data.images.length > 0) {
+              // 其他格式：images 数组
+              newImageUrls = result.data.images.map((item: any) => item.url || item).filter(Boolean);
+            }
+          } else {
+            toast.error(`图片生成失败: ${result.error || '未知错误'}`);
+            updateShot(shot.id, { imageGenerating: false });
+            return;
+          }
         }
       }
       
       if (newImageUrls.length > 0) {
-        // 如果是重新生成，替换所有图片；否则追加
+        // 重新绘图时也追加图片，不覆盖原有图片
         const currentUrls = shot.imageUrls || [];
-        const updatedUrls = regenerate ? newImageUrls : [...currentUrls, ...newImageUrls];
+        const updatedUrls = [...currentUrls, ...newImageUrls]; // 始终追加，不替换
         updateShot(shot.id, { imageUrls: updatedUrls, imageGenerating: false });
       } else {
         toast.warning('图片生成成功但未获取到图片URL');
@@ -723,40 +800,136 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
     }
   };
 
+  // 轮询任务状态
+  const pollTaskStatus = async (taskId: string, shotId: string, maxAttempts: number = 60) => {
+    let attempts = 0;
+    
+    const poll = async () => {
+      if (attempts >= maxAttempts) {
+        toast.error('视频生成超时，请稍后手动查询任务状态', 8000);
+        updateShot(shotId, { videoGenerating: false });
+        return;
+      }
+      
+      attempts++;
+      
+      try {
+        const result = await checkVideoTaskStatus(dayuApiKey, taskId);
+        
+        if (result.success) {
+          if (result.status === 'completed' && result.videoUrl) {
+            // 任务完成，获取视频 URL
+            updateShot(shotId, { videoUrl: result.videoUrl, videoGenerating: false });
+            toast.success('视频生成成功！', 8000);
+          } else if (result.status === 'failed' || result.status === 'error') {
+            // 任务失败
+            toast.error(`视频生成失败: ${result.error || '未知错误'}`, 6000);
+            updateShot(shotId, { videoGenerating: false });
+          } else {
+            // 任务进行中，继续轮询
+            console.log(`[MediaGenerator] 任务 ${taskId} 进度: ${result.progress || 0}%, 状态: ${result.status}`);
+            setTimeout(poll, 5000); // 每 5 秒轮询一次
+          }
+        } else {
+          // 查询失败，继续重试
+          setTimeout(poll, 5000);
+        }
+      } catch (error: any) {
+        console.error('[MediaGenerator] 轮询任务状态失败:', error);
+        setTimeout(poll, 5000);
+      }
+    };
+    
+    // 延迟 3 秒后开始第一次轮询
+    setTimeout(poll, 3000);
+  };
+
   // 生成单个视频
   const handleGenerateVideo = async (shot: Shot, regenerate: boolean = false) => {
-    if (!apiKey) {
-      alert('请先配置 API Key');
+    if (!dayuApiKey || !dayuApiKey.trim()) {
+      toast.error('请先配置大洋芋 API Key（用于视频生成）');
       return;
     }
     
     if (!shot.videoPrompt) {
-      alert('该镜头没有视频提示词');
+      toast.error('该镜头没有视频提示词');
       return;
     }
     
     updateShot(shot.id, { videoGenerating: true });
     
     const selectedModel = VIDEO_MODELS.find(m => m.id === selectedVideoModel);
-    const options: VideoGenerationOptions = {
-      model: selectedVideoModel,
-      prompt: shot.videoPrompt,
-      duration: selectedVideoDuration, // 使用用户选择的时长
-      aspect_ratio: selectedImageRatio,
-      size: selectedVideoSize, // 添加 size 参数
-    };
+    if (!selectedModel) {
+      toast.error('请选择视频模型');
+      updateShot(shot.id, { videoGenerating: false });
+      return;
+    }
+    
+    // 获取当前镜头的图片 URL（如果有）
+    const shotImages = shot.imageUrls && shot.imageUrls.length > 0 ? shot.imageUrls : [];
+    
+    // 判断模式：如果有图片，则为图生视频；否则为文生视频
+    const hasImages = shotImages.length > 0;
+    const mode = hasImages ? '图生视频 (Image-to-Video)' : '文生视频 (Text-to-Video)';
+    console.log(`[MediaGenerator] 视频生成模式: ${mode}, 图片数量: ${shotImages.length}`);
+    
+    if (hasImages) {
+      toast.info(`使用图生视频模式，基于 ${shotImages.length} 张图片生成视频`);
+    } else {
+      toast.info('使用文生视频模式，直接根据提示词生成视频');
+    }
     
     try {
-    const result = await generateVideo(apiKey, options);
-    
-    if (result.success && result.url) {
-      updateShot(shot.id, { videoUrl: result.url, videoGenerating: false });
+      let result;
+      
+      if (hasImages) {
+        // 图生视频模式：使用第一张图片（或选中的图片）
+        const selectedImageUrl = shot.selectedImageIndex !== undefined && shot.selectedImageIndex >= 0
+          ? shotImages[shot.selectedImageIndex]
+          : shotImages[0];
+        
+        const options: DayuVideoGenerationOptions = {
+          prompt: shot.videoPrompt,
+      model: selectedVideoModel,
+          input_reference: selectedImageUrl, // 图片 URL 或 File 对象
+        };
+        
+        result = await generateImageToVideo(dayuApiKey, options);
+      } else {
+        // 文生视频模式
+        const options: DayuVideoGenerationOptions = {
+      prompt: shot.videoPrompt,
+          model: selectedVideoModel,
+        };
+        
+        result = await generateTextToVideo(dayuApiKey, options);
+      }
+      
+      if (result.success && result.taskId) {
+        // 异步任务，开始轮询
+        toast.info('视频生成任务已提交，正在处理中...', 6000);
+        await pollTaskStatus(result.taskId, shot.id);
+      } else if (result.success && result.videoUrl) {
+        // 直接返回了视频 URL（同步完成）
+        updateShot(shot.id, { videoUrl: result.videoUrl, videoGenerating: false });
+        toast.success('视频生成成功！', 8000);
     } else {
-        toast.error(`视频生成失败: ${result.error || '未知错误'}`);
+        // 生成失败
+        const errorMsg = result.error || '未知错误';
+        if (errorMsg.includes('负载已饱和') || errorMsg.includes('saturated') || errorMsg.includes('负载')) {
+          toast.error('服务器暂时繁忙，请稍后重试', 8000);
+        } else {
+          toast.error(`视频生成失败: ${errorMsg}`, 6000);
+        }
         updateShot(shot.id, { videoGenerating: false });
       }
     } catch (error: any) {
-      toast.error(`视频生成失败: ${error.message || '未知错误'}`);
+      const errorMsg = error.message || '未知错误';
+      if (errorMsg.includes('负载已饱和') || errorMsg.includes('saturated') || errorMsg.includes('负载')) {
+        toast.error('服务器暂时繁忙，请稍后重试', 8000);
+      } else {
+        toast.error(`视频生成失败: ${errorMsg}`, 6000);
+      }
       updateShot(shot.id, { videoGenerating: false });
     }
   };
@@ -810,6 +983,22 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
     }
   };
 
+  // 批量生成语音（占位函数，待实现）
+  const handleBatchGenerateVoice = async () => {
+    const selectedShots = shots.filter(s => s.selected && s.caption);
+    if (selectedShots.length === 0) {
+      toast.warning('请先选择需要生成语音的镜头');
+      return;
+    }
+    
+    if (!confirm(`确定要为 ${selectedShots.length} 个镜头批量生成语音吗？`)) {
+      return;
+    }
+    
+    toast.info('批量生成语音功能开发中...', 3000);
+    // TODO: 实现批量语音生成逻辑
+  };
+
   const selectedCount = shots.filter(s => s.selected).length;
   const generatingCount = shots.filter(s => s.imageGenerating || s.videoGenerating).length;
 
@@ -855,15 +1044,38 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
         </div>
 
         {/* 设置选项 - 一排显示 */}
-        <div className="flex flex-wrap items-end gap-3 pt-4 border-t border-slate-700">
-          <div className="flex-1 min-w-[140px]">
-            <label className="text-xs text-slate-500 mb-1 block">圖片模型</label>
+        <div className="flex flex-nowrap items-end gap-2 pt-3 border-t border-slate-700 overflow-x-auto">
+          {/* 大洋芋 API Key 输入 */}
+          <div className="flex-shrink-0 w-[160px]">
+            <label className="text-[10px] text-slate-500 mb-0.5 block flex items-center gap-1">
+              大洋芋 API Key
+              <span className="text-amber-400 text-[9px]">(視頻)</span>
+            </label>
+            <input
+              type="password"
+              value={dayuApiKey}
+              onChange={(e) => setDayuApiKey(e.target.value)}
+              placeholder="輸入 API Key"
+              className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
+            />
+      </div>
+
+          <div className="flex-shrink-0 w-[120px]">
+            <label className="text-[10px] text-slate-500 mb-0.5 block">圖片模型</label>
             <select
               value={selectedImageModel}
               onChange={(e) => {
                 const newModel = e.target.value;
                 setSelectedImageModel(newModel);
                 
+                // 如果切换到 DALL-E 3，检查当前比例是否支持
+                if (newModel === 'dall-e-3') {
+                  const currentRatio = IMAGE_RATIOS.find(r => r.id === selectedImageRatio);
+                  if (currentRatio && !currentRatio.dallE3Supported) {
+                    // 自动切换到第一个支持的比例（1:1）
+                    setSelectedImageRatio('1:1');
+                  }
+                }
                 // 如果切换到 sora-image，检查当前比例是否支持
                 if (newModel === 'sora-image') {
                   const currentRatio = IMAGE_RATIOS.find(r => r.id === selectedImageRatio);
@@ -873,16 +1085,16 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
                   }
                 }
               }}
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+              className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
             >
               {IMAGE_MODELS.map(model => (
                 <option key={model.id} value={model.id}>{model.name}</option>
               ))}
             </select>
-      </div>
-
-          <div className="flex-1 min-w-[140px]">
-            <label className="text-xs text-slate-500 mb-1 block">視頻模型</label>
+          </div>
+          
+          <div className="flex-shrink-0 w-[120px]">
+            <label className="text-[10px] text-slate-500 mb-0.5 block">視頻模型</label>
             <select
               value={selectedVideoModel}
               onChange={(e) => {
@@ -900,7 +1112,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
                   }
                 }
               }}
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+              className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
             >
               {VIDEO_MODELS.map(model => (
                 <option key={model.id} value={model.id}>{model.name}</option>
@@ -909,12 +1121,12 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
           </div>
           
           {/* 视频分辨率设置 */}
-          <div className="flex-1 min-w-[100px]">
-            <label className="text-xs text-slate-500 mb-1 block">視頻分辨率</label>
+          <div className="flex-shrink-0 w-[90px]">
+            <label className="text-[10px] text-slate-500 mb-0.5 block">視頻分辨率</label>
             <select
               value={selectedVideoSize}
               onChange={(e) => setSelectedVideoSize(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+              className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
             >
               {(() => {
                 const model = VIDEO_MODELS.find(m => m.id === selectedVideoModel);
@@ -927,8 +1139,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
           </div>
           
           {/* 视频时长设置 */}
-          <div className="flex-1 min-w-[100px]">
-            <label className="text-xs text-slate-500 mb-1 block">視頻時長（秒）</label>
+          <div className="flex-shrink-0 w-[90px]">
+            <label className="text-[10px] text-slate-500 mb-0.5 block">視頻時長（秒）</label>
             <select
               value={selectedVideoDuration}
               onChange={(e) => setSelectedVideoDuration(Number(e.target.value))}
@@ -944,8 +1156,21 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
             </select>
           </div>
           
-          <div className="flex-1 min-w-[120px]">
-            <label className="text-xs text-slate-500 mb-1 block">
+          {/* 视频方向选择 */}
+          <div className="flex-shrink-0 w-[90px]">
+            <label className="text-[10px] text-slate-500 mb-0.5 block">視頻方向</label>
+            <select
+              value={selectedVideoOrientation}
+              onChange={(e) => setSelectedVideoOrientation(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
+            >
+              <option value="landscape">横屏</option>
+              <option value="portrait">竖屏</option>
+            </select>
+          </div>
+          
+          <div className="flex-shrink-0 w-[90px]">
+            <label className="text-[10px] text-slate-500 mb-0.5 block">
               圖片比例
               {selectedImageModel === 'dall-e-3' && (
                 <span className="text-amber-400 ml-1" title="DALL-E 3 只支持 1024x1024, 1024x1792, 1792x1024">⚠️</span>
@@ -956,10 +1181,30 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
             </label>
             <select
               value={selectedImageRatio}
-              onChange={(e) => setSelectedImageRatio(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+              onChange={(e) => {
+                const newRatio = e.target.value;
+                setSelectedImageRatio(newRatio);
+                
+                // 当图片比例改变时，自动更新视频方向（但用户可以手动覆盖）
+                const currentRatio = IMAGE_RATIOS.find(r => r.id === newRatio);
+                if (currentRatio) {
+                  if (currentRatio.width > currentRatio.height) {
+                    setSelectedVideoOrientation('landscape'); // 横屏
+                  } else if (currentRatio.width < currentRatio.height) {
+                    setSelectedVideoOrientation('portrait'); // 竖屏
+                  } else {
+                    // 正方形默认使用 landscape
+                    setSelectedVideoOrientation('landscape');
+                  }
+                }
+              }}
+              className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
             >
               {IMAGE_RATIOS.map(ratio => {
+                // DALL-E 3 只显示支持的比例
+                if (selectedImageModel === 'dall-e-3' && !ratio.dallE3Supported) {
+                  return null;
+                }
                 // sora-image 只显示支持的比例
                 if (selectedImageModel === 'sora-image' && !ratio.soraImageSupported) {
                   return null;
@@ -978,12 +1223,12 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
             </select>
           </div>
 
-          <div className="flex-1 min-w-[120px]">
-            <label className="text-xs text-slate-500 mb-1 block">風格設置</label>
+          <div className="flex-shrink-0 w-[100px]">
+            <label className="text-[10px] text-slate-500 mb-0.5 block">風格設置</label>
             <select
               value={selectedStyle}
               onChange={(e) => setSelectedStyle(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+              className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
             >
               {STYLE_LIBRARY.map(style => (
                 <option key={style.id} value={style.id}>{style.name}</option>
@@ -996,7 +1241,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
             <select
               value={generateImageCount}
               onChange={(e) => setGenerateImageCount(parseInt(e.target.value))}
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+              className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
             >
               {[1, 2, 3, 4].map(count => (
                 <option key={count} value={count}>{count} 張</option>
@@ -1074,248 +1319,471 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
               <Download size={14} />
               導出圖片 ZIP ({selectedCount})
             </button>
+            
+            {/* 批量操作按钮 */}
+            <div className="flex items-center gap-1 border-l border-slate-700 pl-2 ml-2">
+              <button
+                onClick={handleBatchGenerateImages}
+                disabled={generatingCount > 0}
+                className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
+                title="批量生成图片"
+              >
+                <Rocket size={14} />
+                批量生成圖片
+              </button>
+              <button
+                onClick={handleBatchGenerateVideos}
+                disabled={generatingCount > 0}
+                className="flex items-center gap-1 px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
+                title="批量生成视频"
+              >
+                <Rocket size={14} />
+                批量生成視頻
+              </button>
+              <button
+                onClick={handleBatchGenerateVoice}
+                disabled={generatingCount > 0}
+                className="flex items-center gap-1 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
+                title="批量生成语音"
+              >
+                <Rocket size={14} />
+                批量生成語音
+              </button>
+            </div>
+            
+            <span className="text-xs text-slate-500 ml-2">
+              {generatingCount > 0 ? `生成中: ${generatingCount} 個任務...` : '就緒'}
+            </span>
           </div>
           </div>
 
-        {/* 镜头列表（每个镜头带独立预览窗口） */}
-        <div className="flex-1 overflow-y-auto custom-scrollbar space-y-4">
-                {shots.length === 0 ? (
+        {/* 镜头列表 - 表格式布局 */}
+        <div className="flex-1 overflow-x-auto custom-scrollbar">
+          {shots.length === 0 ? (
             <div className="text-center py-12 text-slate-500">
               <FileText size={48} className="mx-auto mb-4 opacity-50" />
               <p>暫無鏡頭數據</p>
               <p className="text-xs mt-2">請從改寫工具讀取腳本或手動添加鏡頭</p>
             </div>
-                ) : (
-                  shots.map((shot) => (
-              <div
-                key={shot.id}
-                className="grid grid-cols-1 lg:grid-cols-2 gap-4"
-              >
-                {/* 左侧：镜头信息 */}
+          ) : (
+            <div className="min-w-full">
+              {/* 表头 */}
+              <div className="grid grid-cols-[60px_200px_160px_220px_160px_220px_140px] gap-1.5 bg-slate-800/70 border-b border-slate-700 p-2 text-xs font-semibold text-slate-300 sticky top-0 z-10">
+                <div className="flex items-center justify-center">編號</div>
+                <div className="flex items-center">文案</div>
+                <div className="flex items-center">提示詞</div>
+                <div className="flex items-center">新圖</div>
+                <div className="flex items-center">視頻提示詞</div>
+                <div className="flex items-center">視頻</div>
+                <div className="flex items-center justify-end pr-2">操作</div>
+              </div>
+              
+              {/* 表格内容 */}
+              {shots.map((shot) => (
                 <div
-                  className={`bg-slate-900/50 border rounded-lg p-4 transition-all ${
-                    shot.selected ? 'border-emerald-500 bg-emerald-500/10' : 'border-slate-700'
+                  key={shot.id}
+                  className={`grid grid-cols-[60px_200px_160px_220px_160px_220px_140px] gap-1.5 border-b border-slate-700/50 p-2 hover:bg-slate-800/30 transition-colors ${
+                    shot.selected ? 'bg-emerald-500/10' : ''
                   }`}
                 >
-                  <div className="flex items-start gap-3">
-                        <input
-                          type="checkbox"
-                          checked={shot.selected || false}
-                          onChange={(e) => updateShot(shot.id, { selected: e.target.checked })}
-                      className="mt-1 rounded"
+                  {/* 编号列 */}
+                  <div className="flex items-center justify-center">
+                    <input
+                      type="checkbox"
+                      checked={shot.selected || false}
+                      onChange={(e) => updateShot(shot.id, { selected: e.target.checked })}
+                      className="rounded mr-2"
                     />
-                    <div className="flex-1 space-y-3">
-                      {/* 镜头编号和操作 */}
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm font-semibold text-emerald-400">鏡頭 {shot.number}</span>
-                          <div className="flex items-center gap-2">
-                          {shot.editing ? (
-                            <button
-                              onClick={() => handleSaveEdit(shot.id)}
-                              className="text-emerald-400 hover:text-emerald-300"
-                              title="保存"
-                            >
-                              <Check size={16} />
-                            </button>
+                    <span className="text-xs font-semibold text-emerald-400">{shot.number}</span>
+                  </div>
+
+                  {/* 文案列 */}
+                  <div className="flex flex-col gap-1">
+                    <div className={`text-[11px] text-slate-300 leading-relaxed ${
+                      expandedCaptions.has(shot.id) ? '' : 'line-clamp-4'
+                    }`}>
+                      {shot.caption || '無文案'}
+                    </div>
+                    {shot.caption && shot.caption.length > 100 && (
+                      <button
+                        onClick={() => {
+                          setExpandedCaptions(prev => {
+                            const newSet = new Set(prev);
+                            if (newSet.has(shot.id)) {
+                              newSet.delete(shot.id);
+                            } else {
+                              newSet.add(shot.id);
+                            }
+                            return newSet;
+                          });
+                        }}
+                        className="text-[9px] text-blue-400 hover:text-blue-300 self-start"
+                      >
+                        {expandedCaptions.has(shot.id) ? '收起' : '展开'}
+                      </button>
+                    )}
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => {
+                          // 提取文案中的角色（格式：角色名-语气: 或 角色名:）
+                          const roleMatch = shot.caption?.match(/^([^-:：]+)[-:：]/);
+                          const extractedRole = roleMatch ? roleMatch[1].trim() : '角色';
+                          setEditingRole({ shotId: shot.id, role: extractedRole });
+                        }}
+                        className="text-[10px] px-1.5 py-0.5 bg-blue-600 hover:bg-blue-500 text-white rounded"
+                        title="角色（可编辑）"
+                      >
+                        {editingRole?.shotId === shot.id ? (
+                          <input
+                            type="text"
+                            value={editingRole.role}
+                            onChange={(e) => setEditingRole({ ...editingRole, role: e.target.value })}
+                            onBlur={() => {
+                              // 更新文案，替换开头的角色
+                              if (shot.caption) {
+                                const toneMatch = shot.caption.match(/^[^-:：]+-([^:：]+)[:：]/);
+                                const tone = toneMatch ? toneMatch[1].trim() : '';
+                                if (tone) {
+                                  const newCaption = shot.caption.replace(/^[^-:：]+[-:：]/, `${editingRole.role}-`);
+                                  updateShot(shot.id, { caption: newCaption });
+                                } else {
+                                  const newCaption = shot.caption.replace(/^[^-:：]+[-:：]/, `${editingRole.role}:`);
+                                  updateShot(shot.id, { caption: newCaption });
+                                }
+                              } else {
+                                updateShot(shot.id, { caption: `${editingRole.role}-` });
+                              }
+                              setEditingRole(null);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.currentTarget.blur();
+                              }
+                            }}
+                            className="w-16 bg-slate-800 border border-slate-600 rounded px-1 text-[10px] text-slate-200"
+                            autoFocus
+                          />
                         ) : (
-                          <button
-                              onClick={() => {
-                                setEditingShotId(shot.id);
-                                updateShot(shot.id, { editing: true });
-                              }}
-                              className="text-slate-400 hover:text-slate-300"
-                              title="編輯"
-                            >
-                              <Edit2 size={16} />
-                          </button>
+                          shot.caption?.match(/^([^-:：]+)[-:：]/)?.[1]?.trim() || '添加'
                         )}
-                        </div>
-          </div>
-
-                      {/* 镜头内容 */}
-                      {shot.editing ? (
-                        <div className="space-y-2">
-                          <div>
-                            <label className="text-xs text-slate-500 mb-1 block">圖片提示詞</label>
-                            <textarea
-                              value={shot.imagePrompt}
-                              onChange={(e) => updateShot(shot.id, { imagePrompt: e.target.value })}
-                              className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm text-slate-200 resize-none"
-                              rows={2}
-                            />
-                          </div>
-                          <div>
-                            <label className="text-xs text-slate-500 mb-1 block">視頻提示詞</label>
-                            <textarea
-                              value={shot.videoPrompt}
-                              onChange={(e) => updateShot(shot.id, { videoPrompt: e.target.value })}
-                              className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm text-slate-200 resize-none"
-                              rows={2}
-                            />
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="space-y-2 text-sm">
-                          <div>
-                            <span className="text-slate-500">圖片提示詞:</span>
-                            <p className="text-slate-300 mt-1">{shot.imagePrompt || '無'}</p>
-                          </div>
-                          <div>
-                            <span className="text-slate-500">視頻提示詞:</span>
-                            <p className="text-slate-300 mt-1">{shot.videoPrompt || '無'}</p>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* 生成按钮 */}
-          <div className="flex items-center gap-2 pt-2 border-t border-slate-700">
-            <button
-                          onClick={() => handleGenerateImage(shot, false)}
-                          disabled={shot.imageGenerating || !shot.imagePrompt}
-                          className="text-xs px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded disabled:opacity-50 flex items-center gap-1"
-                        >
-                          {shot.imageGenerating ? (
-                            <>
-                              <Loader2 size={12} className="animate-spin" />
-                              生成中...
-                            </>
-                          ) : (
-                            <>
-                              <ImageIcon size={12} />
-                              生成圖片
-                            </>
-                          )}
-            </button>
-
-            <button
-                          onClick={() => handleGenerateVideo(shot)}
-                          disabled={shot.videoGenerating || !shot.videoPrompt}
-                          className="text-xs px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded disabled:opacity-50 flex items-center gap-1"
-                        >
-                          {shot.videoGenerating ? (
-                            <>
-                              <Loader2 size={12} className="animate-spin" />
-                              生成中...
-                            </>
-                          ) : (
-                            <>
-                              <Video size={12} />
-                              生成視頻
-                            </>
-                          )}
-            </button>
-                      </div>
+                      </button>
+                      <button
+                        onClick={() => {
+                          // 提取文案中的语气（格式：角色名-语气:）
+                          const toneMatch = shot.caption?.match(/^[^-:：]+-([^:：]+)[:：]/);
+                          const extractedTone = toneMatch ? toneMatch[1].trim() : '语气';
+                          setEditingTone({ shotId: shot.id, tone: extractedTone });
+                        }}
+                        className="text-[10px] px-1.5 py-0.5 bg-slate-700 hover:bg-slate-600 text-white rounded"
+                        title="语气（可编辑）"
+                      >
+                        {editingTone?.shotId === shot.id ? (
+                          <input
+                            type="text"
+                            value={editingTone.tone}
+                            onChange={(e) => setEditingTone({ ...editingTone, tone: e.target.value })}
+                            onBlur={() => {
+                              // 更新文案，替换语气部分
+                              if (shot.caption) {
+                                const roleMatch = shot.caption.match(/^([^-:：]+)[-:：]/);
+                                const role = roleMatch ? roleMatch[1].trim() : '角色';
+                                const newCaption = shot.caption.replace(/^[^-:：]+-[^:：]+[:：]/, `${role}-${editingTone.tone}:`);
+                                updateShot(shot.id, { caption: newCaption });
+                              } else {
+                                updateShot(shot.id, { caption: `角色-${editingTone.tone}:` });
+                              }
+                              setEditingTone(null);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.currentTarget.blur();
+                              }
+                            }}
+                            className="w-16 bg-slate-800 border border-slate-600 rounded px-1 text-[10px] text-slate-200"
+                            autoFocus
+                          />
+                        ) : (
+                          shot.caption?.match(/^[^-:：]+-([^:：]+)[:：]/)?.[1]?.trim() || '讲述者'
+                        )}
+                      </button>
                     </div>
                   </div>
-                </div>
 
-                {/* 右侧：预览窗口 */}
-                <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-semibold text-slate-400">預覽窗口</span>
-                    {(shot.imageUrls && shot.imageUrls.length > 0) && (
-            <button
-                        onClick={() => handleGenerateImage(shot, true)}
-                        disabled={shot.imageGenerating}
-                        className="text-xs px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded disabled:opacity-50 flex items-center gap-1"
-                        title="重新生成"
-                      >
-                        {shot.imageGenerating ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
-            </button>
+                  {/* 提示词列（图片提示词） */}
+                  <div className="flex flex-col gap-1">
+                    {shot.editing ? (
+                      <textarea
+                        value={shot.imagePrompt}
+                        onChange={(e) => updateShot(shot.id, { imagePrompt: e.target.value })}
+                        className="w-full bg-slate-800 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-slate-200 resize-none h-16"
+                        placeholder="圖片提示詞"
+                      />
+                    ) : (
+                      <>
+                        <div className={`text-[10px] text-slate-300 leading-relaxed ${
+                          expandedImagePrompts.has(shot.id) ? '' : 'line-clamp-3'
+                        }`}>
+                          {shot.imagePrompt || '無'}
+                        </div>
+                        {shot.imagePrompt && shot.imagePrompt.length > 60 && (
+                          <button
+                            onClick={() => {
+                              setExpandedImagePrompts(prev => {
+                                const newSet = new Set(prev);
+                                if (newSet.has(shot.id)) {
+                                  newSet.delete(shot.id);
+                                } else {
+                                  newSet.add(shot.id);
+                                }
+                                return newSet;
+                              });
+                            }}
+                            className="text-[9px] text-blue-400 hover:text-blue-300 self-start"
+                          >
+                            {expandedImagePrompts.has(shot.id) ? '收起' : '展开'}
+                          </button>
+                        )}
+                        <button
+                          onClick={() => {
+                            // 提取提示词开头的景别（如"中景,"、"近景,"等）
+                            const shotTypeMatch = shot.imagePrompt?.match(/^([^,，]+)[,，]/);
+                            const extractedShotType = shotTypeMatch ? shotTypeMatch[1].trim() : '中景';
+                            setEditingShotType({ shotId: shot.id, shotType: extractedShotType });
+                          }}
+                          className="text-[10px] px-1.5 py-0.5 bg-blue-600 hover:bg-blue-500 text-white rounded self-start"
+                          title="景别（可编辑）"
+                        >
+                          {editingShotType?.shotId === shot.id ? (
+                            <input
+                              type="text"
+                              value={editingShotType.shotType}
+                              onChange={(e) => setEditingShotType({ ...editingShotType, shotType: e.target.value })}
+                              onBlur={() => {
+                                // 更新提示词，替换开头的景别
+                                if (shot.imagePrompt) {
+                                  const newPrompt = shot.imagePrompt.replace(/^[^,，]+[,，]\s*/, `${editingShotType.shotType}, `);
+                                  updateShot(shot.id, { imagePrompt: newPrompt, shotType: editingShotType.shotType });
+                                } else {
+                                  updateShot(shot.id, { imagePrompt: `${editingShotType.shotType}, `, shotType: editingShotType.shotType });
+                                }
+                                setEditingShotType(null);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.currentTarget.blur();
+                                }
+                              }}
+                              className="w-12 bg-slate-800 border border-slate-600 rounded px-1 text-[10px] text-slate-200"
+                              autoFocus
+                            />
+                          ) : (
+                            shot.shotType || (shot.imagePrompt?.match(/^([^,，]+)[,，]/)?.[1]?.trim()) || '中景'
+                          )}
+                        </button>
+                      </>
                     )}
+                  </div>
+
+                  {/* 新图列（图片预览） */}
+                  <div className="flex flex-col gap-1">
+                    {shot.imageUrls && shot.imageUrls.length > 0 ? (
+                      <>
+                        {shot.imageUrls.length <= 2 ? (
+                          <>
+                            {/* 主图 */}
+                            <div className="relative">
+                              <img
+                                src={shot.imageUrls[shot.selectedImageIndex !== undefined && shot.selectedImageIndex >= 0 ? shot.selectedImageIndex : 0]}
+                                alt={`镜头${shot.number}-主图`}
+                                className="w-full h-32 object-cover rounded border border-slate-700 cursor-pointer"
+                                onDoubleClick={() => {
+                                  const currentIndex = shot.selectedImageIndex !== undefined && shot.selectedImageIndex >= 0 ? shot.selectedImageIndex : 0;
+                                  setEnlargedImageUrl(shot.imageUrls![currentIndex]);
+                                }}
+                                onClick={() => {
+                                  const currentIndex = shot.selectedImageIndex !== undefined && shot.selectedImageIndex >= 0 ? shot.selectedImageIndex : 0;
+                                  const nextIndex = (currentIndex + 1) % shot.imageUrls!.length;
+                                  updateShot(shot.id, { selectedImageIndex: nextIndex });
+                                }}
+                              />
+                              {shot.imageGenerating && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-black/50 rounded">
+                                  <Loader2 size={16} className="animate-spin text-emerald-400" />
+                                </div>
+                              )}
+                            </div>
+                            {/* 缩略图（只有1-2张时显示） */}
+                            {shot.imageUrls.length > 1 && (
+                              <div className="flex gap-1">
+                                {shot.imageUrls.slice(0, 2).map((url, index) => {
+                                  const isSelected = (shot.selectedImageIndex !== undefined && shot.selectedImageIndex >= 0 ? shot.selectedImageIndex : 0) === index;
+                                  return (
+                                    <img
+                                      key={index}
+                                      src={url}
+                                      alt={`缩略图${index + 1}`}
+                                      className={`w-12 h-12 object-cover rounded border-2 cursor-pointer ${
+                                        isSelected ? 'border-orange-500' : 'border-slate-700'
+                                      }`}
+                                      onClick={() => updateShot(shot.id, { selectedImageIndex: index })}
+                                    />
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            {/* 超过2张时，缩小预览，网格排列 */}
+                            <div className="grid grid-cols-2 gap-1">
+                              {shot.imageUrls.map((url, index) => {
+                                const isSelected = (shot.selectedImageIndex !== undefined && shot.selectedImageIndex >= 0 ? shot.selectedImageIndex : 0) === index;
+                                return (
+                                  <div key={index} className="relative">
+                                    <img
+                                      src={url}
+                                      alt={`图片${index + 1}`}
+                                      className={`w-full h-16 object-cover rounded border-2 cursor-pointer ${
+                                        isSelected ? 'border-orange-500' : 'border-slate-700'
+                                      }`}
+                                      onClick={() => updateShot(shot.id, { selectedImageIndex: index })}
+                                      onDoubleClick={() => setEnlargedImageUrl(url)}
+                                    />
+                                    {isSelected && (
+                                      <div className="absolute top-0.5 left-0.5 bg-orange-500 text-white text-[8px] px-1 rounded">
+                                        {index + 1}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            {shot.imageGenerating && (
+                              <div className="absolute inset-0 flex items-center justify-center bg-black/50 rounded">
+                                <Loader2 size={16} className="animate-spin text-emerald-400" />
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </>
+                    ) : (
+                      <div className="flex items-center justify-center h-32 bg-slate-800/50 rounded border border-slate-700 text-slate-500 text-[10px]">
+                        {shot.imageGenerating ? (
+                          <Loader2 size={16} className="animate-spin text-emerald-400" />
+                        ) : (
+                          '暫無圖片'
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 视频提示词列 */}
+                  <div className="flex flex-col gap-1">
+                    {shot.editing ? (
+                      <textarea
+                        value={shot.videoPrompt}
+                        onChange={(e) => updateShot(shot.id, { videoPrompt: e.target.value })}
+                        className="w-full bg-slate-800 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-slate-200 resize-none h-16"
+                        placeholder="視頻提示詞"
+                      />
+                    ) : (
+                      <>
+                        <div className={`text-[10px] text-slate-300 leading-relaxed ${
+                          expandedVideoPrompts.has(shot.id) ? '' : 'line-clamp-3'
+                        }`}>
+                          {shot.videoPrompt || '無'}
+                        </div>
+                        {shot.videoPrompt && shot.videoPrompt.length > 60 && (
+                          <button
+                            onClick={() => {
+                              setExpandedVideoPrompts(prev => {
+                                const newSet = new Set(prev);
+                                if (newSet.has(shot.id)) {
+                                  newSet.delete(shot.id);
+                                } else {
+                                  newSet.add(shot.id);
+                                }
+                                return newSet;
+                              });
+                            }}
+                            className="text-[9px] text-blue-400 hover:text-blue-300 self-start"
+                          >
+                            {expandedVideoPrompts.has(shot.id) ? '收起' : '展开'}
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+
+                  {/* 视频列（视频预览） */}
+                  <div className="flex flex-col gap-1">
+                    {shot.videoUrl ? (
+                      <div className="relative">
+                        <video
+                          src={shot.videoUrl}
+                          className="w-full h-32 object-cover rounded border border-slate-700"
+                          controls={false}
+                        />
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <Play size={24} className="text-white/80" />
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-center h-32 bg-slate-800/50 rounded border border-slate-700 text-slate-500 text-[10px]">
+                        {shot.videoGenerating ? (
+                          <Loader2 size={16} className="animate-spin text-purple-400" />
+                        ) : (
+                          '暫無視頻'
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 操作列 */}
+                  <div className="flex flex-col gap-1 items-end pr-2">
+                    <button
+                      onClick={() => handleGenerateImage(shot, true)}
+                      disabled={shot.imageGenerating}
+                      className="text-[10px] px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded disabled:opacity-50 whitespace-nowrap"
+                      title="重新绘图"
+                    >
+                      重新繪圖
+                    </button>
+                    <button
+                      className="text-[10px] px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded whitespace-nowrap"
+                      title="配音试听"
+                    >
+                      配音試聽
+                    </button>
+                    <button
+                      onClick={() => handleGenerateVideo(shot)}
+                      disabled={shot.videoGenerating || !shot.videoPrompt}
+                      className="text-[10px] px-2 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded disabled:opacity-50 whitespace-nowrap"
+                      title="制作动画"
+                    >
+                      製作動畫
+                    </button>
+                    <button
+                      onClick={() => {
+                        setEditingShotId(shot.id);
+                        updateShot(shot.id, { editing: !shot.editing });
+                      }}
+                      className={`text-[10px] px-2 py-1 rounded whitespace-nowrap ${
+                        shot.editing 
+                          ? 'bg-orange-600 hover:bg-orange-500 text-white border-2 border-orange-400' 
+                          : 'bg-slate-700 hover:bg-slate-600 text-white'
+                      }`}
+                      title="镜头设置"
+                    >
+                      鏡頭設置
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
-                  {/* 图片预览网格 */}
-                  {shot.imageUrls && shot.imageUrls.length > 0 ? (
-                    <div className={`grid gap-2 ${
-                      shot.imageUrls.length === 1 ? 'grid-cols-1' :
-                      shot.imageUrls.length === 2 ? 'grid-cols-2' :
-                      shot.imageUrls.length === 3 ? 'grid-cols-2' :
-                      'grid-cols-2'
-                    }`}>
-                      {shot.imageUrls.map((url, index) => (
-                        <div key={index} className="relative group">
-                          <img
-                            src={url}
-                            alt={`镜头${shot.number}-图片${index + 1}`}
-                            className="w-full h-auto rounded border border-slate-700 cursor-pointer hover:border-emerald-500 transition-all object-cover"
-                            style={{ 
-                              maxHeight: shot.imageUrls && shot.imageUrls.length > 1 ? '150px' : '300px',
-                              minHeight: '100px'
-                            }}
-                            onDoubleClick={() => setEnlargedImageUrl(url)}
-                            onClick={() => setEnlargedImageUrl(url)}
-                          />
-                          <div className="absolute top-1 right-1 bg-black/50 text-white text-[10px] px-1 rounded opacity-0 group-hover:opacity-100 transition-opacity">
-                            {index + 1}
-              </div>
-                        </div>
-                      ))}
-              </div>
-                  ) : (
-                    <div className="flex items-center justify-center h-32 text-slate-500 text-xs">
-                      {shot.imageGenerating ? (
-                        <div className="flex flex-col items-center gap-2">
-                          <Loader2 size={24} className="animate-spin text-emerald-400" />
-                          <span>生成中...</span>
-                        </div>
-                      ) : (
-                        <span>暫無圖片</span>
-                      )}
-                    </div>
-                  )}
-
-                  {/* 视频预览 */}
-                  {shot.videoUrl && (
-                    <div className="mt-3 pt-3 border-t border-slate-700">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-xs font-semibold text-slate-400">視頻預覽</span>
-                        <button
-                          onClick={() => handleGenerateVideo(shot, true)}
-                          disabled={shot.videoGenerating}
-                          className="text-xs px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded disabled:opacity-50 flex items-center gap-1"
-                          title="重新生成"
-                        >
-                          {shot.videoGenerating ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
-                        </button>
-              </div>
-                      <video
-                        src={shot.videoUrl}
-                        controls
-                        className="w-full rounded border border-slate-700 max-h-48"
-                      />
-            </div>
-                  )}
-                </div>
-              </div>
-            ))
-          )}
-          </div>
-
-        {/* 批量操作 */}
-        {shots.length > 0 && (
-          <div className="flex items-center gap-2 pt-2 border-t border-slate-700 bg-slate-800/50 border border-slate-700 rounded-xl p-4">
-                <button
-              onClick={handleBatchGenerateImages}
-              disabled={generatingCount > 0}
-              className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded transition-all disabled:opacity-50"
-                >
-              <Rocket size={16} />
-              批量生成圖片
-                </button>
-            <button
-              onClick={handleBatchGenerateVideos}
-              disabled={generatingCount > 0}
-              className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium rounded transition-all disabled:opacity-50"
-            >
-              <Rocket size={16} />
-              批量生成視頻
-            </button>
-            <span className="text-sm text-slate-500 ml-auto">
-              {generatingCount > 0 ? `生成中: ${generatingCount} 個任務...` : '就緒'}
-            </span>
-              </div>
-        )}
       </div>
 
       {/* 图片放大模态框 */}

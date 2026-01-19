@@ -12,11 +12,14 @@ export interface ImageGenerationOptions {
 }
 
 export interface VideoGenerationOptions {
-  model: string;
-  prompt: string;
-  duration?: number;
-  aspect_ratio?: string;
-  size?: string; // 视频分辨率，如 "720P", "1080P"
+  model: string; // Sora 模型：'sora-2' 或 'sora-2-pro'
+  prompt: string; // 视频提示词
+  duration?: number; // 视频时长（秒）：10, 15, 或 25
+  size?: string; // 视频分辨率："small" (720p) 或 "large" (1080p)
+  orientation?: string; // 视频方向："landscape"（横屏）或 "portrait"（竖屏）
+  images?: string[]; // 图片链接数组（如果有图片，则为图生视频；如果没有，则为文生视频）
+  watermark?: boolean; // 是否添加水印（默认为 true）
+  private?: boolean; // 是否隐藏视频（可选）
 }
 
 export interface GenerationResult {
@@ -517,6 +520,12 @@ export const generateImage = async (
 /**
  * 生成视频
  */
+/**
+ * 生成视频（仅支持 Sora 系列模型）
+ * 支持两种模式：
+ * 1. 文生视频（Text-to-Video）：当 images 为空或未提供时
+ * 2. 图生视频（Image-to-Video）：当 images 不为空时
+ */
 export const generateVideo = async (
   apiKey: string,
   options: VideoGenerationOptions
@@ -524,221 +533,62 @@ export const generateVideo = async (
   try {
     const baseUrl = 'https://yunwu.ai';
     
-    // sora-2-all 支持多个端点，优先尝试 /v1/videos，失败则尝试 /v1/video/create
-    if (options.model === 'sora-2-all') {
-      const endpoints = ['/v1/videos', '/v1/video/create'];
-      
-      for (const endpoint of endpoints) {
-        try {
-          let body: any = {
-            model: options.model,
-            prompt: options.prompt,
-          };
-          
-          // 添加可选参数
-          if (options.duration) body.duration = options.duration;
-          if (options.aspect_ratio) {
-            body.aspect_ratio = options.aspect_ratio;
-          }
-          if (options.size) body.size = options.size;
-          
-          const response = await fetch(`${baseUrl}${endpoint}`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${apiKey}`,
-            },
-            body: JSON.stringify(body),
-          });
-          
-          if (response.ok) {
-            const data = await response.json();
-            return {
-              success: true,
-              data,
-              url: data.url || data.data?.[0]?.url,
-              taskId: data.task_id || data.id || data.taskId,
-            };
-          } else {
-            // 如果这个端点失败，尝试下一个
-            const errorData = await response.json().catch(() => ({}));
-            const errorMessage = errorData.error?.message || errorData.message || `HTTP ${response.status}: ${response.statusText}`;
-            console.warn(`[YunwuService] sora-2-all 端点 ${endpoint} 失败:`, errorData);
-            
-            // 如果是"模型不可用"错误，直接抛出，不尝试下一个端点
-            if (errorMessage.includes('No available channels') || 
-                errorMessage.includes('not available') ||
-                errorMessage.includes('不可用') ||
-                errorMessage.includes('未启用')) {
-              throw new Error(`模型 "${options.model}" 在当前账户中不可用。\n\n可能原因：\n1. 该模型需要特殊权限或白名单\n2. 该模型暂未在您的账户中启用\n3. 当前账户余额不足或配额已用完\n\n建议：\n- 联系 yunwu.ai 客服确认模型可用性和账户权限\n- 或尝试使用其他视频生成模型`);
-            }
-            
-            // 检查是否是服务器负载饱和的错误
-            if (response.status === 500 || 
-                errorMessage.includes('负载已饱和') || 
-                errorMessage.includes('saturated') || 
-                errorMessage.includes('负载') ||
-                errorMessage.includes('繁忙') ||
-                errorMessage.includes('busy') ||
-                errorMessage.includes('overload')) {
-              throw new Error(`服务器暂时繁忙，请稍后重试。\n\n错误详情：${errorMessage}\n\n建议：\n1. 等待 30 秒 - 2 分钟后重试\n2. 尝试使用其他视频生成模型\n3. 如果是高峰期，建议错峰使用`);
-            }
-            
-            if (endpoint === endpoints[endpoints.length - 1]) {
-              // 最后一个端点也失败，抛出错误
-              throw new Error(errorMessage);
-            }
-            continue;
-          }
-        } catch (error: any) {
-          if (endpoint === endpoints[endpoints.length - 1]) {
-            throw error;
-          }
-          continue;
-        }
-      }
+    // 只支持 Sora 系列模型
+    const supportedModels = ['sora-2', 'sora-2-pro', 'sora-2-all'];
+    if (!supportedModels.includes(options.model)) {
+      throw new Error(`不支持的视频模型: ${options.model}。当前仅支持 Sora 系列模型（sora-2, sora-2-pro）。`);
     }
     
-    // grok-video-3 使用 /v1/video/create 端点
-    if (options.model === 'grok-video-3') {
-      const endpoint = '/v1/video/create';
-      let body: any = {
-        model: options.model,
-        prompt: options.prompt,
-      };
-      
-      // 添加可选参数
-      if (options.duration) body.duration = options.duration;
-      if (options.aspect_ratio) {
-        body.aspect_ratio = options.aspect_ratio;
-      }
-      if (options.size) body.size = options.size;
-      
-      const response = await fetch(`${baseUrl}${endpoint}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(body),
-      });
-      
-      if (!response.ok) {
-        // 尝试解析错误响应，处理各种可能的格式
-        let errorData: any = {};
-        let errorMessage = '';
-        
-        try {
-          const responseText = await response.text();
-          if (responseText) {
-            try {
-              errorData = JSON.parse(responseText);
-            } catch {
-              // 如果不是 JSON，直接使用文本
-              errorMessage = responseText;
-            }
-          }
-        } catch {
-          // 如果读取响应失败，使用默认错误信息
-        }
-        
-        // 从多个可能的字段中提取错误信息
-        errorMessage = errorMessage || 
-          errorData.error?.message || 
-          errorData.message || 
-          errorData.error || 
-          errorData.msg ||
-          `HTTP ${response.status}: ${response.statusText}`;
-        
-        // 检查是否是"模型不可用"的错误
-        if (errorMessage.includes('No available channels') || 
-            errorMessage.includes('not available') ||
-            errorMessage.includes('不可用') ||
-            errorMessage.includes('未启用')) {
-          throw new Error(`模型 "${options.model}" 在当前账户中不可用。\n\n可能原因：\n1. 该模型需要特殊权限或白名单\n2. 该模型暂未在您的账户中启用\n3. 当前账户余额不足或配额已用完\n\n建议：\n- 联系 yunwu.ai 客服确认模型可用性和账户权限\n- 或尝试使用其他视频生成模型`);
-        }
-        
-        // 检查是否是服务器负载饱和的错误
-        if (response.status === 500 || 
-            errorMessage.includes('负载已饱和') || 
-            errorMessage.includes('saturated') || 
-            errorMessage.includes('负载') ||
-            errorMessage.includes('繁忙') ||
-            errorMessage.includes('busy') ||
-            errorMessage.includes('overload')) {
-          throw new Error(`服务器暂时繁忙，请稍后重试。\n\n错误详情：${errorMessage}\n\n建议：\n1. 等待 30 秒 - 2 分钟后重试\n2. 尝试使用其他视频生成模型\n3. 如果是高峰期，建议错峰使用`);
-        }
-        
-        throw new Error(errorMessage);
-      }
-      
-      const data = await response.json();
-      
-      // 异步任务，返回 task_id
-      return {
-        success: true,
-        data,
-        url: data.url || data.data?.[0]?.url,
-        taskId: data.task_id || data.id || data.taskId,
-      };
+    // 使用 /v1/video/create 端点
+    const endpoint = '/v1/video/create';
+    
+    // 判断模式：如果有图片，则为图生视频；否则为文生视频
+    const hasImages = options.images && options.images.length > 0;
+    const mode = hasImages ? 'image-to-video' : 'text-to-video';
+    
+    console.log(`[generateVideo] 模式: ${mode}, 图片数量: ${options.images?.length || 0}`);
+    
+    // 转换 size 格式：720P -> small, 1080P -> large
+    let sizeValue = options.size;
+    if (sizeValue === '720P') {
+      sizeValue = 'small';
+    } else if (sizeValue === '1080P' || sizeValue === '4K') {
+      sizeValue = 'large';
+    } else if (!sizeValue) {
+      sizeValue = 'large'; // 默认使用 large
     }
     
-    // veo_3_1-fast 和 veo_3_1-fast-4K 使用 /v1/videos 端点
-    if (options.model === 'veo_3_1-fast' || options.model === 'veo_3_1-fast-4K') {
-      const endpoint = '/v1/videos';
-      let body: any = {
-        model: options.model,
-        prompt: options.prompt,
-      };
-      
-      // 添加可选参数
-      if (options.duration) body.duration = options.duration;
-      if (options.aspect_ratio) body.aspect_ratio = options.aspect_ratio;
-      if (options.size) body.size = options.size;
-      
-      const response = await fetch(`${baseUrl}${endpoint}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(body),
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
-        const errorMessage = errorData.error?.message || errorData.message || `HTTP ${response.status}: ${response.statusText}`;
-        
-        // 检查是否是"模型不可用"的错误
-        if (errorMessage.includes('No available channels') || errorMessage.includes('not available')) {
-          throw new Error(`模型 "${options.model}" 在当前账户中不可用。\n\n可能原因：\n1. 该模型需要特殊权限或白名单\n2. 该模型暂未在您的账户中启用\n3. 当前账户余额不足或配额已用完\n\n建议：\n- 联系 yunwu.ai 客服确认模型可用性和账户权限\n- 或尝试使用其他视频生成模型`);
-        }
-        
-        throw new Error(errorMessage);
-      }
-      
-      const data = await response.json();
-      
-      // veo_3_1 系列可能是异步任务，返回 task_id
-      return {
-        success: true,
-        data,
-        url: data.url || data.data?.[0]?.url,
-        taskId: data.task_id || data.id || data.taskId,
-      };
+    // 确保 orientation 是 portrait 或 landscape（不能是 square）
+    let orientationValue = options.orientation;
+    if (orientationValue === 'square') {
+      // 正方形默认使用 landscape
+      orientationValue = 'landscape';
+    }
+    if (!orientationValue) {
+      orientationValue = 'landscape'; // 默认横屏
     }
     
-    // 其他模型使用 /v1/videos 端点（/v1/videos/generations 不存在，改为 /v1/videos）
-    let endpoint = '/v1/videos';
+    // 构建请求体
     let body: any = {
-      model: options.model,
+      model: options.model === 'sora-2-all' ? 'sora-2' : options.model, // sora-2-all 使用 sora-2 模型名
       prompt: options.prompt,
+      orientation: orientationValue, // 必需字段：portrait 或 landscape
+      size: sizeValue, // 必需字段：small 或 large
+      duration: options.duration || 10, // 必需字段：10, 15, 或 25
+      watermark: options.watermark !== undefined ? options.watermark : true, // 必需字段，默认为 true
     };
     
-    // 添加可选参数
-    if (options.duration) body.duration = options.duration;
-    if (options.aspect_ratio) body.aspect_ratio = options.aspect_ratio;
+    // 图生视频模式：添加 images 字段
+    if (hasImages) {
+      body.images = options.images; // 图生视频：传入图片数组
+    }
+    // 文生视频模式：不添加 images 字段（或传入空数组）
     
+    // 添加可选参数
+    if (options.private !== undefined) {
+      body.private = options.private;
+    }
+      
     const response = await fetch(`${baseUrl}${endpoint}`, {
       method: 'POST',
       headers: {
@@ -749,7 +599,7 @@ export const generateVideo = async (
     });
     
     if (!response.ok) {
-      // 尝试解析错误响应，处理各种可能的格式
+      // 尝试解析错误响应
       let errorData: any = {};
       let errorMessage = '';
       
@@ -759,7 +609,6 @@ export const generateVideo = async (
           try {
             errorData = JSON.parse(responseText);
           } catch {
-            // 如果不是 JSON，直接使用文本
             errorMessage = responseText;
           }
         }
@@ -780,10 +629,10 @@ export const generateVideo = async (
           errorMessage.includes('not available') ||
           errorMessage.includes('不可用') ||
           errorMessage.includes('未启用')) {
-        throw new Error(`模型 "${options.model}" 在当前账户中不可用。\n\n可能原因：\n1. 该模型需要特殊权限或白名单\n2. 该模型暂未在您的账户中启用\n3. 当前账户余额不足或配额已用完\n\n建议：\n- 联系 yunwu.ai 客服确认模型可用性和账户权限\n- 或尝试使用其他视频生成模型`);
+        throw new Error(`模型 "${options.model}" 在当前账户中不可用。\n\n可能原因：\n1. 该模型需要特殊权限或白名单\n2. 该模型暂未在您的账户中启用\n3. 当前账户余额不足或配额已用完\n\n建议：\n- 联系 yunwu.ai 客服确认模型可用性和账户权限`);
       }
       
-      // 检查是否是服务器负载饱和的错误（HTTP 500 或包含负载相关关键词）
+      // 检查是否是服务器负载饱和的错误
       if (response.status === 500 || 
           errorMessage.includes('负载已饱和') || 
           errorMessage.includes('saturated') || 
@@ -791,7 +640,7 @@ export const generateVideo = async (
           errorMessage.includes('繁忙') ||
           errorMessage.includes('busy') ||
           errorMessage.includes('overload')) {
-        throw new Error(`服务器暂时繁忙，请稍后重试。\n\n错误详情：${errorMessage}\n\n建议：\n1. 等待 30 秒 - 2 分钟后重试\n2. 尝试使用其他视频生成模型\n3. 如果是高峰期，建议错峰使用`);
+        throw new Error(`服务器暂时繁忙，请稍后重试。\n\n错误详情：${errorMessage}\n\n建议：\n1. 等待 30 秒 - 2 分钟后重试\n2. 如果是高峰期，建议错峰使用`);
       }
       
       throw new Error(errorMessage);
@@ -799,11 +648,13 @@ export const generateVideo = async (
     
     const data = await response.json();
     
+    // Sora 返回 task_id，需要轮询获取结果（如果需要）
+    // 如果直接返回了 url，则使用 url；否则需要轮询 task_id
     return {
       success: true,
       data,
-      url: data.data?.[0]?.url || data.url,
-      taskId: data.task_id || data.id,
+      url: data.url || data.data?.[0]?.url || data.video_url,
+      taskId: data.id || data.task_id || data.taskId,
     };
   } catch (error: any) {
     console.error('[YunwuService] 视频生成失败:', error);

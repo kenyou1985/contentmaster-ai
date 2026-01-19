@@ -953,8 +953,44 @@ ${segmentSourceText}
     // 用于收集所有生成的内容，最后统一保存历史记录
     const generatedContentsMap = new Map<number, { topic: string; content: string }>();
     
-    // 初始化进度条
-    setBatchProgress({ current: 0, total: selectedTopics.length });
+    // 计算预期总长度（用于进度计算）
+    const calculateExpectedTotalLength = () => {
+        let totalExpected = 0;
+        selectedTopics.forEach((topic) => {
+            const shouldEnforceLength =
+                niche === NicheType.TCM_METAPHYSICS ||
+                niche === NicheType.FINANCE_CRYPTO ||
+                niche === NicheType.GENERAL_VIRAL;
+            const isRevengeShort =
+                niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.SHORT;
+            const isRevengeLong =
+                niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.LONG;
+            
+            if (shouldEnforceLength) {
+                const minChars =
+                    niche === NicheType.TCM_METAPHYSICS
+                        ? MIN_TCM_SCRIPT_CHARS
+                        : niche === NicheType.FINANCE_CRYPTO
+                            ? MIN_FIN_SCRIPT_CHARS
+                            : MIN_NEWS_SCRIPT_CHARS;
+                totalExpected += minChars;
+            } else if (isRevengeShort) {
+                totalExpected += REVENGE_SHORT_MIN;
+            } else if (isRevengeLong) {
+                const isEnglish = storyLanguage === StoryLanguage.ENGLISH;
+                totalExpected += isEnglish ? REVENGE_LONG_EN_MIN : REVENGE_LONG_CN_MIN;
+            } else {
+                // 默认估算
+                totalExpected += 3000;
+            }
+        });
+        return totalExpected;
+    };
+    
+    const expectedTotalLength = calculateExpectedTotalLength();
+    
+    // 初始化进度条（基于百分比）
+    setBatchProgress({ current: 0, total: 100 });
     
     const generationPromises = selectedTopics.map(async (topic, index) => {
         // Determine the correct script template
@@ -1011,6 +1047,22 @@ ${segmentSourceText}
                                 content: newArr[index].content + chunk
                             };
                         }
+                        
+                        // 实时更新生成进度（基于所有文章的总内容长度）
+                        if (expectedTotalLength > 0) {
+                            // 计算所有已生成内容的总长度（包括当前正在生成的内容）
+                            let totalGeneratedLength = 0;
+                            newArr.forEach((item) => {
+                                if (item && item.content) {
+                                    totalGeneratedLength += item.content.length;
+                                }
+                            });
+                            
+                            // 计算百分比（最多95%，留5%给收尾和清理）
+                            const progress = Math.min(95, (totalGeneratedLength / expectedTotalLength) * 100);
+                            setBatchProgress({ current: Math.round(progress), total: 100 });
+                        }
+                        
                         return newArr;
                     });
             };
@@ -1329,11 +1381,18 @@ ${segmentSourceText}
                 return newSet;
             });
             
-            // 更新进度
+            // 更新进度（基于实际生成内容）
             setBatchProgress(prev => {
-                if (prev) {
-                    const newCurrent = prev.current + 1;
-                    return { ...prev, current: newCurrent };
+                if (prev && expectedTotalLength > 0) {
+                    // 计算所有已生成内容的总长度
+                    let totalGeneratedLength = 0;
+                    generatedContentsMap.forEach((item) => {
+                        totalGeneratedLength += item.content.length;
+                    });
+                    
+                    // 计算百分比（最多95%，留5%给收尾和清理）
+                    const progress = Math.min(95, (totalGeneratedLength / expectedTotalLength) * 100);
+                    return { current: Math.round(progress), total: 100 };
                 }
                 return prev;
             });
@@ -1344,6 +1403,9 @@ ${segmentSourceText}
     await Promise.all(generationPromises);
 
     setStatus(GenerationStatus.COMPLETED);
+    
+    // 所有文章生成完成，进度条设为100%
+    setBatchProgress({ current: 100, total: 100 });
     
     // 获取最终生成的内容数量（从 Map 中获取，因为状态可能还没更新）
     const finalCount = generatedContentsMap.size > 0 ? generatedContentsMap.size : generatedContents.length;

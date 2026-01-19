@@ -25,6 +25,18 @@ const App: React.FC = () => {
     const envApiKey = (import.meta as any).env?.VITE_GEMINI_API_KEY;
     return localStorage.getItem('GEMINI_API_KEY') || envApiKey || '';
   });
+  
+  // 大洋芋 API Key State（用于视频生成）
+  const [dayuApiKey, setDayuApiKey] = useState(() => {
+    return localStorage.getItem('DAYU_API_KEY') || '';
+  });
+  
+  // 保存大洋芋 API Key 到 localStorage
+  useEffect(() => {
+    if (dayuApiKey) {
+      localStorage.setItem('DAYU_API_KEY', dayuApiKey);
+    }
+  }, [dayuApiKey]);
 
   const detectProvider = (key: string): ApiProvider => {
     const trimmed = key.trim();
@@ -86,7 +98,13 @@ const App: React.FC = () => {
         ) : activeTab === 'tools' ? (
           <Tools apiKey={apiKey} provider={provider} toast={toast} />
         ) : (
-          <MediaGenerator apiKey={apiKey} provider={provider} toast={toast} />
+          <MediaGenerator 
+            apiKey={apiKey} 
+            provider={provider} 
+            toast={toast}
+            dayuApiKey={dayuApiKey}
+            setDayuApiKey={setDayuApiKey}
+          />
         )}
       </Layout>
       <ToastContainer toasts={toast.toasts} onClose={toast.closeToast} />
