@@ -7,13 +7,29 @@ import { Sparkles, Calendar, Loader2, Download, Eye, Zap, AlertTriangle, Copy, C
 import JSZip from 'jszip';
 import { saveHistory, getHistory, getHistoryKey, deleteHistory, HistoryRecord } from '../services/historyService';
 import { HistorySelector } from './HistorySelector';
+import { useToast } from './Toast';
+import { ProgressBar } from './ProgressBar';
 
 interface GeneratorProps {
   apiKey: string;
   provider: ApiProvider;
+  toast?: ReturnType<typeof useToast>;
 }
 
-export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
+export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: externalToast }) => {
+  // 优先使用外部传入的 toast，如果没有则使用内部的
+  const internalToast = useToast();
+  const toast = externalToast || internalToast;
+  
+  // 调试：检查 toast 是否正确传递
+  React.useEffect(() => {
+    console.log('[Generator] Toast 实例检查:', {
+      hasExternalToast: !!externalToast,
+      hasInternalToast: !!internalToast,
+      toastMethods: toast ? Object.keys(toast) : 'null',
+      toastToasts: toast?.toasts?.length || 0,
+    });
+  }, [externalToast, internalToast, toast]);
   const MIN_TCM_SCRIPT_CHARS = 7500; // 30 min * 250 chars/min
   const MAX_TCM_SCRIPT_CHARS = 10000; // 40 min * 250 chars/min
   const MIN_FIN_SCRIPT_CHARS = 7500; // 30 min * 250 chars/min
@@ -56,7 +72,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
   // Which article is currently displayed in the main editor
   const [viewIndex, setViewIndex] = useState<number>(0);
   
-  const [errorMsg, setErrorMsg] = useState('');
+  // errorMsg 已移除，改用 Toast 通知
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   
@@ -166,12 +182,12 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
       setShowHistorySelector(false);
     }
   };
-  
+
   // Reset input when niche or submode changes
   useEffect(() => {
     if (!showHistorySelector) {
-      setInputVal('');
-      setTopics([]);
+    setInputVal('');
+    setTopics([]);
       setAdaptedContent('');
       setIsAdapting(false);
     }
@@ -255,7 +271,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
 
   const handlePlanTopics = async () => {
     if (!apiKey || !apiKey.trim()) {
-        setErrorMsg("請先在設置中輸入您的 API Key。");
+        toast.error("請先在設置中輸入您的 API Key。");
         return;
     }
 
@@ -263,11 +279,11 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
     initializeGemini(apiKey, { provider });
     
     setStatus(GenerationStatus.PLANNING);
-    setErrorMsg('');
+    // 清除错误消息（使用 Toast 后不再需要）
 
     const config = NICHES[niche];
     if (!config) {
-        setErrorMsg("配置錯誤：找不到該賽道配置");
+        toast.error("配置錯誤：找不到該賽道配置");
         return;
     }
 
@@ -279,7 +295,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
     if (subModeConfig) {
         // Check input requirement
         if (subModeConfig.requiresInput && !inputVal) {
-             setErrorMsg(`請輸入${subModeConfig.title.split('：')[0]}所需的資訊。`);
+             toast.warning(`請輸入${subModeConfig.title.split('：')[0]}所需的資訊。`);
              return;
         }
 
@@ -305,7 +321,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
     } else {
         // Logic for other niches without sub-modes
         if (!inputVal) {
-             setErrorMsg("請輸入關鍵詞。");
+             toast.warning("請輸入關鍵詞。");
              return;
         }
         prompt = config.topicPromptTemplate.replace('{input}', inputVal);
@@ -325,7 +341,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
       setStatus(GenerationStatus.IDLE);
     } catch (err: any) {
       console.error(err);
-      setErrorMsg(parseErrorMessage(err));
+      const errorMsg = parseErrorMessage(err);
+      toast.error(errorMsg);
       setStatus(GenerationStatus.ERROR);
     }
   };
@@ -333,12 +350,12 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
   // Handle adaptation for ShadowWriter mode
   const handleAdaptContent = async () => {
     if (!apiKey || !apiKey.trim()) {
-      setErrorMsg("請先在設置中輸入您的 API Key。");
+      toast.error("請先在設置中輸入您的 API Key。");
       return;
     }
 
     if (!inputVal || !inputVal.trim()) {
-      setErrorMsg("請輸入需要改編的原文內容。");
+      toast.warning("請輸入需要改編的原文內容。");
       return;
     }
 
@@ -347,7 +364,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
     
     setIsAdapting(true);
     setAdaptedContent('');
-    setErrorMsg('');
+    // 清除错误消息（使用 Toast 后不再需要）
 
     // Length control helper (IMPORTANT: must use SAME rule for source & output)
     // DO NOT strip all whitespace/newlines, otherwise length control will be wrong and cause expansion.
@@ -704,15 +721,18 @@ ${segmentSourceText}
     setTopics(topics.map(t => t.id === id ? { ...t, selected: !t.selected } : t));
   };
 
+  // 批量生成进度状态
+  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(null);
+
   const handleBatchGenerate = async () => {
     if (!apiKey || !apiKey.trim()) {
-        setErrorMsg("請先在設置中輸入您的 API Key。");
+        toast.error("請先在設置中輸入您的 API Key。");
         return;
     }
     
     const selectedTopics = topics.filter(t => t.selected);
     if (selectedTopics.length === 0) {
-        setErrorMsg("請至少選擇一個選題。");
+        toast.warning("請至少選擇一個選題。");
         return;
     }
 
@@ -744,7 +764,7 @@ ${segmentSourceText}
     initializeGemini(apiKey, { provider });
 
     setStatus(GenerationStatus.WRITING);
-    setErrorMsg('');
+    // 清除错误消息（使用 Toast 后不再需要）
     
     // 1. Initialize empty content
     const initialContents = selectedTopics.map(t => ({ topic: t.title, content: '' }));
@@ -932,6 +952,9 @@ ${segmentSourceText}
 
     // 用于收集所有生成的内容，最后统一保存历史记录
     const generatedContentsMap = new Map<number, { topic: string; content: string }>();
+    
+    // 初始化进度条
+    setBatchProgress({ current: 0, total: selectedTopics.length });
     
     const generationPromises = selectedTopics.map(async (topic, index) => {
         // Determine the correct script template
@@ -1305,6 +1328,15 @@ ${segmentSourceText}
                 newSet.delete(index);
                 return newSet;
             });
+            
+            // 更新进度
+            setBatchProgress(prev => {
+                if (prev) {
+                    const newCurrent = prev.current + 1;
+                    return { ...prev, current: newCurrent };
+                }
+                return prev;
+            });
         }
     });
 
@@ -1312,6 +1344,65 @@ ${segmentSourceText}
     await Promise.all(generationPromises);
 
     setStatus(GenerationStatus.COMPLETED);
+    
+    // 获取最终生成的内容数量（从 Map 中获取，因为状态可能还没更新）
+    const finalCount = generatedContentsMap.size > 0 ? generatedContentsMap.size : generatedContents.length;
+    
+    // 显示完成通知
+    console.log('[Generator] 准备显示 Toast 通知:', { 
+      finalCount, 
+      hasToast: !!toast,
+      isExternal: toast === externalToast,
+      isInternal: toast === internalToast,
+      toastType: typeof toast,
+      hasSuccess: toast && 'success' in toast,
+      successType: toast && typeof toast.success,
+      currentToasts: toast?.toasts?.length || 0,
+    });
+    
+    // ⚠️ 关键：必须使用 externalToast（App.tsx 中的 toast 实例）
+    // 因为 ToastContainer 在 App.tsx 中使用的是 App 的 toast.toasts
+    if (!externalToast) {
+      console.error('[Generator] externalToast 未传入！无法显示 Toast 通知');
+      return;
+    }
+    
+    console.log('[Generator] 使用 externalToast:', {
+      hasSuccess: typeof externalToast.success === 'function',
+      currentToasts: externalToast.toasts?.length || 0,
+      toastKeys: Object.keys(externalToast)
+    });
+    
+    if (typeof externalToast.success === 'function') {
+      try {
+        console.log('[Generator] 调用 externalToast.success，参数:', {
+          message: `成功生成 ${finalCount} 篇文章！`,
+          duration: 8000
+        });
+        const result = externalToast.success(`成功生成 ${finalCount} 篇文章！`, 8000);
+        console.log('[Generator] externalToast.success 调用成功，返回 ID:', result);
+        
+        // 延迟检查状态（React 状态更新是异步的）
+        setTimeout(() => {
+          console.log('[Generator] Toast 状态检查（延迟 200ms）:', {
+            toastsLength: externalToast.toasts?.length || 0,
+            toasts: externalToast.toasts?.map(t => ({ id: t.id, type: t.type, message: t.message })) || []
+          });
+        }, 200);
+      } catch (error) {
+        console.error('[Generator] externalToast.success 调用失败:', error);
+      }
+    } else {
+      console.error('[Generator] externalToast.success 不是函数:', {
+        success: externalToast.success,
+        successType: typeof externalToast.success
+      });
+    }
+    
+    // 延迟清除进度条，让用户看到完成状态
+    setTimeout(() => {
+      setBatchProgress(null);
+    }, 1000);
     
     // 保存历史记录：每篇文章单独保存，避免多篇文章合并导致错乱
     // ⚠️ 使用生成开始时锁定的子模式配置，而不是当前的配置（避免生成过程中子模式被切换）
@@ -1382,12 +1473,12 @@ ${segmentSourceText}
 
   const handleContinueGeneration = async () => {
       if (!apiKey || !apiKey.trim()) {
-          setErrorMsg("請先在設置中輸入您的 API Key。");
+          toast.error("請先在設置中輸入您的 API Key。");
           return;
       }
       
       if (generatedContents.length === 0) {
-          setErrorMsg("沒有可續寫的內容。");
+          toast.warning("沒有可續寫的內容。");
           return;
       }
 
@@ -1399,7 +1490,7 @@ ${segmentSourceText}
       const subModeConfig = getCurrentSubModeConfig();
 
       if (!subModeConfig || !subModeConfig.continuePromptTemplate) {
-          setErrorMsg("此模式不支持自動續寫。");
+          toast.warning("此模式不支持自動續寫。");
           return;
       }
 
@@ -1784,7 +1875,7 @@ ${segmentSourceText}
           </div>
         )}
 
-        {errorMsg && <div className="mt-4 p-3 bg-red-900/20 border border-red-800 text-red-200 rounded-lg text-sm flex items-center gap-2 animate-in fade-in slide-in-from-top-2"><AlertTriangle size={16}/> {errorMsg}</div>}
+        {/* 错误提示已改用 Toast 通知 */}
 
         {/* Topics List - Hide in Adaptation Mode */}
         {topics.length > 0 && !(niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION) && (
@@ -1816,6 +1907,20 @@ ${segmentSourceText}
                         </div>
                     ))}
                 </div>
+                
+                {/* 批量生成进度条 */}
+                {batchProgress && (
+                  <div className="mb-4 p-4 bg-slate-800/50 rounded-lg border border-slate-700">
+                    <ProgressBar
+                      current={batchProgress.current}
+                      total={batchProgress.total}
+                      label="生成進度"
+                      showPercentage={true}
+                      showCount={true}
+                      color="emerald"
+                    />
+                  </div>
+                )}
                 
                 <div className="flex justify-end">
                      <button 
@@ -1937,9 +2042,30 @@ ${segmentSourceText}
           records={historyRecords}
           onSelect={handleHistorySelect}
           onClose={() => {
+            // 如果用户关闭选择器，仍然执行切换操作
+            if (pendingSubModeChange) {
+              const { niche: nicheType, submode: submodeId } = pendingSubModeChange;
+              
+              // 根据 niche 类型找到对应的 setFunc
+              if (nicheType === NicheType.TCM_METAPHYSICS) {
+                setTcmSubMode(submodeId as TcmSubModeId);
+              } else if (nicheType === NicheType.FINANCE_CRYPTO) {
+                setFinanceSubMode(submodeId as FinanceSubModeId);
+              } else if (nicheType === NicheType.STORY_REVENGE) {
+                setRevengeSubMode(submodeId as RevengeSubModeId);
+              } else if (nicheType === NicheType.GENERAL_VIRAL) {
+                setNewsSubMode(submodeId as NewsSubModeId);
+              }
+              
+              // 清空输入和内容
+              setInputVal('');
+              setTopics([]);
+              setAdaptedContent('');
+              setIsAdapting(false);
+            }
+            
             setShowHistorySelector(false);
             setPendingSubModeChange(null);
-            // 如果用户取消，不切换子模式
           }}
           onDelete={(timestamp) => {
             if (pendingSubModeChange) {

@@ -5,10 +5,13 @@ import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Sav
 import JSZip from 'jszip';
 import { HistorySelector } from './HistorySelector';
 import { getHistory, HistoryRecord } from '../services/historyService';
+import { useToast } from './Toast';
+import { ProgressBar } from './ProgressBar';
 
 interface MediaGeneratorProps {
   apiKey: string;
   provider: ApiProvider;
+  toast?: ReturnType<typeof useToast>;
 }
 
 // 镜头数据接口
@@ -42,15 +45,15 @@ const IMAGE_MODELS = [
 
 // 视频模型配置（根据yunwu.ai文档）
 const VIDEO_MODELS = [
-  { id: 'sora-2-all', name: 'Sora 2 All', endpoint: '/v1/videos', duration: 10 }, // 支持 /v1/videos 和 /v1/video/create（自动尝试）
-  { id: 'sora', name: 'Sora', endpoint: '/v1/videos', duration: 10 }, // 使用 /v1/videos 端点
-  { id: 'veo3', name: 'Veo 3', endpoint: '/v1/videos', duration: 10 }, // 使用 /v1/videos 端点
-  { id: 'veo3-fast', name: 'Veo 3 Fast', endpoint: '/v1/videos', duration: 10 }, // 使用 /v1/videos 端点
-  { id: 'veo_3_1-fast', name: 'Veo 3.1 Fast', endpoint: '/v1/videos', duration: 10 }, // 使用 /v1/videos 端点
-  { id: 'veo_3_1-fast-4K', name: 'Veo 3.1 Fast 4K', endpoint: '/v1/videos', duration: 10 }, // 使用 /v1/videos 端点
-  { id: 'grok-video-3', name: 'Grok Video 3', endpoint: '/v1/video/create', duration: 10 }, // 使用 /v1/video/create 端点
-  { id: 'kling-video-v2.5', name: 'Kling Video v2.5', endpoint: '/v1/videos', duration: 10 }, // 使用 /v1/videos 端点
-  { id: 'seedream-v4', name: 'Seedream v4', endpoint: '/v1/videos', duration: 10 }, // 使用 /v1/videos 端点
+  { id: 'sora-2-all', name: 'Sora 2 All', endpoint: '/v1/videos', duration: 10, supportedDurations: [10, 15, 25], defaultSize: '1080P', supportedSizes: ['720P', '1080P'] }, // 支持 /v1/videos 和 /v1/video/create（自动尝试）
+  { id: 'sora', name: 'Sora', endpoint: '/v1/videos', duration: 10, supportedDurations: [10, 25], defaultSize: '1080P', supportedSizes: ['720P', '1080P'] }, // 使用 /v1/videos 端点
+  { id: 'veo3', name: 'Veo 3', endpoint: '/v1/videos', duration: 10, supportedDurations: [10], defaultSize: '1080P', supportedSizes: ['720P', '1080P'] }, // 使用 /v1/videos 端点
+  { id: 'veo3-fast', name: 'Veo 3 Fast', endpoint: '/v1/videos', duration: 10, supportedDurations: [10], defaultSize: '720P', supportedSizes: ['720P', '1080P'] }, // 使用 /v1/videos 端点
+  { id: 'veo_3_1-fast', name: 'Veo 3.1 Fast', endpoint: '/v1/videos', duration: 10, supportedDurations: [10], defaultSize: '720P', supportedSizes: ['720P', '1080P'] }, // 使用 /v1/videos 端点
+  { id: 'veo_3_1-fast-4K', name: 'Veo 3.1 Fast 4K', endpoint: '/v1/videos', duration: 10, supportedDurations: [10], defaultSize: '1080P', supportedSizes: ['1080P', '4K'] }, // 使用 /v1/videos 端点
+  { id: 'grok-video-3', name: 'Grok Video 3', endpoint: '/v1/video/create', duration: 10, supportedDurations: [10], defaultSize: '1080P', supportedSizes: ['720P', '1080P'] }, // 使用 /v1/video/create 端点
+  { id: 'kling-video-v2.5', name: 'Kling Video v2.5', endpoint: '/v1/videos', duration: 10, supportedDurations: [10], defaultSize: '1080P', supportedSizes: ['720P', '1080P'] }, // 使用 /v1/videos 端点
+  { id: 'seedream-v4', name: 'Seedream v4', endpoint: '/v1/videos', duration: 10, supportedDurations: [10], defaultSize: '1080P', supportedSizes: ['720P', '1080P'] }, // 使用 /v1/videos 端点
 ];
 
 // 图片比例配置
@@ -80,13 +83,19 @@ const STYLE_LIBRARY = [
   { id: 'illustration', name: '插画风格', prompt: 'illustration style, artistic, hand-drawn' },
 ];
 
-export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider }) => {
+export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider, toast: externalToast }) => {
+  const internalToast = useToast();
+  const toast = externalToast || internalToast;
+  
   const [scriptText, setScriptText] = useState('');
   const [shots, setShots] = useState<Shot[]>([]);
   const [selectedImageModel, setSelectedImageModel] = useState(IMAGE_MODELS[0].id);
   const [selectedVideoModel, setSelectedVideoModel] = useState(VIDEO_MODELS[0].id);
   const [selectedImageRatio, setSelectedImageRatio] = useState(IMAGE_RATIOS[2].id); // 默认9:16
   const [selectedStyle, setSelectedStyle] = useState(STYLE_LIBRARY[0].id);
+  // 视频参数设置
+  const [selectedVideoSize, setSelectedVideoSize] = useState<string>(VIDEO_MODELS[0]?.defaultSize || '1080P');
+  const [selectedVideoDuration, setSelectedVideoDuration] = useState<number>(VIDEO_MODELS[0]?.duration || 10);
   const [editingShotId, setEditingShotId] = useState<string | null>(null);
   const [enlargedImageUrl, setEnlargedImageUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -94,6 +103,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
   const [generateImageCount, setGenerateImageCount] = useState(1); // 每次生成的图片数量
   const [showScriptHistorySelector, setShowScriptHistorySelector] = useState(false);
   const [scriptHistoryRecords, setScriptHistoryRecords] = useState<HistoryRecord[]>([]);
+  
+  // 批量操作进度
+  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; type: 'image' | 'video' } | null>(null);
 
   // 组件加载时不自动读取，避免读取旧数据
   // 用户需要手动点击"从改写工具读取"按钮来加载最新脚本
@@ -357,7 +369,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
       setShowScriptHistorySelector(true);
     } else {
       // 没有历史记录，提示用户
-      alert('未找到脚本历史记录。请先在改写工具中生成脚本。');
+      toast.warning('未找到脚本历史记录。请先在改写工具中生成脚本。');
     }
   };
   
@@ -390,13 +402,13 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
           setShowScriptHistorySelector(false);
           console.log('[MediaGenerator] ✅ 脚本加载成功，镜头数量:', parsed.length);
         } else {
-          alert('脚本解析失败，无法提取镜头信息。');
+          toast.error('脚本解析失败，无法提取镜头信息。');
         }
       } else {
-        alert('选中的记录不包含有效的镜头信息。');
+        toast.warning('选中的记录不包含有效的镜头信息。');
       }
     } else {
-      alert('选中的记录内容为空。');
+      toast.warning('选中的记录内容为空。');
     }
   };
 
@@ -429,7 +441,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
   const handleDeleteSelected = () => {
     const selectedShots = shots.filter(s => s.selected);
     if (selectedShots.length === 0) {
-      alert('请先选择要删除的镜头');
+      toast.warning('请先选择要删除的镜头');
       return;
     }
     if (confirm(`确定要删除 ${selectedShots.length} 个镜头吗？`)) {
@@ -455,10 +467,10 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
     const selectedShots = shots.filter(s => s.selected && s.imageUrls && s.imageUrls.length > 0);
     
     if (selectedShots.length === 0) {
-      alert('请先选择包含图片的镜头');
+      toast.warning('请先选择包含图片的镜头');
       return;
     }
-
+    
     try {
       const zip = new JSZip();
       let imageCount = 0;
@@ -520,7 +532,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
       }
 
       if (imageCount === 0) {
-        alert('没有可导出的图片');
+        toast.warning('没有可导出的图片');
         return;
       }
 
@@ -533,12 +545,12 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+    URL.revokeObjectURL(url);
 
-      alert(`成功导出 ${imageCount} 张图片到 ZIP 文件`);
+      toast.success(`成功导出 ${imageCount} 张图片到 ZIP 文件`);
     } catch (error: any) {
       console.error('导出 ZIP 失败:', error);
-      alert(`导出失败: ${error.message || '未知错误'}`);
+      toast.error(`导出失败: ${error.message || '未知错误'}`);
     }
   };
 
@@ -591,7 +603,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
     }
     
     if (!shot.imagePrompt) {
-      alert('该镜头没有图片提示词');
+      toast.warning('该镜头没有图片提示词');
       return;
     }
     
@@ -617,23 +629,23 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
       if (chatCompletionsModels.includes(selectedImageModel) && generateImageCount > 1) {
         // 多次调用生成多张图片（这些模型不支持 n 参数）
         for (let i = 0; i < generateImageCount; i++) {
-          const options: ImageGenerationOptions = {
-            model: selectedImageModel,
-            prompt: finalPrompt,
+    const options: ImageGenerationOptions = {
+      model: selectedImageModel,
+      prompt: finalPrompt,
             size: imageSize,
-            quality: 'standard',
+      quality: 'standard',
             // 注意：这些模型不支持 n 参数，所以不传
-          };
-          
-          const result = await generateImage(apiKey, options);
-          
-          if (result.success && result.url) {
+    };
+    
+    const result = await generateImage(apiKey, options);
+    
+    if (result.success && result.url) {
             newImageUrls.push(result.url);
           } else if (result.success && result.data?.data && Array.isArray(result.data.data)) {
             // 处理多张图片的情况（grok 可能一次返回多张）
             const urls = result.data.data.map((item: any) => item.url || item).filter(Boolean);
             newImageUrls.push(...urls);
-          } else {
+    } else {
             console.warn(`第 ${i + 1} 张图片生成失败:`, result.error);
           }
           
@@ -661,8 +673,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
             newImageUrls = result.data.data.map((item: any) => item.url || item).filter(Boolean);
           }
         } else {
-          alert(`图片生成失败: ${result.error || '未知错误'}`);
-          updateShot(shot.id, { imageGenerating: false });
+          toast.error(`图片生成失败: ${result.error || '未知错误'}`);
+      updateShot(shot.id, { imageGenerating: false });
           return;
         }
       } else {
@@ -690,7 +702,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
             newImageUrls = [result.url];
           }
         } else {
-          alert(`图片生成失败: ${result.error || '未知错误'}`);
+          toast.error(`图片生成失败: ${result.error || '未知错误'}`);
           updateShot(shot.id, { imageGenerating: false });
           return;
         }
@@ -702,7 +714,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
         const updatedUrls = regenerate ? newImageUrls : [...currentUrls, ...newImageUrls];
         updateShot(shot.id, { imageUrls: updatedUrls, imageGenerating: false });
       } else {
-        alert('图片生成成功但未获取到图片URL');
+        toast.warning('图片生成成功但未获取到图片URL');
         updateShot(shot.id, { imageGenerating: false });
       }
     } catch (error: any) {
@@ -729,21 +741,22 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
     const options: VideoGenerationOptions = {
       model: selectedVideoModel,
       prompt: shot.videoPrompt,
-      duration: selectedModel?.duration || 10,
+      duration: selectedVideoDuration, // 使用用户选择的时长
       aspect_ratio: selectedImageRatio,
+      size: selectedVideoSize, // 添加 size 参数
     };
     
     try {
-      const result = await generateVideo(apiKey, options);
-      
-      if (result.success && result.url) {
-        updateShot(shot.id, { videoUrl: result.url, videoGenerating: false });
-      } else {
-        alert(`视频生成失败: ${result.error || '未知错误'}`);
+    const result = await generateVideo(apiKey, options);
+    
+    if (result.success && result.url) {
+      updateShot(shot.id, { videoUrl: result.url, videoGenerating: false });
+    } else {
+        toast.error(`视频生成失败: ${result.error || '未知错误'}`);
         updateShot(shot.id, { videoGenerating: false });
       }
     } catch (error: any) {
-      alert(`视频生成失败: ${error.message || '未知错误'}`);
+      toast.error(`视频生成失败: ${error.message || '未知错误'}`);
       updateShot(shot.id, { videoGenerating: false });
     }
   };
@@ -770,7 +783,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
   const handleBatchGenerateVideos = async () => {
     const shotsWithoutVideos = shots.filter(s => s.videoPrompt && !s.videoUrl && !s.videoGenerating);
     if (shotsWithoutVideos.length === 0) {
-      alert('所有镜头都已生成视频或正在生成中');
+      toast.info('所有镜头都已生成视频或正在生成中');
       return;
     }
     
@@ -778,9 +791,22 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
       return;
     }
     
-    for (const shot of shotsWithoutVideos) {
-      await handleGenerateVideo(shot);
-      await new Promise(resolve => setTimeout(resolve, 3000)); // 延迟3秒避免API限流
+    // 初始化进度
+    setBatchProgress({ current: 0, total: shotsWithoutVideos.length, type: 'video' });
+    
+    try {
+      for (let i = 0; i < shotsWithoutVideos.length; i++) {
+        const shot = shotsWithoutVideos[i];
+        await handleGenerateVideo(shot);
+        setBatchProgress(prev => prev ? { ...prev, current: i + 1 } : null);
+        await new Promise(resolve => setTimeout(resolve, 3000)); // 延迟3秒避免API限流
+      }
+      
+      toast.success(`成功生成 ${shotsWithoutVideos.length} 个镜头的视频！`, 8000);
+    } catch (error: any) {
+      toast.error(`批量生成视频失败: ${error.message || '未知错误'}`, 6000);
+    } finally {
+      setBatchProgress(null);
     }
   };
 
@@ -803,7 +829,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
             >
               <FolderOpen size={16} />
               從改寫工具讀取
-            </button>
+          </button>
             <button
               onClick={() => fileInputRef.current?.click()}
               className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium rounded-lg transition-all"
@@ -853,13 +879,27 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
                 <option key={model.id} value={model.id}>{model.name}</option>
               ))}
             </select>
-          </div>
+      </div>
 
           <div className="flex-1 min-w-[140px]">
             <label className="text-xs text-slate-500 mb-1 block">視頻模型</label>
             <select
               value={selectedVideoModel}
-              onChange={(e) => setSelectedVideoModel(e.target.value)}
+              onChange={(e) => {
+                const newModel = e.target.value;
+                setSelectedVideoModel(newModel);
+                
+                // 切换模型时，自动更新 size 和 duration 的默认值
+                const model = VIDEO_MODELS.find(m => m.id === newModel);
+                if (model) {
+                  if (model.defaultSize) {
+                    setSelectedVideoSize(model.defaultSize);
+                  }
+                  if (model.duration) {
+                    setSelectedVideoDuration(model.duration);
+                  }
+                }
+              }}
               className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
             >
               {VIDEO_MODELS.map(model => (
@@ -867,7 +907,43 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
               ))}
             </select>
           </div>
-
+          
+          {/* 视频分辨率设置 */}
+          <div className="flex-1 min-w-[100px]">
+            <label className="text-xs text-slate-500 mb-1 block">視頻分辨率</label>
+            <select
+              value={selectedVideoSize}
+              onChange={(e) => setSelectedVideoSize(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+            >
+              {(() => {
+                const model = VIDEO_MODELS.find(m => m.id === selectedVideoModel);
+                const sizes = model?.supportedSizes || ['720P', '1080P'];
+                return sizes.map(size => (
+                  <option key={size} value={size}>{size}</option>
+                ));
+              })()}
+            </select>
+          </div>
+          
+          {/* 视频时长设置 */}
+          <div className="flex-1 min-w-[100px]">
+            <label className="text-xs text-slate-500 mb-1 block">視頻時長（秒）</label>
+            <select
+              value={selectedVideoDuration}
+              onChange={(e) => setSelectedVideoDuration(Number(e.target.value))}
+              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+            >
+              {(() => {
+                const model = VIDEO_MODELS.find(m => m.id === selectedVideoModel);
+                const durations = model?.supportedDurations || [10];
+                return durations.map(duration => (
+                  <option key={duration} value={duration}>{duration}秒</option>
+                ));
+              })()}
+            </select>
+          </div>
+          
           <div className="flex-1 min-w-[120px]">
             <label className="text-xs text-slate-500 mb-1 block">
               圖片比例
@@ -951,13 +1027,13 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
           <div className="flex items-center gap-2">
             {/* 批量选择按钮 */}
             <div className="flex items-center gap-1 border-r border-slate-700 pr-2 mr-2">
-              <button
+            <button
                 onClick={handleSelectAll}
                 className="flex items-center gap-1 px-2 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-medium rounded transition-all"
                 title="全选"
-              >
+            >
                 <CheckSquare size={14} />
-              </button>
+            </button>
               <button
                 onClick={handleDeselectAll}
                 className="flex items-center gap-1 px-2 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-medium rounded transition-all"
@@ -999,18 +1075,18 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
               導出圖片 ZIP ({selectedCount})
             </button>
           </div>
-        </div>
+          </div>
 
         {/* 镜头列表（每个镜头带独立预览窗口） */}
         <div className="flex-1 overflow-y-auto custom-scrollbar space-y-4">
-          {shots.length === 0 ? (
+                {shots.length === 0 ? (
             <div className="text-center py-12 text-slate-500">
               <FileText size={48} className="mx-auto mb-4 opacity-50" />
               <p>暫無鏡頭數據</p>
               <p className="text-xs mt-2">請從改寫工具讀取腳本或手動添加鏡頭</p>
             </div>
-          ) : (
-            shots.map((shot) => (
+                ) : (
+                  shots.map((shot) => (
               <div
                 key={shot.id}
                 className="grid grid-cols-1 lg:grid-cols-2 gap-4"
@@ -1022,17 +1098,17 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
                   }`}
                 >
                   <div className="flex items-start gap-3">
-                    <input
-                      type="checkbox"
-                      checked={shot.selected || false}
-                      onChange={(e) => updateShot(shot.id, { selected: e.target.checked })}
+                        <input
+                          type="checkbox"
+                          checked={shot.selected || false}
+                          onChange={(e) => updateShot(shot.id, { selected: e.target.checked })}
                       className="mt-1 rounded"
                     />
                     <div className="flex-1 space-y-3">
                       {/* 镜头编号和操作 */}
                       <div className="flex items-center justify-between">
                         <span className="text-sm font-semibold text-emerald-400">鏡頭 {shot.number}</span>
-                        <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2">
                           {shot.editing ? (
                             <button
                               onClick={() => handleSaveEdit(shot.id)}
@@ -1041,8 +1117,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
                             >
                               <Check size={16} />
                             </button>
-                          ) : (
-                            <button
+                        ) : (
+                          <button
                               onClick={() => {
                                 setEditingShotId(shot.id);
                                 updateShot(shot.id, { editing: true });
@@ -1051,10 +1127,10 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
                               title="編輯"
                             >
                               <Edit2 size={16} />
-                            </button>
-                          )}
+                          </button>
+                        )}
                         </div>
-                      </div>
+          </div>
 
                       {/* 镜头内容 */}
                       {shot.editing ? (
@@ -1092,8 +1168,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
                       )}
 
                       {/* 生成按钮 */}
-                      <div className="flex items-center gap-2 pt-2 border-t border-slate-700">
-                        <button
+          <div className="flex items-center gap-2 pt-2 border-t border-slate-700">
+            <button
                           onClick={() => handleGenerateImage(shot, false)}
                           disabled={shot.imageGenerating || !shot.imagePrompt}
                           className="text-xs px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded disabled:opacity-50 flex items-center gap-1"
@@ -1109,9 +1185,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
                               生成圖片
                             </>
                           )}
-                        </button>
+            </button>
 
-                        <button
+            <button
                           onClick={() => handleGenerateVideo(shot)}
                           disabled={shot.videoGenerating || !shot.videoPrompt}
                           className="text-xs px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded disabled:opacity-50 flex items-center gap-1"
@@ -1127,7 +1203,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
                               生成視頻
                             </>
                           )}
-                        </button>
+            </button>
                       </div>
                     </div>
                   </div>
@@ -1138,17 +1214,17 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-xs font-semibold text-slate-400">預覽窗口</span>
                     {(shot.imageUrls && shot.imageUrls.length > 0) && (
-                      <button
+            <button
                         onClick={() => handleGenerateImage(shot, true)}
                         disabled={shot.imageGenerating}
                         className="text-xs px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded disabled:opacity-50 flex items-center gap-1"
                         title="重新生成"
                       >
                         {shot.imageGenerating ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
-                      </button>
+            </button>
                     )}
-                  </div>
-                  
+        </div>
+
                   {/* 图片预览网格 */}
                   {shot.imageUrls && shot.imageUrls.length > 0 ? (
                     <div className={`grid gap-2 ${
@@ -1172,10 +1248,10 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
                           />
                           <div className="absolute top-1 right-1 bg-black/50 text-white text-[10px] px-1 rounded opacity-0 group-hover:opacity-100 transition-opacity">
                             {index + 1}
-                          </div>
+              </div>
                         </div>
                       ))}
-                    </div>
+              </div>
                   ) : (
                     <div className="flex items-center justify-center h-32 text-slate-500 text-xs">
                       {shot.imageGenerating ? (
@@ -1202,31 +1278,31 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
                         >
                           {shot.videoGenerating ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
                         </button>
-                      </div>
+              </div>
                       <video
                         src={shot.videoUrl}
                         controls
                         className="w-full rounded border border-slate-700 max-h-48"
                       />
-                    </div>
+            </div>
                   )}
                 </div>
               </div>
             ))
           )}
-        </div>
+          </div>
 
         {/* 批量操作 */}
         {shots.length > 0 && (
           <div className="flex items-center gap-2 pt-2 border-t border-slate-700 bg-slate-800/50 border border-slate-700 rounded-xl p-4">
-            <button
+                <button
               onClick={handleBatchGenerateImages}
               disabled={generatingCount > 0}
               className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded transition-all disabled:opacity-50"
-            >
+                >
               <Rocket size={16} />
               批量生成圖片
-            </button>
+                </button>
             <button
               onClick={handleBatchGenerateVideos}
               disabled={generatingCount > 0}
@@ -1238,7 +1314,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
             <span className="text-sm text-slate-500 ml-auto">
               {generatingCount > 0 ? `生成中: ${generatingCount} 個任務...` : '就緒'}
             </span>
-          </div>
+              </div>
         )}
       </div>
 
@@ -1263,16 +1339,16 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
             />
             <a
               href={enlargedImageUrl}
-              download
+                download
               className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded transition-all"
               onClick={(e) => e.stopPropagation()}
-            >
-              <Download size={16} />
+              >
+                <Download size={16} />
               下載圖片
-            </a>
+              </a>
           </div>
-        </div>
-      )}
+            </div>
+          )}
       
       {/* 脚本历史记录选择器 */}
       {showScriptHistorySelector && (

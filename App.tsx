@@ -5,9 +5,20 @@ import { Tools } from './components/Tools';
 import { MediaGenerator } from './components/MediaGenerator';
 import { initializeGemini } from './services/geminiService';
 import { ApiProvider } from './types';
+import { ToastContainer, useToast } from './components/Toast';
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'generate' | 'tools' | 'media'>('generate');
+  const toast = useToast();
+  
+  // 调试：检查 toast 状态
+  React.useEffect(() => {
+    console.log('[App] Toast 状态检查:', {
+      toastsLength: toast.toasts.length,
+      toasts: toast.toasts,
+      hasSuccess: typeof toast.success === 'function',
+    });
+  }, [toast.toasts]);
   
   // API Key State
   const [apiKey, setApiKey] = useState(() => {
@@ -61,22 +72,25 @@ const App: React.FC = () => {
   }, [provider]);
 
   return (
-    <Layout 
-      activeTab={activeTab} 
-      setActiveTab={setActiveTab}
-      apiKey={apiKey}
-      setApiKey={setApiKey}
-      provider={provider}
-      setProvider={setProvider}
-    >
-      {activeTab === 'generate' ? (
-        <Generator apiKey={apiKey} provider={provider} />
-      ) : activeTab === 'tools' ? (
-        <Tools apiKey={apiKey} provider={provider} />
-      ) : (
-        <MediaGenerator apiKey={apiKey} provider={provider} />
-      )}
-    </Layout>
+    <>
+      <Layout 
+        activeTab={activeTab} 
+        setActiveTab={setActiveTab}
+        apiKey={apiKey}
+        setApiKey={setApiKey}
+        provider={provider}
+        setProvider={setProvider}
+      >
+        {activeTab === 'generate' ? (
+          <Generator apiKey={apiKey} provider={provider} toast={toast} />
+        ) : activeTab === 'tools' ? (
+          <Tools apiKey={apiKey} provider={provider} toast={toast} />
+        ) : (
+          <MediaGenerator apiKey={apiKey} provider={provider} toast={toast} />
+        )}
+      </Layout>
+      <ToastContainer toasts={toast.toasts} onClose={toast.closeToast} />
+    </>
   );
 };
 

@@ -16,6 +16,7 @@ export interface VideoGenerationOptions {
   prompt: string;
   duration?: number;
   aspect_ratio?: string;
+  size?: string; // 视频分辨率，如 "720P", "1080P"
 }
 
 export interface GenerationResult {
@@ -539,6 +540,7 @@ export const generateVideo = async (
           if (options.aspect_ratio) {
             body.aspect_ratio = options.aspect_ratio;
           }
+          if (options.size) body.size = options.size;
           
           const response = await fetch(`${baseUrl}${endpoint}`, {
             method: 'POST',
@@ -610,6 +612,7 @@ export const generateVideo = async (
       if (options.aspect_ratio) {
         body.aspect_ratio = options.aspect_ratio;
       }
+      if (options.size) body.size = options.size;
       
       const response = await fetch(`${baseUrl}${endpoint}`, {
         method: 'POST',
@@ -691,6 +694,7 @@ export const generateVideo = async (
       // 添加可选参数
       if (options.duration) body.duration = options.duration;
       if (options.aspect_ratio) body.aspect_ratio = options.aspect_ratio;
+      if (options.size) body.size = options.size;
       
       const response = await fetch(`${baseUrl}${endpoint}`, {
         method: 'POST',
