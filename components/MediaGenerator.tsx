@@ -1,8 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ApiProvider } from '../types';
+import { ApiProvider, ToolMode, NicheType } from '../types';
 import { generateImage, generateVideo, ImageGenerationOptions, VideoGenerationOptions } from '../services/yunwuService';
 import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, FolderOpen, Rocket, Copy, Check, CheckSquare, Square } from 'lucide-react';
 import JSZip from 'jszip';
+import { HistorySelector } from './HistorySelector';
+import { getHistory, HistoryRecord } from '../services/historyService';
 
 interface MediaGeneratorProps {
   apiKey: string;
@@ -90,6 +92,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showScriptInput, setShowScriptInput] = useState(false);
   const [generateImageCount, setGenerateImageCount] = useState(1); // 每次生成的图片数量
+  const [showScriptHistorySelector, setShowScriptHistorySelector] = useState(false);
+  const [scriptHistoryRecords, setScriptHistoryRecords] = useState<HistoryRecord[]>([]);
 
   // 组件加载时不自动读取，避免读取旧数据
   // 用户需要手动点击"从改写工具读取"按钮来加载最新脚本
@@ -270,97 +274,130 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
     reader.readAsText(file);
   };
 
-  // 从改写工具读取脚本（支持历史缓存）
+  // 加载脚本历史记录并显示选择器
   const loadScriptFromTools = () => {
-    console.log('[MediaGenerator] ========== 开始读取脚本 ==========');
+    console.log('[MediaGenerator] ========== 开始读取脚本历史记录 ==========');
     
-    // 强制清除当前所有镜头数据和脚本文本
-    setShots([]);
-    setScriptText('');
+    // 收集所有可能的脚本历史记录来源
+    const allRecords: HistoryRecord[] = [];
     
-    // 优先读取最新的脚本
-    const savedScript = localStorage.getItem('lastGeneratedScript');
-    console.log('[MediaGenerator] lastGeneratedScript 存在:', !!savedScript);
-    console.log('[MediaGenerator] lastGeneratedScript 长度:', savedScript?.length || 0);
+    // 1. 从 Tools 模块的新历史记录系统读取（SCRIPT 模式）
+    const niches = [NicheType.TCM_METAPHYSICS, NicheType.FINANCE_CRYPTO, NicheType.STORY_REVENGE, NicheType.GENERAL_VIRAL];
+    niches.forEach(niche => {
+      const historyKey = `${ToolMode.SCRIPT}_${niche}`;
+      const records = getHistory('tools', historyKey);
+      console.log(`[MediaGenerator] 从 ${historyKey} 读取到 ${records.length} 条记录`);
+      allRecords.push(...records);
+    });
     
-    if (savedScript && savedScript.trim()) {
-      // 验证脚本是否是最新的（通过检查是否包含镜头信息）
-      const hasShots = /(?:镜头|鏡頭)\s*\d+/.test(savedScript);
-      const shotCount = (savedScript.match(/(?:镜头|鏡頭)\s*\d+/g) || []).length;
-      console.log('[MediaGenerator] 脚本包含镜头信息:', hasShots);
-      console.log('[MediaGenerator] 脚本镜头数量:', shotCount);
-      console.log('[MediaGenerator] 脚本前300字符:', savedScript.substring(0, 300));
-      
-      if (hasShots && shotCount > 0) {
-        // 解析脚本
-        const parsed = parseScript(savedScript);
-        console.log('[MediaGenerator] 解析后的镜头数量:', parsed.length);
-        
-        if (parsed.length > 0) {
-          // 直接设置状态，不使用 setTimeout
-          setScriptText(savedScript);
-          setShots(parsed);
-          setShowScriptInput(false);
-          console.log('[MediaGenerator] ✅ 脚本加载成功，镜头数量:', parsed.length);
-          return;
-        } else {
-          console.warn('[MediaGenerator] ⚠️ 脚本解析失败，镜头数量为0');
-        }
-      } else {
-        // 如果脚本格式不正确，清除它
-        console.warn('[MediaGenerator] ⚠️ 脚本格式不正确，清除缓存');
-        localStorage.removeItem('lastGeneratedScript');
-      }
-    }
-    
-    // 如果没有最新脚本，尝试读取历史缓存
+    // 2. 从旧的 scriptHistory 读取（保持向后兼容）
     try {
       const historyKey = 'scriptHistory';
       const historyStr = localStorage.getItem(historyKey);
-      console.log('[MediaGenerator] scriptHistory 存在:', !!historyStr);
-      
       if (historyStr) {
         const history = JSON.parse(historyStr);
-        if (Array.isArray(history) && history.length > 0) {
-          console.log('[MediaGenerator] 历史记录数量:', history.length);
-          
-          // 获取最近一次的脚本（按时间戳排序，最新的在前）
-          const sortedHistory = history.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-          
-          // 遍历历史记录，找到第一个有效的脚本
-          for (let i = 0; i < sortedHistory.length; i++) {
-            const scriptItem = sortedHistory[i];
-            if (scriptItem && scriptItem.content && scriptItem.content.trim()) {
-              const hasShots = /(?:镜头|鏡頭)\s*\d+/.test(scriptItem.content);
-              const shotCount = (scriptItem.content.match(/(?:镜头|鏡頭)\s*\d+/g) || []).length;
-              const date = new Date(scriptItem.timestamp || 0);
-              console.log(`[MediaGenerator] 检查历史脚本 #${i + 1}, 包含镜头: ${hasShots}, 镜头数量: ${shotCount}, 时间: ${date.toLocaleString()}`);
-              
-              if (hasShots && shotCount > 0) {
-                // 解析脚本
-                const parsed = parseScript(scriptItem.content);
-                console.log('[MediaGenerator] 解析后的镜头数量:', parsed.length);
-                
-                if (parsed.length > 0) {
-                  // 直接设置状态
-                  setScriptText(scriptItem.content);
-                  setShots(parsed);
-                  setShowScriptInput(false);
-                  console.log('[MediaGenerator] ✅ 从历史缓存加载脚本成功，镜头数量:', parsed.length);
-                  return;
-                }
-              }
+        if (Array.isArray(history)) {
+          history.forEach((item: any) => {
+            if (item && item.content && item.content.trim()) {
+              allRecords.push({
+                content: item.content,
+                timestamp: item.timestamp || Date.now(),
+                metadata: {
+                  topic: '脚本历史记录',
+                },
+              });
             }
-          }
+          });
+          console.log(`[MediaGenerator] 从 scriptHistory 读取到 ${history.length} 条记录`);
         }
       }
     } catch (error) {
-      console.warn('[MediaGenerator] ❌ 读取历史缓存失败:', error);
+      console.error('[MediaGenerator] 读取 scriptHistory 失败:', error);
     }
     
-    // 如果都没有，提示用户
-    console.log('[MediaGenerator] ❌ 未找到有效脚本');
-    alert('改写工具中还没有生成的脚本，请先在改写工具中生成脚本。');
+    // 3. 从 lastGeneratedScript 读取（最新脚本）
+    try {
+      const savedScript = localStorage.getItem('lastGeneratedScript');
+      if (savedScript && savedScript.trim()) {
+        const hasShots = /(?:镜头|鏡頭)\s*\d+/.test(savedScript);
+        if (hasShots) {
+          allRecords.unshift({
+            content: savedScript,
+            timestamp: Date.now(),
+            metadata: {
+              topic: '最新生成的脚本',
+            },
+          });
+          console.log('[MediaGenerator] 从 lastGeneratedScript 读取到最新脚本');
+        }
+      }
+    } catch (error) {
+      console.error('[MediaGenerator] 读取 lastGeneratedScript 失败:', error);
+    }
+    
+    // 按时间戳排序（最新的在前）
+    allRecords.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    
+    // 去重（相同内容的记录只保留最新的）
+    const uniqueRecords: HistoryRecord[] = [];
+    const seenContents = new Set<string>();
+    allRecords.forEach(record => {
+      const contentHash = record.content.trim().substring(0, 200); // 使用前200字符作为哈希
+      if (!seenContents.has(contentHash)) {
+        seenContents.add(contentHash);
+        uniqueRecords.push(record);
+      }
+    });
+    
+    console.log(`[MediaGenerator] 总共找到 ${uniqueRecords.length} 条唯一脚本记录`);
+    
+    if (uniqueRecords.length > 0) {
+      // 显示历史记录选择器
+      setScriptHistoryRecords(uniqueRecords);
+      setShowScriptHistorySelector(true);
+    } else {
+      // 没有历史记录，提示用户
+      alert('未找到脚本历史记录。请先在改写工具中生成脚本。');
+    }
+  };
+  
+  // 处理脚本历史记录选择
+  const handleScriptHistorySelect = (record: HistoryRecord) => {
+    console.log('[MediaGenerator] 选择脚本历史记录:', {
+      timestamp: new Date(record.timestamp).toLocaleString(),
+      contentLength: record.content.length,
+    });
+    
+    if (record.content && record.content.trim()) {
+      // 验证脚本是否包含镜头信息
+      const hasShots = /(?:镜头|鏡頭)\s*\d+/.test(record.content);
+      const shotCount = (record.content.match(/(?:镜头|鏡頭)\s*\d+/g) || []).length;
+      
+      if (hasShots && shotCount > 0) {
+        // 解析脚本
+        const parsed = parseScript(record.content);
+        console.log('[MediaGenerator] 解析后的镜头数量:', parsed.length);
+        
+        if (parsed.length > 0) {
+          // 清除当前数据
+          setShots([]);
+          setScriptText('');
+          
+          // 加载选中的脚本
+          setScriptText(record.content);
+          setShots(parsed);
+          setShowScriptInput(false);
+          setShowScriptHistorySelector(false);
+          console.log('[MediaGenerator] ✅ 脚本加载成功，镜头数量:', parsed.length);
+        } else {
+          alert('脚本解析失败，无法提取镜头信息。');
+        }
+      } else {
+        alert('选中的记录不包含有效的镜头信息。');
+      }
+    } else {
+      alert('选中的记录内容为空。');
+    }
   };
 
   // 更新镜头数据
@@ -1235,6 +1272,26 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ apiKey, provider
             </a>
           </div>
         </div>
+      )}
+      
+      {/* 脚本历史记录选择器 */}
+      {showScriptHistorySelector && (
+        <HistorySelector
+          records={scriptHistoryRecords}
+          onSelect={handleScriptHistorySelect}
+          onClose={() => setShowScriptHistorySelector(false)}
+          onDelete={(timestamp) => {
+            // 删除历史记录
+            const updatedRecords = scriptHistoryRecords.filter(r => r.timestamp !== timestamp);
+            setScriptHistoryRecords(updatedRecords);
+            
+            // 如果删除后没有记录了，关闭选择器
+            if (updatedRecords.length === 0) {
+              setShowScriptHistorySelector(false);
+            }
+          }}
+          title="選擇腳本歷史記錄"
+        />
       )}
     </div>
   );

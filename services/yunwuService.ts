@@ -564,12 +564,21 @@ export const generateVideo = async (
             console.warn(`[YunwuService] sora-2-all 端点 ${endpoint} 失败:`, errorData);
             
             // 如果是"模型不可用"错误，直接抛出，不尝试下一个端点
-            if (errorMessage.includes('No available channels') || errorMessage.includes('not available')) {
+            if (errorMessage.includes('No available channels') || 
+                errorMessage.includes('not available') ||
+                errorMessage.includes('不可用') ||
+                errorMessage.includes('未启用')) {
               throw new Error(`模型 "${options.model}" 在当前账户中不可用。\n\n可能原因：\n1. 该模型需要特殊权限或白名单\n2. 该模型暂未在您的账户中启用\n3. 当前账户余额不足或配额已用完\n\n建议：\n- 联系 yunwu.ai 客服确认模型可用性和账户权限\n- 或尝试使用其他视频生成模型`);
             }
             
             // 检查是否是服务器负载饱和的错误
-            if (errorMessage.includes('负载已饱和') || errorMessage.includes('saturated') || errorMessage.includes('负载') || response.status === 500) {
+            if (response.status === 500 || 
+                errorMessage.includes('负载已饱和') || 
+                errorMessage.includes('saturated') || 
+                errorMessage.includes('负载') ||
+                errorMessage.includes('繁忙') ||
+                errorMessage.includes('busy') ||
+                errorMessage.includes('overload')) {
               throw new Error(`服务器暂时繁忙，请稍后重试。\n\n错误详情：${errorMessage}\n\n建议：\n1. 等待 30 秒 - 2 分钟后重试\n2. 尝试使用其他视频生成模型\n3. 如果是高峰期，建议错峰使用`);
             }
             
@@ -612,12 +621,49 @@ export const generateVideo = async (
       });
       
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
-        const errorMessage = errorData.error?.message || errorData.message || `HTTP ${response.status}: ${response.statusText}`;
+        // 尝试解析错误响应，处理各种可能的格式
+        let errorData: any = {};
+        let errorMessage = '';
+        
+        try {
+          const responseText = await response.text();
+          if (responseText) {
+            try {
+              errorData = JSON.parse(responseText);
+            } catch {
+              // 如果不是 JSON，直接使用文本
+              errorMessage = responseText;
+            }
+          }
+        } catch {
+          // 如果读取响应失败，使用默认错误信息
+        }
+        
+        // 从多个可能的字段中提取错误信息
+        errorMessage = errorMessage || 
+          errorData.error?.message || 
+          errorData.message || 
+          errorData.error || 
+          errorData.msg ||
+          `HTTP ${response.status}: ${response.statusText}`;
         
         // 检查是否是"模型不可用"的错误
-        if (errorMessage.includes('No available channels') || errorMessage.includes('not available')) {
+        if (errorMessage.includes('No available channels') || 
+            errorMessage.includes('not available') ||
+            errorMessage.includes('不可用') ||
+            errorMessage.includes('未启用')) {
           throw new Error(`模型 "${options.model}" 在当前账户中不可用。\n\n可能原因：\n1. 该模型需要特殊权限或白名单\n2. 该模型暂未在您的账户中启用\n3. 当前账户余额不足或配额已用完\n\n建议：\n- 联系 yunwu.ai 客服确认模型可用性和账户权限\n- 或尝试使用其他视频生成模型`);
+        }
+        
+        // 检查是否是服务器负载饱和的错误
+        if (response.status === 500 || 
+            errorMessage.includes('负载已饱和') || 
+            errorMessage.includes('saturated') || 
+            errorMessage.includes('负载') ||
+            errorMessage.includes('繁忙') ||
+            errorMessage.includes('busy') ||
+            errorMessage.includes('overload')) {
+          throw new Error(`服务器暂时繁忙，请稍后重试。\n\n错误详情：${errorMessage}\n\n建议：\n1. 等待 30 秒 - 2 分钟后重试\n2. 尝试使用其他视频生成模型\n3. 如果是高峰期，建议错峰使用`);
         }
         
         throw new Error(errorMessage);
@@ -699,16 +745,48 @@ export const generateVideo = async (
     });
     
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
-      const errorMessage = errorData.error?.message || errorData.message || `HTTP ${response.status}: ${response.statusText}`;
+      // 尝试解析错误响应，处理各种可能的格式
+      let errorData: any = {};
+      let errorMessage = '';
+      
+      try {
+        const responseText = await response.text();
+        if (responseText) {
+          try {
+            errorData = JSON.parse(responseText);
+          } catch {
+            // 如果不是 JSON，直接使用文本
+            errorMessage = responseText;
+          }
+        }
+      } catch {
+        // 如果读取响应失败，使用默认错误信息
+      }
+      
+      // 从多个可能的字段中提取错误信息
+      errorMessage = errorMessage || 
+        errorData.error?.message || 
+        errorData.message || 
+        errorData.error || 
+        errorData.msg ||
+        `HTTP ${response.status}: ${response.statusText}`;
       
       // 检查是否是"模型不可用"的错误
-      if (errorMessage.includes('No available channels') || errorMessage.includes('not available')) {
+      if (errorMessage.includes('No available channels') || 
+          errorMessage.includes('not available') ||
+          errorMessage.includes('不可用') ||
+          errorMessage.includes('未启用')) {
         throw new Error(`模型 "${options.model}" 在当前账户中不可用。\n\n可能原因：\n1. 该模型需要特殊权限或白名单\n2. 该模型暂未在您的账户中启用\n3. 当前账户余额不足或配额已用完\n\n建议：\n- 联系 yunwu.ai 客服确认模型可用性和账户权限\n- 或尝试使用其他视频生成模型`);
       }
       
-      // 检查是否是服务器负载饱和的错误
-      if (errorMessage.includes('负载已饱和') || errorMessage.includes('saturated') || errorMessage.includes('负载') || response.status === 500) {
+      // 检查是否是服务器负载饱和的错误（HTTP 500 或包含负载相关关键词）
+      if (response.status === 500 || 
+          errorMessage.includes('负载已饱和') || 
+          errorMessage.includes('saturated') || 
+          errorMessage.includes('负载') ||
+          errorMessage.includes('繁忙') ||
+          errorMessage.includes('busy') ||
+          errorMessage.includes('overload')) {
         throw new Error(`服务器暂时繁忙，请稍后重试。\n\n错误详情：${errorMessage}\n\n建议：\n1. 等待 30 秒 - 2 分钟后重试\n2. 尝试使用其他视频生成模型\n3. 如果是高峰期，建议错峰使用`);
       }
       

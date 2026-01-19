@@ -13,7 +13,7 @@ export interface HistoryRecord {
   };
 }
 
-const MAX_HISTORY_COUNT = 10;
+const MAX_HISTORY_COUNT = 15;
 
 /**
  * 生成历史记录的存储键
@@ -52,9 +52,22 @@ export const saveHistory = (
       }
     }
 
+    // 检查是否已存在相同内容的记录（避免重复保存）
+    const trimmedContent = content.trim();
+    const existingIndex = history.findIndex(record => 
+      record.content.trim() === trimmedContent && 
+      record.metadata?.topic === metadata?.topic
+    );
+    
+    // 如果已存在相同记录，不重复添加
+    if (existingIndex !== -1) {
+      console.log(`[HistoryService] 跳过重复记录: ${storageKey}, 主题: ${metadata?.topic}`);
+      return;
+    }
+    
     // 添加新记录到最前面
     history.unshift({
-      content: content.trim(),
+      content: trimmedContent,
       timestamp: Date.now(),
       metadata: metadata || {},
     });

@@ -72,13 +72,27 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
     }
   }, [generatedContents, viewIndex, activeIndices]);
 
+  // 生成历史记录 key 的统一函数
+  const getHistoryKeyForSubMode = (nicheType: NicheType, submodeId: string): string => {
+    return `${nicheType}_${submodeId}`;
+  };
+
   // 处理子模式切换（带历史记录选择）
   const handleSubModeChange = (nicheType: NicheType, submodeId: string, setFunc: (id: any) => void) => {
-    const historyKey = `${nicheType}_${submodeId}`;
+    const historyKey = getHistoryKeyForSubMode(nicheType, submodeId);
     const records = getHistory('generator', historyKey);
+    
+    console.log('[Generator] 切换子模式:', { 
+      nicheType, 
+      submodeId, 
+      historyKey, 
+      recordsCount: records.length,
+      recordTopics: records.map(r => r.metadata?.topic)
+    });
     
     if (records.length > 0) {
       // 有历史记录，显示选择器
+      console.log('[Generator] 显示历史记录选择器，记录数:', records.length, '第一条记录主题:', records[0]?.metadata?.topic);
       setHistoryRecords(records);
       setPendingSubModeChange({ niche: nicheType, submode: submodeId });
       setShowHistorySelector(true);
@@ -95,6 +109,16 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
   // 处理历史记录选择
   const handleHistorySelect = (record: HistoryRecord) => {
     if (pendingSubModeChange) {
+      const expectedKey = getHistoryKeyForSubMode(pendingSubModeChange.niche, pendingSubModeChange.submode);
+      
+      console.log('[Generator] 加载历史记录:', {
+        pendingSubMode: pendingSubModeChange,
+        expectedKey,
+        recordTopic: record.metadata?.topic,
+        recordContentLength: record.content?.length,
+        recordTimestamp: new Date(record.timestamp).toLocaleString()
+      });
+      
       // 切换子模式
       if (pendingSubModeChange.niche === NicheType.TCM_METAPHYSICS) {
         setTcmSubMode(pendingSubModeChange.submode as TcmSubModeId);
@@ -107,38 +131,39 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider }) => {
       }
       
       // 加载历史记录内容
-      // 解析合并的内容（用分隔符分开）
-      const contentParts = record.content.split(/\n\n={50,}\n\n/);
-      const parsedContents: GeneratedContent[] = [];
-      
-      contentParts.forEach((part) => {
-        const match = part.match(/^===\s*(.+?)\s*===\n\n([\s\S]*)$/);
-        if (match) {
-          parsedContents.push({
-            topic: match[1],
-            content: match[2],
-          });
-        } else if (part.trim()) {
-          // 如果没有标题，使用元数据中的主题或默认标题
-          const topic = record.metadata?.topic?.split('; ')[parsedContents.length] || `历史记录 ${parsedContents.length + 1}`;
-          parsedContents.push({
-            topic,
-            content: part.trim(),
-          });
-        }
-      });
-      
-      if (parsedContents.length > 0) {
-        setGeneratedContents(parsedContents);
+      // 由于现在每篇文章单独保存，直接加载单篇文章
+      if (record.content && record.content.trim()) {
+        const topic = record.metadata?.topic || '历史记录';
+        const contentPreview = record.content.substring(0, 100);
+        
+        console.log('[Generator] 加载历史记录内容:', {
+          expectedKey,
+          recordTopic: topic,
+          contentPreview: contentPreview,
+          contentLength: record.content.length,
+          recordTimestamp: new Date(record.timestamp).toLocaleString()
+        });
+        
+        // 清空当前内容，避免混乱
+        setTopics([]);
+        setGeneratedContents([{
+          topic,
+          content: record.content,
+        }]);
         setViewIndex(0);
         setStatus(GenerationStatus.COMPLETED);
+      } else {
+        console.warn('[Generator] 历史记录内容为空，无法加载');
       }
       
       if (record.metadata?.input) {
         setInputVal(record.metadata.input);
+      } else {
+        setInputVal(''); // 如果没有输入，清空输入框
       }
       
       setPendingSubModeChange(null);
+      setShowHistorySelector(false);
     }
   };
   
@@ -691,6 +716,30 @@ ${segmentSourceText}
         return;
     }
 
+    // ⚠️ 关键：在生成开始时就锁定当前子模式配置，避免生成过程中子模式被切换导致历史记录 key 错误
+    const currentSubModeConfig = getCurrentSubModeConfig();
+    const currentNiche = niche;
+    
+    // 根据当前赛道获取对应的子模式ID（更可靠的方式）
+    let currentSubModeId: string;
+    if (niche === NicheType.TCM_METAPHYSICS) {
+      currentSubModeId = tcmSubMode;
+    } else if (niche === NicheType.FINANCE_CRYPTO) {
+      currentSubModeId = financeSubMode;
+    } else if (niche === NicheType.STORY_REVENGE) {
+      currentSubModeId = revengeSubMode;
+    } else if (niche === NicheType.GENERAL_VIRAL) {
+      currentSubModeId = newsSubMode;
+    } else {
+      currentSubModeId = currentSubModeConfig?.id || '';
+    }
+    
+    console.log('[Generator] 锁定子模式配置:', { 
+      niche: currentNiche, 
+      submodeId: currentSubModeId,
+      configId: currentSubModeConfig?.id 
+    });
+
     // Initialize API
     initializeGemini(apiKey, { provider });
 
@@ -881,6 +930,9 @@ ${segmentSourceText}
         return fallback[hash] || '平安';
     };
 
+    // 用于收集所有生成的内容，最后统一保存历史记录
+    const generatedContentsMap = new Map<number, { topic: string; content: string }>();
+    
     const generationPromises = selectedTopics.map(async (topic, index) => {
         // Determine the correct script template
         let scriptTemplate = config.scriptPromptTemplate;
@@ -1059,19 +1111,31 @@ ${segmentSourceText}
                     const capped = truncateToMax(cleaned, maxChars);
                     if (capped !== localContent) {
                         localContent = capped;
+                    }
+                    // Append CTA for TCM niche
+                    const ctaWord = getCtaKeyword(topic.title);
+                    const cta = `\n\n如果覺得今天倪師講的這番話對你有幫助，請動動你的手，點個讚、訂閱並轉發。如果你聽懂了，請在留言區打一個「${ctaWord}」或留一句祈福的話，為自己與家人積聚正向磁場。`;
+                    localContent = `${localContent}${cta}`;
+                    
+                    // 保存到 Map 中，用于最后统一保存历史记录
+                    generatedContentsMap.set(index, { topic: topic.title, content: localContent });
+                    
                     setGeneratedContents(prev => {
                         const newArr = [...prev];
                         if (newArr[index]) {
                             newArr[index] = {
                                 ...newArr[index],
-                                    content: localContent
+                                content: localContent
                             };
                         }
                         return newArr;
                     });
-                }
                 } else if (niche === NicheType.FINANCE_CRYPTO) {
                     localContent = cleaned;
+                    
+                    // 保存到 Map 中，用于最后统一保存历史记录
+                    generatedContentsMap.set(index, { topic: topic.title, content: localContent });
+                    
                     setGeneratedContents(prev => {
                         const newArr = [...prev];
                         if (newArr[index]) {
@@ -1108,23 +1172,10 @@ ${segmentSourceText}
                             localContent = cleaned;
                         }
                     }
-                    setGeneratedContents(prev => {
-                        const newArr = [...prev];
-                        if (newArr[index]) {
-                            newArr[index] = {
-                                ...newArr[index],
-                                content: localContent
-                            };
-                        }
-                        return newArr;
-                    });
-                }
-
-                // Append CTA for TCM niche
-                if (niche === NicheType.TCM_METAPHYSICS) {
-                    const ctaWord = getCtaKeyword(topic.title);
-                    const cta = `\n\n如果覺得今天倪師講的這番話對你有幫助，請動動你的手，點個讚、訂閱並轉發。如果你聽懂了，請在留言區打一個「${ctaWord}」或留一句祈福的話，為自己與家人積聚正向磁場。`;
-                    localContent = `${localContent}${cta}`;
+                    
+                    // 保存到 Map 中，用于最后统一保存历史记录
+                    generatedContentsMap.set(index, { topic: topic.title, content: localContent });
+                    
                     setGeneratedContents(prev => {
                         const newArr = [...prev];
                         if (newArr[index]) {
@@ -1223,6 +1274,9 @@ ${segmentSourceText}
                     .slice(0, 200);
 
                 const finalContent = `${localContent}\n\n=== SUMMARY ===\n${summaryText}`;
+                // 保存到 Map 中，用于最后统一保存历史记录
+                generatedContentsMap.set(index, { topic: topic.title, content: finalContent });
+                
                 setGeneratedContents(prev => {
                     const newArr = [...prev];
                     if (newArr[index]) {
@@ -1259,25 +1313,67 @@ ${segmentSourceText}
 
     setStatus(GenerationStatus.COMPLETED);
     
-    // 保存历史记录：将所有生成的内容合并保存
+    // 保存历史记录：每篇文章单独保存，避免多篇文章合并导致错乱
+    // ⚠️ 使用生成开始时锁定的子模式配置，而不是当前的配置（避免生成过程中子模式被切换）
+    // ⚠️ 使用 Map 中收集的内容，而不是状态（避免状态更新延迟问题和重复保存）
     try {
-      const subModeConfig = getCurrentSubModeConfig();
-      if (subModeConfig && generatedContents.length > 0) {
-        const historyKey = `${niche}_${subModeConfig.id}`;
-        // 将所有生成的内容合并为一个文本（用分隔符分开）
-        const combinedContent = generatedContents
-          .filter(item => item.content && item.content.trim())
-          .map((item, index) => `=== ${item.topic} ===\n\n${item.content}`)
-          .join('\n\n' + '='.repeat(50) + '\n\n');
+      if (currentSubModeId && generatedContentsMap.size > 0) {
+        const historyKey = getHistoryKeyForSubMode(currentNiche, currentSubModeId);
         
-        if (combinedContent.trim()) {
-          saveHistory('generator', historyKey, combinedContent, {
-            topic: generatedContents.map(item => item.topic).join('; '),
-            input: inputVal,
-            count: generatedContents.length,
-          });
-          console.log('[Generator] 历史记录已保存，共', generatedContents.length, '篇文章');
-        }
+        console.log('[Generator] 开始保存历史记录:', { 
+          niche: currentNiche, 
+          submodeId: currentSubModeId, 
+          historyKey, 
+          articleCount: generatedContentsMap.size,
+          articleTopics: Array.from(generatedContentsMap.values()).map(item => item.topic)
+        });
+        
+        // 为每篇文章单独保存历史记录（只保存一次，避免重复）
+        let savedCount = 0;
+        const savedContentHashes = new Set<string>(); // 用于去重
+        
+        generatedContentsMap.forEach((item, index) => {
+          if (item.content && item.content.trim() && item.content.length > 100) {
+            // 生成内容哈希，用于去重
+            const contentHash = `${item.topic}_${item.content.length}_${item.content.substring(0, 50)}`;
+            
+            // 检查是否已保存过相同内容
+            if (savedContentHashes.has(contentHash)) {
+              console.warn('[Generator] 跳过重复内容:', { 
+                index,
+                topic: item.topic 
+              });
+              return;
+            }
+            
+            savedContentHashes.add(contentHash);
+            
+            console.log('[Generator] 保存单篇文章历史记录:', { 
+              index,
+              topic: item.topic, 
+              contentLength: item.content.length,
+              historyKey 
+            });
+            saveHistory('generator', historyKey, item.content, {
+              topic: item.topic,
+              input: inputVal,
+            });
+            savedCount++;
+          } else {
+            console.warn('[Generator] 跳过保存（内容无效）:', { 
+              index,
+              topic: item.topic, 
+              contentLength: item.content?.length || 0 
+            });
+          }
+        });
+        
+        console.log('[Generator] 历史记录已保存，共', savedCount, '篇文章（每篇单独保存），key:', historyKey);
+      } else {
+        console.warn('[Generator] 跳过保存历史记录:', { 
+          currentSubModeId, 
+          mapSize: generatedContentsMap.size 
+        });
       }
     } catch (error) {
       console.error('[Generator] 保存历史记录失败:', error);
@@ -1383,6 +1479,41 @@ ${segmentSourceText}
               return newSet;
           });
           setStatus(GenerationStatus.COMPLETED);
+          
+          // 保存续写后的历史记录
+          try {
+            const finalContent = generatedContents[newIndex];
+            if (finalContent && finalContent.content && finalContent.content.trim() && finalContent.content.length > 100) {
+              // 锁定当前子模式配置
+              const currentNicheForHistory = niche;
+              let currentSubModeIdForHistory: string;
+              if (niche === NicheType.TCM_METAPHYSICS) {
+                currentSubModeIdForHistory = tcmSubMode;
+              } else if (niche === NicheType.FINANCE_CRYPTO) {
+                currentSubModeIdForHistory = financeSubMode;
+              } else if (niche === NicheType.STORY_REVENGE) {
+                currentSubModeIdForHistory = revengeSubMode;
+              } else if (niche === NicheType.GENERAL_VIRAL) {
+                currentSubModeIdForHistory = newsSubMode;
+              } else {
+                return; // 无法确定子模式，不保存
+              }
+              
+              const historyKey = getHistoryKeyForSubMode(currentNicheForHistory, currentSubModeIdForHistory);
+              console.log('[Generator] 续写完成，保存历史记录:', { 
+                topic: finalContent.topic, 
+                contentLength: finalContent.content.length,
+                historyKey 
+              });
+              
+              saveHistory('generator', historyKey, finalContent.content, {
+                topic: finalContent.topic,
+                input: inputVal,
+              });
+            }
+          } catch (error) {
+            console.error('[Generator] 续写后保存历史记录失败:', error);
+          }
       }
   };
 
@@ -1459,7 +1590,7 @@ ${segmentSourceText}
                     const isSelected = activeModeId === mode.id;
                     
                     // 检查是否有历史记录
-                    const historyKey = `${niche}_${mode.id}`;
+                    const historyKey = getHistoryKeyForSubMode(niche, mode.id);
                     const hasHistory = getHistory('generator', historyKey).length > 0;
                     
                     return (
@@ -1812,7 +1943,7 @@ ${segmentSourceText}
           }}
           onDelete={(timestamp) => {
             if (pendingSubModeChange) {
-              const historyKey = `${pendingSubModeChange.niche}_${pendingSubModeChange.submode}`;
+              const historyKey = getHistoryKeyForSubMode(pendingSubModeChange.niche, pendingSubModeChange.submode);
               deleteHistory('generator', historyKey, timestamp);
               setHistoryRecords(getHistory('generator', historyKey));
             }
