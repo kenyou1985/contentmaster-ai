@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  jimeng-api:
+    # 请根据实际的即梦逆向API服务镜像名称修改
+    # 常见镜像名: jimeng-free-api, jimeng-api, jimeng-reverse-api 等
+    # 如果镜像不存在，需要先从GitHub构建:
+    #   git clone <GitHub项目地址>
+    #   cd <项目目录>
+    #   docker build -t jimeng-free-api:latest .
+    image: jimeng-free-api:latest
+    container_name: jimeng-api
+    ports:
+      - "3000:3000"  # 主机端口:容器端口
+    environment:
+      - PORT=3000
+      # 如果需要SESSION_ID，可以在这里设置（或通过环境变量传递）
+      # - JIMENG_SESSION_ID=your_session_id_here
+    restart: unless-stopped
+    # 如果需要挂载卷
+    # volumes:
+    #   - ./data:/app/data
+    # 如果需要网络
+    # networks:
+    #   - jimeng-network
+
+# networks:
+#   jimeng-network:
+#     driver: bridge

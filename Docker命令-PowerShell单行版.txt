@@ -1,0 +1,21 @@
+# 即梦逆向API服务 - PowerShell单行命令
+
+## 方案1：jimeng-free-api-all（推荐）
+
+完整单行命令：
+docker run -d --name jimeng-free-api -p 8001:8001 -e TZ=Asia/Shanghai --restart always zhizinan1997/jimeng-free-api-all:latest
+
+## 方案2：iptag/jimeng-api（精简版）
+
+完整单行命令（需要替换YOUR_SESSION_ID）：
+docker run -d --name jimeng-api -p 3000:3000 -e J_TOKEN=YOUR_SESSION_ID iptag/jimeng-api:latest
+
+## 使用说明
+
+### PowerShell中执行：
+1. 直接复制上面的单行命令
+2. 粘贴到PowerShell中执行
+3. 方案2需要先替换 YOUR_SESSION_ID 为实际的sessionid
+
+### 或者使用脚本：
+双击运行：启动即梦逆向API服务-PowerShell.ps1

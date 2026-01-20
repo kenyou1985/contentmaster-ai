@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  jimeng:
+    # 请根据您的即梦镜像名称修改
+    # 常见镜像名: jimeng/jimeng, jimeng-api, jimeng-service 等
+    image: jimeng/jimeng:latest
+    container_name: jimeng
+    ports:
+      - "8080:5100"  # 主机端口:容器端口
+    environment:
+      - PORT=5100
+      # 添加其他需要的环境变量
+    restart: unless-stopped
+    # 如果需要挂载卷
+    # volumes:
+    #   - ./data:/app/data
+    # 如果需要网络
+    # networks:
+    #   - jimeng-network
+
+# networks:
+#   jimeng-network:
+#     driver: bridge

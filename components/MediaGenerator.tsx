@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { ApiProvider, ToolMode, NicheType } from '../types';
 import { generateImage, ImageGenerationOptions } from '../services/yunwuService';
 import { generateTextToVideo, generateImageToVideo, checkVideoTaskStatus, DayuVideoGenerationOptions } from '../services/dayuVideoService';
+import { generateJimengImages } from '../services/jimengService';
 import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, FolderOpen, Rocket, Copy, Check, CheckSquare, Square } from 'lucide-react';
 import JSZip from 'jszip';
 import { HistorySelector } from './HistorySelector';
@@ -45,6 +46,7 @@ const IMAGE_MODELS = [
   { id: 'flux-1-kontext-dev', name: 'Flux 1 Kontext Dev', endpoint: '/v1/images/generations', apiModelName: 'flux.1-kontext-dev' }, // 注意：API 名称使用点号
   { id: 'grok-3-image', name: 'Grok 3 Image', endpoint: '/v1/chat/completions' }, // 使用 chat/completions
   { id: 'grok-4-image', name: 'Grok 4 Image', endpoint: '/v1/chat/completions' }, // 使用 chat/completions
+  { id: 'jimeng', name: '即梦 (Jimeng)', endpoint: 'jimeng', isJimeng: true }, // 即梦模型
 ];
 
 // 视频模型配置（根据大洋芋 API 文档：https://6ibmqmipvf.apifox.cn/）
@@ -119,6 +121,28 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       }
     }
   }, [dayuApiKey, externalSetDayuApiKey]);
+
+  // 即梦 API 配置状态
+  // 默认使用3030端口（简化方案，直接调用Node.js即梦API服务）
+  const [jimengApiBaseUrl, setJimengApiBaseUrl] = useState(() => {
+    return localStorage.getItem('JIMENG_API_BASE_URL') || 'http://localhost:3030';
+  });
+  const [jimengSessionId, setJimengSessionId] = useState(() => {
+    return localStorage.getItem('JIMENG_SESSION_ID') || '';
+  });
+  
+  // 保存即梦配置到 localStorage
+  useEffect(() => {
+    if (jimengApiBaseUrl) {
+      localStorage.setItem('JIMENG_API_BASE_URL', jimengApiBaseUrl);
+    }
+  }, [jimengApiBaseUrl]);
+  
+  useEffect(() => {
+    if (jimengSessionId) {
+      localStorage.setItem('JIMENG_SESSION_ID', jimengSessionId);
+    }
+  }, [jimengSessionId]);
   
   const [scriptText, setScriptText] = useState('');
   const [shots, setShots] = useState<Shot[]>([]);
@@ -637,9 +661,20 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
   // 生成单个图片（支持生成多张）
   const handleGenerateImage = async (shot: Shot, regenerate: boolean = false) => {
-    if (!apiKey) {
-      alert('请先配置 API Key');
-      return;
+    // 检查选中的模型
+    const selectedModel = IMAGE_MODELS.find(m => m.id === selectedImageModel);
+    
+    // 即梦模型需要检查 SESSION_ID，其他模型需要检查 API Key
+    if (selectedModel?.isJimeng) {
+      if (!jimengSessionId || jimengSessionId.trim() === '') {
+        alert('请先配置即梦 SESSION_ID');
+        return;
+      }
+    } else {
+      if (!apiKey) {
+        alert('请先配置 API Key');
+        return;
+      }
     }
     
     if (!shot.imagePrompt) {
@@ -664,8 +699,36 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     try {
       let newImageUrls: string[] = [];
       
-      // sora-image、grok-3-image、grok-4-image 使用 chat/completions，不支持 n 参数，需要多次调用来生成多张图片
-      const chatCompletionsModels = ['sora-image', 'grok-3-image', 'grok-4-image'];
+      // 即梦模型特殊处理
+      if (selectedModel?.isJimeng) {
+        // 使用即梦API生成图片
+        const selectedRatio = IMAGE_RATIOS.find(r => r.id === selectedImageRatio);
+        const width = selectedRatio?.width || 1080;
+        const height = selectedRatio?.height || 1920;
+        
+        const result = await generateJimengImages(
+          jimengApiBaseUrl,
+          jimengSessionId,
+          {
+            prompt: finalPrompt,
+            num_images: generateImageCount,
+            width,
+            height
+          }
+        );
+        
+        if (result.success && result.data) {
+          newImageUrls = result.data.map(item => item.url);
+          toast.success(`成功生成 ${newImageUrls.length} 张图片！`, 8000);
+        } else {
+          toast.error(result.error || '即梦图片生成失败', 6000);
+          updateShot(shot.id, { imageGenerating: false });
+          return;
+        }
+      } else {
+        // 原有的yunwu.ai模型处理逻辑
+        // sora-image、grok-3-image、grok-4-image 使用 chat/completions，不支持 n 参数，需要多次调用来生成多张图片
+        const chatCompletionsModels = ['sora-image', 'grok-3-image', 'grok-4-image'];
       if (chatCompletionsModels.includes(selectedImageModel) && generateImageCount > 1) {
         // 多次调用生成多张图片（这些模型不支持 n 参数）
         for (let i = 0; i < generateImageCount; i++) {
@@ -784,6 +847,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           }
         }
       }
+      } // 结束 else 块（即梦模型处理）
       
       if (newImageUrls.length > 0) {
         // 重新绘图时也追加图片，不覆盖原有图片
@@ -1059,6 +1123,38 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
             />
       </div>
+          
+          {/* 即梦 API 配置（仅在选择即梦模型时显示） */}
+          {selectedImageModel === 'jimeng' && (
+            <>
+              <div className="flex-shrink-0 w-[140px]">
+                <label className="text-[10px] text-slate-500 mb-0.5 block flex items-center gap-1">
+                  即梦 API 地址
+                  <span className="text-blue-400 text-[9px]">(圖片)</span>
+                </label>
+                <input
+                  type="text"
+                  value={jimengApiBaseUrl}
+                  onChange={(e) => setJimengApiBaseUrl(e.target.value)}
+                  placeholder="http://localhost:5100"
+                  className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+              <div className="flex-shrink-0 w-[160px]">
+                <label className="text-[10px] text-slate-500 mb-0.5 block flex items-center gap-1">
+                  即梦 SESSION_ID
+                  <span className="text-blue-400 text-[9px]">(圖片)</span>
+                </label>
+                <input
+                  type="text"
+                  value={jimengSessionId}
+                  onChange={(e) => setJimengSessionId(e.target.value)}
+                  placeholder="輸入 SESSION_ID"
+                  className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+            </>
+          )}
 
           <div className="flex-shrink-0 w-[120px]">
             <label className="text-[10px] text-slate-500 mb-0.5 block">圖片模型</label>
