@@ -104,4 +104,4 @@ export enum ToolMode {
   SCRIPT = 'SCRIPT'
 }
 
-export type ApiProvider = 'yunwu' | 'google';
+export type ApiProvider = 'yunwu' | 'google' | 'runninghub';

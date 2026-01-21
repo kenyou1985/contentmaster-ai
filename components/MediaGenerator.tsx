@@ -2,8 +2,12 @@ import React, { useState, useRef, useEffect } from 'react';
 import { ApiProvider, ToolMode, NicheType } from '../types';
 import { generateImage, ImageGenerationOptions } from '../services/yunwuService';
 import { generateTextToVideo, generateImageToVideo, checkVideoTaskStatus, DayuVideoGenerationOptions } from '../services/dayuVideoService';
+import { cacheVideo, getCachedVideoUrl, downloadVideo } from '../services/videoCacheService';
+import { generateImage as generateRunningHubImage, generateVideo as generateRunningHubVideo, checkTaskStatus as checkRunningHubTaskStatus, type RunningHubImageOptions, type RunningHubVideoOptions } from '../services/runninghubService';
 import { generateJimengImages } from '../services/jimengService';
-import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, FolderOpen, Rocket, Copy, Check, CheckSquare, Square } from 'lucide-react';
+import { detectCharactersInPrompt } from '../services/characterLibraryService';
+import { CharacterLibrary } from './CharacterLibrary';
+import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, FolderOpen, Rocket, Copy, Check, CheckSquare, Square, Users, HardDrive } from 'lucide-react';
 import JSZip from 'jszip';
 import { HistorySelector } from './HistorySelector';
 import { getHistory, HistoryRecord } from '../services/historyService';
@@ -11,7 +15,7 @@ import { useToast } from './Toast';
 import { ProgressBar } from './ProgressBar';
 
 interface MediaGeneratorProps {
-  apiKey: string;
+  apiKey: string; // 全局API Key（当provider是runninghub时，这就是RunningHub API Key）
   provider: ApiProvider;
   toast?: ReturnType<typeof useToast>;
   dayuApiKey?: string; // 大洋芋 API Key（用于视频生成）
@@ -29,7 +33,10 @@ interface Shot {
   voiceOver: string;
   soundEffect: string;
   imageUrls?: string[]; // 支持多张图片
-  videoUrl?: string;
+  videoUrl?: string; // 保留向后兼容（显示第一个视频）
+  videoUrls?: string[]; // 支持多个视频（追加模式）
+  cachedVideoUrl?: string; // 缓存的视频 Blob URL
+  cachedVideoUrls?: string[]; // 缓存的视频 Blob URL 数组
   imageGenerating?: boolean;
   videoGenerating?: boolean;
   selected?: boolean;
@@ -39,14 +46,18 @@ interface Shot {
 
 // 图片模型配置（根据yunwu.ai文档）
 const IMAGE_MODELS = [
-  { id: 'dall-e-3', name: 'DALL·E 3', endpoint: '/v1/images/generations' },
-  { id: 'sora-image', name: 'Sora Image', endpoint: '/v1/chat/completions' }, // 使用 chat/completions
-  { id: 'banana', name: 'Banana (Gemini 2.5 Flash)', endpoint: '/v1/images/generations', apiModelName: 'gemini-2.5-flash-image' },
-  { id: 'banana-2', name: 'Banana 2 (Gemini 3 Pro)', endpoint: '/v1/images/generations', apiModelName: 'gemini-3-pro-image-preview' },
-  { id: 'flux-1-kontext-dev', name: 'Flux 1 Kontext Dev', endpoint: '/v1/images/generations', apiModelName: 'flux.1-kontext-dev' }, // 注意：API 名称使用点号
-  { id: 'grok-3-image', name: 'Grok 3 Image', endpoint: '/v1/chat/completions' }, // 使用 chat/completions
-  { id: 'grok-4-image', name: 'Grok 4 Image', endpoint: '/v1/chat/completions' }, // 使用 chat/completions
-  { id: 'jimeng', name: '即梦 (Jimeng)', endpoint: 'jimeng', isJimeng: true }, // 即梦模型
+  { id: 'dall-e-3', name: 'DALL·E 3', endpoint: '/v1/images/generations', supportsImageToImage: false },
+  { id: 'sora-image', name: 'Sora Image', endpoint: '/v1/chat/completions', supportsImageToImage: false }, // 使用 chat/completions
+  { id: 'banana', name: 'Banana (Gemini 2.5 Flash)', endpoint: '/v1/images/generations', apiModelName: 'gemini-2.5-flash-image', supportsImageToImage: false },
+  { id: 'banana-2', name: 'Banana 2 (Gemini 3 Pro)', endpoint: '/v1/images/generations', apiModelName: 'gemini-3-pro-image-preview', supportsImageToImage: false },
+  { id: 'flux-1-kontext-dev', name: 'Flux 1 Kontext Dev', endpoint: '/v1/images/generations', apiModelName: 'flux.1-kontext-dev', supportsImageToImage: false }, // 注意：API 名称使用点号
+  { id: 'grok-3-image', name: 'Grok 3 Image', endpoint: '/v1/chat/completions', supportsImageToImage: false }, // 使用 chat/completions
+  { id: 'grok-4-image', name: 'Grok 4 Image', endpoint: '/v1/chat/completions', supportsImageToImage: false }, // 使用 chat/completions
+  { id: 'jimeng', name: '即梦 (Jimeng)', endpoint: 'jimeng', isJimeng: true, supportsImageToImage: true }, // 即梦模型，支持图生图
+  // RunningHub 开源模型
+  { id: 'runninghub-flux', name: 'RunningHub - Flux', endpoint: 'runninghub', isRunningHub: true, runningHubModel: 'flux', supportsImageToImage: true },
+  { id: 'runninghub-z-image', name: 'RunningHub - Z-Image', endpoint: 'runninghub', isRunningHub: true, runningHubModel: 'z-image', supportsImageToImage: true },
+  { id: 'runninghub-qwen-image', name: 'RunningHub - Qwen-Image', endpoint: 'runninghub', isRunningHub: true, runningHubModel: 'qwen-image', supportsImageToImage: true },
 ];
 
 // 视频模型配置（根据大洋芋 API 文档：https://6ibmqmipvf.apifox.cn/）
@@ -61,6 +72,8 @@ const VIDEO_MODELS = [
   { id: 'sora2-pro-portrait-25s', name: 'Sora 2 Pro 竖屏 25秒', duration: 25, supportedDurations: [25], defaultSize: '1080P', supportedSizes: ['1080P'], orientation: 'portrait' },
   { id: 'sora2-pro-portrait-hd-15s', name: 'Sora 2 Pro 竖屏 HD 15秒', duration: 15, supportedDurations: [15], defaultSize: '1080P', supportedSizes: ['1080P'], orientation: 'portrait' },
   { id: 'sora2-pro-landscape-hd-15s', name: 'Sora 2 Pro 横屏 HD 15秒', duration: 15, supportedDurations: [15], defaultSize: '1080P', supportedSizes: ['1080P'], orientation: 'landscape' },
+  // RunningHub 开源模型
+  { id: 'runninghub-wan2.2', name: 'RunningHub - Wan2.2', duration: 10, supportedDurations: [5, 10, 15], defaultSize: '720P', supportedSizes: ['720P'], orientation: 'landscape', isRunningHub: true },
 ];
 
 // 图片比例配置
@@ -131,6 +144,12 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     return localStorage.getItem('JIMENG_SESSION_ID') || '';
   });
   
+  // RunningHub API Key：从全局apiKey获取（当provider是runninghub时）
+  const runningHubApiKey = provider === 'runninghub' ? apiKey : '';
+  
+  // 角色库管理
+  const [showCharacterLibrary, setShowCharacterLibrary] = useState(false);
+  
   // 保存即梦配置到 localStorage
   useEffect(() => {
     if (jimengApiBaseUrl) {
@@ -162,6 +181,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const [editingTone, setEditingTone] = useState<{ shotId: string; tone: string } | null>(null); // 编辑语气
   const [editingShotType, setEditingShotType] = useState<{ shotId: string; shotType: string } | null>(null); // 编辑景别
   const [enlargedImageUrl, setEnlargedImageUrl] = useState<string | null>(null);
+  const [enlargedVideoUrl, setEnlargedVideoUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showScriptInput, setShowScriptInput] = useState(false);
   const [generateImageCount, setGenerateImageCount] = useState(1); // 每次生成的图片数量
@@ -173,6 +193,119 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
   // 组件加载时不自动读取，避免读取旧数据
   // 用户需要手动点击"从改写工具读取"按钮来加载最新脚本
+
+  // 视频预览组件（支持缓存）
+  const VideoPreview: React.FC<{
+    videoUrl: string;
+    cachedVideoUrl?: string;
+    shotId: string;
+  }> = ({ videoUrl, cachedVideoUrl, shotId }) => {
+    const [currentVideoUrl, setCurrentVideoUrl] = useState<string>(cachedVideoUrl || videoUrl);
+    const [isCaching, setIsCaching] = useState(false);
+    const [isCached, setIsCached] = useState(!!cachedVideoUrl);
+    
+    // 检查并加载缓存
+    useEffect(() => {
+      const loadCache = async () => {
+        // 如果已有缓存URL，直接使用
+        if (cachedVideoUrl) {
+          setCurrentVideoUrl(cachedVideoUrl);
+          setIsCached(true);
+          return;
+        }
+        
+        // 检查是否有已缓存的视频
+        const cached = getCachedVideoUrl(videoUrl);
+        if (cached) {
+          setCurrentVideoUrl(cached);
+          setIsCached(true);
+          updateShot(shotId, { cachedVideoUrl: cached });
+          return;
+        }
+        
+        // 自动缓存视频（后台进行，不阻塞UI）
+        setIsCaching(true);
+        try {
+          const cachedUrl = await cacheVideo(videoUrl);
+          setCurrentVideoUrl(cachedUrl);
+          setIsCached(true);
+          updateShot(shotId, { cachedVideoUrl: cachedUrl });
+          toast.success('视频已缓存到本地，播放更流畅', 3000);
+        } catch (error: any) {
+          console.warn('[VideoPreview] 自动缓存失败:', error);
+          // 缓存失败时使用原始URL
+          setCurrentVideoUrl(videoUrl);
+        } finally {
+          setIsCaching(false);
+        }
+      };
+      
+      loadCache();
+    }, [videoUrl, cachedVideoUrl, shotId]);
+    
+    const handleDownload = async (e: React.MouseEvent) => {
+      e.stopPropagation();
+      try {
+        await downloadVideo(videoUrl, `video_${Date.now()}.mp4`);
+        toast.success('视频下载成功', 3000);
+      } catch (error: any) {
+        toast.error(`下载失败: ${error.message}`, 5000);
+      }
+    };
+    
+    return (
+      <div 
+        className="relative cursor-pointer group"
+        onClick={() => setEnlargedVideoUrl(currentVideoUrl)}
+      >
+        <video
+          src={currentVideoUrl}
+          className="w-full h-32 object-cover rounded border border-slate-700"
+          controls={false}
+          preload="auto"
+          onMouseEnter={(e) => {
+            const video = e.currentTarget;
+            video.currentTime = 0;
+            video.play().catch(() => {
+              // 自动播放失败时静默处理
+            });
+          }}
+          onMouseLeave={(e) => {
+            const video = e.currentTarget;
+            video.pause();
+            video.currentTime = 0;
+          }}
+        />
+        <div className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/30 transition-all rounded">
+          <div className="bg-black/50 rounded-full p-2 group-hover:bg-black/70 transition-all">
+            <Play size={24} className="text-white/90 group-hover:text-white" fill="white" />
+          </div>
+        </div>
+        {/* 缓存状态指示器 */}
+        <div className="absolute top-1 right-1 flex gap-1">
+          {isCaching && (
+            <div className="bg-blue-600/80 text-white text-[8px] px-1.5 py-0.5 rounded flex items-center gap-1">
+              <Loader2 size={10} className="animate-spin" />
+              缓存中
+            </div>
+          )}
+          {isCached && !isCaching && (
+            <div className="bg-emerald-600/80 text-white text-[8px] px-1.5 py-0.5 rounded flex items-center gap-1" title="已缓存到本地">
+              <HardDrive size={10} />
+              已缓存
+            </div>
+          )}
+          <button
+            onClick={handleDownload}
+            className="bg-slate-800/80 hover:bg-slate-700/80 text-white p-1 rounded transition-all"
+            title="下载视频"
+          >
+            <Download size={12} />
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   // 解析脚本文本，提取镜头信息
   const parseScript = (text: string): Shot[] => {
@@ -664,10 +797,15 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     // 检查选中的模型
     const selectedModel = IMAGE_MODELS.find(m => m.id === selectedImageModel);
     
-    // 即梦模型需要检查 SESSION_ID，其他模型需要检查 API Key
+    // 检查 API Key 配置
     if (selectedModel?.isJimeng) {
       if (!jimengSessionId || jimengSessionId.trim() === '') {
         alert('请先配置即梦 SESSION_ID');
+        return;
+      }
+    } else if (selectedModel?.isRunningHub) {
+      if (provider !== 'runninghub' || !apiKey || apiKey.trim() === '') {
+        alert('请先在顶部配置 RunningHub API Key（选择 RunningHub 服务）');
         return;
       }
     } else {
@@ -693,37 +831,121 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       finalPrompt = `${finalPrompt}, ${selectedStyleObj.prompt}`;
     }
     
+    // 检测提示词中是否包含角色库中的角色
+    const matchedCharacters = detectCharactersInPrompt(finalPrompt);
+    const useImageToImage = matchedCharacters.length > 0 && (selectedModel?.isJimeng || selectedModel?.isRunningHub);
+    
+    if (useImageToImage) {
+      toast.info(`检测到角色 "${matchedCharacters.map(c => c.name).join(', ')}"，将使用图生图模式`, 5000);
+    }
+    
     // 获取适合模型的尺寸
     const imageSize = getImageSize(selectedImageModel, selectedImageRatio);
     
     try {
       let newImageUrls: string[] = [];
       
+      // RunningHub 模型处理
+      if (selectedModel?.isRunningHub) {
+        const selectedRatio = IMAGE_RATIOS.find(r => r.id === selectedImageRatio);
+        const width = selectedRatio?.width || 1024;
+        const height = selectedRatio?.height || 1024;
+        
+        // 构建生成选项
+        const generationOptions: RunningHubImageOptions = {
+          prompt: finalPrompt,
+          model: selectedModel.runningHubModel as 'flux' | 'z-image' | 'qwen-image',
+          width,
+          height,
+          num_images: generateImageCount,
+        };
+        
+        // 如果检测到角色，使用图生图模式
+        if (useImageToImage && matchedCharacters.length > 0) {
+          const characterImage = matchedCharacters[0].imageUrl;
+          generationOptions.image_url = characterImage;
+        }
+        
+        // 生成多张图片
+        if (generateImageCount > 1) {
+          for (let i = 0; i < generateImageCount; i++) {
+            const result = await generateRunningHubImage(apiKey, {
+              ...generationOptions,
+              num_images: 1, // 每次生成1张
+            });
+            
+            if (result.success) {
+              if (result.url) {
+                newImageUrls.push(result.url);
+              } else if (result.urls && result.urls.length > 0) {
+                newImageUrls.push(...result.urls);
+              }
+            } else {
+              console.warn(`第 ${i + 1} 张图片生成失败:`, result.error);
+            }
+            
+            // 延迟避免API限流
+            if (i < generateImageCount - 1) {
+              await new Promise(resolve => setTimeout(resolve, 1500));
+            }
+          }
+        } else {
+          const result = await generateRunningHubImage(apiKey, generationOptions);
+          
+          if (result.success) {
+            if (result.url) {
+              newImageUrls = [result.url];
+            } else if (result.urls && result.urls.length > 0) {
+              newImageUrls = result.urls;
+            } else {
+              toast.error('图片生成成功但未获取到图片URL');
+              updateShot(shot.id, { imageGenerating: false });
+              return;
+            }
+            toast.success(`成功生成 ${newImageUrls.length} 张图片！`, 8000);
+          } else {
+            const errorMsg = result.error || 'RunningHub 图片生成失败';
+            updateShot(shot.id, { imageGenerating: false });
+            throw new Error(errorMsg);
+          }
+        }
+      }
       // 即梦模型特殊处理
-      if (selectedModel?.isJimeng) {
+      else if (selectedModel?.isJimeng) {
         // 使用即梦API生成图片
         const selectedRatio = IMAGE_RATIOS.find(r => r.id === selectedImageRatio);
         const width = selectedRatio?.width || 1080;
         const height = selectedRatio?.height || 1920;
         
+        // 构建生成选项
+        const generationOptions: any = {
+          prompt: finalPrompt,
+          num_images: generateImageCount,
+          width,
+          height
+        };
+        
+        // 如果检测到角色，使用图生图模式
+        if (useImageToImage && matchedCharacters.length > 0) {
+          // 使用第一个匹配角色的图片
+          const characterImage = matchedCharacters[0].imageUrl;
+          generationOptions.images = [characterImage];
+          generationOptions.sample_strength = 0.7; // 默认采样强度
+        }
+        
         const result = await generateJimengImages(
           jimengApiBaseUrl,
           jimengSessionId,
-          {
-            prompt: finalPrompt,
-            num_images: generateImageCount,
-            width,
-            height
-          }
+          generationOptions
         );
         
         if (result.success && result.data) {
           newImageUrls = result.data.map(item => item.url);
           toast.success(`成功生成 ${newImageUrls.length} 张图片！`, 8000);
         } else {
-          toast.error(result.error || '即梦图片生成失败', 6000);
+          const errorMsg = result.error || '即梦图片生成失败';
           updateShot(shot.id, { imageGenerating: false });
-          return;
+          throw new Error(errorMsg);
         }
       } else {
         // 原有的yunwu.ai模型处理逻辑
@@ -776,9 +998,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             newImageUrls = result.data.data.map((item: any) => item.url || item).filter(Boolean);
           }
         } else {
-          toast.error(`图片生成失败: ${result.error || '未知错误'}`);
-      updateShot(shot.id, { imageGenerating: false });
-          return;
+          const errorMsg = `图片生成失败: ${result.error || '未知错误'}`;
+          updateShot(shot.id, { imageGenerating: false });
+          throw new Error(errorMsg);
         }
       } else {
         // 其他模型：如果生成多张，需要多次调用（因为某些模型可能不支持 n 参数或支持有限）
@@ -841,9 +1063,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               newImageUrls = result.data.images.map((item: any) => item.url || item).filter(Boolean);
             }
           } else {
-            toast.error(`图片生成失败: ${result.error || '未知错误'}`);
+            const errorMsg = `图片生成失败: ${result.error || '未知错误'}`;
             updateShot(shot.id, { imageGenerating: false });
-            return;
+            throw new Error(errorMsg);
           }
         }
       }
@@ -853,53 +1075,428 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         // 重新绘图时也追加图片，不覆盖原有图片
         const currentUrls = shot.imageUrls || [];
         const updatedUrls = [...currentUrls, ...newImageUrls]; // 始终追加，不替换
-        updateShot(shot.id, { imageUrls: updatedUrls, imageGenerating: false });
+        
+        // 自动选中新生成的第一张图片
+        let selectedIndex: number;
+        if (currentUrls.length === 0) {
+          // 之前没有图片，选中新生成的第一张（索引0）
+          selectedIndex = 0;
+        } else {
+          // 之前有图片，选中新生成的第一张（即 currentUrls.length，因为新图片是追加的）
+          selectedIndex = currentUrls.length;
+        }
+        
+        updateShot(shot.id, { 
+          imageUrls: updatedUrls, 
+          selectedImageIndex: selectedIndex,
+          imageGenerating: false 
+        });
       } else {
-        toast.warning('图片生成成功但未获取到图片URL');
+        const errorMsg = '图片生成成功但未获取到图片URL';
         updateShot(shot.id, { imageGenerating: false });
+        throw new Error(errorMsg);
       }
     } catch (error: any) {
-      alert(`图片生成失败: ${error.message || '未知错误'}`);
+      // 确保 imageGenerating 状态被清除
       updateShot(shot.id, { imageGenerating: false });
+      // 重新抛出错误，让调用者处理（批量生成会统一统计，单个生成会显示错误）
+      throw error;
     }
   };
 
-  // 轮询任务状态
-  const pollTaskStatus = async (taskId: string, shotId: string, maxAttempts: number = 60) => {
+  // 辅助函数：追加视频URL到镜头（支持追加模式）
+  const appendVideoToShot = (shotId: string, videoUrl: string, cachedUrl?: string) => {
+    const shot = shots.find(s => s.id === shotId);
+    if (!shot) return;
+    
+    // 追加模式：保留原有视频，添加新视频
+    const currentVideoUrls = shot.videoUrls || (shot.videoUrl ? [shot.videoUrl] : []);
+    const currentCachedUrls = shot.cachedVideoUrls || (shot.cachedVideoUrl ? [shot.cachedVideoUrl] : []);
+    const updatedVideoUrls = [...currentVideoUrls, videoUrl];
+    const updatedCachedUrls = cachedUrl ? [...currentCachedUrls, cachedUrl] : currentCachedUrls;
+    
+    updateShot(shotId, {
+      videoUrl: videoUrl, // 保留向后兼容，显示最新的视频
+      videoUrls: updatedVideoUrls, // 追加到数组
+      cachedVideoUrl: cachedUrl || shot.cachedVideoUrl, // 保留向后兼容
+      cachedVideoUrls: updatedCachedUrls, // 追加到数组
+      videoGenerating: false
+    });
+    
+    return updatedVideoUrls.length;
+  };
+
+  // RunningHub 任务状态轮询
+  const pollRunningHubTaskStatus = async (taskId: string, shotId: string, maxAttempts: number = 180) => {
     let attempts = 0;
+    let lastProgress = 0;
+    let lastStatus = '';
+    let consecutiveErrors = 0;
+    const maxConsecutiveErrors = 5;
     
     const poll = async () => {
-      if (attempts >= maxAttempts) {
-        toast.error('视频生成超时，请稍后手动查询任务状态', 8000);
+      attempts++;
+      
+      if (attempts > maxAttempts) {
+        // 超时后最后一次查询
+        console.log(`[MediaGenerator] RunningHub 轮询超时，进行最后一次查询: taskId=${taskId}`);
+        try {
+          const finalResult = await checkRunningHubTaskStatus(apiKey, taskId);
+          if (finalResult.success && finalResult.url) {
+            try {
+              toast.info('视频生成成功，正在缓存视频...', 3000);
+              const cachedUrl = await cacheVideo(finalResult.url);
+              const totalCount = appendVideoToShot(shotId, finalResult.url, cachedUrl);
+              toast.success(`视频生成成功并已缓存！（共 ${totalCount} 个视频）`, 8000);
+            } catch (cacheError: any) {
+              console.warn('[MediaGenerator] 视频缓存失败:', cacheError);
+              const totalCount = appendVideoToShot(shotId, finalResult.url);
+              toast.success(`视频生成成功！（共 ${totalCount} 个视频）`, 8000);
+            }
+            return;
+          }
+        } catch (error) {
+          console.error('[MediaGenerator] 最后一次查询失败:', error);
+        }
+        
+        toast.warning(
+          `视频生成超时（已轮询 ${maxAttempts} 次），但任务可能仍在后台处理中。\n\n` +
+          `任务ID: ${taskId}\n` +
+          `最后状态: ${lastStatus || '未知'}\n` +
+          `最后进度: ${lastProgress}%\n\n` +
+          `请稍后手动刷新或重新查询任务状态。`,
+          12000
+        );
         updateShot(shotId, { videoGenerating: false });
         return;
       }
       
-      attempts++;
-      
       try {
-        const result = await checkVideoTaskStatus(dayuApiKey, taskId);
+        const result = await checkRunningHubTaskStatus(apiKey, taskId);
+        consecutiveErrors = 0;
         
         if (result.success) {
-          if (result.status === 'completed' && result.videoUrl) {
-            // 任务完成，获取视频 URL
-            updateShot(shotId, { videoUrl: result.videoUrl, videoGenerating: false });
-            toast.success('视频生成成功！', 8000);
-          } else if (result.status === 'failed' || result.status === 'error') {
-            // 任务失败
+          lastStatus = result.status || '';
+          lastProgress = result.progress || 0;
+          
+          console.log(`[MediaGenerator] RunningHub 任务 ${taskId} 状态: ${result.status}, 进度: ${result.progress}%`);
+          
+          // 检查是否有视频URL（支持多种字段名）
+          // RunningHubResult 有 url 字段，DayuVideoResult 有 videoUrl 字段
+          // 注意：即使设置了 batch_size=1，API 可能仍返回多个视频，这里只取第一个
+          let videoUrl = result.url || (result as any).videoUrl;
+          
+          // 如果还没有找到URL，从data中提取（只取第一个视频）
+          if (!videoUrl && result.data) {
+            const data = result.data;
+            const files = data.files || data.outputs || [];
+            
+            // 先找出所有视频文件
+            const videoFiles = files.filter((f: any) => 
+              f.url?.includes('.mp4') || 
+              f.fileName?.includes('.mp4') ||
+              f.outputType === 'mp4' ||
+              f.type === 'video/mp4'
+            );
+            
+            if (videoFiles.length > 0) {
+              // 只取第一个视频文件
+              videoUrl = videoFiles[0].url || videoFiles[0].fileUrl || videoFiles[0].fileName;
+              if (videoFiles.length > 1) {
+                console.warn(`[MediaGenerator] RunningHub 返回了 ${videoFiles.length} 个视频，但只使用第一个:`, videoUrl);
+              }
+            } else if (files.length > 0) {
+              // 如果没有找到mp4，使用第一个文件
+              videoUrl = files[0].url || files[0].fileUrl || files[0].fileName;
+            }
+            
+            // 也尝试从data的顶层字段查找
+            if (!videoUrl) {
+              videoUrl = data.videoUrl || data.video_url || data.url || data.outputUrl;
+            }
+          }
+          
+          if (videoUrl) {
+            // 已获取到视频URL，追加模式
+            try {
+              toast.info('视频生成成功，正在缓存视频...', 3000);
+              const cachedUrl = await cacheVideo(videoUrl);
+              const totalCount = appendVideoToShot(shotId, videoUrl, cachedUrl);
+              toast.success(`视频生成成功并已缓存！（共 ${totalCount} 个视频）`, 8000);
+            } catch (cacheError: any) {
+              console.warn('[MediaGenerator] 视频缓存失败:', cacheError);
+              const totalCount = appendVideoToShot(shotId, videoUrl);
+              toast.success(`视频生成成功！（共 ${totalCount} 个视频）`, 8000);
+            }
+            return;
+          } else if (result.status === 'SUCCESS' || result.status === 'completed' || result.status === 'success') {
+            // 状态完成但无URL，可能是URL字段名不对，尝试从data中提取（只取第一个视频）
+            if (result.data) {
+              const data = result.data;
+              const files = data.files || data.outputs || [];
+              
+              // 先找出所有视频文件，只取第一个
+              const videoFiles = files.filter((f: any) => 
+                f.url?.includes('.mp4') || 
+                f.fileName?.includes('.mp4') ||
+                f.outputType === 'mp4'
+              );
+              
+              let extractedUrl: string | undefined;
+              if (videoFiles.length > 0) {
+                extractedUrl = videoFiles[0].url || videoFiles[0].fileUrl || videoFiles[0].fileName;
+                if (videoFiles.length > 1) {
+                  console.warn(`[MediaGenerator] RunningHub 返回了 ${videoFiles.length} 个视频，但只使用第一个`);
+                }
+              } else if (files.length > 0) {
+                extractedUrl = files[0].url || files[0].fileUrl || files[0].fileName;
+              }
+              
+              // 也尝试从data的顶层字段查找
+              if (!extractedUrl) {
+                extractedUrl = data.videoUrl || data.video_url || data.url;
+              }
+              
+              if (extractedUrl) {
+                console.log('[MediaGenerator] 从data中提取到视频URL:', extractedUrl);
+                try {
+                  toast.info('视频生成成功，正在缓存视频...', 3000);
+                  const cachedUrl = await cacheVideo(extractedUrl);
+                  const totalCount = appendVideoToShot(shotId, extractedUrl, cachedUrl);
+                  toast.success(`视频生成成功并已缓存！（共 ${totalCount} 个视频）`, 8000);
+                } catch (cacheError: any) {
+                  console.warn('[MediaGenerator] 视频缓存失败:', cacheError);
+                  const totalCount = appendVideoToShot(shotId, extractedUrl);
+                  toast.success(`视频生成成功！（共 ${totalCount} 个视频）`, 8000);
+                }
+                return;
+              }
+            }
+            // 如果仍然没有URL，继续轮询（可能URL还在生成中）
+            console.log('[MediaGenerator] 任务状态为SUCCESS但无URL，继续轮询获取URL');
+            setTimeout(poll, 5000);
+          } else if (result.status === 'FAILED' || result.status === 'failed' || result.status === 'error') {
             toast.error(`视频生成失败: ${result.error || '未知错误'}`, 6000);
             updateShot(shotId, { videoGenerating: false });
+            return;
           } else {
             // 任务进行中，继续轮询
-            console.log(`[MediaGenerator] 任务 ${taskId} 进度: ${result.progress || 0}%, 状态: ${result.status}`);
-            setTimeout(poll, 5000); // 每 5 秒轮询一次
+            const progress = result.progress || 0;
+            let pollInterval = 5000;
+            
+            if (progress >= 90) {
+              pollInterval = 3000;
+            } else if (progress >= 50) {
+              pollInterval = 4000;
+            }
+            
+            setTimeout(poll, pollInterval);
           }
         } else {
-          // 查询失败，继续重试
+          consecutiveErrors++;
+          if (consecutiveErrors >= maxConsecutiveErrors) {
+            toast.error(`连续 ${maxConsecutiveErrors} 次查询失败，请检查网络连接或API配置`, 8000);
+            updateShot(shotId, { videoGenerating: false });
+            return;
+          }
+          console.warn(`[MediaGenerator] RunningHub 查询任务状态失败 (${consecutiveErrors}/${maxConsecutiveErrors}):`, result.error);
           setTimeout(poll, 5000);
         }
       } catch (error: any) {
-        console.error('[MediaGenerator] 轮询任务状态失败:', error);
+        consecutiveErrors++;
+        console.error(`[MediaGenerator] RunningHub 轮询任务状态异常 (${consecutiveErrors}/${maxConsecutiveErrors}):`, error);
+        
+        if (consecutiveErrors >= maxConsecutiveErrors) {
+          toast.error(`连续 ${maxConsecutiveErrors} 次查询异常，请检查网络连接`, 8000);
+          updateShot(shotId, { videoGenerating: false });
+          return;
+        }
+        
+        setTimeout(poll, 5000);
+      }
+    };
+    
+    setTimeout(poll, 3000);
+  };
+
+  // 轮询任务状态（大洋芋）
+  // 根据API文档：普通模式3-5分钟，pro模式15-30分钟
+  // 增加轮询次数和超时时间，确保能获取到已完成的视频
+  const pollTaskStatus = async (taskId: string, shotId: string, maxAttempts: number = 360) => {
+    let attempts = 0;
+    let lastProgress = 0;
+    let lastStatus = '';
+    let consecutiveErrors = 0;
+    const maxConsecutiveErrors = 5; // 连续错误次数限制
+    
+    const poll = async () => {
+      attempts++;
+      
+      // 根据模型类型调整超时时间
+      // 普通模式：最多30分钟（360次 * 5秒 = 1800秒 = 30分钟）
+      // Pro模式可能需要更长时间，但先设置30分钟作为基础超时
+      if (attempts > maxAttempts) {
+        // 即使超时，也尝试最后一次查询，可能视频已经生成完成（这是关键修复）
+        console.log(`[MediaGenerator] 轮询超时（${maxAttempts}次），进行最后一次查询: taskId=${taskId}`);
+        try {
+          const finalResult = await checkVideoTaskStatus(dayuApiKey, taskId);
+          console.log(`[MediaGenerator] 最后一次查询结果:`, {
+            success: finalResult.success,
+            status: finalResult.status,
+            progress: finalResult.progress,
+            hasVideoUrl: !!finalResult.videoUrl,
+            dataKeys: finalResult.data ? Object.keys(finalResult.data) : []
+          });
+          
+          if (finalResult.success) {
+            // 尝试从多个可能的字段提取视频URL
+            const data = finalResult.data || {};
+            const possibleUrl = finalResult.videoUrl ||
+                               data.video_url ||
+                               data.url ||
+                               data.videoUrl ||
+                               data.video ||
+                               data.output?.url ||
+                               data.output?.video_url ||
+                               data.result?.url ||
+                               data.result?.video_url ||
+                               data.files?.[0]?.url;
+            
+            if (possibleUrl) {
+              // 最后一次查询成功获取到视频URL，自动缓存，追加模式
+              try {
+                const cachedUrl = await cacheVideo(possibleUrl);
+                const totalCount = appendVideoToShot(shotId, possibleUrl, cachedUrl);
+                toast.success(`视频生成成功并已缓存！（已超时但成功获取到视频，共 ${totalCount} 个视频）`, 8000);
+              } catch (cacheError: any) {
+                console.warn('[MediaGenerator] 视频缓存失败:', cacheError);
+                const totalCount = appendVideoToShot(shotId, possibleUrl);
+                toast.success(`视频生成成功！（已超时但成功获取到视频，共 ${totalCount} 个视频）`, 8000);
+              }
+              return;
+            } else if (finalResult.status === 'completed' || finalResult.status === 'success') {
+              // 状态为完成但无URL，可能是URL字段名不对，记录完整数据用于调试
+              console.error(`[MediaGenerator] 任务状态为完成但无视频URL，完整响应数据:`, JSON.stringify(data, null, 2));
+              toast.warning(
+                `视频生成已完成，但无法获取视频URL。\n\n` +
+                `任务ID: ${taskId}\n` +
+                `状态: ${finalResult.status}\n` +
+                `请检查API响应格式或联系技术支持。`,
+                10000
+              );
+              updateShot(shotId, { videoGenerating: false });
+              return;
+            }
+          }
+        } catch (error: any) {
+          console.error('[MediaGenerator] 最后一次查询失败:', error);
+        }
+        
+        // 超时且最后一次查询也未获取到视频
+        toast.warning(
+          `视频生成超时（已轮询 ${maxAttempts} 次，约 ${Math.floor(maxAttempts * 5 / 60)} 分钟），但任务可能仍在后台处理中。\n\n` +
+          `任务ID: ${taskId}\n` +
+          `最后状态: ${lastStatus || '未知'}\n` +
+          `最后进度: ${lastProgress}%\n\n` +
+          `提示：即使显示超时，如果后台已生成成功，您可以：\n` +
+          `1. 等待几分钟后刷新页面\n` +
+          `2. 或使用任务ID手动查询任务状态\n` +
+          `3. 或重新生成视频`,
+          15000
+        );
+        updateShot(shotId, { videoGenerating: false });
+        return;
+      }
+      
+      try {
+        const result = await checkVideoTaskStatus(dayuApiKey, taskId);
+        consecutiveErrors = 0; // 重置连续错误计数
+        
+        if (result.success) {
+          lastStatus = result.status || '';
+          lastProgress = result.progress || 0;
+          
+          console.log(`[MediaGenerator] 任务 ${taskId} 状态: ${result.status}, 进度: ${result.progress}%, 视频URL: ${result.videoUrl ? '已获取' : '未获取'}`);
+          
+          // 检查任务是否完成（状态为 completed 或已获取到视频URL）
+          // 注意：即使状态不是 completed，如果有 videoUrl 也认为已完成
+          if (result.videoUrl) {
+            // 已获取到视频URL，任务完成，自动缓存
+              try {
+                toast.info('视频生成成功，正在缓存视频以提升播放性能...', 3000);
+                const cachedUrl = await cacheVideo(result.videoUrl);
+                const totalCount = appendVideoToShot(shotId, result.videoUrl, cachedUrl);
+                toast.success(`视频生成成功并已缓存！（共 ${totalCount} 个视频）`, 8000);
+              } catch (cacheError: any) {
+                console.warn('[MediaGenerator] 视频缓存失败，使用原始URL:', cacheError);
+                const totalCount = appendVideoToShot(shotId, result.videoUrl);
+                toast.success(`视频生成成功！（共 ${totalCount} 个视频）`, 8000);
+              }
+              return;
+          } else if (result.status === 'completed' || result.status === 'success') {
+            // 状态为完成，但还没有视频URL，可能是URL字段名不对，再查询一次
+            console.log(`[MediaGenerator] 任务状态为完成但无视频URL，检查响应数据:`, result.data);
+            // 尝试从data中提取URL
+            const data = result.data || {};
+            const possibleUrl = data.video_url || data.url || data.videoUrl || data.result?.url || data.result?.video_url;
+            if (possibleUrl) {
+              // 自动缓存视频，追加模式
+              try {
+                toast.info('视频生成成功，正在缓存视频...', 3000);
+                const cachedUrl = await cacheVideo(possibleUrl);
+                const totalCount = appendVideoToShot(shotId, possibleUrl, cachedUrl);
+                toast.success(`视频生成成功并已缓存！（共 ${totalCount} 个视频）`, 8000);
+              } catch (cacheError: any) {
+                console.warn('[MediaGenerator] 视频缓存失败，使用原始URL:', cacheError);
+                const totalCount = appendVideoToShot(shotId, possibleUrl);
+                toast.success(`视频生成成功！（共 ${totalCount} 个视频）`, 8000);
+              }
+              return;
+            } else {
+              // 状态完成但无URL，继续轮询等待URL出现
+              console.warn(`[MediaGenerator] 任务状态为完成但无视频URL，继续轮询...`);
+              setTimeout(poll, 5000);
+            }
+          } else if (result.status === 'failed' || result.status === 'error' || result.status === 'failure') {
+            // 任务失败
+            toast.error(`视频生成失败: ${result.error || '未知错误'}`, 6000);
+            updateShot(shotId, { videoGenerating: false });
+            return;
+          } else {
+            // 任务进行中（pending, in_progress, processing 等），继续轮询
+            // 根据进度调整轮询间隔：进度越高，轮询越频繁
+            const progress = result.progress || 0;
+            let pollInterval = 5000; // 默认5秒
+            
+            if (progress >= 90) {
+              pollInterval = 3000; // 接近完成时，3秒轮询一次
+            } else if (progress >= 50) {
+              pollInterval = 4000; // 进度过半时，4秒轮询一次
+            }
+            
+            setTimeout(poll, pollInterval);
+          }
+        } else {
+          // 查询失败，但继续重试（可能是临时网络问题）
+          consecutiveErrors++;
+          if (consecutiveErrors >= maxConsecutiveErrors) {
+            toast.error(`连续 ${maxConsecutiveErrors} 次查询失败，请检查网络连接或API配置`, 8000);
+            updateShot(shotId, { videoGenerating: false });
+            return;
+          }
+          console.warn(`[MediaGenerator] 查询任务状态失败 (${consecutiveErrors}/${maxConsecutiveErrors}):`, result.error);
+          setTimeout(poll, 5000);
+        }
+      } catch (error: any) {
+        consecutiveErrors++;
+        console.error(`[MediaGenerator] 轮询任务状态异常 (${consecutiveErrors}/${maxConsecutiveErrors}):`, error);
+        
+        if (consecutiveErrors >= maxConsecutiveErrors) {
+          toast.error(`连续 ${maxConsecutiveErrors} 次查询异常，请检查网络连接`, 8000);
+          updateShot(shotId, { videoGenerating: false });
+          return;
+        }
+        
         setTimeout(poll, 5000);
       }
     };
@@ -910,9 +1507,20 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
   // 生成单个视频
   const handleGenerateVideo = async (shot: Shot, regenerate: boolean = false) => {
-    if (!dayuApiKey || !dayuApiKey.trim()) {
-      toast.error('请先配置大洋芋 API Key（用于视频生成）');
-      return;
+    const selectedModel = VIDEO_MODELS.find(m => m.id === selectedVideoModel);
+    const isRunningHubModel = selectedModel?.isRunningHub;
+    
+    // 检查 API Key
+    if (isRunningHubModel) {
+      if (provider !== 'runninghub' || !apiKey || !apiKey.trim()) {
+        toast.error('请先在顶部配置 RunningHub API Key（选择 RunningHub 服务）');
+        return;
+      }
+    } else {
+      if (!dayuApiKey || !dayuApiKey.trim()) {
+        toast.error('请先配置大洋芋 API Key（用于视频生成）');
+        return;
+      }
     }
     
     if (!shot.videoPrompt) {
@@ -922,7 +1530,6 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     
     updateShot(shot.id, { videoGenerating: true });
     
-    const selectedModel = VIDEO_MODELS.find(m => m.id === selectedVideoModel);
     if (!selectedModel) {
       toast.error('请选择视频模型');
       updateShot(shot.id, { videoGenerating: false });
@@ -934,11 +1541,30 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     
     // 判断模式：如果有图片，则为图生视频；否则为文生视频
     const hasImages = shotImages.length > 0;
+    
+    // 如果有图片，必须使用选中的图片
+    if (hasImages) {
+      // 检查是否有选中的图片
+      if (shot.selectedImageIndex === undefined || shot.selectedImageIndex < 0) {
+        toast.error('请先选择要用于生成视频的图片（点击图片即可选择）', 6000);
+        updateShot(shot.id, { videoGenerating: false });
+        return;
+      }
+      
+      // 验证选中的图片索引是否有效
+      if (shot.selectedImageIndex >= shotImages.length) {
+        toast.error('选中的图片索引无效，请重新选择图片', 6000);
+        updateShot(shot.id, { videoGenerating: false });
+        return;
+      }
+    }
+    
     const mode = hasImages ? '图生视频 (Image-to-Video)' : '文生视频 (Text-to-Video)';
-    console.log(`[MediaGenerator] 视频生成模式: ${mode}, 图片数量: ${shotImages.length}`);
+    console.log(`[MediaGenerator] 视频生成模式: ${mode}, 图片数量: ${shotImages.length}, 选中图片索引: ${shot.selectedImageIndex}`);
     
     if (hasImages) {
-      toast.info(`使用图生视频模式，基于 ${shotImages.length} 张图片生成视频`);
+      const selectedImageIndex = shot.selectedImageIndex!;
+      toast.info(`使用图生视频模式，基于选中的图片（第 ${selectedImageIndex + 1} 张）生成视频`, 5000);
     } else {
       toast.info('使用文生视频模式，直接根据提示词生成视频');
     }
@@ -946,38 +1572,154 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     try {
       let result;
       
-      if (hasImages) {
-        // 图生视频模式：使用第一张图片（或选中的图片）
-        const selectedImageUrl = shot.selectedImageIndex !== undefined && shot.selectedImageIndex >= 0
-          ? shotImages[shot.selectedImageIndex]
-          : shotImages[0];
-        
-        const options: DayuVideoGenerationOptions = {
-          prompt: shot.videoPrompt,
-      model: selectedVideoModel,
-          input_reference: selectedImageUrl, // 图片 URL 或 File 对象
-        };
-        
-        result = await generateImageToVideo(dayuApiKey, options);
+      // RunningHub 模型处理
+      if (isRunningHubModel) {
+        if (hasImages) {
+          // 图生视频模式
+          const selectedImageUrl = shotImages[shot.selectedImageIndex!];
+          
+          if (!selectedImageUrl) {
+            toast.error('选中的图片URL无效，请重新选择图片', 6000);
+            updateShot(shot.id, { videoGenerating: false });
+            return;
+          }
+          
+          const options: RunningHubVideoOptions = {
+            prompt: shot.videoPrompt,
+            model: 'wan2.2',
+            image_url: selectedImageUrl,
+            duration: selectedModel.duration || 10,
+          };
+          
+          result = await generateRunningHubVideo(apiKey, options);
+        } else {
+          // 文生视频模式
+          const options: RunningHubVideoOptions = {
+            prompt: shot.videoPrompt,
+            model: 'wan2.2',
+            duration: selectedModel.duration || 10,
+          };
+          
+          result = await generateRunningHubVideo(apiKey, options);
+        }
       } else {
-        // 文生视频模式
-        const options: DayuVideoGenerationOptions = {
-      prompt: shot.videoPrompt,
-          model: selectedVideoModel,
-        };
-        
-        result = await generateTextToVideo(dayuApiKey, options);
+        // 大洋芋模型处理
+        if (hasImages) {
+          // 图生视频模式：必须使用选中的图片
+          const selectedImageUrl = shotImages[shot.selectedImageIndex!];
+          
+          if (!selectedImageUrl) {
+            toast.error('选中的图片URL无效，请重新选择图片', 6000);
+            updateShot(shot.id, { videoGenerating: false });
+            return;
+          }
+          
+          console.log(`[MediaGenerator] 使用选中的图片生成视频: 索引 ${shot.selectedImageIndex}, URL: ${selectedImageUrl.substring(0, 50)}...`);
+          
+          const options: DayuVideoGenerationOptions = {
+            prompt: shot.videoPrompt,
+            model: selectedVideoModel,
+            input_reference: selectedImageUrl, // 使用选中的图片
+          };
+          
+          result = await generateImageToVideo(dayuApiKey, options);
+        } else {
+          // 文生视频模式
+          const options: DayuVideoGenerationOptions = {
+            prompt: shot.videoPrompt,
+            model: selectedVideoModel,
+          };
+          
+          result = await generateTextToVideo(dayuApiKey, options);
+        }
       }
       
-      if (result.success && result.taskId) {
-        // 异步任务，开始轮询
-        toast.info('视频生成任务已提交，正在处理中...', 6000);
-        await pollTaskStatus(result.taskId, shot.id);
-      } else if (result.success && result.videoUrl) {
-        // 直接返回了视频 URL（同步完成）
-        updateShot(shot.id, { videoUrl: result.videoUrl, videoGenerating: false });
-        toast.success('视频生成成功！', 8000);
-    } else {
+      if (result.success) {
+        // 记录完整的响应数据用于调试
+        console.log('[MediaGenerator] 视频生成响应:', {
+          hasTaskId: !!result.taskId,
+          taskId: result.taskId,
+          hasVideoUrl: !!result.videoUrl,
+          videoUrl: result.videoUrl,
+          status: result.status,
+          progress: result.progress,
+          dataKeys: result.data ? Object.keys(result.data) : [],
+          fullData: result.data,
+        });
+        
+        // 如果result中没有taskId，尝试从result.data中提取
+        if (!result.taskId && result.data) {
+          const extractedTaskId = result.data.id || result.data.taskId || result.data.task_id || result.data.video_id;
+          if (extractedTaskId) {
+            console.log('[MediaGenerator] 从data中提取taskId:', extractedTaskId);
+            result.taskId = extractedTaskId;
+          }
+        }
+        
+        // 检查是否直接返回了视频URL（同步完成，较少见）
+        if (result.videoUrl) {
+          // 自动缓存视频，并追加到 videoUrls 数组
+          try {
+            toast.info('视频生成成功，正在缓存视频...', 3000);
+            const cachedUrl = await cacheVideo(result.videoUrl);
+            
+            // 追加模式：保留原有视频，添加新视频
+            const currentVideoUrls = shot.videoUrls || (shot.videoUrl ? [shot.videoUrl] : []);
+            const currentCachedUrls = shot.cachedVideoUrls || (shot.cachedVideoUrl ? [shot.cachedVideoUrl] : []);
+            const updatedVideoUrls = [...currentVideoUrls, result.videoUrl];
+            const updatedCachedUrls = [...currentCachedUrls, cachedUrl];
+            
+            updateShot(shot.id, { 
+              videoUrl: result.videoUrl, // 保留向后兼容，显示最新的视频
+              videoUrls: updatedVideoUrls, // 追加到数组
+              cachedVideoUrl: cachedUrl, // 保留向后兼容
+              cachedVideoUrls: updatedCachedUrls, // 追加到数组
+              videoGenerating: false 
+            });
+            toast.success(`视频生成成功并已缓存！（共 ${updatedVideoUrls.length} 个视频）`, 8000);
+          } catch (cacheError: any) {
+            console.warn('[MediaGenerator] 视频缓存失败，使用原始URL:', cacheError);
+            
+            // 追加模式：即使缓存失败也追加视频URL
+            const currentVideoUrls = shot.videoUrls || (shot.videoUrl ? [shot.videoUrl] : []);
+            const updatedVideoUrls = [...currentVideoUrls, result.videoUrl];
+            
+            updateShot(shot.id, { 
+              videoUrl: result.videoUrl,
+              videoUrls: updatedVideoUrls,
+              videoGenerating: false 
+            });
+            toast.success(`视频生成成功！（共 ${updatedVideoUrls.length} 个视频）`, 8000);
+          }
+        } else if (result.taskId) {
+          // 异步任务，开始轮询
+          console.log(`[MediaGenerator] 视频生成任务已提交: taskId=${result.taskId}, status=${result.status}, progress=${result.progress}`);
+          const modelInfo = selectedModel?.name || selectedVideoModel;
+          const isProModel = modelInfo?.includes('Pro') || modelInfo?.includes('pro');
+          const isRunningHub = isRunningHubModel;
+          const estimatedTime = isRunningHub ? '3-10分钟' : (isProModel ? '15-30分钟' : '3-5分钟');
+          
+          toast.info(
+            `视频生成任务已提交\n` +
+            `任务ID: ${result.taskId}\n` +
+            `预计耗时: ${estimatedTime}\n` +
+            `系统会自动获取结果，请耐心等待...`,
+            8000
+          );
+          
+          // 使用对应的轮询函数
+          if (isRunningHub) {
+            await pollRunningHubTaskStatus(result.taskId, shot.id);
+          } else {
+            await pollTaskStatus(result.taskId, shot.id);
+          }
+        } else {
+          // 成功但没有taskId和videoUrl，可能是响应格式问题
+          console.warn('[MediaGenerator] 视频生成响应异常:', result);
+          toast.warning('视频生成任务已提交，但未获取到任务ID，请稍后手动检查', 8000);
+          updateShot(shot.id, { videoGenerating: false });
+        }
+      } else {
         // 生成失败
         const errorMsg = result.error || '未知错误';
         if (errorMsg.includes('负载已饱和') || errorMsg.includes('saturated') || errorMsg.includes('负载')) {
@@ -998,48 +1740,237 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     }
   };
 
-  // 批量生成图片（仅未生成的）
-  const handleBatchGenerateImages = async () => {
-    const shotsWithoutImages = shots.filter(s => s.imagePrompt && (!s.imageUrls || s.imageUrls.length === 0) && !s.imageGenerating);
-    if (shotsWithoutImages.length === 0) {
-      alert('所有镜头都已生成图片或正在生成中');
-      return;
+  // 并发控制辅助函数：限制同时执行的任务数量
+  const runConcurrentTasks = async <T,>(
+    tasks: (() => Promise<T>)[],
+    concurrency: number,
+    onProgress?: (completed: number, total: number) => void
+  ): Promise<{ success: T[]; failed: { error: any; index: number }[] }> => {
+    const results: { success: T[]; failed: { error: any; index: number }[] } = {
+      success: [],
+      failed: []
+    };
+    
+    let completed = 0;
+    let currentIndex = 0;
+    
+    // 创建并发池
+    const workers: Promise<void>[] = [];
+    
+    const runNext = async (): Promise<void> => {
+      while (currentIndex < tasks.length) {
+        const index = currentIndex++;
+        const task = tasks[index];
+        
+        try {
+          const result = await task();
+          results.success.push(result);
+          completed++;
+          if (onProgress) {
+            onProgress(completed, tasks.length);
+          }
+        } catch (error: any) {
+          results.failed.push({ error, index });
+          completed++;
+          if (onProgress) {
+            onProgress(completed, tasks.length);
+          }
+        }
+      }
+    };
+    
+    // 启动并发工作池
+    for (let i = 0; i < Math.min(concurrency, tasks.length); i++) {
+      workers.push(runNext());
     }
     
-    if (!confirm(`确定要批量生成 ${shotsWithoutImages.length} 个镜头的图片吗？`)) {
-      return;
-    }
+    // 等待所有任务完成
+    await Promise.all(workers);
     
-    for (const shot of shotsWithoutImages) {
-      await handleGenerateImage(shot);
-      await new Promise(resolve => setTimeout(resolve, 2000)); // 延迟2秒避免API限流
-    }
+    return results;
   };
 
-  // 批量生成视频（仅未生成的）
-  const handleBatchGenerateVideos = async () => {
-    const shotsWithoutVideos = shots.filter(s => s.videoPrompt && !s.videoUrl && !s.videoGenerating);
-    if (shotsWithoutVideos.length === 0) {
-      toast.info('所有镜头都已生成视频或正在生成中');
+  // 批量生成图片（选中的镜头，支持追加模式）- 并发执行
+  const handleBatchGenerateImages = async () => {
+    // 只处理选中的镜头
+    const selectedShots = shots.filter(s => s.selected);
+    if (selectedShots.length === 0) {
+      toast.warning('请先选择需要生成图片的镜头', 4000);
       return;
     }
     
-    if (!confirm(`确定要批量生成 ${shotsWithoutVideos.length} 个镜头的视频吗？`)) {
+    // 从选中的镜头中过滤出有图片提示词且不在生成中的
+    // 注意：不再过滤已有图片的镜头，允许继续追加生成
+    const shotsToGenerate = selectedShots.filter(s => 
+      s.imagePrompt && 
+      !s.imageGenerating
+    );
+    
+    if (shotsToGenerate.length === 0) {
+      // 检查是否有正在生成中的镜头
+      const generatingShots = selectedShots.filter(s => s.imageGenerating);
+      if (generatingShots.length > 0) {
+        toast.info(`选中的镜头中有 ${generatingShots.length} 个正在生成图片，请等待完成`, 4000);
+      } else {
+        toast.info('选中的镜头都没有图片提示词，请先添加提示词', 4000);
+      }
+      return;
+    }
+    
+    // 统计已有图片的镜头数量
+    const shotsWithImages = shotsToGenerate.filter(s => s.imageUrls && s.imageUrls.length > 0);
+    const shotsWithoutImages = shotsToGenerate.filter(s => !s.imageUrls || s.imageUrls.length === 0);
+    
+    const confirmMessage = shotsWithImages.length > 0
+      ? `确定要为选中的 ${shotsToGenerate.length} 个镜头批量生成图片吗？\n\n` +
+        `- ${shotsWithoutImages.length} 个镜头将生成第一张图片\n` +
+        `- ${shotsWithImages.length} 个镜头将追加生成新图片（保留原有图片）\n\n` +
+        `将并发生成，提高效率。`
+      : `确定要为选中的 ${shotsToGenerate.length} 个镜头批量生成图片吗？\n\n将并发生成，提高效率。`;
+    
+    if (!confirm(confirmMessage)) {
       return;
     }
     
     // 初始化进度
-    setBatchProgress({ current: 0, total: shotsWithoutVideos.length, type: 'video' });
+    setBatchProgress({ current: 0, total: shotsToGenerate.length, type: 'image' });
     
     try {
-      for (let i = 0; i < shotsWithoutVideos.length; i++) {
-        const shot = shotsWithoutVideos[i];
-        await handleGenerateVideo(shot);
-        setBatchProgress(prev => prev ? { ...prev, current: i + 1 } : null);
-        await new Promise(resolve => setTimeout(resolve, 3000)); // 延迟3秒避免API限流
-      }
+      // 创建任务数组（每个镜头一个任务）
+      const tasks = shotsToGenerate.map((shot, index) => 
+        async () => {
+          const existingCount = shot.imageUrls?.length || 0;
+          console.log(`[MediaGenerator] 开始并发生成图片: 镜头 ${shot.number} (${index + 1}/${shotsToGenerate.length})，已有 ${existingCount} 张图片，将追加生成`);
+          await handleGenerateImage(shot);
+          return { shot, index };
+        }
+      );
       
-      toast.success(`成功生成 ${shotsWithoutVideos.length} 个镜头的视频！`, 8000);
+      // 并发执行，最多同时5个请求（图片生成相对快速，可以设置更高的并发数）
+      const concurrency = 5;
+      const results = await runConcurrentTasks(
+        tasks,
+        concurrency,
+        (completed, total) => {
+          setBatchProgress(prev => prev ? { ...prev, current: completed } : null);
+        }
+      );
+      
+      const successCount = results.success.length;
+      const failCount = results.failed.length;
+      
+      if (failCount === 0) {
+        toast.success(`成功为 ${successCount} 个镜头生成图片！（并发执行，已追加到原有图片）`, 8000);
+      } else {
+        toast.warning(`完成：成功 ${successCount} 个，失败 ${failCount} 个`, 8000);
+        // 记录失败的镜头
+        results.failed.forEach(({ error, index }) => {
+          console.error(`[MediaGenerator] 图片生成失败: 镜头 ${shotsToGenerate[index].number}`, error);
+        });
+      }
+    } catch (error: any) {
+      toast.error(`批量生成图片失败: ${error.message || '未知错误'}`, 6000);
+    } finally {
+      setBatchProgress(null);
+    }
+  };
+
+  // 批量生成视频（选中的镜头，支持追加模式）- 并发执行
+  const handleBatchGenerateVideos = async () => {
+    // 只处理选中的镜头
+    const selectedShots = shots.filter(s => s.selected);
+    if (selectedShots.length === 0) {
+      toast.warning('请先选择需要生成视频的镜头', 4000);
+      return;
+    }
+    
+    // 从选中的镜头中过滤出有视频提示词且不在生成中的
+    // 注意：不再过滤已有视频的镜头，允许继续追加生成
+    const shotsToGenerate = selectedShots.filter(s => {
+      if (!s.videoPrompt || s.videoGenerating) {
+        return false;
+      }
+      // 如果有图片，必须已选中图片
+      if (s.imageUrls && s.imageUrls.length > 0) {
+        return s.selectedImageIndex !== undefined && s.selectedImageIndex >= 0 && s.selectedImageIndex < s.imageUrls.length;
+      }
+      // 没有图片也可以生成（文生视频）
+      return true;
+    });
+    
+    if (shotsToGenerate.length === 0) {
+      const shotsWithImagesButNoSelection = selectedShots.filter(s => 
+        s.videoPrompt && 
+        !s.videoGenerating &&
+        s.imageUrls && 
+        s.imageUrls.length > 0 &&
+        (s.selectedImageIndex === undefined || s.selectedImageIndex < 0)
+      );
+      
+      if (shotsWithImagesButNoSelection.length > 0) {
+        toast.error(`有 ${shotsWithImagesButNoSelection.length} 个镜头有图片但未选择图片，请先选择图片后再批量生成视频`, 8000);
+      } else {
+        const generatingShots = selectedShots.filter(s => s.videoGenerating);
+        if (generatingShots.length > 0) {
+          toast.info(`选中的镜头中有 ${generatingShots.length} 个正在生成视频，请等待完成`, 4000);
+        } else {
+          toast.info('选中的镜头都没有视频提示词，请先添加提示词', 4000);
+        }
+      }
+      return;
+    }
+    
+    // 统计已有视频的镜头数量
+    const shotsWithVideos = shotsToGenerate.filter(s => s.videoUrl);
+    const shotsWithoutVideos = shotsToGenerate.filter(s => !s.videoUrl);
+    
+    const confirmMessage = shotsWithVideos.length > 0
+      ? `确定要为选中的 ${shotsToGenerate.length} 个镜头批量生成视频吗？\n\n` +
+        `- ${shotsWithoutVideos.length} 个镜头将生成第一个视频\n` +
+        `- ${shotsWithVideos.length} 个镜头将追加生成新视频（保留原有视频）\n\n` +
+        `注意：将使用每个镜头选中的图片生成视频。\n\n将并发生成，提高效率。`
+      : `确定要批量生成 ${shotsToGenerate.length} 个镜头的视频吗？\n\n注意：将使用每个镜头选中的图片生成视频。\n\n将并发生成，提高效率。`;
+    
+    if (!confirm(confirmMessage)) {
+      return;
+    }
+    
+    // 初始化进度
+    setBatchProgress({ current: 0, total: shotsToGenerate.length, type: 'video' });
+    
+    try {
+      // 创建任务数组（每个镜头一个任务）
+      const tasks = shotsToGenerate.map((shot, index) => 
+        async () => {
+          const hasExistingVideo = !!shot.videoUrl;
+          console.log(`[MediaGenerator] 开始并发生成视频: 镜头 ${shot.number} (${index + 1}/${shotsToGenerate.length})，${hasExistingVideo ? '已有视频，将追加生成' : '将生成第一个视频'}`);
+          await handleGenerateVideo(shot);
+          return { shot, index };
+        }
+      );
+      
+      // 并发执行，最多同时3个请求（视频生成较耗时，设置较低的并发数避免API限流）
+      const concurrency = 3;
+      const results = await runConcurrentTasks(
+        tasks,
+        concurrency,
+        (completed, total) => {
+          setBatchProgress(prev => prev ? { ...prev, current: completed } : null);
+        }
+      );
+      
+      const successCount = results.success.length;
+      const failCount = results.failed.length;
+      
+      if (failCount === 0) {
+        toast.success(`成功为 ${successCount} 个镜头生成视频！（并发执行，已追加到原有视频）`, 8000);
+      } else {
+        toast.warning(`完成：成功 ${successCount} 个，失败 ${failCount} 个`, 8000);
+        // 记录失败的镜头
+        results.failed.forEach(({ error, index }) => {
+          console.error(`[MediaGenerator] 视频生成失败: 镜头 ${shotsToGenerate[index].number}`, error);
+        });
+      }
     } catch (error: any) {
       toast.error(`批量生成视频失败: ${error.message || '未知错误'}`, 6000);
     } finally {
@@ -1153,7 +2084,27 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                   className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
                 />
               </div>
+              <div className="flex-shrink-0">
+                <label className="text-[10px] text-slate-500 mb-0.5 block">
+                  角色库
+                </label>
+                <button
+                  onClick={() => setShowCharacterLibrary(true)}
+                  className="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-slate-200 text-[11px] rounded flex items-center gap-1"
+                  title="管理角色库（支持图生图）"
+                >
+                  <Users size={14} />
+                  管理
+                </button>
+              </div>
             </>
+          )}
+
+          {/* RunningHub 提示（API Key在全局配置中） */}
+          {((selectedImageModel && selectedImageModel.startsWith('runninghub-')) || selectedVideoModel === 'runninghub-wan2.2') && provider !== 'runninghub' && (
+            <div className="flex-shrink-0 px-3 py-1 bg-purple-900/30 border border-purple-700/50 rounded text-[10px] text-purple-300 flex items-center">
+              ⚠️ 请在顶部配置 RunningHub API Key
+            </div>
           )}
 
           <div className="flex-shrink-0 w-[120px]">
@@ -1811,34 +2762,62 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                     )}
                   </div>
 
-                  {/* 视频列（视频预览） */}
+                  {/* 视频列（视频预览，支持多个视频） */}
                   <div className="flex flex-col gap-1">
-                    {shot.videoUrl ? (
-                      <div className="relative">
-                        <video
-                          src={shot.videoUrl}
-                          className="w-full h-32 object-cover rounded border border-slate-700"
-                          controls={false}
-                        />
-                        <div className="absolute inset-0 flex items-center justify-center">
-                          <Play size={24} className="text-white/80" />
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex items-center justify-center h-32 bg-slate-800/50 rounded border border-slate-700 text-slate-500 text-[10px]">
-                        {shot.videoGenerating ? (
-                          <Loader2 size={16} className="animate-spin text-purple-400" />
-                        ) : (
-                          '暫無視頻'
-                        )}
-                      </div>
-                    )}
+                    {(() => {
+                      // 获取所有视频URL（优先使用 videoUrls 数组，兼容 videoUrl）
+                      const videoUrls = shot.videoUrls || (shot.videoUrl ? [shot.videoUrl] : []);
+                      const cachedVideoUrls = shot.cachedVideoUrls || (shot.cachedVideoUrl ? [shot.cachedVideoUrl] : []);
+                      
+                      if (videoUrls.length > 0) {
+                        // 显示所有视频（最新的在顶部）
+                        return (
+                          <div className="flex flex-col gap-1">
+                            {videoUrls.map((videoUrl, index) => {
+                              const cachedUrl = cachedVideoUrls[index];
+                              const isLatest = index === videoUrls.length - 1;
+                              return (
+                                <div key={index} className="relative">
+                                  <VideoPreview 
+                                    videoUrl={videoUrl}
+                                    cachedVideoUrl={cachedUrl}
+                                    shotId={shot.id}
+                                  />
+                                  {videoUrls.length > 1 && (
+                                    <div className="absolute top-1 left-1 bg-slate-900/80 text-[9px] text-slate-300 px-1 py-0.5 rounded">
+                                      {isLatest ? '最新' : `视频 ${index + 1}`}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      } else {
+                        // 没有视频
+                        return (
+                          <div className="flex items-center justify-center h-32 bg-slate-800/50 rounded border border-slate-700 text-slate-500 text-[10px]">
+                            {shot.videoGenerating ? (
+                              <Loader2 size={16} className="animate-spin text-purple-400" />
+                            ) : (
+                              '暫無視頻'
+                            )}
+                          </div>
+                        );
+                      }
+                    })()}
                   </div>
 
                   {/* 操作列 */}
                   <div className="flex flex-col gap-1 items-end pr-2">
                     <button
-                      onClick={() => handleGenerateImage(shot, true)}
+                      onClick={async () => {
+                        try {
+                          await handleGenerateImage(shot, true);
+                        } catch (error: any) {
+                          toast.error(`图片生成失败: ${error.message || '未知错误'}`, 6000);
+                        }
+                      }}
                       disabled={shot.imageGenerating}
                       className="text-[10px] px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded disabled:opacity-50 whitespace-nowrap"
                       title="重新绘图"
@@ -1913,6 +2892,39 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           </div>
             </div>
           )}
+
+      {/* 视频播放模态框 */}
+      {enlargedVideoUrl && (
+        <div
+          className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4"
+          onClick={() => setEnlargedVideoUrl(null)}
+        >
+          <div className="relative max-w-7xl max-h-[90vh] w-full">
+            <button
+              onClick={() => setEnlargedVideoUrl(null)}
+              className="absolute top-4 right-4 bg-slate-800 hover:bg-slate-700 text-white rounded-full p-2 z-10"
+            >
+              <X size={24} />
+            </button>
+            <video
+              src={enlargedVideoUrl}
+              controls
+              autoPlay
+              className="max-w-full max-h-[90vh] rounded-lg border-2 border-slate-700"
+              onClick={(e) => e.stopPropagation()}
+            />
+            <a
+              href={enlargedVideoUrl}
+              download
+              className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium rounded transition-all"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Download size={16} />
+              下載視頻
+            </a>
+          </div>
+        </div>
+      )}
       
       {/* 脚本历史记录选择器 */}
       {showScriptHistorySelector && (
@@ -1931,6 +2943,15 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             }
           }}
           title="選擇腳本歷史記錄"
+        />
+      )}
+
+      {/* 角色库管理 */}
+      {showCharacterLibrary && (
+        <CharacterLibrary
+          onClose={() => setShowCharacterLibrary(false)}
+          jimengApiBaseUrl={jimengApiBaseUrl}
+          jimengSessionId={jimengSessionId}
         />
       )}
     </div>

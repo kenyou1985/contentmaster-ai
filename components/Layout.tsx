@@ -24,6 +24,7 @@ export const Layout: React.FC<LayoutProps> = ({
   const [showKeyInput, setShowKeyInput] = React.useState(!apiKey);
   const isYunwuKey = apiKey?.trim().startsWith('sk-');
   const isGoogleKey = apiKey?.trim().startsWith('AIza');
+  const isRunningHubKey = provider === 'runninghub';
 
   return (
     <div className="min-h-screen flex flex-col bg-[#020617] text-slate-100 relative overflow-x-hidden">
@@ -110,6 +111,7 @@ export const Layout: React.FC<LayoutProps> = ({
                     >
                         <option value="yunwu">Yunwu.ai（sk- 開頭）</option>
                         <option value="google">Google Gemini（AIza 開頭）</option>
+                        <option value="runninghub">RunningHub（開源模型）</option>
                     </select>
                 </div>
 
@@ -126,17 +128,30 @@ export const Layout: React.FC<LayoutProps> = ({
                                <Zap size={8} fill="currentColor" /> Google Gemini Auto-Config
                             </span>
                         )}
+                        {isRunningHubKey && (
+                            <span className="ml-2 bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded text-[10px] flex items-center gap-1 inline-block border border-blue-500/30">
+                               <Zap size={8} fill="currentColor" /> RunningHub 開源模型
+                            </span>
+                        )}
                     </label>
                     <input 
                         type="password" 
                         value={apiKey}
                         onChange={(e) => setApiKey(e.target.value)}
-                        placeholder={provider === 'google' ? '輸入 Google Key (AIza 開頭)' : '輸入 Yunwu Key (sk- 開頭)'}
+                        placeholder={
+                            provider === 'google' 
+                                ? '輸入 Google Key (AIza 開頭)' 
+                                : provider === 'runninghub'
+                                ? '輸入 RunningHub API Key'
+                                : '輸入 Yunwu Key (sk- 開頭)'
+                        }
                         className={`w-full bg-slate-900/50 border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 transition-all ${
                             isYunwuKey 
                             ? 'border-emerald-500/50 focus:border-emerald-500/80 focus:ring-emerald-500/20 text-emerald-100'
                             : isGoogleKey
                                 ? 'border-emerald-500/50 focus:border-emerald-500/80 focus:ring-emerald-500/20 text-emerald-100'
+                                : isRunningHubKey
+                                ? 'border-blue-500/50 focus:border-blue-500/80 focus:ring-blue-500/20 text-blue-100'
                                 : 'border-slate-700/60 focus:border-amber-500/50 focus:ring-amber-500/20 text-slate-200'
                         }`}
                     />
@@ -145,12 +160,21 @@ export const Layout: React.FC<LayoutProps> = ({
 
             <div className="flex-1 flex flex-col items-end gap-3 justify-end">
                 <div className="text-xs text-slate-500 flex justify-end gap-4 flex-wrap">
-                    <a href="https://yunwu.apifox.cn/" target="_blank" rel="noreferrer" className="text-emerald-400 hover:text-emerald-300 flex items-center gap-1">
-                        Yunwu API 文檔 <ExternalLink size={10} />
-                    </a>
-                    <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-emerald-400 hover:text-emerald-300 flex items-center gap-1">
-                        獲取官方 Key <ExternalLink size={10} />
-                    </a>
+                    {provider === 'yunwu' && (
+                        <a href="https://yunwu.apifox.cn/" target="_blank" rel="noreferrer" className="text-emerald-400 hover:text-emerald-300 flex items-center gap-1">
+                            Yunwu API 文檔 <ExternalLink size={10} />
+                        </a>
+                    )}
+                    {provider === 'google' && (
+                        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-emerald-400 hover:text-emerald-300 flex items-center gap-1">
+                            獲取官方 Key <ExternalLink size={10} />
+                        </a>
+                    )}
+                    {provider === 'runninghub' && (
+                        <a href="https://www.runninghub.cn/runninghub-api-doc-cn/" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 flex items-center gap-1">
+                            RunningHub API 文檔 <ExternalLink size={10} />
+                        </a>
+                    )}
                 </div>
                 <button 
                     onClick={() => setShowKeyInput(false)}
