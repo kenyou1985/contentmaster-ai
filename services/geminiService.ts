@@ -3,9 +3,9 @@
 
 const YUNWU_BASE_URL = "https://yunwu.ai";
 const GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com";
-const DEFAULT_YUNWU_MODEL = "gemini-3-pro-preview-thinking";
-const GOOGLE_PRIMARY_MODEL = "gemini-3-pro-preview";
-const GOOGLE_FALLBACK_MODEL = "gemini-3-flash-preview";
+const DEFAULT_YUNWU_MODEL = "gemini-3.1-pro-preview";
+const GOOGLE_PRIMARY_MODEL = "gemini-3.1-pro-preview";
+const GOOGLE_FALLBACK_MODEL = "gemini-3-pro-preview-thinking";
 
 type Provider = 'yunwu' | 'google';
 
