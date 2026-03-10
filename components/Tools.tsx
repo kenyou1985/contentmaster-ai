@@ -210,6 +210,8 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     if (mode === ToolMode.SCRIPT) {
       // 保留方括号格式，只移除链接格式
       cleaned = cleaned.replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1'); // 移除链接格式，保留文本
+      // 移除续写分隔符行（----）
+      cleaned = cleaned.replace(/^\s*-{3,}\s*$/gm, '');
       // 不移除方括号格式，保留[序号]、[名称]等
     } else {
       // 其他模式移除方括号格式
@@ -261,8 +263,8 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       const invalidPatterns = [
         '【脚本角色清单】', '【脚本场景清单】',
         '----', // 分隔符
-        '角色信息',
-        '场景信息',
+        /^角色信息$/,  // 纯文本的“角色信息”标题
+        /^场景信息$/,  // 纯文本的“场景信息”标题
         /^角色\d+:/,  // 角色1:、角色2:等
         /^场景\d+:/,  // 场景1:、场景2:等
         /^性别:/,     // 性别: 男
@@ -275,7 +277,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       
       const isInvalidLine = invalidPatterns.some(pattern => {
         if (typeof pattern === 'string') {
-          return line === pattern || line.includes(pattern);
+          return line === pattern;
         } else {
           return pattern.test(line);
         }
@@ -421,6 +423,14 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
         if (seenShots.has(shotNum)) {
           console.log(`[cleanScriptOutput] 跳过重复镜头: ${shotNum}`);
           skipCurrentShot = true; // 标记需要跳过这个镜头的所有内容
+          inShot = false;
+          continue;
+        }
+
+        // 自定义镜头数：超过目标镜头数直接丢弃
+        if (scriptShotMode === 'custom' && seenShots.size >= targetShots) {
+          console.log(`[cleanScriptOutput] 超出目标镜头数(${targetShots})，丢弃镜头: ${shotNum}`);
+          skipCurrentShot = true;
           inShot = false;
           continue;
         }
@@ -648,7 +658,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       // 计算已搬运的原文字数
       let copiedTextLength = 0;
       // 支持多种引号格式：" " 「 」 " "
-      const shotTextPattern = /镜头文案[：:]\s*[^-]+-[^：:]+[：:]\s*[""「"]([\s\S]*?)[""」"]/g;
+      const shotTextPattern = /镜头文案[：:][\s\S]*?[“"「]([\s\S]*?)[”"」]/g;
       const shotTextMatches = text.matchAll(shotTextPattern);
       for (const match of shotTextMatches) {
         if (match[1]) {
@@ -805,18 +815,28 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     // Inject Niche Persona into the system instruction, enforce Chinese
     // 脚本输出模式：使用通用系统指令，不关联赛道，不进行任何改写或洗稿
     let systemInstruction = '';
+    let minChars = 0;
+    let maxChars = 0;
     if (taskMode === ToolMode.SCRIPT) {
       if (!nicheConfig) {
         setIsGenerating(false);
         setOutputText('错误：找不到赛道配置');
         return;
       }
+      const isChinese = /[\u4e00-\u9fff]/.test(taskInputText);
+      const originalLength = taskInputText.length;
+      const targetShots = scriptShotMode === 'custom'
+        ? Math.min(100, Math.max(10, scriptShotCount))
+        : Math.min(60, Math.ceil(originalLength / 250));
+      const avgChars = Math.max(150, Math.round(originalLength / targetShots));
+      minChars = isChinese ? Math.max(120, Math.round(avgChars * 0.8)) : Math.max(240, Math.round(avgChars * 0.8));
+      maxChars = isChinese ? Math.max(minChars + 20, Math.round(avgChars * 1.2)) : Math.max(minChars + 40, Math.round(avgChars * 1.2));
       // 脚本输出模式：赛道人设 + 严格原文搬运规则
       systemInstruction = `${nicheConfig.systemInstruction}\n你也是一位专业的视频脚本生成助手。你的任务是：
 1. 将原文内容按照指定格式转换为视频脚本
 2. **绝对铁律：镜头文案必须100%按照原文输出，禁止任何改写、润色、扩写、缩写或修改**
 3. **只进行格式转换，不进行任何内容改写**
-4. **续写时同样适用：所有镜头（包括镜头14、镜头15、镜头16...）都必须100%原文还原**
+4. **续写时同样适用：所有镜头（包括镜头14、镜头15、镜头16...）都必须100%原文还原，且每镜头字数需符合${minChars}-${maxChars}字范围**
 5. 请务必使用简体中文输出（包括镜头文案、角色和场景描述部分）。如原文为繁体，请先转换为简体再输出`;
     } else {
       // 其他模式：使用赛道配置
@@ -1105,8 +1125,13 @@ ${inputSection}
         case ToolMode.SCRIPT:
                 // 检测语言（简单判断：如果包含中文字符，认为是中文）
                 const isChinese = /[\u4e00-\u9fff]/.test(inputText);
-                const minChars = 200; // 统一字数要求：200-300字
-                const maxChars = 300; // 统一字数要求：200-300字
+                const targetShots = scriptShotMode === 'custom'
+                  ? Math.min(100, Math.max(10, scriptShotCount))
+                  : Math.min(60, Math.ceil(originalLength / 250));
+                // 每镜头字数基于原文字数均分，允许一定浮动
+                const avgChars = Math.max(150, Math.round(originalLength / targetShots));
+                const minChars = isChinese ? Math.max(120, Math.round(avgChars * 0.8)) : Math.max(240, Math.round(avgChars * 0.8));
+                const maxChars = isChinese ? Math.max(minChars + 20, Math.round(avgChars * 1.2)) : Math.max(minChars + 40, Math.round(avgChars * 1.2));
                 
                 return `### 任务指令：视频脚本生成
 
@@ -1197,7 +1222,7 @@ ${inputSection}
 ### 镜头格式（每个镜头必须包含以下所有字段，严格按照此格式）
 
 镜头[序号]
-镜头文案: [角色名]-[语气词]："[⚠️ 这里必须填入原文的连续长段落，100%原文还原，一个字都不能改，200-300字，无动作描述，纯净文本]"
+镜头文案: [角色名]-[语气词]："[⚠️ 这里必须填入原文的连续长段落，100%原文还原，一个字都不能改，${minChars}-${maxChars}字，无动作描述，纯净文本]"
 图片提示词: [景别], [画面描述], [环境描述]
 视频提示词: [秒数]s: [画面描述], [运镜方式]
 景别: [全景/中景/特写]
@@ -1228,11 +1253,11 @@ ${inputSection}
 - **必须从原文中直接复制粘贴，不能有任何改动**
 
 **格式要求：**
-- 每个镜头文案必须：200-300字（严格控制字数）
+- 每个镜头文案必须：${minChars}-${maxChars}字（严格控制字数）
 - 无动作描述，纯净文本，适合 TTS 语音合成
 - 格式：[角色名]-[语气词]："[原文文本内容，100%还原]"
 - 语气词限定：只能使用以下六种之一：高兴、愤怒、悲伤、害怕、惊讶、平静
-- ⚠️ **字数铁律**：每个镜头文案必须在200-300字之间，不能过短或过长
+- ⚠️ **字数铁律**：每个镜头文案必须在${minChars}-${maxChars}字之间（约${avgChars}字/镜头），不能过短或过长
 
 ### 图片提示词
 - 必须适合 AI 绘图工具（Midjourney/Stable Diffusion/DALL-E）
@@ -1261,7 +1286,7 @@ ${inputSection}
 ## 完整输出格式示例（必须严格遵守）
 
 镜头1
-镜头文案: 医生-平静："[200-300字的原文文本，100%还原，一个字都不能改]"
+镜头文案: 医生-平静："[${minChars}-${maxChars}字的原文文本，100%还原，一个字都不能改]"
 图片提示词: 中景, 一位中年男性医生坐在古色古香的书房中, 背景有书架和医学图谱, 柔和的光线
 视频提示词: 8s: 医生平静讲述, 固定机位
 景别: 中景
@@ -1276,9 +1301,9 @@ ${inputSection}
 语音分镜: 医生
 音效: 背景音乐
 
-... (继续输出所有镜头，直到原文全部转换完毕) ...
+... (继续输出所有镜头，直到原文全部转换完毕，镜头数必须严格等于设定值) ...
 
-⚠️ **镜头文案字数铁律**：每个镜头文案必须严格控制在200-300字之间！
+⚠️ **镜头文案字数铁律**：每个镜头文案必须严格控制在${minChars}-${maxChars}字之间（约${avgChars}字/镜头）！
 
 [角色信息]
 [名称]医生
@@ -1549,8 +1574,6 @@ ${needsMore ?
         } else if (mode === ToolMode.SCRIPT) {
             // 检测语言
             const isChinese = /[\u4e00-\u9fff]/.test(inputText);
-            const minChars = isChinese ? 200 : 450;
-            const maxChars = isChinese ? 250 : 800;
             
             // 统计已完成的镜头数量
             const shotCount = (currentContent.match(/鏡頭\d+|镜头\d+/g) || []).length;
@@ -1559,7 +1582,7 @@ ${needsMore ?
             let copiedTextLength = 0;
             // 匹配镜头文案格式：镜头文案: [角色名]-[语气词]："[文本内容]"
             // 使用非贪婪匹配和多行模式，支持文本内容中包含换行
-            const shotTextPattern = /镜头文案[：:]\s*[^-]+-[^：:]+[：:]\s*[""「"]([\s\S]*?)[""」"]/g;
+            const shotTextPattern = /镜头文案[：:][\s\S]*?[“"「]([\s\S]*?)[”"」]/g;
             const shotTextMatches = currentContent.matchAll(shotTextPattern);
             for (const match of shotTextMatches) {
                 if (match[1]) {
@@ -1575,10 +1598,12 @@ ${needsMore ?
                 : '0';
             
             // 估算还需要多少镜头（基于原文长度和已完成内容）
-            // 统一字数要求：每个镜头200-300字，取中间值250字来估算
             const estimatedTotalShots = scriptShotMode === 'custom'
               ? Math.min(100, Math.max(10, scriptShotCount))
               : Math.min(60, Math.ceil(originalLength / 250));
+            const avgChars = Math.max(150, Math.round(originalLength / estimatedTotalShots));
+            const minChars = isChinese ? Math.max(120, Math.round(avgChars * 0.8)) : Math.max(240, Math.round(avgChars * 0.8));
+            const maxChars = isChinese ? Math.max(minChars + 20, Math.round(avgChars * 1.2)) : Math.max(minChars + 40, Math.round(avgChars * 1.2));
             const remainingShots = Math.max(0, estimatedTotalShots - shotCount);
             
             // 检查是否需要重新输出不完整的镜头
@@ -1602,8 +1627,10 @@ ${needsMore ?
             }
             
             // 检查是否所有镜头都已完成
-            // ⚠️ 关键判断：1) 镜头数量达标 或 2) 原文已搬运完毕（>=95%）
-            const allShotsComplete = (shotCount >= estimatedTotalShots || copiedTextLength >= originalLength * 0.95) && !cleanInfo?.needsRework;
+            // ⚠️ 关键判断：自定义镜头必须严格达到设定数量；自动模式可按原文完成度判断
+            const allShotsComplete = scriptShotMode === 'custom'
+              ? (shotCount >= estimatedTotalShots && !cleanInfo?.needsRework)
+              : ((shotCount >= estimatedTotalShots || copiedTextLength >= originalLength * 0.95) && !cleanInfo?.needsRework);
             const hasRoleInfo = currentContent.includes('[角色信息]');
             const hasSceneInfo = currentContent.includes('[场景信息]') || currentContent.includes('[場景信息]');
             
@@ -1695,6 +1722,7 @@ ${context}
 - 已完成镜头：${shotCount} 个
 - 预计总镜头：${estimatedTotalShots} 个（${scriptShotMode === 'custom' ? '自定义' : '自动估算'}）
 - 还需完成：约 ${remainingShots} 个镜头
+- 每镜头字数目标：约 ${avgChars} 字（允许范围 ${minChars}-${maxChars} 字）
 - 角色信息：${hasRoleInfo ? '✓ 已完成' : '✗ 未完成'}
 - 场景信息：${hasSceneInfo ? '✓ 已完成' : '✗ 未完成'}
 ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬运完毕（≥95%），如果所有镜头都已输出完成，必须立即输出角色信息和场景信息，然后结束任务！⚠️⚠️⚠️' : ''}${reworkInstruction}${roleSceneInstruction}
@@ -1721,7 +1749,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
    - **前面的镜头文案和原文一致，后面的也必须和原文一致，不能有任何变化**
    - **续写时同样适用：镜头16、镜头17、镜头18...所有后续镜头都必须100%原文还原**
 4. **镜头文案格式**：
-   - **字数铁律**：每个镜头文案必须严格控制在200-300字之间
+   - **字数铁律**：每个镜头文案必须严格控制在${minChars}-${maxChars}字之间（约${avgChars}字/镜头）
    - 格式：[角色名]-[语气词]："[原文文本内容，100%还原]"
    - 语气词限定：只能使用以下六种之一：高兴、愤怒、悲伤、害怕、惊讶、平静
    - 必须是原文的连续长段落，无动作描述，纯净文本
@@ -1788,7 +1816,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                     }
 
                     // 自动模式：基于已搬运的原文长度
-                    const shotTextPattern = /镜头文案[：:]\s*[^-]+-[^：:]+[：:]\s*[""「"]([\s\S]*?)[""」"]/g;
+                    const shotTextPattern = /镜头文案[：:][\s\S]*?[“"「]([\s\S]*?)[”"」]/g;
                     const shotTextMatches = localOutput.matchAll(shotTextPattern);
                     let copiedLength = 0;
                     for (const match of shotTextMatches) {
@@ -1834,7 +1862,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                     // 计算当前进度
                     const currentShotCount = (localOutput.match(/鏡頭\d+|镜头\d+/g) || []).length;
                     let currentCopiedLength = 0;
-                    const shotTextPattern = /镜头文案[：:]\s*[^-]+-[^：:]+[：:]\s*[""「"]([\s\S]*?)[""」"]/g;
+                    const shotTextPattern = /镜头文案[：:][\s\S]*?[“"「]([\s\S]*?)[”"」]/g;
                     const shotTextMatches = localOutput.matchAll(shotTextPattern);
                     for (const match of shotTextMatches) {
                         if (match[1]) {
@@ -1869,7 +1897,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                     const calculateProgress = () => {
                         if (taskMode === ToolMode.SCRIPT) {
                             // 脚本模式：基于已搬运的原文长度
-                            const shotTextPattern = /镜头文案[：:]\s*[^-]+-[^：:]+[：:]\s*[""「"]([\s\S]*?)[""」"]/g;
+                            const shotTextPattern = /镜头文案[：:][\s\S]*?[“"「]([\s\S]*?)[”"」]/g;
                             const shotTextMatches = localOutput.matchAll(shotTextPattern);
                             let copiedLength = 0;
                             for (const match of shotTextMatches) {
@@ -1912,6 +1940,13 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                         }
                         if ((hasSceneInfo || hasRoleInfo) && currentShotCount < targetShots) {
                             console.log('[Tools] 续写中检测到提前的角色/场景信息，继续生成镜头');
+                            // 丢弃提前输出的角色/场景信息，避免污染后续续写
+                            localOutput = localOutput
+                                .replace(/\n?\[角色信息\][\s\S]*$/g, '')
+                                .replace(/\n?\[场景信息\][\s\S]*$/g, '')
+                                .replace(/\n?\[場景信息\][\s\S]*$/g, '')
+                                .trim();
+                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
                             continue;
                         }
                     } else if (hasSceneInfo && hasRoleInfo) {
@@ -1942,7 +1977,11 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                   : (hasSceneInfo && hasRoleInfo);
                 if (!shouldStop && scriptShotMode === 'custom' && (hasSceneInfo || hasRoleInfo) && currentShotCount < targetShots) {
                     // 丢弃提前的角色/场景信息
-                    localOutput = localOutput.replace(/\n?\[角色信息\][\s\S]*$/g, '').replace(/\n?\[场景信息\][\s\S]*$/g, '').trim();
+                    localOutput = localOutput
+                        .replace(/\n?\[角色信息\][\s\S]*$/g, '')
+                        .replace(/\n?\[场景信息\][\s\S]*$/g, '')
+                        .replace(/\n?\[場景信息\][\s\S]*$/g, '')
+                        .trim();
                 }
                 if (shouldStop) {
                     console.log('[Tools] 检测到场景信息已完成，强制结束生成');
@@ -2055,7 +2094,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                 if (taskMode === ToolMode.SCRIPT) {
                     // 计算已搬运的原文字数
                     let copiedTextLength = 0;
-                    const shotTextPattern = /镜头文案[：:]\s*[^-]+-[^：:]+[：:]\s*[""「"]([\s\S]*?)[""」"]/g;
+                    const shotTextPattern = /镜头文案[：:][\s\S]*?[“"「]([\s\S]*?)[”"」]/g;
                     const shotTextMatches = localOutput.matchAll(shotTextPattern);
                     for (const match of shotTextMatches) {
                         if (match[1]) {
