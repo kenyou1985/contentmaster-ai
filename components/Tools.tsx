@@ -249,6 +249,9 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     let skipCurrentShot = false; // 标记当前镜头是否需要跳过（重复镜头）
     let sceneInfoComplete = false; // 标记场景信息是否已完成
     let skipInvalidBlock = false; // 标记是否在跳过无效格式块（如【脚本角色清单】）
+    const targetShots = scriptShotMode === 'custom'
+      ? Math.min(100, Math.max(10, scriptShotCount))
+      : Math.min(60, Math.ceil(inputText.length / 250));
     
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
@@ -257,6 +260,8 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       const invalidPatterns = [
         '【脚本角色清单】', '【脚本场景清单】',
         '----', // 分隔符
+        '角色信息',
+        '场景信息',
         /^角色\d+:/,  // 角色1:、角色2:等
         /^场景\d+:/,  // 场景1:、场景2:等
         /^性别:/,     // 性别: 男
@@ -269,7 +274,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       
       const isInvalidLine = invalidPatterns.some(pattern => {
         if (typeof pattern === 'string') {
-          return line.includes(pattern);
+          return line === pattern || line.includes(pattern);
         } else {
           return pattern.test(line);
         }
@@ -314,6 +319,16 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
         break;
       }
       
+      // 自定义镜头数：未达标时，禁止进入角色/场景信息
+      const shotCountSoFar = seenShots.size;
+      if (scriptShotMode === 'custom' && shotCountSoFar < targetShots) {
+        if (line === '[角色信息]' || line === '[场景信息]' || line === '[場景信息]') {
+          skipInvalidBlock = true;
+          console.log(`[cleanScriptOutput] 自定义镜头未达标(${shotCountSoFar}/${targetShots})，丢弃角色/场景信息`);
+          continue;
+        }
+      }
+      
       // 检测角色信息开始
       if (line === '[角色信息]') {
         inShot = false;
@@ -331,6 +346,11 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
         inSceneInfo = true;
         skipCurrentShot = false;
         cleanedLines.push(lines[i]);
+        continue;
+      }
+      
+      // 自定义镜头数：未达标时，丢弃非模板角色信息内容
+      if (scriptShotMode === 'custom' && shotCountSoFar < targetShots && (inRoleInfo || inSceneInfo)) {
         continue;
       }
       
@@ -594,8 +614,19 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       const hasRoleInfo = text.includes('[角色信息]');
       const hasSceneInfo = text.includes('[场景信息]') || text.includes('[場景信息]');
       
-      // ⚠️ 关键：如果已经有场景信息，说明脚本已完成，立即返回true
-      if (hasSceneInfo && hasRoleInfo) {
+      const shotCount = (text.match(/鏡頭\d+|镜头\d+/g) || []).length;
+      const targetShots = scriptShotMode === 'custom'
+        ? Math.min(100, Math.max(10, scriptShotCount))
+        : Math.min(60, Math.ceil(originalLength / 250));
+      
+      // 自定义镜头数：必须镜头数达标且角色/场景信息完整
+      if (scriptShotMode === 'custom' && hasSceneInfo && hasRoleInfo && shotCount >= targetShots) {
+        console.log('[isContentComplete] 自定义镜头数达标且场景信息已输出，脚本完成！');
+        return true;
+      }
+      
+      // 自动模式：场景信息输出即视为完成
+      if (scriptShotMode !== 'custom' && hasSceneInfo && hasRoleInfo) {
         console.log('[isContentComplete] 检测到场景信息已输出，脚本完成！');
         return true;
       }
@@ -606,16 +637,8 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       // 如果有未完成标记，说明不完整
       if (hasIncompleteMarker) return false;
       
-      // 检查镜头数量
-      const shotCount = (text.match(/鏡頭\d+|镜头\d+/g) || []).length;
-      const targetShots = scriptShotMode === 'custom'
-        ? Math.min(100, Math.max(10, scriptShotCount))
-        : Math.min(60, Math.ceil(originalLength / 250));
-      
       // 如果镜头数量为0，说明还没开始输出，不算完整
       if (shotCount === 0) return false;
-      // 若启用自定义镜头数，且已达到目标镜头数，视为完成
-      if (scriptShotMode === 'custom' && shotCount >= targetShots) return true;
       
       // 检查最后一个镜头是否完整
       const { needsRework } = cleanIncompleteShot(text);
@@ -1875,8 +1898,22 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                 
                 // ⚠️ 关键：每次续写后立即检查是否已输出场景信息
                 if (taskMode === ToolMode.SCRIPT) {
+                    const hasRoleInfo = localOutput.includes('[角色信息]');
                     const hasSceneInfo = localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]');
-                    if (hasSceneInfo) {
+                    const currentShotCount = (localOutput.match(/鏡頭\d+|镜头\d+/g) || []).length;
+                    const targetShots = scriptShotMode === 'custom'
+                      ? Math.min(100, Math.max(10, scriptShotCount))
+                      : Math.min(60, Math.ceil(originalLength / 250));
+                    if (scriptShotMode === 'custom') {
+                        if (hasSceneInfo && hasRoleInfo && currentShotCount >= targetShots) {
+                            console.log('[Tools] 续写中检测到场景信息且镜头数达标，立即停止续写！');
+                            break; // 立即退出续写循环
+                        }
+                        if ((hasSceneInfo || hasRoleInfo) && currentShotCount < targetShots) {
+                            console.log('[Tools] 续写中检测到提前的角色/场景信息，继续生成镜头');
+                            continue;
+                        }
+                    } else if (hasSceneInfo && hasRoleInfo) {
                         console.log('[Tools] 续写中检测到场景信息已输出，立即停止续写！');
                         break; // 立即退出续写循环
                     }
@@ -1893,8 +1930,20 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                 localOutput = cleanScriptOutput(localOutput);
                 
                 // 强制检查：如果场景信息已完成，立即停止
+                const hasRoleInfo = localOutput.includes('[角色信息]');
                 const hasSceneInfo = localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]');
-                if (hasSceneInfo) {
+                const currentShotCount = (localOutput.match(/鏡頭\d+|镜头\d+/g) || []).length;
+                const targetShots = scriptShotMode === 'custom'
+                  ? Math.min(100, Math.max(10, scriptShotCount))
+                  : Math.min(60, Math.ceil(originalLength / 250));
+                const shouldStop = scriptShotMode === 'custom'
+                  ? (hasSceneInfo && hasRoleInfo && currentShotCount >= targetShots)
+                  : (hasSceneInfo && hasRoleInfo);
+                if (!shouldStop && scriptShotMode === 'custom' && (hasSceneInfo || hasRoleInfo) && currentShotCount < targetShots) {
+                    // 丢弃提前的角色/场景信息
+                    localOutput = localOutput.replace(/\n?\[角色信息\][\s\S]*$/g, '').replace(/\n?\[场景信息\][\s\S]*$/g, '').trim();
+                }
+                if (shouldStop) {
                     console.log('[Tools] 检测到场景信息已完成，强制结束生成');
                     // 清理场景信息后的所有内容
                     const sceneInfoIndex = Math.max(
