@@ -59,7 +59,8 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   const isGenerating = activeTask.isGenerating;
   const isExtractingTranscript = activeTask.isExtractingTranscript;
   const scriptShotMode = activeTask.scriptShotMode || 'auto';
-  const scriptShotCount = Math.min(100, Math.max(10, activeTask.scriptShotCount || 10));
+  const scriptShotCountRaw = activeTask.scriptShotCount;
+  const scriptShotCount = Math.min(100, Math.max(10, scriptShotCountRaw || 10));
   const lastProgressUpdateRef = useRef<number>(0);
   
   // 更新当前任务状态
@@ -2210,9 +2211,26 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                      type="number"
                      min={10}
                      max={100}
-                     value={scriptShotCount}
+                     value={scriptShotCountRaw ?? ''}
+                     placeholder="10-100"
                      disabled={scriptShotMode !== 'custom'}
-                     onChange={(e) => updateActiveTask({ scriptShotCount: Number(e.target.value) })}
+                     onChange={(e) => {
+                       const nextValue = e.target.value;
+                       if (nextValue === '') {
+                         updateActiveTask({ scriptShotCount: undefined });
+                         return;
+                       }
+                       updateActiveTask({ scriptShotCount: Number(nextValue) });
+                     }}
+                     onBlur={(e) => {
+                       const nextValue = e.target.value;
+                       if (nextValue === '') {
+                         updateActiveTask({ scriptShotCount: 10 });
+                         return;
+                       }
+                       const clamped = Math.min(100, Math.max(10, Number(nextValue)));
+                       updateActiveTask({ scriptShotCount: clamped });
+                     }}
                      className="w-[90px] bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-sm text-slate-200 font-bold focus:outline-none focus:border-emerald-500 disabled:opacity-50"
                    />
                  </div>
