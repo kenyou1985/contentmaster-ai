@@ -499,9 +499,19 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
         continue;
       }
       
-      // 如果在镜头块内，保留该行
+      // 如果在镜头块内，只保留镜头模板字段，过滤无关文案
       if (inShot) {
-        cleanedLines.push(lines[i]);
+        if (!line) {
+          cleanedLines.push(lines[i]);
+          continue;
+        }
+        if (/^(?:镜头|鏡頭)\d+/.test(line)) {
+          cleanedLines.push(lines[i]);
+          continue;
+        }
+        if (/^(镜头文案|圖片提示词|图片提示词|视频提示词|视频提示词|景别|景別|语音分镜|語音分鏡|音效)[：:]/.test(line)) {
+          cleanedLines.push(lines[i]);
+        }
         continue;
       }
       

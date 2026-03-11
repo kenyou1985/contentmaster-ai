@@ -55,7 +55,7 @@ export const Layout: React.FC<LayoutProps> = ({
               >
                 <div className="flex items-center gap-2">
                     <LayoutIcon size={14} />
-                    自動生成
+                    自动生成
                 </div>
               </button>
               <button
@@ -66,7 +66,7 @@ export const Layout: React.FC<LayoutProps> = ({
               >
                 <div className="flex items-center gap-2">
                     <PenTool size={14} />
-                    改寫工具
+                    改写工具
                 </div>
               </button>
               <button
@@ -77,7 +77,7 @@ export const Layout: React.FC<LayoutProps> = ({
               >
                 <div className="flex items-center gap-2">
                     <Video size={14} />
-                    媒體生成
+                    媒体生成
                 </div>
               </button>
             </nav>
@@ -102,7 +102,7 @@ export const Layout: React.FC<LayoutProps> = ({
             <div className="flex-1 space-y-3">
                 <div className="space-y-1">
                     <label className="text-xs text-slate-400 font-semibold uppercase tracking-wider flex items-center gap-1">
-                        <Settings size={12} /> API 服務
+                        <Settings size={12} /> API 服务
                     </label>
                     <select
                         value={provider}
@@ -140,10 +140,10 @@ export const Layout: React.FC<LayoutProps> = ({
                         onChange={(e) => setApiKey(e.target.value)}
                         placeholder={
                             provider === 'google' 
-                                ? '輸入 Google Key (AIza 開頭)' 
+                                ? '输入 Google Key (AIza 开头)' 
                                 : provider === 'runninghub'
-                                ? '輸入 RunningHub API Key'
-                                : '輸入 Yunwu Key (sk- 開頭)'
+                                ? '输入 RunningHub API Key'
+                                : '输入 Yunwu Key (sk- 开头)'
                         }
                         className={`w-full bg-slate-900/50 border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 transition-all ${
                             isYunwuKey 

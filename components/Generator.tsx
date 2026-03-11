@@ -224,8 +224,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
   const getInputPlaceholder = () => {
       const config = getCurrentSubModeConfig();
-      if (config) return config.inputPlaceholder || "輸入關鍵詞";
-      return "輸入關鍵詞/趨勢";
+      if (config) return config.inputPlaceholder || "输入关键词";
+      return "输入关键词/趋势";
   };
 
   const parseErrorMessage = (err: any): string => {
@@ -252,17 +252,17 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
       // Check for specific error types
       if (msgLower.includes('failed to fetch') || msgLower.includes('fetch failed') || msgLower.includes('network')) {
-          return "網絡連接失敗。請檢查：1) 網絡連接是否正常 2) API Key 是否正確設置 3) Base URL 是否可訪問 4) 瀏覽器控制台是否有 CORS 錯誤";
+          return "网络连接失败。请检查：1) 网络连接是否正常 2) API Key 是否正确设置 3) Base URL 是否可访问 4) 浏览器控制台是否有 CORS 错误";
       } else if (msgLower.includes('not initialized')) {
-          return "API 未初始化。請確保已在設置中輸入 API Key 並點擊「完成」按鈕。";
+          return "API 未初始化。请確保已在设置中输入 API Key 並點擊「完成」按鈕。";
       } else if (msgLower.includes('api key') || msgLower.includes('unauthorized') || msgLower.includes('401') || msgLower.includes('403')) {
-          return "API Key 無效或未授權。請檢查：1) API Key 是否正確 2) API Key 是否已過期 3) API Key 是否有相應權限。";
+          return "API Key 無效或未授權。请檢查：1) API Key 是否正確 2) API Key 是否已過期 3) API Key 是否有相應權限。";
       } else if (msgLower.includes('xhr error') || msgLower.includes('500') || msgLower.includes('rpc failed')) {
-          return "網絡連接或服務器暫時不穩定 (500/XHR)。請檢查您的網絡連接或稍後再試。";
+          return "网络连接或服务器暂时不稳定 (500/XHR)。请检查您的网络连接或稍后再试。";
       } else if (msgLower.includes('429') || msgLower.includes('quota') || msgLower.includes('resource_exhausted')) {
           return "API 配額已滿 (429)。建議等待 1 分鐘後再試。";
       } else if (msgLower.includes('cors')) {
-          return "CORS 跨域錯誤。請檢查 Base URL 配置或使用代理服務。";
+          return "CORS 跨域错误。请检查 Base URL 配置或使用代理服务。";
       }
       
       // Truncate very long error messages
@@ -271,7 +271,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
   const handlePlanTopics = async () => {
     if (!apiKey || !apiKey.trim()) {
-        toast.error("請先在設置中輸入您的 API Key。");
+        toast.error("请先在设置中输入您的 API Key。");
         return;
     }
 
@@ -283,7 +283,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
     const config = NICHES[niche];
     if (!config) {
-        toast.error("配置錯誤：找不到該賽道配置");
+        toast.error("配置错误：找不到該赛道配置");
         return;
     }
 
@@ -295,7 +295,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (subModeConfig) {
         // Check input requirement
         if (subModeConfig.requiresInput && !inputVal) {
-             toast.warning(`請輸入${subModeConfig.title.split('：')[0]}所需的資訊。`);
+             toast.warning(`请输入${subModeConfig.title.split('：')[0]}所需的信息。`);
              return;
         }
 
@@ -306,7 +306,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
         if (inputVal) {
             prompt = prompt.replace('{input}', inputVal);
             if (niche === NicheType.FINANCE_CRYPTO) {
-                prompt += `\n\n# 關鍵詞強制規則\n所有輸出標題必須包含關鍵詞「${inputVal}」，不得省略或替換。`;
+                prompt += `\n\n# 关键词强制规则\n所有输出标题必须包含关键词「${inputVal}」，不得省略或替换。`;
             }
         } else {
             prompt = prompt.replace(/.*\{input\}.*\n?/g, '').replace('{input}', '');
@@ -321,7 +321,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     } else {
         // Logic for other niches without sub-modes
         if (!inputVal) {
-             toast.warning("請輸入關鍵詞。");
+             toast.warning("请输入关键词。");
              return;
         }
         prompt = config.topicPromptTemplate.replace('{input}', inputVal);
@@ -350,12 +350,12 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   // Handle adaptation for ShadowWriter mode
   const handleAdaptContent = async () => {
     if (!apiKey || !apiKey.trim()) {
-      toast.error("請先在設置中輸入您的 API Key。");
+      toast.error("请先在设置中输入您的 API Key。");
       return;
     }
 
     if (!inputVal || !inputVal.trim()) {
-      toast.warning("請輸入需要改編的原文內容。");
+      toast.warning("请输入需要改編的原文內容。");
       return;
     }
 
@@ -396,7 +396,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
     const config = NICHES[niche];
     if (!config) {
-      setErrorMsg("配置錯誤：找不到該賽道配置");
+      setErrorMsg("配置错误：找不到該赛道配置");
       return;
     }
 
@@ -551,7 +551,7 @@ Replace words while keeping EXACT same length. That's ALL.
         const segmentPrompt = `# 洗稿任務（第 ${startParaIndex + 1}-${endParaIndex} 段，共 ${sourceParagraphCount} 段）
 
 ⚠️ **字數鐵律** ⚠️
-本段原文：${segmentSourceLength} 字 → 你的輸出：${targetSegmentLength} 字（±${segmentTolerance}）
+本段原文：${segmentSourceLength} 字 → 你的输出：${targetSegmentLength} 字（±${segmentTolerance}）
 超過 ${targetSegmentLength + segmentTolerance} 字 = 失敗
 
 📊 **進度：${Math.floor((currentLength / sourceLength) * 100)}%**（已完成 ${currentLength}/${sourceLength} 字）
@@ -566,9 +566,9 @@ ${segmentSourceText}
 ## 🚫 **絕對禁止（違反=失敗）**
 
 1. **禁止添加任何內容**：不要加新句子、新詞、新描述
-2. **禁止擴寫**：不要解釋、不要展開、不要詳細說明
+2. **禁止扩写**：不要解釋、不要展開、不要詳細說明
 3. **禁止收尾詞彙**：嚴禁使用「下課」「散會」「再見」「後會有期」「今天就講到這」等結束語
-4. **禁止改變長度**：輸出必須和原文一樣長
+4. **禁止改變長度**：输出必須和原文一樣長
 
 ## ✅ **只准做的事**
 
@@ -576,7 +576,7 @@ ${segmentSourceText}
 - 改變句式（主動→被動、長句→短句）
 - 調整語序（他很生氣→生氣的他）
 
-## 📝 **輸出格式**
+## 📝 **输出格式**
 
 - 純文本
 - 保持段落結構
@@ -585,7 +585,7 @@ ${segmentSourceText}
 
 ---
 
-立即輸出洗稿內容：`;
+立即输出洗稿內容：`;
 
         // Generate into a segment buffer first, enforce HARD caps (segment + global),
         // then append. This prevents uncontrolled expansion even if the model ignores instructions.
@@ -726,13 +726,13 @@ ${segmentSourceText}
 
   const handleBatchGenerate = async () => {
     if (!apiKey || !apiKey.trim()) {
-        toast.error("請先在設置中輸入您的 API Key。");
+        toast.error("请先在设置中输入您的 API Key。");
         return;
     }
     
     const selectedTopics = topics.filter(t => t.selected);
     if (selectedTopics.length === 0) {
-        toast.warning("請至少選擇一個選題。");
+        toast.warning("请至少选择一個选题。");
         return;
     }
 
@@ -871,7 +871,7 @@ ${segmentSourceText}
             // 移除摘要标记
             .replace(/^\s*===\s*summary\s*===.*$/gmi, '')
             .replace(/^\s*summary[:：].*$/gmi, '')
-            .replace(/^\s*總結[:：].*$/gmi, '')
+            .replace(/^\s*总结[:：].*$/gmi, '')
             .replace(/^\s*总结[:：].*$/gmi, '')
             // 移除多余空行
             .replace(/\n\s*\n\s*\n+/g, '\n\n')
@@ -1124,10 +1124,10 @@ ${segmentSourceText}
                         const currentLength = sanitizeTtsScript(localContent).length;
                         const continuePrompt = [
                             niche === NicheType.GENERAL_VIRAL
-                                ? `請用第一人稱續寫新聞評論，保持評論員的犀利與獨家視角，不要重覆前文。當前已寫${currentLength}字，如果內容充分完整且達到4000字以上，可以自然收尾並以「下期再見」「我們下期見」或「咱們下期再見」結束。如果內容尚不完整，請繼續深入分析，暫時不要收尾。`
-                                : '請續寫以下內容，保持原風格與第一人稱口吻，不要重覆前文。',
+                                ? `请用第一人称续写新聞評論，保持評論員的犀利與獨家視角，不要重覆前文。當前已寫${currentLength}字，如果內容充分完整且達到4000字以上，可以自然收尾並以「下期再見」「我們下期見」或「咱們下期再見」結束。如果內容尚不完整，请繼續深入分析，暫時不要收尾。`
+                                : '请续写以下內容，保持原風格與第一人称口吻，不要重覆前文。',
                             '不要出現「下課」「今天的課到這裡」等其他收尾語。',
-                            '輸出第一行必須是「-----」，下一行直接續寫正文。',
+                            '输出第一行必須是「-----」，下一行直接续写正文。',
                             `目標字數：至少 ${minChars} 字，當前已${currentLength}字。`,
                             '',
                             '【上文】',
@@ -1163,10 +1163,10 @@ ${segmentSourceText}
                         // 字数已经达到4000以上但没有收尾语，必须强制收尾
                         console.log('[Generator] Content reached 4000+ chars without ending, forcing conclusion');
                         const endPrompt = [
-                            '請用第一人稱對上述內容進行總結收尾，結尾要升華點題並形成明確觀點收束。',
+                            '请用第一人称對上述內容進行总结收尾，結尾要升華點題並形成明確觀點收束。',
                             '最後必須以「下期再見」或「咱們下期再見」或「我們下期見」作為結尾語。',
-                            '輸出第一行必須是「-----」，下一行直接續寫收尾段落。',
-                            '不要標題、不要段落標記、不要元信息。',
+                            '输出第一行必須是「-----」，下一行直接续写收尾段落。',
+                            '不要标题、不要段落标记、不要元信息。',
                             '收尾段落控制在300-500字之內，要簡潔有力、點題升華。',
                             '',
                             '【需要收尾的內容】',
@@ -1189,7 +1189,7 @@ ${segmentSourceText}
                     }
                     // Append CTA for TCM niche
                     const ctaWord = getCtaKeyword(topic.title);
-                    const cta = `\n\n如果覺得今天倪師講的這番話對你有幫助，請動動你的手，點個讚、訂閱並轉發。如果你聽懂了，請在留言區打一個「${ctaWord}」或留一句祈福的話，為自己與家人積聚正向磁場。`;
+                    const cta = `\n\n如果覺得今天倪師講的這番話對你有幫助，请動動你的手，點個讚、訂閱並轉發。如果你聽懂了，请在留言區打一個「${ctaWord}」或留一句祈福的話，為自己與家人積聚正向磁場。`;
                     localContent = `${localContent}${cta}`;
                     
                     // 保存到 Map 中，用于最后统一保存历史记录
@@ -1284,7 +1284,7 @@ ${segmentSourceText}
                     const continuePrompt = [
                         isEnglish
                             ? 'Continue the story in first person. Start your output with a single line of "-----" and then continue immediately. Use a brief, natural transition sentence and move the plot forward. Do not repeat earlier content. Do not output any meta text.'
-                            : '請用第一人稱續寫故事。輸出第一行必須是「-----」，下一行直接續寫正文。使用簡短自然的過渡句直接銜接情節，保持原有風格與節奏，不要重覆前文。不要輸出任何元信息。',
+                            : '请用第一人称续写故事。输出第一行必須是「-----」，下一行直接续写正文。使用簡短自然的過渡句直接銜接情節，保持原有風格與節奏，不要重覆前文。不要输出任何元信息。',
                         cnLongFlavor,
                         isEnglish
                             ? `Requirement: total length at least ${minChars} characters; keep it within about ${maxChars} characters if possible.`
@@ -1304,7 +1304,7 @@ ${segmentSourceText}
                     const endPrompt = [
                         isEnglish
                             ? 'Conclude the story now with a clear, final ending. Start your output with a single line of "-----" and then continue immediately. Keep first person and do not add any headings or summaries. Make sure it reads like a complete short story.'
-                            : '請用第一人稱收尾。輸出第一行必須是「-----」，下一行直接續寫正文。給出清楚結局，不要標題或總結。',
+                            : '请用第一人称收尾。输出第一行必须是「-----」，下一行直接续写正文。给出清楚结局，不要标题或总结。',
                         cnLongFlavor,
                         '',
                         localContent.slice(-2500)
@@ -1331,9 +1331,9 @@ ${segmentSourceText}
                 let summaryText = '';
                 await streamContentGeneration(
                     [
-                        '請用中文輸出 2-4 句的簡短故事總結，不得超過 200 字。',
-                        '只輸出總結內容，不要標題、不要符號、不要前言後語。',
-                        '禁止輸出例如「Suggested Title Options」或任何非故事總結內容。',
+                        '请用中文输出 2-4 句的簡短故事总结，不得超過 200 字。',
+                        '只输出总结内容，不要标题、不要符号、不要前言后语。',
+                        '禁止输出例如「Suggested Title Options」或任何非故事总结內容。',
                         '',
                         localContent.slice(-3000)
                     ].join('\n'),
@@ -1535,12 +1535,12 @@ ${segmentSourceText}
 
   const handleContinueGeneration = async () => {
       if (!apiKey || !apiKey.trim()) {
-          toast.error("請先在設置中輸入您的 API Key。");
+          toast.error("请先在设置中输入您的 API Key。");
           return;
       }
       
       if (generatedContents.length === 0) {
-          toast.warning("沒有可續寫的內容。");
+          toast.warning("沒有可续写的內容。");
           return;
       }
 
@@ -1552,7 +1552,7 @@ ${segmentSourceText}
       const subModeConfig = getCurrentSubModeConfig();
 
       if (!subModeConfig || !subModeConfig.continuePromptTemplate) {
-          toast.warning("此模式不支持自動續寫。");
+          toast.warning("此模式不支持自动续写。");
           return;
       }
 
@@ -1622,7 +1622,7 @@ ${segmentSourceText}
            setGeneratedContents(prev => {
               const newArr = [...prev];
               const cleanMsg = parseErrorMessage(err);
-              newArr[newIndex].content += `\n\n[續寫失敗: ${cleanMsg}]`;
+              newArr[newIndex].content += `\n\n[续写失敗: ${cleanMsg}]`;
               return newArr;
           });
       } finally {
@@ -1706,7 +1706,7 @@ ${segmentSourceText}
       <section>
         <h2 className="text-lg font-medium text-slate-300 mb-4 flex items-center gap-2">
           <span className="bg-emerald-600 w-6 h-6 rounded-full flex items-center justify-center text-xs text-white">1</span>
-          選擇賽道 (Select Track)
+          选择赛道 (Select Track)
         </h2>
         <NicheSelector selectedNiche={niche} onSelect={setNiche} />
       </section>
@@ -1715,7 +1715,7 @@ ${segmentSourceText}
       <section className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6">
          <h2 className="text-lg font-medium text-slate-300 mb-6 flex items-center gap-2">
           <span className="bg-emerald-600 w-6 h-6 rounded-full flex items-center justify-center text-xs text-white">2</span>
-          策劃選題 (Plan Topics)
+          策划选题 (Plan Topics)
         </h2>
         
         {/* Sub-Category Selection Grid */}
@@ -1834,12 +1834,12 @@ ${segmentSourceText}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
               <label className="block text-sm text-slate-400 font-medium">
-                輸入原文 (Source Text)
+                输入原文 (Source Text)
               </label>
               <textarea
                 value={inputVal}
                 onChange={(e) => setInputVal(e.target.value)}
-                placeholder="請在此粘貼需要改編的原文內容..."
+                placeholder="请在此粘貼需要改編的原文內容..."
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-slate-100 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all resize-none custom-scrollbar h-[300px]"
               />
             </div>
@@ -1853,7 +1853,7 @@ ${segmentSourceText}
                     }}
                     className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
                   >
-                    <Copy size={12} /> 複製
+                    <Copy size={12} /> 复制
                   </button>
                 )}
               </label>
@@ -1864,7 +1864,7 @@ ${segmentSourceText}
                     <span>正在改編中...</span>
                   </div>
                 ) : (
-                  <div className="text-slate-600 text-sm">改編後的內容將顯示於此</div>
+                  <div className="text-slate-600 text-sm">改编后的内容将显示于此</div>
                 ))}
                 {isAdapting && adaptedContent && <span className="inline-block w-2 h-4 bg-emerald-500 ml-1 animate-pulse" />}
               </div>
@@ -1897,7 +1897,7 @@ ${segmentSourceText}
                         </div>
                         <div>
                             <p className="text-emerald-200 text-sm font-medium">智能生成就緒</p>
-                            <p className="text-emerald-300/60 text-xs">此模式無需輸入，AI 將自動根據核心邏輯生成爆款選題。</p>
+                            <p className="text-emerald-300/60 text-xs">此模式无需输入，AI 将自动根据核心逻辑生成爆款选题。</p>
                         </div>
                     </div>
                 )}
@@ -1909,7 +1909,7 @@ ${segmentSourceText}
                 className={`mt-0 md:mt-7 px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-medium rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 w-full md:w-auto justify-center whitespace-nowrap shadow-lg shadow-emerald-900/20`}
             >
                 {status === GenerationStatus.PLANNING ? <Loader2 className="animate-spin" /> : <Sparkles />}
-                {isInputRequired() ? '預測選題' : '一鍵生成爆款Hooks'}
+                {isInputRequired() ? '预测选题' : '一键生成爆款Hooks'}
             </button>
         </div>
         )}
@@ -1945,11 +1945,11 @@ ${segmentSourceText}
                 <div className="flex justify-between items-center mb-3">
                     <span className="text-sm text-slate-400">
                         {niche === NicheType.STORY_REVENGE 
-                            ? `選擇要生成的故事 (${storyDuration === StoryDuration.SHORT ? '短篇' : '長篇'}/${storyLanguage}):`
-                            : "選擇要生成的長文 (約 8000 字/篇):"
+                            ? `选择要生成的故事 (${storyDuration === StoryDuration.SHORT ? '短篇' : '長篇'}/${storyLanguage}):`
+                            : "选择要生成的長文 (約 8000 字/篇):"
                         }
                     </span>
-                    <span className="text-sm text-emerald-400 font-medium">已選 {topics.filter(t => t.selected).length} 個</span>
+                    <span className="text-sm text-emerald-400 font-medium">已选 {topics.filter(t => t.selected).length} 个</span>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[350px] overflow-y-auto pr-2 custom-scrollbar mb-6">
                     {topics.map(topic => (
@@ -1976,7 +1976,7 @@ ${segmentSourceText}
                     <ProgressBar
                       current={batchProgress.current}
                       total={batchProgress.total}
-                      label="生成進度"
+                      label="生成进度"
                       showPercentage={true}
                       showCount={true}
                       color="emerald"
@@ -2072,10 +2072,10 @@ ${segmentSourceText}
                                     <button
                                         onClick={() => handleCopy(generatedContents[viewIndex].content, viewIndex)}
                                         className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-md transition-all flex items-center gap-2 text-xs"
-                                        title="複製全文"
+                                        title="复制全文"
                                     >
                                         {copiedId === viewIndex ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
-                                        {copiedId === viewIndex ? '已複製' : '複製'}
+                                        {copiedId === viewIndex ? '已复制' : '复制'}
                                     </button>
                                 </div>
                             </div>
@@ -2090,7 +2090,7 @@ ${segmentSourceText}
                             <div className="w-16 h-16 rounded-full bg-slate-900 flex items-center justify-center">
                                 <Eye className="w-8 h-8 text-slate-700" />
                             </div>
-                            <p>請從左側選擇一個選題以查看內容...</p>
+                            <p>请從左側选择一個选题以查看內容...</p>
                         </div>
                     )}
                 </div>
@@ -2136,7 +2136,7 @@ ${segmentSourceText}
               setHistoryRecords(getHistory('generator', historyKey));
             }
           }}
-          title="選擇歷史記錄"
+          title="选择历史记录"
         />
       )}
     </div>

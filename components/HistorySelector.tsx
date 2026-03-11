@@ -20,7 +20,7 @@ export const HistorySelector: React.FC<HistorySelectorProps> = ({
   onSelect,
   onClose,
   onDelete,
-  title = '歷史記錄',
+  title = '历史记录',
 }) => {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
 
@@ -67,7 +67,7 @@ export const HistorySelector: React.FC<HistorySelectorProps> = ({
           {records.length === 0 ? (
             <div className="text-center py-12 text-slate-500">
               <FileText size={48} className="mx-auto mb-4 opacity-50" />
-              <p>暫無歷史記錄</p>
+              <p>暂无历史记录</p>
             </div>
           ) : (
             records.map((record, index) => (
@@ -97,7 +97,7 @@ export const HistorySelector: React.FC<HistorySelectorProps> = ({
                     </p>
                     {record.metadata?.input && (
                       <p className="text-xs text-slate-500 mt-1">
-                        輸入: {getPreview(record.metadata.input, 50)}
+                        输入: {getPreview(record.metadata.input, 50)}
                       </p>
                     )}
                   </div>
@@ -106,7 +106,7 @@ export const HistorySelector: React.FC<HistorySelectorProps> = ({
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          if (confirm('確定要刪除這條歷史記錄嗎？')) {
+                          if (confirm('确定要删除这条历史记录嗎？')) {
                             onDelete(record.timestamp);
                           }
                         }}
@@ -143,7 +143,7 @@ export const HistorySelector: React.FC<HistorySelectorProps> = ({
               className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
               <Check size={16} />
-              加載選中記錄
+              加载选中记录
             </button>
           </div>
         )}

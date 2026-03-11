@@ -320,7 +320,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       const trimmedLine = line.trim();
       
       // 检测镜头开始
-      const shotMatch = trimmedLine.match(/^(?:镜头|鏡頭)(\d+)/);
+      const shotMatch = trimmedLine.match(/^(?:镜头|镜头)(\d+)/);
       if (shotMatch) {
         // 保存上一个镜头的当前字段
         if (currentShot && currentField && fieldContent.length > 0) {
@@ -384,7 +384,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           currentField = 'imagePrompt';
           const match = trimmedLine.match(/^(?:图片提示词|圖片提示詞)[：:]\s*(.+)/);
           if (match && match[1]) fieldContent.push(match[1]);
-        } else if (/^(?:视频提示词|視頻提示詞)[：:]/.test(trimmedLine)) {
+        } else if (/^(?:视频提示词|视频提示詞)[：:]/.test(trimmedLine)) {
           if (currentField && fieldContent.length > 0) {
             const content = fieldContent.join('\n').trim();
             if (currentField === 'imagePrompt') currentShot.imagePrompt = content;
@@ -393,7 +393,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           }
           fieldContent = [];
           currentField = 'videoPrompt';
-          const match = trimmedLine.match(/^(?:视频提示词|視頻提示詞)[：:]\s*(.+)/);
+          const match = trimmedLine.match(/^(?:视频提示词|视频提示詞)[：:]\s*(.+)/);
           if (match && match[1]) fieldContent.push(match[1]);
         } else if (/^景别[：:]/.test(trimmedLine) || /^景別[：:]/.test(trimmedLine)) {
           if (currentField && fieldContent.length > 0) {
@@ -528,7 +528,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     try {
       const savedScript = localStorage.getItem('lastGeneratedScript');
       if (savedScript && savedScript.trim()) {
-        const hasShots = /(?:镜头|鏡頭)\s*\d+/.test(savedScript);
+        const hasShots = /(?:镜头|镜头)\s*\d+/.test(savedScript);
         if (hasShots) {
           allRecords.unshift({
             content: savedScript,
@@ -579,8 +579,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     
     if (record.content && record.content.trim()) {
       // 验证脚本是否包含镜头信息
-      const hasShots = /(?:镜头|鏡頭)\s*\d+/.test(record.content);
-      const shotCount = (record.content.match(/(?:镜头|鏡頭)\s*\d+/g) || []).length;
+      const hasShots = /(?:镜头|镜头)\s*\d+/.test(record.content);
+      const shotCount = (record.content.match(/(?:镜头|镜头)\s*\d+/g) || []).length;
       
       if (hasShots && shotCount > 0) {
         // 解析脚本
@@ -2004,7 +2004,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         <div className="flex items-center justify-between">
           <h2 className="text-xl font-bold text-emerald-400 flex items-center gap-2">
             <Video size={24} />
-            媒體生成
+            媒体生成
           </h2>
           <div className="flex items-center gap-2">
             <button
@@ -2012,14 +2012,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded-lg transition-all"
             >
               <FolderOpen size={16} />
-              從改寫工具讀取
+              从改写工具读取
           </button>
             <button
               onClick={() => fileInputRef.current?.click()}
               className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium rounded-lg transition-all"
             >
               <Upload size={16} />
-              上傳腳本文件
+              上傳脚本文件
             </button>
             <input
               ref={fileInputRef}
@@ -2033,7 +2033,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium rounded-lg transition-all"
             >
               <FileText size={16} />
-              {showScriptInput ? '隱藏' : '手動輸入'}
+              {showScriptInput ? '隐藏' : '手动输入'}
             </button>
           </div>
         </div>
@@ -2044,13 +2044,13 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           <div className="flex-shrink-0 w-[160px]">
             <label className="text-[10px] text-slate-500 mb-0.5 block flex items-center gap-1">
               大洋芋 API Key
-              <span className="text-amber-400 text-[9px]">(視頻)</span>
+              <span className="text-amber-400 text-[9px]">(视频)</span>
             </label>
             <input
               type="password"
               value={dayuApiKey}
               onChange={(e) => setDayuApiKey(e.target.value)}
-              placeholder="輸入 API Key"
+              placeholder="输入 API Key"
               className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
             />
       </div>
@@ -2080,7 +2080,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                   type="text"
                   value={jimengSessionId}
                   onChange={(e) => setJimengSessionId(e.target.value)}
-                  placeholder="輸入 SESSION_ID"
+                  placeholder="输入 SESSION_ID"
                   className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
                 />
               </div>
@@ -2141,7 +2141,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           </div>
           
           <div className="flex-shrink-0 w-[120px]">
-            <label className="text-[10px] text-slate-500 mb-0.5 block">視頻模型</label>
+            <label className="text-[10px] text-slate-500 mb-0.5 block">视频模型</label>
             <select
               value={selectedVideoModel}
               onChange={(e) => {
@@ -2169,7 +2169,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           
           {/* 视频分辨率设置 */}
           <div className="flex-shrink-0 w-[90px]">
-            <label className="text-[10px] text-slate-500 mb-0.5 block">視頻分辨率</label>
+            <label className="text-[10px] text-slate-500 mb-0.5 block">视频分辨率</label>
             <select
               value={selectedVideoSize}
               onChange={(e) => setSelectedVideoSize(e.target.value)}
@@ -2187,7 +2187,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           
           {/* 视频时长设置 */}
           <div className="flex-shrink-0 w-[90px]">
-            <label className="text-[10px] text-slate-500 mb-0.5 block">視頻時長（秒）</label>
+            <label className="text-[10px] text-slate-500 mb-0.5 block">视频時長（秒）</label>
             <select
               value={selectedVideoDuration}
               onChange={(e) => setSelectedVideoDuration(Number(e.target.value))}
@@ -2205,7 +2205,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           
           {/* 视频方向选择 */}
           <div className="flex-shrink-0 w-[90px]">
-            <label className="text-[10px] text-slate-500 mb-0.5 block">視頻方向</label>
+            <label className="text-[10px] text-slate-500 mb-0.5 block">视频方向</label>
             <select
               value={selectedVideoOrientation}
               onChange={(e) => setSelectedVideoOrientation(e.target.value)}
@@ -2271,7 +2271,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           </div>
 
           <div className="flex-shrink-0 w-[100px]">
-            <label className="text-[10px] text-slate-500 mb-0.5 block">風格設置</label>
+            <label className="text-[10px] text-slate-500 mb-0.5 block">风格设置</label>
             <select
               value={selectedStyle}
               onChange={(e) => setSelectedStyle(e.target.value)}
@@ -2301,11 +2301,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       {/* 脚本输入区域 */}
       {showScriptInput && (
         <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
-          <label className="text-sm font-medium text-slate-400 mb-2 block">腳本內容</label>
+          <label className="text-sm font-medium text-slate-400 mb-2 block">脚本內容</label>
           <textarea
             value={scriptText}
             onChange={(e) => handleScriptInput(e.target.value)}
-            placeholder="請粘貼腳本內容或從改寫工具讀取..."
+            placeholder="请粘贴脚本內容或从改写工具读取..."
             className="w-full h-40 bg-slate-900/50 border border-slate-700 rounded-lg p-4 text-slate-200 resize-none focus:outline-none focus:ring-1 focus:ring-emerald-500"
           />
         </div>
@@ -2315,7 +2315,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       <div className="flex flex-col gap-4">
         {/* 操作栏 */}
         <div className="flex items-center justify-between bg-slate-800/50 border border-slate-700 rounded-xl p-4">
-          <h3 className="text-sm font-semibold text-slate-300">鏡頭列表 ({shots.length})</h3>
+          <h3 className="text-sm font-semibold text-slate-300">镜头列表 ({shots.length})</h3>
           <div className="flex items-center gap-2">
             {/* 批量选择按钮 */}
             <div className="flex items-center gap-1 border-r border-slate-700 pr-2 mr-2">
@@ -2347,7 +2347,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition-all"
             >
               <Plus size={14} />
-              添加鏡頭
+              添加镜头
             </button>
             <button
               onClick={handleDeleteSelected}
@@ -2364,7 +2364,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               title="导出选中镜头的所有图片为 ZIP 文件"
             >
               <Download size={14} />
-              導出圖片 ZIP ({selectedCount})
+              导出图片 ZIP ({selectedCount})
             </button>
             
             {/* 批量操作按钮 */}
@@ -2385,7 +2385,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                 title="批量生成视频"
               >
                 <Rocket size={14} />
-                批量生成視頻
+                批量生成视频
               </button>
               <button
                 onClick={handleBatchGenerateVoice}
@@ -2409,8 +2409,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           {shots.length === 0 ? (
             <div className="text-center py-12 text-slate-500">
               <FileText size={48} className="mx-auto mb-4 opacity-50" />
-              <p>暫無鏡頭數據</p>
-              <p className="text-xs mt-2">請從改寫工具讀取腳本或手動添加鏡頭</p>
+              <p>暂无镜头數據</p>
+              <p className="text-xs mt-2">请从改写工具读取脚本或手动添加镜头</p>
             </div>
           ) : (
             <div className="min-w-full">
@@ -2420,8 +2420,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                 <div className="flex items-center">文案</div>
                 <div className="flex items-center">提示詞</div>
                 <div className="flex items-center">新圖</div>
-                <div className="flex items-center">視頻提示詞</div>
-                <div className="flex items-center">視頻</div>
+                <div className="flex items-center">视频提示詞</div>
+                <div className="flex items-center">视频</div>
                 <div className="flex items-center justify-end pr-2">操作</div>
               </div>
               
@@ -2718,7 +2718,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                         {shot.imageGenerating ? (
                           <Loader2 size={16} className="animate-spin text-emerald-400" />
                         ) : (
-                          '暫無圖片'
+                          '暂无圖片'
                         )}
                       </div>
                     )}
@@ -2731,7 +2731,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                         value={shot.videoPrompt}
                         onChange={(e) => updateShot(shot.id, { videoPrompt: e.target.value })}
                         className="w-full bg-slate-800 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-slate-200 resize-none h-16"
-                        placeholder="視頻提示詞"
+                        placeholder="视频提示詞"
                       />
                     ) : (
                       <>
@@ -2800,7 +2800,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                             {shot.videoGenerating ? (
                               <Loader2 size={16} className="animate-spin text-purple-400" />
                             ) : (
-                              '暫無視頻'
+                              '暂无视频'
                             )}
                           </div>
                         );
@@ -2850,7 +2850,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                       }`}
                       title="镜头设置"
                     >
-                      鏡頭設置
+                      镜头设置
                     </button>
                   </div>
                 </div>
@@ -2920,7 +2920,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               onClick={(e) => e.stopPropagation()}
             >
               <Download size={16} />
-              下載視頻
+              下载视频
             </a>
           </div>
         </div>
@@ -2942,7 +2942,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               setShowScriptHistorySelector(false);
             }
           }}
-          title="選擇腳本歷史記錄"
+          title="选择脚本历史记录"
         />
       )}
 
