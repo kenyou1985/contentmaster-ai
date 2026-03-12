@@ -236,10 +236,12 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
         segments[segments.length - 1] = `${segments[segments.length - 1]} ${last}`.trim();
       }
     } else if (segments.length < targetShots) {
-      while (segments.length < targetShots) {
+      let splitHappened = true;
+      while (segments.length < targetShots && splitHappened) {
+        splitHappened = false;
         const idx = segments.reduce((maxIdx, seg, i, arr) => (seg.length > arr[maxIdx].length ? i : maxIdx), 0);
         const seg = segments[idx];
-        if (seg.length <= minLen + 20) break;
+        if (seg.length <= 2) break;
         const mid = Math.floor(seg.length / 2);
         let splitAt = seg.lastIndexOf('。', mid);
         if (splitAt === -1) splitAt = seg.lastIndexOf('！', mid);
@@ -252,6 +254,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
         const second = seg.slice(splitAt + 1).trim();
         if (!first || !second) break;
         segments.splice(idx, 1, first, second);
+        splitHappened = true;
       }
     }
 
@@ -652,6 +655,18 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     return endingKeywords.some(pattern => pattern.test(text));
   };
 
+  const getUniqueShotCount = (text: string): number => {
+    const matches = text.match(/鏡頭\d+|镜头\d+/g) || [];
+    const numbers = new Set<number>();
+    matches.forEach(match => {
+      const num = parseInt(match.replace(/\D/g, ''), 10);
+      if (!Number.isNaN(num)) {
+        numbers.add(num);
+      }
+    });
+    return numbers.size;
+  };
+
   // 检测并清理不完整的镜头（脚本模式专用）
   const cleanIncompleteShot = (text: string): { cleaned: string; lastShotNumber: number; needsRework: boolean } => {
     // 匹配镜头格式：镜头[数字] 或 鏡頭[数字]
@@ -775,7 +790,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       const hasRoleInfo = text.includes('[角色信息]');
       const hasSceneInfo = text.includes('[场景信息]') || text.includes('[場景信息]');
       
-      const shotCount = (text.match(/鏡頭\d+|镜头\d+/g) || []).length;
+      const shotCount = getUniqueShotCount(text);
       const targetShots = scriptShotMode === 'custom'
         ? Math.min(100, Math.max(10, scriptShotCount))
         : Math.min(60, Math.ceil(originalLength / 250));
@@ -1747,7 +1762,7 @@ ${needsMore ?
             const isChinese = /[\u4e00-\u9fff]/.test(inputText);
             
             // 统计已完成的镜头数量
-            const shotCount = (currentContent.match(/鏡頭\d+|镜头\d+/g) || []).length;
+            const shotCount = getUniqueShotCount(currentContent);
             
             // 计算已搬运的原文字数（提取所有镜头文案中的文本）
             let copiedTextLength = 0;
@@ -1982,7 +1997,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                       : Math.min(60, Math.ceil(originalLength / 250));
 
                     if (scriptShotMode === 'custom') {
-                        const shotCount = (localOutput.match(/鏡頭\d+|镜头\d+/g) || []).length;
+                        const shotCount = getUniqueShotCount(localOutput);
                         const hasRoleInfo = localOutput.includes('[角色信息]');
                         const hasSceneInfo = localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]');
                         const shotProgress = Math.min(95, (shotCount / targetShots) * 100);
@@ -2027,15 +2042,55 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
             // 即使 isContentComplete 返回 false，也保存历史记录（因为摘要模式不续写）
             shouldSaveHistory = localOutput.trim().length > 0;
         } else {
+            let roleSceneInjected = false;
             while (!isContentComplete(localOutput, taskMode, originalLength) && continuationCount < MAX_CONTINUATIONS) {
                 continuationCount++;
                 console.log(`[Tools] Content incomplete, continuing (${continuationCount}/${MAX_CONTINUATIONS})...`);
+
+                // 自定义镜头：一旦镜头数达标且最后一个镜头文案已覆盖原文末尾，就立刻要求模型输出角色/场景信息
+                if (!roleSceneInjected && taskMode === ToolMode.SCRIPT && scriptShotMode === 'custom') {
+                    const uniqueShotCount = getUniqueShotCount(localOutput);
+                    const targetShots = Math.min(100, Math.max(10, scriptShotCount));
+                    if (uniqueShotCount >= targetShots) {
+                        // 移除可能提前输出的角色/场景信息，确保末尾判断不受影响
+                        if (localOutput.includes('[角色信息]') || localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]')) {
+                            localOutput = localOutput
+                                .replace(/\n?\[角色信息\][\s\S]*$/g, '')
+                                .replace(/\n?\[场景信息\][\s\S]*$/g, '')
+                                .replace(/\n?\[場景信息\][\s\S]*$/g, '')
+                                .trim();
+                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                        }
+                        const lastChars = taskInputText.slice(-200).trim();
+                        // 最后一个镜头文案是否包含原文末尾片段（尽量鲁棒，去掉空白后比对）
+                        const normalize = (s: string) => s.replace(/\s+/g, '');
+                        const hasTail = lastChars && normalize(localOutput).includes(normalize(lastChars));
+                        const hasRoleInfo = localOutput.includes('[角色信息]');
+                        const hasSceneInfo = localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]');
+
+                        if (hasTail && (!hasRoleInfo || !hasSceneInfo)) {
+                            roleSceneInjected = true;
+                            const separator = '\n\n----\n\n';
+                            localOutput += separator;
+                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+
+                            const roleScenePrompt = `### 任务指令：补全角色信息与场景信息\n\n你已经完成所有镜头输出（镜头数量已达标），且最后一个镜头文案已覆盖原文末尾。\n\n现在只需要输出角色信息和场景信息。\n\n【必须严格按模板输出，禁止任何额外文字】\n[角色信息]\n[名称]医生\n[别名]倪医生，主播\n[描述]（根据原文合理推断，至少50字）\n\n[名称]助手\n[别名]小李，助理\n[描述]（根据原文合理推断，至少50字）\n\n[场景信息]\n[名称]场景-室内\n[别名]无\n[描述]（根据原文合理推断，至少30字）\n\n[名称]场景-户外\n[别名]无\n[描述]（根据原文合理推断，至少30字）\n\n⚠️ 规则：\n1. 每个字段必须独占一行\n2. 只能输出以上两块信息，不要输出镜头，不要解释，不要加标题或分隔符\n3. 必须简体中文`; 
+
+                            await streamContentGeneration(roleScenePrompt, systemInstruction, (chunk) => {
+                                localOutput += chunk;
+                                updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                            });
+
+                            // 生成完成后继续走后面的清洗与保存逻辑
+                        }
+                    }
+                }
                 
                 // 脚本模式：检测并清理不完整的镜头
                 let cleanInfo: { cleaned: string; lastShotNumber: number; needsRework: boolean } | null = null;
                 if (taskMode === ToolMode.SCRIPT) {
                     // 计算当前进度
-                    const currentShotCount = (localOutput.match(/鏡頭\d+|镜头\d+/g) || []).length;
+                    const currentShotCount = getUniqueShotCount(localOutput);
                     let currentCopiedLength = 0;
                     const shotTextPattern = /镜头文案[：:][\s\S]*?[“"「]([\s\S]*?)[”"」]/g;
                     const shotTextMatches = localOutput.matchAll(shotTextPattern);
@@ -2104,7 +2159,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                 if (taskMode === ToolMode.SCRIPT) {
                     const hasRoleInfo = localOutput.includes('[角色信息]');
                     const hasSceneInfo = localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]');
-                    const currentShotCount = (localOutput.match(/鏡頭\d+|镜头\d+/g) || []).length;
+                    const currentShotCount = getUniqueShotCount(localOutput);
                     const targetShots = scriptShotMode === 'custom'
                       ? Math.min(100, Math.max(10, scriptShotCount))
                       : Math.min(60, Math.ceil(originalLength / 250));
@@ -2143,7 +2198,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                 // 强制检查：如果场景信息已完成，立即停止
                 const hasRoleInfo = localOutput.includes('[角色信息]');
                 const hasSceneInfo = localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]');
-                const currentShotCount = (localOutput.match(/鏡頭\d+|镜头\d+/g) || []).length;
+                const currentShotCount = getUniqueShotCount(localOutput);
                 const targetShots = scriptShotMode === 'custom'
                   ? Math.min(100, Math.max(10, scriptShotCount))
                   : Math.min(60, Math.ceil(originalLength / 250));
