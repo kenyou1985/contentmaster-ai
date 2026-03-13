@@ -757,6 +757,18 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     return { cleaned: text, lastShotNumber: lastShot.number, needsRework: false };
   };
 
+  const getCopiedTextLength = (text: string): number => {
+    let copiedTextLength = 0;
+    const shotTextPattern = /镜头文案[：:][\s\S]*?[“"「]([\s\S]*?)[”"」]/g;
+    const shotTextMatches = text.matchAll(shotTextPattern);
+    for (const match of shotTextMatches) {
+      if (match[1]) {
+        copiedTextLength += match[1].trim().length;
+      }
+    }
+    return copiedTextLength;
+  };
+
   // 检查内容是否完整（是否有明确的结尾）
   const isContentComplete = (text: string, mode: ToolMode, originalLength: number): boolean => {
     if (mode === ToolMode.SUMMARIZE) {
@@ -825,21 +837,18 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       const { needsRework } = cleanIncompleteShot(text);
       if (needsRework) return false;
       
-      // 计算已搬运的原文字数
-      let copiedTextLength = 0;
-      // 支持多种引号格式：" " 「 」 " "
-      const shotTextPattern = /镜头文案[：:][\s\S]*?[“"「]([\s\S]*?)[”"」]/g;
-      const shotTextMatches = text.matchAll(shotTextPattern);
-      for (const match of shotTextMatches) {
-        if (match[1]) {
-          copiedTextLength += match[1].trim().length;
-        }
-      }
+      const copiedTextLength = getCopiedTextLength(text);
       console.log(`[isContentComplete] 已搬运原文: ${copiedTextLength}/${originalLength} 字 (${(copiedTextLength/originalLength*100).toFixed(1)}%)`);
       
-      // ⚠️ 关键：如果已搬运的文案长度 >= 原文长度的95%，说明原文已全部搬运完毕
+      // ✅ 原文搬运达到或超过 100%，优先进入收尾（避免继续搬运导致超出）
+      if (copiedTextLength >= originalLength) {
+        console.log('[isContentComplete] 原文已搬运完毕（>=100%），等待角色和场景信息...');
+        return hasRoleInfo && hasSceneInfo;
+      }
+      
+      // ⚠️ 关键：如果已搬运的文案长度 >= 原文长度的95%，说明原文已基本搬运完毕
       if (copiedTextLength >= originalLength * 0.95) {
-        console.log(`[isContentComplete] 原文已搬运完毕（${copiedTextLength}/${originalLength}字），等待角色和场景信息...`);
+        console.log(`[isContentComplete] 原文已基本搬运完毕（${copiedTextLength}/${originalLength}字），等待角色和场景信息...`);
         // 如果原文搬运完毕，且有角色信息和场景信息，则完成
         return hasRoleInfo && hasSceneInfo;
       }
@@ -1094,13 +1103,13 @@ ${inputSection}
 - **禁止深度改編**：禁止添加新情節、刪除原有情節、改變情節順序、修改人物設定
 
 ## Style Context
-请以 ${nicheConfig.name} 的風格和語氣進行洗稿，融入該領域的專業術語和表達方式。
+请以 ${nicheConfig.name} 的风格和语气进行洗稿，遵循该赛道的选题与文案逻辑，并用**简单易懂的大白话**表达。
 
 ## Constraints & Rules
 1. **詞彙替換**：使用同義詞或更高級的詞彙替換原有詞彙，避免重複。
 2. **句式變換**：將主動句改為被動句，長句拆短，短句合併，改變敘述語序。
-3. **框架鎖定**：在不影響邏輯的前提下，可以微調句子順序，但絕不改變段落結構和情節順序。
-4. **去AI味**：避免使用死板的翻譯腔，增加口語化或更自然的連接詞（如"其實"、"換句話說"、"說白了"）。
+3. **框架鎖定**：在不影响逻辑的前提下，可以微调句子顺序，但绝不改变段落结构和情节顺序。
+4. **去AI味**：避免死板翻译腔，增加口语化连接词（如“其实”“换句话说”“说白了”），整体用大白话。
 5. **完整性**：絕對不能丟失原文的关键數據、專有名詞和核心論點。
 6. **赛道風格融合**：確保洗稿後的文本符合 ${nicheConfig.name} 的獨特語氣和表達習慣。
 7. **字数保持（重要）**：洗稿後的文本字数必須 >= ${originalLength * 0.9} 字（至少保持原文90%的長度），不得大幅縮減内容。
@@ -1144,7 +1153,7 @@ ${inputSection}
 - **絕對禁止語言轉換**（如英文變中文、中文變英文）
 
 ## Goals
-將提供的簡短文本或大綱擴展為一篇内容詳實、邏輯嚴密的深度文章，融入 ${nicheConfig.name} 的專業視角。
+將提供的簡短文本或大綱擴展為一篇内容詳實、邏輯嚴密的深度文章，遵循 ${nicheConfig.name} 的赛道选题与文案逻辑，并用**简单易懂的大白话**表达。
 
 ## Workflow
 1. **分析核心观点**：識別输入文本中的主要論點和关键詞。
@@ -1284,14 +1293,14 @@ ${inputSection}
 - **絕對禁止語言轉換**（如英文變中文、中文變英文）
 
 ## Goals
-像一位嚴厲的文字編輯一樣，以 ${nicheConfig.name} 領域的專業標準优化這段文本，使其更具專業感、流暢感和高級感。
+像一位嚴厲的文字編輯一樣，以 ${nicheConfig.name} 的赛道风格与选题逻辑优化这段文本，使其更专业、更顺滑，但仍用**简单易懂的大白话**表达。
 
 ## Checkpoints
 1. **語法修正**：糾正所有錯別字、標點错误和語病。
 2. **詞彙升級**：將平庸的詞彙替換為更精準、更具表現力的詞彙（例如將"很多"改為"不勝枚舉"，將"好"改為"卓越"），並融入 ${nicheConfig.name} 領域的專業術語。
 3. **修辭增強**：在合適的地方加入排比、比喻、反問等修辭手法，增強感染力和說服力。
 4. **精簡冗餘**：刪除囉嗦的重複表達，使句子更乾練有力。
-5. **語氣統一**：確保全文語氣一致（根據原文判斷是商務風、學術風還是文學風），並強化 ${nicheConfig.name} 的獨特風格。
+5. **语气统一**：确保全文语气一致，并强化 ${nicheConfig.name} 的独特风格，同时保持大白话表达。
 6. **邏輯流暢**：优化句子之間的銜接，確保思路連貫、層次分明。
 7. **字数保持**：润色後的字数應與原文相當（約 ${originalLength * 0.9}-${originalLength * 1.1} 字），不要大幅縮減或擴充。
 8. **禁止提前收尾**：首次输出時严禁使用「下課」「散會」等收尾語，保持内容連貫流暢。
@@ -2006,14 +2015,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                     }
 
                     // 自动模式：基于已搬运的原文长度
-                    const shotTextPattern = /镜头文案[：:][\s\S]*?[“"「]([\s\S]*?)[”"」]/g;
-                    const shotTextMatches = localOutput.matchAll(shotTextPattern);
-                    let copiedLength = 0;
-                    for (const match of shotTextMatches) {
-                        if (match[1]) {
-                            copiedLength += match[1].trim().length;
-                        }
-                    }
+                    const copiedLength = getCopiedTextLength(localOutput);
                     // 脚本模式：原文搬运进度 + 角色场景信息完成度
                     const hasRoleInfo = localOutput.includes('[角色信息]');
                     const hasSceneInfo = localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]');
@@ -2091,14 +2093,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                 if (taskMode === ToolMode.SCRIPT) {
                     // 计算当前进度
                     const currentShotCount = getUniqueShotCount(localOutput);
-                    let currentCopiedLength = 0;
-                    const shotTextPattern = /镜头文案[：:][\s\S]*?[“"「]([\s\S]*?)[”"」]/g;
-                    const shotTextMatches = localOutput.matchAll(shotTextPattern);
-                    for (const match of shotTextMatches) {
-                        if (match[1]) {
-                            currentCopiedLength += match[1].trim().length;
-                        }
-                    }
+                    const currentCopiedLength = getCopiedTextLength(localOutput);
                     const progress = ((currentCopiedLength / originalLength) * 100).toFixed(1);
                     console.log(`[Tools] 续写前进度: 镜头${currentShotCount}个, 已搬运${currentCopiedLength}/${originalLength}字 (${progress}%)`);
                     
@@ -2117,6 +2112,27 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                 
                 // 生成续写prompt（传入清理后的内容和是否需要重新输出镜头的信息，以及原文）
                 const continuePrompt = generateContinuePrompt(localOutput, taskMode, originalLength, cleanInfo, taskInputText);
+
+                // 脚本模式：若已达到或超过原文长度，强制进入角色/场景信息，不再续写镜头
+                if (taskMode === ToolMode.SCRIPT) {
+                    const copiedTextLength = getCopiedTextLength(localOutput);
+                    const hasRoleInfo = localOutput.includes('[角色信息]');
+                    const hasSceneInfo = localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]');
+                    if (copiedTextLength >= originalLength && (!hasRoleInfo || !hasSceneInfo)) {
+                        const separator = '\n\n----\n\n';
+                        localOutput += separator;
+                        updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+
+                        const roleScenePrompt = `### 任务指令：补全角色信息与场景信息\n\n你已经完成所有镜头输出，且镜头文案已覆盖原文末尾。\n\n现在只需要输出角色信息和场景信息。\n\n【必须严格按模板输出，禁止任何额外文字】\n[角色信息]\n[名称]医生\n[别名]倪医生，主播\n[描述]（根据原文合理推断，至少50字）\n\n[名称]助手\n[别名]小李，助理\n[描述]（根据原文合理推断，至少50字）\n\n[场景信息]\n[名称]场景-室内\n[别名]无\n[描述]（根据原文合理推断，至少30字）\n\n[名称]场景-户外\n[别名]无\n[描述]（根据原文合理推断，至少30字）\n\n⚠️ 规则：\n1. 每个字段必须独占一行\n2. 只能输出以上两块信息，不要输出镜头，不要解释，不要加标题或分隔符\n3. 必须简体中文`;
+
+                        await streamContentGeneration(roleScenePrompt, systemInstruction, (chunk) => {
+                            localOutput += chunk;
+                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                        });
+
+                        break;
+                    }
+                }
                 
                 // 续写
                 await streamContentGeneration(continuePrompt, systemInstruction, (chunk) => {
@@ -2127,14 +2143,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                     const calculateProgress = () => {
                         if (taskMode === ToolMode.SCRIPT) {
                             // 脚本模式：基于已搬运的原文长度
-                            const shotTextPattern = /镜头文案[：:][\s\S]*?[“"「]([\s\S]*?)[”"」]/g;
-                            const shotTextMatches = localOutput.matchAll(shotTextPattern);
-                            let copiedLength = 0;
-                            for (const match of shotTextMatches) {
-                                if (match[1]) {
-                                    copiedLength += match[1].trim().length;
-                                }
-                            }
+                            const copiedLength = getCopiedTextLength(localOutput);
                             // 脚本模式：原文搬运进度 + 角色场景信息完成度
                             const hasRoleInfo = localOutput.includes('[角色信息]');
                             const hasSceneInfo = localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]');
