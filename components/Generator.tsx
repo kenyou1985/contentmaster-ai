@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ApiProvider, NicheType, Topic, GeneratedContent, GenerationStatus, TcmSubModeId, FinanceSubModeId, RevengeSubModeId, NewsSubModeId, StoryLanguage, StoryDuration } from '../types';
-import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE } from '../constants';
+import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT } from '../constants';
 import { NicheSelector } from './NicheSelector';
 import { generateTopics, streamContentGeneration, initializeGemini } from '../services/geminiService';
 import { Sparkles, Calendar, Loader2, Download, Eye, Zap, AlertTriangle, Copy, Check, Globe, Clock, PlusCircle, History } from 'lucide-react';
@@ -52,6 +52,9 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const [revengeSubMode, setRevengeSubMode] = useState<RevengeSubModeId>(RevengeSubModeId.CULTURAL_ORIGINAL);
   const [newsSubMode, setNewsSubMode] = useState<NewsSubModeId>(NewsSubModeId.GEO_POLITICS);
   
+  // Script length mode for TCM/Finance/Psychology
+  const [scriptLengthMode, setScriptLengthMode] = useState<'LONG' | 'SHORT'>('LONG');
+
   // Revenge Story Settings
   const [storyLanguage, setStoryLanguage] = useState<StoryLanguage>(StoryLanguage.ENGLISH);
   const [storyDuration, setStoryDuration] = useState<StoryDuration>(StoryDuration.SHORT);
@@ -80,6 +83,17 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const [showHistorySelector, setShowHistorySelector] = useState(false);
   const [historyRecords, setHistoryRecords] = useState<HistoryRecord[]>([]);
   const [pendingSubModeChange, setPendingSubModeChange] = useState<{ niche: NicheType; submode: string } | null>(null);
+
+  // UTC 时间锚定（所有生成必须使用最新 UTC 年份）
+  const getUtcAnchor = (): string => {
+    const now = new Date();
+    const year = now.getUTCFullYear();
+    const month = String(now.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(now.getUTCDate()).padStart(2, '0');
+    const hour = String(now.getUTCHours()).padStart(2, '0');
+    const minute = String(now.getUTCMinutes()).padStart(2, '0');
+    return `当前UTC时间：${year}年${month}月${day}日 ${hour}:${minute} UTC（以此为唯一时间锚，所有输出中的年份必须为${year}年，禁止使用其他年份或过期年份）`;
+  };
 
   // Auto-scroll logic
   useEffect(() => {
@@ -199,6 +213,9 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (niche === NicheType.FINANCE_CRYPTO) return FINANCE_SUB_MODES[financeSubMode];
     if (niche === NicheType.STORY_REVENGE) return REVENGE_SUB_MODES[revengeSubMode];
     if (niche === NicheType.GENERAL_VIRAL) return NEWS_SUB_MODES[newsSubMode];
+    if (niche === NicheType.PSYCHOLOGY) return null;
+    if (niche === NicheType.PHILOSOPHY_WISDOM) return null;
+    if (niche === NicheType.EMOTION_TABOO) return null;
     return null;
   };
 
@@ -207,18 +224,27 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
      if (niche === NicheType.FINANCE_CRYPTO) return FINANCE_SUB_MODES;
      if (niche === NicheType.STORY_REVENGE) return REVENGE_SUB_MODES;
      if (niche === NicheType.GENERAL_VIRAL) return NEWS_SUB_MODES;
+     if (niche === NicheType.PSYCHOLOGY) return null;
+     if (niche === NicheType.PHILOSOPHY_WISDOM) return null;
+     if (niche === NicheType.EMOTION_TABOO) return null;
      return null;
   };
 
   const isInputRequired = () => {
     const config = getCurrentSubModeConfig();
     if (config) return config.requiresInput;
+    if (niche === NicheType.PSYCHOLOGY) return false;
+    if (niche === NicheType.PHILOSOPHY_WISDOM) return false;
+    if (niche === NicheType.EMOTION_TABOO) return false;
     return true; // Default input required for other niches
   };
 
   const shouldShowInput = () => {
     const config = getCurrentSubModeConfig();
     if (config) return config.requiresInput || config.optionalInput;
+    if (niche === NicheType.PSYCHOLOGY) return false;
+    if (niche === NicheType.PHILOSOPHY_WISDOM) return false;
+    if (niche === NicheType.EMOTION_TABOO) return false;
     return true;
   };
 
@@ -311,8 +337,11 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
         } else {
             prompt = prompt.replace(/.*\{input\}.*\n?/g, '').replace('{input}', '');
         }
-        
-        // 2. Story Specific Injection
+
+        // 2. UTC 时间锚定（所有板块统一）
+        prompt = `${getUtcAnchor()}\n\n${prompt}`;
+
+        // 3. Story Specific Injection
         if (niche === NicheType.STORY_REVENGE) {
              prompt = prompt.replace('{language}', storyLanguage);
              prompt = prompt.replace('{duration}', storyDuration);
@@ -320,11 +349,24 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
     } else {
         // Logic for other niches without sub-modes
-        if (!inputVal) {
-             toast.warning("请输入关键词。");
-             return;
+        if (niche === NicheType.PSYCHOLOGY) {
+            prompt = config.topicPromptTemplate;
+            if (scriptLengthMode === 'SHORT') {
+                prompt += '\n\n# 输出要求\n只输出短视频选题，不要出现【短视频】或【长视频】等标签。';
+            } else {
+                prompt += '\n\n# 输出要求\n只输出长视频选题，不要出现【短视频】或【长视频】等标签。';
+            }
+        } else if (niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO) {
+            prompt = config.topicPromptTemplate;
+        } else {
+            if (!inputVal) {
+                toast.warning("请输入关键词。");
+                return;
+            }
+            prompt = config.topicPromptTemplate.replace('{input}', inputVal);
         }
-        prompt = config.topicPromptTemplate.replace('{input}', inputVal);
+        // UTC 时间锚定（所有板块统一）
+        prompt = `${getUtcAnchor()}\n\n${prompt}`;
     }
     
     // Status already set above
@@ -960,20 +1002,32 @@ ${segmentSourceText}
             const shouldEnforceLength =
                 niche === NicheType.TCM_METAPHYSICS ||
                 niche === NicheType.FINANCE_CRYPTO ||
+                niche === NicheType.PSYCHOLOGY ||
+                niche === NicheType.PHILOSOPHY_WISDOM ||
+                niche === NicheType.EMOTION_TABOO ||
                 niche === NicheType.GENERAL_VIRAL;
             const isRevengeShort =
                 niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.SHORT;
             const isRevengeLong =
                 niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.LONG;
+            const isShortScript =
+                (niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO) &&
+                scriptLengthMode === 'SHORT';
             
             if (shouldEnforceLength) {
-                const minChars =
-                    niche === NicheType.TCM_METAPHYSICS
-                        ? MIN_TCM_SCRIPT_CHARS
-                        : niche === NicheType.FINANCE_CRYPTO
-                            ? MIN_FIN_SCRIPT_CHARS
-                            : MIN_NEWS_SCRIPT_CHARS;
-                totalExpected += minChars;
+                if (isShortScript) {
+                    totalExpected += niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO ? 450 : 500;
+                } else {
+                    const minChars =
+                        niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO
+                            ? 2000
+                            : niche === NicheType.TCM_METAPHYSICS
+                                ? MIN_TCM_SCRIPT_CHARS
+                                : niche === NicheType.FINANCE_CRYPTO
+                                    ? MIN_FIN_SCRIPT_CHARS
+                                    : MIN_NEWS_SCRIPT_CHARS;
+                    totalExpected += minChars;
+                }
             } else if (isRevengeShort) {
                 totalExpected += REVENGE_SHORT_MIN;
             } else if (isRevengeLong) {
@@ -999,10 +1053,36 @@ ${segmentSourceText}
         
         if (subModeConfig && subModeConfig.scriptPromptTemplate) {
             scriptTemplate = subModeConfig.scriptPromptTemplate;
+        } else if (niche === NicheType.PSYCHOLOGY) {
+            scriptTemplate = scriptLengthMode === 'SHORT'
+                ? PSYCHOLOGY_SHORT_SCRIPT_PROMPT
+                : PSYCHOLOGY_LONG_SCRIPT_PROMPT;
+        } else if (niche === NicheType.PHILOSOPHY_WISDOM) {
+            scriptTemplate = scriptLengthMode === 'SHORT'
+                ? PHILOSOPHY_SHORT_SCRIPT_PROMPT
+                : PHILOSOPHY_LONG_SCRIPT_PROMPT;
+        } else if (niche === NicheType.EMOTION_TABOO) {
+            scriptTemplate = scriptLengthMode === 'SHORT'
+                ? EMOTION_TABOO_SHORT_SCRIPT_PROMPT
+                : EMOTION_TABOO_LONG_SCRIPT_PROMPT;
         }
 
         // Use the selected script prompt
         let prompt = scriptTemplate.replace('{topic}', topic.title);
+
+        // 短视频脚本模式：覆盖为短视频文案指令（仅中医玄学/金融投资）
+        if ((niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO) && scriptLengthMode === 'SHORT') {
+            prompt = [
+                '你是短视频脚本写手。请根据选题生成 500 字以内短视频文案。',
+                '要求：语言风格必须与当前人设一致——中医玄学使用倪海厦风格，金融投资使用查理·芒格风格；保持强个性化表达；开头不要过多涉及具体时日时辰；围绕主题详细展开；一环接一环；适当使用排比句；包含“第一、第二、第三”等总结排列；必须有标点符号。',
+                '结尾必须加入自然的引导转发评论语句（结合对应人设口吻），不要生硬。',
+                '格式：不分段；不加标题；不加编号；不加 Markdown。',
+                `选题：${topic.title}`
+            ].join('\n');
+        }
+
+        // UTC 时间锚定（所有板块统一）
+        prompt = `${getUtcAnchor()}\n\n${prompt}`;
         
         // Inject Story Variables if applicable
         if (niche === NicheType.STORY_REVENGE) {
@@ -1076,26 +1156,38 @@ ${segmentSourceText}
             const shouldEnforceLength =
                 niche === NicheType.TCM_METAPHYSICS ||
                 niche === NicheType.FINANCE_CRYPTO ||
+                niche === NicheType.PSYCHOLOGY ||
+                niche === NicheType.PHILOSOPHY_WISDOM ||
+                niche === NicheType.EMOTION_TABOO ||
                 niche === NicheType.GENERAL_VIRAL;
             const isRevengeShort =
                 niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.SHORT;
             const isRevengeLong =
                 niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.LONG;
+            const isShortScript =
+                (niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO) &&
+                scriptLengthMode === 'SHORT';
 
             if (shouldEnforceLength) {
                 let continueCount = 0;
-                const minChars =
-                    niche === NicheType.TCM_METAPHYSICS
-                        ? MIN_TCM_SCRIPT_CHARS
-                        : niche === NicheType.FINANCE_CRYPTO
-                            ? MIN_FIN_SCRIPT_CHARS
-                            : MIN_NEWS_SCRIPT_CHARS;
-                const maxChars =
-                    niche === NicheType.TCM_METAPHYSICS
-                        ? MAX_TCM_SCRIPT_CHARS
-                        : niche === NicheType.FINANCE_CRYPTO
-                            ? MAX_FIN_SCRIPT_CHARS
-                            : MAX_NEWS_SCRIPT_CHARS;
+                const minChars = isShortScript
+                    ? (niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO ? 400 : 300)
+                    : niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO
+                        ? 2000
+                        : niche === NicheType.TCM_METAPHYSICS
+                            ? MIN_TCM_SCRIPT_CHARS
+                            : niche === NicheType.FINANCE_CRYPTO
+                                ? MIN_FIN_SCRIPT_CHARS
+                                : MIN_NEWS_SCRIPT_CHARS;
+                const maxChars = isShortScript
+                    ? 500
+                    : niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO
+                        ? 3000
+                        : niche === NicheType.TCM_METAPHYSICS
+                            ? MAX_TCM_SCRIPT_CHARS
+                            : niche === NicheType.FINANCE_CRYPTO
+                                ? MAX_FIN_SCRIPT_CHARS
+                                : MAX_NEWS_SCRIPT_CHARS;
                 
                 // 对于新闻评论，先检查是否已经完整（有收尾且字数合理）
                 if (niche === NicheType.GENERAL_VIRAL && isContentComplete(localContent, minChars, maxChars)) {
@@ -1122,10 +1214,23 @@ ${segmentSourceText}
                         continueCount += 1;
                         const context = localContent.slice(-2000);
                         const currentLength = sanitizeTtsScript(localContent).length;
+                        const remainingBudget = maxChars - currentLength;
                         const continuePrompt = [
-                            niche === NicheType.GENERAL_VIRAL
-                                ? `请用第一人称续写新聞評論，保持評論員的犀利與獨家視角，不要重覆前文。當前已寫${currentLength}字，如果內容充分完整且達到4000字以上，可以自然收尾並以「下期再見」「我們下期見」或「咱們下期再見」結束。如果內容尚不完整，请繼續深入分析，暫時不要收尾。`
-                                : '请续写以下內容，保持原風格與第一人称口吻，不要重覆前文。',
+                            isShortScript
+                                ? (niche === NicheType.PSYCHOLOGY
+                                    ? `请继续补充短视频文案，保持人间清醒型心理导师口吻，当前已写${currentLength}字，目标400-500字，要求结尾有互动引导，必须有标点。`
+                                    : niche === NicheType.PHILOSOPHY_WISDOM
+                                        ? `请继续补充短视频文案，保持禅意与觉醒心理学口吻，当前已写${currentLength}字，目标400-500字，结尾要有“结善缘/能量共振/留下一句xxx”的引导，必须有标点。`
+                                        : niche === NicheType.EMOTION_TABOO
+                                            ? `请继续补充短视频文案，保持禁忌张力与心理崩塌感，当前已写${currentLength}字，目标400-500字，结尾自然互动引导，必须有标点。`
+                                            : `请继续补充短视频文案，保持一环接一环的节奏与排比句结构，加入“第一、第二、第三”的总结排列。当前已写${currentLength}字，目标300-500字，必须有标点。`)
+                                : niche === NicheType.GENERAL_VIRAL
+                                    ? `请用第一人称续写新聞評論，保持評論員的犀利與獨家視角，不要重覆前文。當前已寫${currentLength}字，如果內容充分完整且達到4000字以上，可以自然收尾並以「下期再見」「我們下期見」或「咱們下期再見」結束。如果內容尚不完整，请繼續深入分析，暫時不要收尾。`
+                                    : niche === NicheType.EMOTION_TABOO
+                                        ? (remainingBudget <= 400
+                                            ? `请用200-400字完成收束，确保故事完整闭合与反思结尾，保持禁忌张力与心理崩塌感。当前已写${currentLength}字，务必在字数上限内完成。`
+                                            : `请继续续写，重点加强禁忌与羞耻的心理描写与含蓄暗示，确保故事完整闭合，目标2000-2500字，最多不超过3000字。当前已写${currentLength}字。`)
+                                        : '请续写以下內容，保持原風格與第一人称口吻，不要重覆前文。',
                             '不要出現「下課」「今天的課到這裡」等其他收尾語。',
                             '输出第一行必須是「-----」，下一行直接续写正文。',
                             `目標字數：至少 ${minChars} 字，當前已${currentLength}字。`,
@@ -1139,6 +1244,10 @@ ${segmentSourceText}
                             systemInstruction,
                             appendChunk
                         );
+
+                        if (localContent.length >= maxChars) {
+                            break;
+                        }
                         
                         // 对于新闻评论，检查是否已经出现"下期再见"，如果是则立即停止
                         if (niche === NicheType.GENERAL_VIRAL && hasEndingIndicators(localContent)) {
@@ -1187,10 +1296,14 @@ ${segmentSourceText}
                     if (capped !== localContent) {
                         localContent = capped;
                     }
-                    // Append CTA for TCM niche
-                    const ctaWord = getCtaKeyword(topic.title);
-                    const cta = `\n\n如果覺得今天倪師講的這番話對你有幫助，请動動你的手，點個讚、訂閱並轉發。如果你聽懂了，请在留言區打一個「${ctaWord}」或留一句祈福的話，為自己與家人積聚正向磁場。`;
-                    localContent = `${localContent}${cta}`;
+                    if (isShortScript) {
+                        localContent = truncateToMax(localContent, 500);
+                    } else {
+                        // Append CTA for TCM niche
+                        const ctaWord = getCtaKeyword(topic.title);
+                        const cta = `\n\n如果覺得今天倪師講的這番話對你有幫助，请動動你的手，點個讚、訂閱並轉發。如果你聽懂了，请在留言區打一個「${ctaWord}」或留一句祈福的話，為自己與家人積聚正向磁場。`;
+                        localContent = `${localContent}${cta}`;
+                    }
                     
                     // 保存到 Map 中，用于最后统一保存历史记录
                     generatedContentsMap.set(index, { topic: topic.title, content: localContent });
@@ -1207,10 +1320,32 @@ ${segmentSourceText}
                     });
                 } else if (niche === NicheType.FINANCE_CRYPTO) {
                     localContent = cleaned;
+                    if (isShortScript) {
+                        localContent = truncateToMax(localContent, 500);
+                    }
                     
                     // 保存到 Map 中，用于最后统一保存历史记录
                     generatedContentsMap.set(index, { topic: topic.title, content: localContent });
                     
+                    setGeneratedContents(prev => {
+                        const newArr = [...prev];
+                        if (newArr[index]) {
+                            newArr[index] = {
+                                ...newArr[index],
+                                content: localContent
+                            };
+                        }
+                        return newArr;
+                    });
+                } else if (niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO) {
+                    localContent = cleaned;
+                    if (localContent.length > maxChars + 200) {
+                        localContent = truncateToMax(localContent, maxChars);
+                    }
+
+                    // 保存到 Map 中，用于最后统一保存历史记录
+                    generatedContentsMap.set(index, { topic: topic.title, content: localContent });
+
                     setGeneratedContents(prev => {
                         const newArr = [...prev];
                         if (newArr[index]) {
@@ -1826,6 +1961,46 @@ ${segmentSourceText}
                     </div>
                 </div>
              </div>
+        )}
+
+        {/* Script length selector for TCM/Finance */}
+        {(niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO) && (
+          <div className="mb-6 animate-in fade-in duration-300 bg-slate-800/30 p-4 rounded-xl border border-slate-700/50">
+            <label className="text-xs font-bold text-emerald-400 flex items-center gap-1 mb-2">
+              <Clock size={14} /> 脚本时长
+            </label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setScriptLengthMode('LONG')}
+                className={`flex-1 px-3 py-1.5 rounded text-xs border transition-all ${
+                  scriptLengthMode === 'LONG'
+                    ? 'bg-emerald-600 text-white border-emerald-500'
+                    : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'
+                }`}
+              >
+                长视频脚本（默认）
+              </button>
+              <button
+                onClick={() => setScriptLengthMode('SHORT')}
+                className={`flex-1 px-3 py-1.5 rounded text-xs border transition-all ${
+                  scriptLengthMode === 'SHORT'
+                    ? 'bg-emerald-600 text-white border-emerald-500'
+                    : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'
+                }`}
+              >
+                短视频脚本（≤500字）
+              </button>
+            </div>
+            <p className="text-[10px] text-slate-500 mt-2">
+              {niche === NicheType.PSYCHOLOGY
+                ? '短视频：400-500字，反直觉开场，1-2个概念降维打击，结尾互动引导。'
+                : niche === NicheType.PHILOSOPHY_WISDOM
+                  ? '短视频：400-500字，开篇即高潮，痛点+底层逻辑+金句+引导，结尾结善缘。'
+                  : niche === NicheType.EMOTION_TABOO
+                    ? '短视频：400-500字，悬念开场+感官铺垫+心理拉扯+高光瞬间+反思引导。'
+                    : '短视频：在选题基础上详细展开，加入排比与总结排列，输出 500 字以内短视频文案。'}
+            </p>
+          </div>
         )}
 
         {/* Input Area (Conditional) */}
