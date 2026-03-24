@@ -349,7 +349,8 @@ export const EMOTION_TABOO_LONG_SCRIPT_PROMPT = `
 6. 文风：爽感更强，冲突更激烈，但禁止露骨性描写；用含蓄暗示带出张力。
 7. 升华结尾：从故事拔高到人性的反思、自我认知。
 8. 互动引导：结尾自然接入互动引导词，如：“家人们，如果是你们在那一刻，会怎么选？”、“在评论区，留下你不敢说出口的秘密。”
-9. 纯净口播稿：只输出第一人称讲故事的纯文本，不能出现任何动作提示或括号说明。
+9. 时间设定：故事默认发生在过去，使用“那年、后来、当时、几年前”等模糊时间表达；禁止出现具体公历日期（如3月23日）与当天/当前UTC时间信息。
+10. 纯净口播稿：只输出第一人称讲故事的纯文本，不能出现任何动作提示或括号说明。
 `;
 
 export const EMOTION_TABOO_SHORT_SCRIPT_PROMPT = `
@@ -364,7 +365,8 @@ export const EMOTION_TABOO_SHORT_SCRIPT_PROMPT = `
 5. 文风：爽感更强、节奏更快，可以有禁忌与越界的心理描写与暗示，但禁止露骨性描写；用含蓄暗示带出张力，让读者明确感受到越界已经发生。
 6. 升华结尾：从故事拔高到人性的反思、自我认知。
 7. 互动引导：结尾自然接入互动引导词。
-8. 纯净口播稿：只输出第一人称讲故事的纯文本，不能出现任何动作提示或括号说明。
+8. 时间设定：故事默认发生在过去，使用“那年、后来、当时、几年前”等模糊时间表达；禁止出现具体公历日期（如3月23日）与当天/当前UTC时间信息。
+9. 纯净口播稿：只输出第一人称讲故事的纯文本，不能出现任何动作提示或括号说明。
 `;
 
 // ==========================================
@@ -567,6 +569,7 @@ const REVENGE_SYSTEM_PROMPT = `
 **Global Language Rules:**
 - **Creative Content (Scripts, Titles, Hooks):** Output in the **Target Language** (User Selected).
 - **Communication (Outlines, Options, Notes):** STRICTLY **CHINESE (中文)**.
+- **If target language is Chinese:** MUST use **Simplified Chinese (简体中文)** only. Never use Traditional Chinese.
 
 ## 🌍 Cultural Localization Matrix (文化适配矩阵 - DARK EDITION)
 **You MUST apply these rules to Character Ethnicity, Naming, and Plot Tropes:**
@@ -611,7 +614,8 @@ const REVENGE_ORIGINAL_TOPIC_PROMPT = `
 # 绝对規則
 1. **內容純淨**：只輸出標題文本本身。**嚴禁**輸出編號、引號或解釋。
 2. **標題語言**：必須使用目標語言 ({language})。
-3. **风格**：All Villains (全員恶人)。主角必須冷酷無情。
+3. **若目標語言為中文**：標題必須為簡體中文，嚴禁繁體字。
+4. **风格**：All Villains (全員恶人)。主角必須冷酷無情。
 
 # 示例 (English Dark Edition)
 - My boss stole my commission to pay for his mistress, so I reported his insider trading to the SEC and forwarded the evidence to his wife.
@@ -683,6 +687,9 @@ const REVENGE_SCRIPT_PROMPT = `
 # 【內容增強：人性與黑暗】(Dark Content)
 - 展現「全員恶人」的設定。
 - 包含 R級邊緣/18禁暗示的心理或場景描写（如權色交易、背叛的快感），增加藝術性與張力。
+
+# 中文输出规则
+- 若目标语言为中文，必须只输出简体中文，严禁繁体中文。
 
 # 輸出格式
 直接開始讲故事，纯文本。
@@ -782,6 +789,9 @@ const REVENGE_ADAPT_SCRIPT_PROMPT = `
 - 包含 R級邊緣/18禁暗示的心理或場景描写（如權色交易、背叛的快感），增加藝術性與張力。
 - 必須体現目標語言文化的典型衝突元素。
 
+# 中文输出规则
+- 若目标语言为中文，必须只输出简体中文，严禁繁体中文。
+
 # 輸出格式
 直接開始讲故事，纯文本。
 故事結束後，另起一行輸出：
@@ -816,6 +826,9 @@ const REVENGE_CONTINUE_PROMPT = `
 **僅在故事徹底完結後**：
 在故事正文結束後，換行並輸出分隔符 "=== SUMMARY ==="，然後提供一個精簡的故事總結。
 如果故事尚未結束，**不要**輸出此分隔符或總結。
+
+# 中文输出规则
+- 若目标语言为中文，必须只输出简体中文，严禁繁体中文。
 
 # 輸出格式
 直接接續上文情節，纯文本写作。

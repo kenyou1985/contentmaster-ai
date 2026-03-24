@@ -21,7 +21,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const internalToast = useToast();
   const toast = externalToast || internalToast;
   
-  // 调试：检查 toast 是否正确传递
+  // 调试日志降噪：避免每次渲染都打印导致控制台刷屏
   React.useEffect(() => {
     console.log('[Generator] Toast 实例检查:', {
       hasExternalToast: !!externalToast,
@@ -29,7 +29,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       toastMethods: toast ? Object.keys(toast) : 'null',
       toastToasts: toast?.toasts?.length || 0,
     });
-  }, [externalToast, internalToast, toast]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const MIN_TCM_SCRIPT_CHARS = 7500; // 30 min * 250 chars/min
   const MAX_TCM_SCRIPT_CHARS = 10000; // 40 min * 250 chars/min
   const MIN_FIN_SCRIPT_CHARS = 7500; // 30 min * 250 chars/min

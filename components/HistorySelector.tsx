@@ -72,7 +72,7 @@ export const HistorySelector: React.FC<HistorySelectorProps> = ({
           ) : (
             records.map((record, index) => (
               <div
-                key={record.timestamp}
+                key={`${record.timestamp}-${index}`}
                 className={`bg-slate-900/50 border rounded-lg p-3 cursor-pointer transition-all ${
                   selectedIndex === index
                     ? 'border-emerald-500 bg-emerald-500/10'
