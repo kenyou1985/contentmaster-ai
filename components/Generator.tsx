@@ -85,7 +85,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const [historyRecords, setHistoryRecords] = useState<HistoryRecord[]>([]);
   const [pendingSubModeChange, setPendingSubModeChange] = useState<{ niche: NicheType; submode: string } | null>(null);
 
-  // UTC 时间锚定（所有生成必须使用最新 UTC 年份）
+  // UTC 时间锚定（仅在需要时间锚的赛道/子模式注入）
   const getUtcAnchor = (): string => {
     const now = new Date();
     const year = now.getUTCFullYear();
@@ -94,6 +94,14 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     const hour = String(now.getUTCHours()).padStart(2, '0');
     const minute = String(now.getUTCMinutes()).padStart(2, '0');
     return `当前UTC时间：${year}年${month}月${day}日 ${hour}:${minute} UTC（以此为唯一时间锚，所有输出中的年份必须为${year}年，禁止使用其他年份或过期年份）`;
+  };
+
+  const shouldInjectUtcAnchor = (): boolean => {
+    // 中医玄学：仅“时辰禁忌”允许注入具体 UTC 时间锚
+    if (niche === NicheType.TCM_METAPHYSICS) {
+      return tcmSubMode === TcmSubModeId.TIME_TABOO;
+    }
+    return true;
   };
 
   // Auto-scroll logic
@@ -339,8 +347,10 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
             prompt = prompt.replace(/.*\{input\}.*\n?/g, '').replace('{input}', '');
         }
 
-        // 2. UTC 时间锚定（所有板块统一）
-        prompt = `${getUtcAnchor()}\n\n${prompt}`;
+        // 2. UTC 时间锚定（中医玄学仅时辰禁忌注入）
+        if (shouldInjectUtcAnchor()) {
+          prompt = `${getUtcAnchor()}\n\n${prompt}`;
+        }
 
         // 3. Story Specific Injection
         if (niche === NicheType.STORY_REVENGE) {
@@ -366,8 +376,10 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
             }
             prompt = config.topicPromptTemplate.replace('{input}', inputVal);
         }
-        // UTC 时间锚定（所有板块统一）
-        prompt = `${getUtcAnchor()}\n\n${prompt}`;
+        // UTC 时间锚定（中医玄学仅时辰禁忌注入）
+        if (shouldInjectUtcAnchor()) {
+          prompt = `${getUtcAnchor()}\n\n${prompt}`;
+        }
     }
     
     // Status already set above
@@ -1082,8 +1094,10 @@ ${segmentSourceText}
             ].join('\n');
         }
 
-        // UTC 时间锚定（所有板块统一）
-        prompt = `${getUtcAnchor()}\n\n${prompt}`;
+        // UTC 时间锚定（中医玄学仅时辰禁忌注入）
+        if (shouldInjectUtcAnchor()) {
+          prompt = `${getUtcAnchor()}\n\n${prompt}`;
+        }
         
         // Inject Story Variables if applicable
         if (niche === NicheType.STORY_REVENGE) {
