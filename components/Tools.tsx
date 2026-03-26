@@ -341,8 +341,6 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       const invalidPatterns = [
         '【脚本角色清单】', '【脚本场景清单】',
         '----', // 分隔符
-        /^角色信息$/,  // 纯文本的“角色信息”标题
-        /^场景信息$/,  // 纯文本的“场景信息”标题
         /^角色\d+:/,  // 角色1:、角色2:等
         /^场景\d+:/,  // 场景1:、场景2:等
         /^性别:/,     // 性别: 男
@@ -393,8 +391,8 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
         }
       }
       
-      // 检测角色信息开始
-      if (line === '[角色信息]') {
+      // 检测角色信息开始（兼容无方括号标题）
+      if (line === '[角色信息]' || line === '角色信息') {
         inShot = false;
         inRoleInfo = true;
         inSceneInfo = false;
@@ -403,8 +401,8 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
         continue;
       }
       
-      // 检测场景信息开始
-      if (line === '[场景信息]' || line === '[場景信息]') {
+      // 检测场景信息开始（兼容无方括号标题）
+      if (line === '[场景信息]' || line === '[場景信息]' || line === '场景信息' || line === '場景信息') {
         inShot = false;
         inRoleInfo = false;
         inSceneInfo = true;
@@ -421,7 +419,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       // 如果在角色信息块内
       if (inRoleInfo) {
         // 检查是否遇到场景信息（表示角色信息块结束）
-        if (line === '[场景信息]' || line === '[場景信息]') {
+        if (line === '[场景信息]' || line === '[場景信息]' || line === '场景信息' || line === '場景信息') {
           inRoleInfo = false;
           inSceneInfo = true;
           cleanedLines.push(lines[i]);
@@ -449,6 +447,26 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       
       // 如果在场景信息块内
       if (inSceneInfo) {
+        // 场景信息后若又出现镜头，说明模型续写越界，直接截断后续内容
+        if (/^(?:镜头|鏡頭)\d+/.test(line)) {
+          console.log('[cleanScriptOutput] 场景信息后检测到镜头，截断后续越界内容');
+          break;
+        }
+
+        // 兼容无方括号字段写法，统一转为模板字段
+        if (/^名称\s+/.test(line)) {
+          cleanedLines.push(`[名称]${line.replace(/^名称\s+/, '').trim()}`);
+          continue;
+        }
+        if (/^别名\s+/.test(line)) {
+          cleanedLines.push(`[别名]${line.replace(/^别名\s+/, '').trim()}`);
+          continue;
+        }
+        if (/^描述\s+/.test(line)) {
+          cleanedLines.push(`[描述]${line.replace(/^描述\s+/, '').trim()}`);
+          continue;
+        }
+
         // 修复：如果字段挤在一起（如 [名称]xxx[别名]xxx[描述]xxx），需要拆分
         const fieldPattern = /\[(名称|名稱|别名|別名|描述)\]([^\[]*)/g;
         const matches = Array.from(line.matchAll(fieldPattern));
@@ -488,12 +506,10 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
           continue;
         }
 
-        // 自定义镜头数：超过目标镜头数直接丢弃
+        // 自定义镜头数：超过目标镜头数直接丢弃并终止后续（防止22、23镜头继续污染）
         if (scriptShotMode === 'custom' && seenShots.size >= targetShots) {
-          console.log(`[cleanScriptOutput] 超出目标镜头数(${targetShots})，丢弃镜头: ${shotNum}`);
-          skipCurrentShot = true;
-          inShot = false;
-          continue;
+          console.log(`[cleanScriptOutput] 超出目标镜头数(${targetShots})，从镜头${shotNum}开始截断后续内容`);
+          break;
         }
         
         seenShots.add(shotNum);
@@ -699,8 +715,10 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       return { cleaned: text, lastShotNumber: 0, needsRework: false };
     }
     
-    // 检查最后一个镜头是否完整
-    const lastShot = shots[shots.length - 1];
+    // 检查最后一个“有效镜头号”是否完整（按最大镜头号判定，避免被重复的旧镜头干扰）
+    const maxShotNumber = Math.max(...shots.map(s => s.number));
+    const maxShotCandidates = shots.filter(s => s.number === maxShotNumber);
+    const lastShot = maxShotCandidates.reduce((prev, curr) => (curr.startIndex > prev.startIndex ? curr : prev));
     const lastShotStart = lastShot.startIndex;
     // 查找最后一个镜头的结束位置（下一个镜头开始或文本末尾）
     let lastShotEnd = text.length;
@@ -804,16 +822,32 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
 
   const normalizeForCompare = (s: string): string => s.replace(/\s+/g, '').replace(/[“”"「」]/g, '');
 
-  const getLastShotText = (text: string): string => {
-    const shotPattern = /^\s*(?:镜头|鏡頭)(\d+)\s*$/gm;
-    const shots: Array<{ startIndex: number }> = [];
-    let m;
-    while ((m = shotPattern.exec(text)) !== null) {
-      shots.push({ startIndex: m.index });
-    }
-    if (shots.length === 0) return '';
+  const hasRoleInfoBlock = (text: string): boolean => {
+    return text.includes('[角色信息]') || /(^|\n)\s*角色信息\s*(\n|$)/.test(text);
+  };
 
-    const start = shots[shots.length - 1].startIndex;
+  const hasSceneInfoBlock = (text: string): boolean => {
+    return text.includes('[场景信息]') || text.includes('[場景信息]') || /(^|\n)\s*(场景信息|場景信息)\s*(\n|$)/.test(text);
+  };
+
+  const getLastShotMeta = (text: string): { number: number; startIndex: number } | null => {
+    const shotPattern = /^\s*(?:镜头|鏡頭)(\d+)\s*$/gm;
+    const shots: Array<{ number: number; startIndex: number }> = [];
+    let m: RegExpExecArray | null;
+    while ((m = shotPattern.exec(text)) !== null) {
+      shots.push({ number: parseInt(m[1], 10), startIndex: m.index });
+    }
+    if (shots.length === 0) return null;
+    const maxNum = Math.max(...shots.map(s => s.number));
+    const candidates = shots.filter(s => s.number === maxNum);
+    return candidates.reduce((prev, curr) => (curr.startIndex > prev.startIndex ? curr : prev));
+  };
+
+  const getLastShotText = (text: string): string => {
+    const lastShot = getLastShotMeta(text);
+    if (!lastShot) return '';
+
+    const start = lastShot.startIndex;
     let end = text.length;
     const roleInfoIndex = text.indexOf('[角色信息]', start);
     const sceneInfoIndex = text.indexOf('[场景信息]', start);
@@ -824,31 +858,83 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
 
     const block = text.substring(start, end);
     const quoted = block.match(/镜头文案[：:][\s\S]*?[“"「]([\s\S]*?)[”"」]/);
-    if (quoted?.[1]) return quoted[1].trim();
+    if (quoted?.[1] !== undefined) return quoted[1];
     const plain = block.match(/镜头文案[：:]\s*([^\n\r]+)/);
-    return plain?.[1]?.trim() || '';
+    return plain?.[1] || '';
   };
 
   const isLastShotTailAligned = (scriptText: string, originalText: string): boolean => {
     if (!scriptText || !originalText) return false;
-    const lastShot = normalizeForCompare(getLastShotText(scriptText));
-    const tail = normalizeForCompare(originalText.slice(-220));
+    const lastShotRaw = getLastShotText(scriptText);
+    const tailRaw = originalText.slice(-Math.max(260, lastShotRaw.length));
+    const lastShot = normalizeForCompare(lastShotRaw);
+    const tail = normalizeForCompare(tailRaw);
     if (!lastShot || !tail) return false;
-    // 最后一个镜头文案应至少覆盖原文末尾的一段关键尾部
-    const tailAnchor = tail.slice(-80);
-    return lastShot.includes(tailAnchor) || tailAnchor.includes(lastShot.slice(-80));
+
+    // 强对齐：完整尾部匹配
+    if (tail.length >= lastShot.length && tail.endsWith(lastShot)) return true;
+    if (lastShot.length >= tail.length && lastShot.endsWith(tail)) return true;
+
+    // 兜底：至少要求尾部关键后缀严格对齐，避免“看起来对齐但因前段细微差异卡死”
+    const suffixLen = Math.min(120, tail.length, lastShot.length);
+    if (suffixLen >= 60) {
+      return tail.slice(-suffixLen) === lastShot.slice(-suffixLen);
+    }
+
+    return false;
   };
 
   const getCopiedTextLength = (text: string): number => {
     let copiedTextLength = 0;
-    const shotTextPattern = /镜头文案[：:][\s\S]*?[“"「]([\s\S]*?)[”"」]/g;
-    const shotTextMatches = text.matchAll(shotTextPattern);
-    for (const match of shotTextMatches) {
-      if (match[1]) {
-        copiedTextLength += match[1].trim().length;
+    const shotPattern = /^\s*(?:镜头|鏡頭)(\d+)\s*$/gm;
+    const starts: number[] = [];
+    let m: RegExpExecArray | null;
+
+    while ((m = shotPattern.exec(text)) !== null) {
+      starts.push(m.index);
+    }
+
+    for (let i = 0; i < starts.length; i++) {
+      const start = starts[i];
+      const end = i + 1 < starts.length ? starts[i + 1] : text.length;
+      const block = text.substring(start, end);
+
+      const quoted = block.match(/镜头文案[：:][\s\S]*?[“"「]([\s\S]*?)[”"」]/);
+      if (quoted?.[1] !== undefined) {
+        copiedTextLength += quoted[1].length;
+        continue;
+      }
+
+      const plain = block.match(/镜头文案[：:]\s*([^\n\r]+)/);
+      if (plain?.[1] !== undefined) {
+        copiedTextLength += plain[1].length;
       }
     }
+
     return copiedTextLength;
+  };
+
+  const getScriptConsistencyDebug = (scriptText: string, originalText: string) => {
+    const copied = getCopiedTextLength(scriptText);
+    const original = originalText.length;
+    const diff = copied - original;
+    const lastShotRaw = getLastShotText(scriptText);
+    const lastShotLen = lastShotRaw.length;
+    const tailAligned = isLastShotTailAligned(scriptText, originalText);
+    const shotCount = getUniqueShotCount(scriptText);
+    const hasRoleInfo = hasRoleInfoBlock(scriptText);
+    const hasSceneInfo = hasSceneInfoBlock(scriptText);
+    return {
+      shotCount,
+      copied,
+      original,
+      diff,
+      progress: original > 0 ? `${((copied / original) * 100).toFixed(1)}%` : '0% ',
+      lastShotLen,
+      tailAligned,
+      hasRoleInfo,
+      hasSceneInfo,
+    };
   };
 
   // 检查内容是否完整（是否有明确的结尾）
@@ -881,25 +967,15 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     
     if (mode === ToolMode.SCRIPT) {
       // 脚本模式：检查场景信息是否已输出（最关键的完成标志）
-      const hasRoleInfo = text.includes('[角色信息]');
-      const hasSceneInfo = text.includes('[场景信息]') || text.includes('[場景信息]');
+      const hasRoleInfo = hasRoleInfoBlock(text);
+      const hasSceneInfo = hasSceneInfoBlock(text);
       
       const shotCount = getUniqueShotCount(text);
       const targetShots = scriptShotMode === 'custom'
         ? Math.min(100, Math.max(10, scriptShotCount))
         : Math.min(60, Math.ceil(originalLength / 250));
       
-      // 自定义镜头数：必须镜头数严格等于目标且角色/场景信息完整
-      if (scriptShotMode === 'custom' && hasSceneInfo && hasRoleInfo && shotCount === targetShots) {
-        console.log('[isContentComplete] 自定义镜头数严格达标且场景信息已输出，脚本完成！');
-        return true;
-      }
-      
-      // 自动模式：场景信息输出即视为完成
-      if (scriptShotMode !== 'custom' && hasSceneInfo && hasRoleInfo) {
-        console.log('[isContentComplete] 检测到场景信息已输出，脚本完成！');
-        return true;
-      }
+      // 不能仅凭角色/场景信息提前判定完成，必须通过尾部对齐和字数搬运校验
       
       // 检查是否有未完成的标记（----表示还需要续写）
       const hasIncompleteMarker = text.includes('生成中') || text.includes('----');
@@ -1868,19 +1944,8 @@ ${needsMore ?
             // 统计已完成的镜头数量
             const shotCount = getUniqueShotCount(currentContent);
             
-            // 计算已搬运的原文字数（提取所有镜头文案中的文本）
-            let copiedTextLength = 0;
-            // 匹配镜头文案格式：镜头文案: [角色名]-[语气词]："[文本内容]"
-            // 使用非贪婪匹配和多行模式，支持文本内容中包含换行
-            const shotTextPattern = /镜头文案[：:][\s\S]*?[“"「]([\s\S]*?)[”"」]/g;
-            const shotTextMatches = currentContent.matchAll(shotTextPattern);
-            for (const match of shotTextMatches) {
-                if (match[1]) {
-                    // 提取纯文本内容（去除格式标记）
-                    const pureText = match[1].trim();
-                    copiedTextLength += pureText.length;
-                }
-            }
+            // 计算已搬运的原文字数（与完成判定保持同一统计口径）
+            const copiedTextLength = getCopiedTextLength(currentContent);
             const originalTextContent = originalText || inputText;
             const remainingTextLength = originalTextContent.length - copiedTextLength;
             const copyProgress = copiedTextLength > 0 
@@ -1924,8 +1989,8 @@ ${needsMore ?
             const allShotsComplete = scriptShotMode === 'custom'
               ? (shotCount >= estimatedTotalShots && (expectedSegmentsCount === 0 || shotCount >= expectedSegmentsCount) && !cleanInfo?.needsRework)
               : ((shotCount >= estimatedTotalShots || copiedTextLength >= originalLength * 0.95) && !cleanInfo?.needsRework);
-            const hasRoleInfo = currentContent.includes('[角色信息]');
-            const hasSceneInfo = currentContent.includes('[场景信息]') || currentContent.includes('[場景信息]');
+            const hasRoleInfo = hasRoleInfoBlock(currentContent);
+            const hasSceneInfo = hasSceneInfoBlock(currentContent);
             
             let roleSceneInstruction = '';
             // 只有在所有镜头都完成后，才输出角色信息和场景信息
@@ -2113,8 +2178,8 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
 
                     if (scriptShotMode === 'custom') {
                         const shotCount = getUniqueShotCount(localOutput);
-                        const hasRoleInfo = localOutput.includes('[角色信息]');
-                        const hasSceneInfo = localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]');
+                        const hasRoleInfo = hasRoleInfoBlock(localOutput);
+                        const hasSceneInfo = hasSceneInfoBlock(localOutput);
                         const shotProgress = Math.min(95, (shotCount / targetShots) * 100);
                         const roleSceneProgress = (hasRoleInfo ? 2.5 : 0) + (hasSceneInfo ? 2.5 : 0);
                         return Math.min(100, shotProgress + roleSceneProgress);
@@ -2123,8 +2188,8 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                     // 自动模式：基于已搬运的原文长度
                     const copiedLength = getCopiedTextLength(localOutput);
                     // 脚本模式：原文搬运进度 + 角色场景信息完成度
-                    const hasRoleInfo = localOutput.includes('[角色信息]');
-                    const hasSceneInfo = localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]');
+                    const hasRoleInfo = hasRoleInfoBlock(localOutput);
+                    const hasSceneInfo = hasSceneInfoBlock(localOutput);
                     const textProgress = Math.min(95, (copiedLength / originalLength) * 100);
                     const roleSceneProgress = (hasRoleInfo ? 2.5 : 0) + (hasSceneInfo ? 2.5 : 0);
                     return Math.min(100, textProgress + roleSceneProgress);
@@ -2151,38 +2216,41 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
             shouldSaveHistory = localOutput.trim().length > 0;
         } else {
             let roleSceneInjected = false;
+            let earlyRoleSceneRounds = 0;
             while (!isContentComplete(localOutput, taskMode, originalLength, taskNiche) && continuationCount < MAX_CONTINUATIONS) {
                 continuationCount++;
                 console.log(`[Tools] Content incomplete, continuing (${continuationCount}/${MAX_CONTINUATIONS})...`);
 
-                // 自定义镜头：一旦镜头数达标且最后一个镜头文案已覆盖原文末尾，就立刻要求模型输出角色/场景信息
+                // 自定义镜头：镜头数达标后，按“末尾对齐 + 角色场景完整”推进，不再误删已完成信息
                 if (!roleSceneInjected && taskMode === ToolMode.SCRIPT && scriptShotMode === 'custom' && !isRevengeScriptTask) {
                     const uniqueShotCount = getUniqueShotCount(localOutput);
                     const targetShots = Math.min(100, Math.max(10, scriptShotCount));
                     if (uniqueShotCount >= targetShots) {
-                        // 移除可能提前输出的角色/场景信息，确保末尾判断不受影响
-                        if (localOutput.includes('[角色信息]') || localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]')) {
+                        const tailAlignedNow = isLastShotTailAligned(localOutput, originalScriptInputRef.current || '');
+                        let hasRoleInfo = hasRoleInfoBlock(localOutput);
+                        let hasSceneInfo = hasSceneInfoBlock(localOutput);
+
+                        // 仅在“末尾未对齐”时才移除角色/场景信息，避免已经完成又被清掉
+                        if (!tailAlignedNow && (hasRoleInfo || hasSceneInfo)) {
                             localOutput = localOutput
                                 .replace(/\n?\[角色信息\][\s\S]*$/g, '')
+                                .replace(/\n?角色信息\n[\s\S]*$/g, '')
                                 .replace(/\n?\[场景信息\][\s\S]*$/g, '')
                                 .replace(/\n?\[場景信息\][\s\S]*$/g, '')
+                                .replace(/\n?(?:场景信息|場景信息)\n[\s\S]*$/g, '')
                                 .trim();
                             updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                            hasRoleInfo = false;
+                            hasSceneInfo = false;
                         }
-                        const lastChars = taskInputText.slice(-200).trim();
-                        // 最后一个镜头文案是否包含原文末尾片段（尽量鲁棒，去掉空白后比对）
-                        const normalize = (s: string) => s.replace(/\s+/g, '');
-                        const hasTail = lastChars && normalize(localOutput).includes(normalize(lastChars));
-                        const hasRoleInfo = localOutput.includes('[角色信息]');
-                        const hasSceneInfo = localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]');
 
-                        if (hasTail && (!hasRoleInfo || !hasSceneInfo)) {
+                        if (tailAlignedNow && (!hasRoleInfo || !hasSceneInfo)) {
                             roleSceneInjected = true;
                             const separator = '\n\n生成中\n\n';
                             localOutput += separator;
                             updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
 
-                            const roleScenePrompt = `### 任务指令：补全角色信息与场景信息\n\n你已经完成所有镜头输出（镜头数量已达标），且最后一个镜头文案已覆盖原文末尾。\n\n现在只需要输出角色信息和场景信息。\n\n【必须严格按模板输出，禁止任何额外文字】\n[角色信息]\n[名称]医生\n[别名]倪医生，主播\n[描述]（根据原文合理推断，至少50字）\n\n[名称]助手\n[别名]小李，助理\n[描述]（根据原文合理推断，至少50字）\n\n[场景信息]\n[名称]场景-室内\n[别名]无\n[描述]（根据原文合理推断，至少30字）\n\n[名称]场景-户外\n[别名]无\n[描述]（根据原文合理推断，至少30字）\n\n⚠️ 规则：\n1. 每个字段必须独占一行\n2. 只能输出以上两块信息，不要输出镜头，不要解释，不要加标题或分隔符\n3. 必须简体中文`; 
+                            const roleScenePrompt = `### 任务指令：补全角色信息与场景信息\n\n你已经完成所有镜头输出（镜头数量已达标），且最后一个镜头文案已覆盖原文末尾。\n\n现在只需要输出角色信息和场景信息。\n\n【必须严格按模板输出，禁止任何额外文字】\n[角色信息]\n[名称]医生\n[别名]倪医生，主播\n[描述]（根据原文合理推断，至少50字）\n\n[名称]助手\n[别名]小李，助理\n[描述]（根据原文合理推断，至少50字）\n\n[场景信息]\n[名称]场景-室内\n[别名]无\n[描述]（根据原文合理推断，至少30字）\n\n[名称]场景-户外\n[别名]无\n[描述]（根据原文合理推断，至少30字）\n\n⚠️ 规则：\n1. 每个字段必须独占一行\n2. 只能输出以上两块信息，不要输出镜头，不要解释，不要加标题或分隔符\n3. 必须简体中文`;
 
                             await streamContentGeneration(roleScenePrompt, systemInstruction, (chunk) => {
                                 localOutput += chunk;
@@ -2281,8 +2349,8 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                 // 脚本模式：若已达到或超过原文长度，强制进入角色/场景信息（复仇脚本纯文本模式跳过）
                 if (taskMode === ToolMode.SCRIPT && !isRevengeScriptTask) {
                     const copiedTextLength = getCopiedTextLength(localOutput);
-                    const hasRoleInfo = localOutput.includes('[角色信息]');
-                    const hasSceneInfo = localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]');
+                    const hasRoleInfo = hasRoleInfoBlock(localOutput);
+                    const hasSceneInfo = hasSceneInfoBlock(localOutput);
                     if (copiedTextLength >= originalLength && (!hasRoleInfo || !hasSceneInfo)) {
                         const separator = '\n\n生成中\n\n';
                         localOutput += separator;
@@ -2310,8 +2378,8 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                             // 脚本模式：基于已搬运的原文长度
                             const copiedLength = getCopiedTextLength(localOutput);
                             // 脚本模式：原文搬运进度 + 角色场景信息完成度
-                            const hasRoleInfo = localOutput.includes('[角色信息]');
-                            const hasSceneInfo = localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]');
+                            const hasRoleInfo = hasRoleInfoBlock(localOutput);
+                            const hasSceneInfo = hasSceneInfoBlock(localOutput);
                             const textProgress = Math.min(95, (copiedLength / originalLength) * 100);
                             const roleSceneProgress = (hasRoleInfo ? 2.5 : 0) + (hasSceneInfo ? 2.5 : 0);
                             return Math.min(100, textProgress + roleSceneProgress);
@@ -2331,42 +2399,60 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                 
                 // ⚠️ 关键：每次续写后立即检查是否已输出场景信息
                 if (taskMode === ToolMode.SCRIPT) {
-                    const hasRoleInfo = localOutput.includes('[角色信息]');
-                    const hasSceneInfo = localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]');
+                    const hasRoleInfo = hasRoleInfoBlock(localOutput);
+                    const hasSceneInfo = hasSceneInfoBlock(localOutput);
                     const currentShotCount = getUniqueShotCount(localOutput);
                     const targetShots = scriptShotMode === 'custom'
                       ? Math.min(100, Math.max(10, scriptShotCount))
                       : Math.min(60, Math.ceil(originalLength / 250));
+                    const tailAligned = isLastShotTailAligned(localOutput, originalScriptInputRef.current || '');
                     if (hasSceneInfo || hasRoleInfo) {
                         if (currentShotCount < targetShots) {
-                            console.log('[Tools] 续写中检测到提前的角色/场景信息，继续生成镜头');
+                            earlyRoleSceneRounds += 1;
+                            console.log(`[Tools] 续写中检测到提前的角色/场景信息，继续生成镜头（${earlyRoleSceneRounds}）`);
                             // 丢弃提前输出的角色/场景信息，避免污染后续续写
                             localOutput = localOutput
                                 .replace(/\n?\[角色信息\][\s\S]*$/g, '')
+                                .replace(/\n?角色信息\n[\s\S]*$/g, '')
                                 .replace(/\n?\[场景信息\][\s\S]*$/g, '')
                                 .replace(/\n?\[場景信息\][\s\S]*$/g, '')
+                                .replace(/\n?(?:场景信息|場景信息)\n[\s\S]*$/g, '')
                                 .trim();
                             updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+
+                            // 防止模型反复提前吐角色/场景导致卡死：连续多次后强制要求只补镜头
+                            if (earlyRoleSceneRounds >= 3) {
+                                const forceMirrorPrompt = `请仅继续输出镜头内容，从镜头${Math.min(targetShots, currentShotCount + 1)}开始，严格按模板输出镜头字段。\n禁止输出任何角色信息或场景信息。\n当且仅当镜头达到${targetShots}个且最后镜头文案对齐原文末尾后，才可输出[角色信息]和[场景信息]。`;
+                                const separator = '\n\n生成中\n\n';
+                                localOutput += separator;
+                                updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                                await streamContentGeneration(forceMirrorPrompt, systemInstruction, (chunk) => {
+                                    localOutput += chunk;
+                                    updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                                });
+                            }
                             continue;
                         }
+                        earlyRoleSceneRounds = 0;
                         if (currentShotCount > targetShots) {
                             console.log('[Tools] 续写中检测到镜头数超出目标，裁剪尾部并继续');
                             localOutput = localOutput.replace(/\n?\[角色信息\][\s\S]*$/g, '').replace(/\n?\[场景信息\][\s\S]*$/g, '').replace(/\n?\[場景信息\][\s\S]*$/g, '').trim();
                             updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
                             continue;
                         }
+                        if (!tailAligned) {
+                            console.log('[Tools] 检测到角色/场景信息但末尾未对齐，丢弃信息后继续修正末镜头');
+                            localOutput = localOutput
+                              .replace(/\n?\[角色信息\][\s\S]*$/g, '')
+                              .replace(/\n?角色信息\n[\s\S]*$/g, '')
+                              .replace(/\n?\[场景信息\][\s\S]*$/g, '')
+                              .replace(/\n?\[場景信息\][\s\S]*$/g, '')
+                              .replace(/\n?(?:场景信息|場景信息)\n[\s\S]*$/g, '')
+                              .trim();
+                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                            continue;
+                        }
                         if (hasSceneInfo && hasRoleInfo && currentShotCount === targetShots) {
-                            const tailAligned = isLastShotTailAligned(localOutput, originalScriptInputRef.current || '');
-                            if (!tailAligned) {
-                                console.log('[Tools] 镜头数达标但末尾未对齐，继续续写修正末镜头');
-                                localOutput = localOutput
-                                  .replace(/\n?\[角色信息\][\s\S]*$/g, '')
-                                  .replace(/\n?\[场景信息\][\s\S]*$/g, '')
-                                  .replace(/\n?\[場景信息\][\s\S]*$/g, '')
-                                  .trim();
-                                updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
-                                continue;
-                            }
                             console.log('[Tools] 续写中检测到场景信息且镜头数与尾部对齐达标，立即停止续写！');
                             break; // 立即退出续写循环
                         }
@@ -2375,6 +2461,10 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
             }
             // 非摘要模式：生成完成后检查是否完整
             shouldSaveHistory = isContentComplete(localOutput, taskMode, originalLength, taskNiche);
+            if (taskMode === ToolMode.SCRIPT && !isRevengeScriptTask) {
+                const dbg = getScriptConsistencyDebug(localOutput, originalScriptInputRef.current || taskInputText);
+                console.log('[Tools][Consistency][LoopEnd]', dbg);
+            }
         }
         
         // 清理续写分隔符（脚本模式使用----，其他模式使用-----）
@@ -2388,8 +2478,8 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                 
                 if (!isRevengeScriptTask) {
                   // 强制检查：如果场景信息已完成，立即停止
-                  const hasRoleInfo = localOutput.includes('[角色信息]');
-                  const hasSceneInfo = localOutput.includes('[场景信息]') || localOutput.includes('[場景信息]');
+                  const hasRoleInfo = hasRoleInfoBlock(localOutput);
+                  const hasSceneInfo = hasSceneInfoBlock(localOutput);
                   const currentShotCount = getUniqueShotCount(localOutput);
                   const targetShots = scriptShotMode === 'custom'
                     ? Math.min(100, Math.max(10, scriptShotCount))
@@ -2397,20 +2487,28 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                   const shouldStop = scriptShotMode === 'custom'
                     ? (hasSceneInfo && hasRoleInfo && currentShotCount >= targetShots)
                     : (hasSceneInfo && hasRoleInfo);
+                  const dbg = getScriptConsistencyDebug(localOutput, originalScriptInputRef.current || taskInputText);
+                  console.log('[Tools][Consistency][BeforeFinalStopCheck]', dbg);
                   if (!shouldStop && scriptShotMode === 'custom' && (hasSceneInfo || hasRoleInfo) && currentShotCount < targetShots) {
                       // 丢弃提前的角色/场景信息
                       localOutput = localOutput
                           .replace(/\n?\[角色信息\][\s\S]*$/g, '')
+                          .replace(/\n?角色信息\n[\s\S]*$/g, '')
                           .replace(/\n?\[场景信息\][\s\S]*$/g, '')
                           .replace(/\n?\[場景信息\][\s\S]*$/g, '')
+                          .replace(/\n?(?:场景信息|場景信息)\n[\s\S]*$/g, '')
                           .trim();
                   }
                   if (shouldStop) {
                       console.log('[Tools] 检测到场景信息已完成，强制结束生成');
+                      const dbgStop = getScriptConsistencyDebug(localOutput, originalScriptInputRef.current || taskInputText);
+                      console.log('[Tools][Consistency][ForceStop]', dbgStop);
                       // 清理场景信息后的所有内容
                       const sceneInfoIndex = Math.max(
                           localOutput.lastIndexOf('[场景信息]'),
-                          localOutput.lastIndexOf('[場景信息]')
+                          localOutput.lastIndexOf('[場景信息]'),
+                          localOutput.lastIndexOf('\n场景信息\n'),
+                          localOutput.lastIndexOf('\n場景信息\n')
                       );
                       if (sceneInfoIndex !== -1) {
                           // 找到场景信息后的最后一个 [描述] 字段
@@ -2523,15 +2621,8 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                             updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
                         }
                     } else {
-                        // 计算已搬运的原文字数
-                        let copiedTextLength = 0;
-                        const shotTextPattern = /镜头文案[：:][\s\S]*?[“"「]([\s\S]*?)[”"」]/g;
-                        const shotTextMatches = localOutput.matchAll(shotTextPattern);
-                        for (const match of shotTextMatches) {
-                            if (match[1]) {
-                                copiedTextLength += match[1].trim().length;
-                            }
-                        }
+                        // 计算已搬运的原文字数（与完成判定保持同一统计口径）
+                        const copiedTextLength = getCopiedTextLength(localOutput);
                         const copyProgress = ((copiedTextLength / originalLength) * 100).toFixed(0);
                         const shotCount = (localOutput.match(/鏡頭\d+|镜头\d+/g) || []).length;
                         
