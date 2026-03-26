@@ -252,24 +252,62 @@ export const generateTopics = async (
 ): Promise<string[]> => {
   return retryOperation(async () => {
     try {
-      let content = "";
-      if (provider === 'google') {
-        const response = await callGoogleWithFallback(prompt, systemInstruction, 0.9, 4096, modelName);
-        content = extractGoogleText(response);
-      } else {
-        const response = await callYunwuAPI(prompt, systemInstruction, 0.9, 4096, false);
-        content = response.choices?.[0]?.message?.content || "";
-      }
-      if (!content) {
+      const parseTopics = (raw: string): string[] => {
+        if (!raw) return [];
+        const lines = raw
+          .split('\n')
+          .map(line => line.trim())
+          .filter(Boolean)
+          .map(line => line
+            .replace(/^\d+[\.、]\s*/, '')
+            .replace(/^[-*•]\s*/, '')
+            .replace(/["']/g, '')
+            .trim()
+          )
+          .filter(line => line.length > 8);
+
+        // 去重并保留顺序
+        const unique: string[] = [];
+        const seen = new Set<string>();
+        for (const t of lines) {
+          if (!seen.has(t)) {
+            seen.add(t);
+            unique.push(t);
+          }
+        }
+        return unique;
+      };
+
+      const requestOnce = async (inputPrompt: string): Promise<string> => {
+        if (provider === 'google') {
+          const response = await callGoogleWithFallback(inputPrompt, systemInstruction, 0.9, 4096, modelName);
+          return extractGoogleText(response);
+        }
+        const response = await callYunwuAPI(inputPrompt, systemInstruction, 0.9, 4096, false);
+        return response.choices?.[0]?.message?.content || "";
+      };
+
+      const firstContent = await requestOnce(prompt);
+      if (!firstContent) {
         throw new Error("API 返回了空響應。請檢查 API Key 和配置。");
       }
 
-      // Split by new line and filter empty or short lines
-      const topics = content.split('\n')
-        .filter(line => line.trim().length > 5)
-        .map(line => line.replace(/^\d+\.\s*/, '').replace(/["']/g, '').trim())
-        .slice(0, 10);
-      
+      let topics = parseTopics(firstContent);
+
+      // 兜底补齐：若不足10个，最多补齐3轮
+      let fillRounds = 0;
+      while (topics.length > 0 && topics.length < 10 && fillRounds < 3) {
+        fillRounds += 1;
+        const need = 10 - topics.length;
+        const fillPrompt = `${prompt}\n\n【补齐要求】\n你上一次只返回了${topics.length}个选题。请只补齐剩余${need}个，不要重复，不要解释，不要前言，每行一个标题。\n已生成（禁止重复）：\n${topics.map((t, i) => `${i + 1}. ${t}`).join('\n')}`;
+        const extraContent = await requestOnce(fillPrompt);
+        const extraTopics = parseTopics(extraContent).filter(t => !topics.includes(t));
+        if (extraTopics.length === 0) break;
+        topics = [...topics, ...extraTopics];
+      }
+
+      topics = topics.slice(0, 10);
+
       if (topics.length === 0) {
         throw new Error("API 返回了空響應。請檢查 API Key 和配置。");
       }
