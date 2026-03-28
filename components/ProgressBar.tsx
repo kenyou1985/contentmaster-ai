@@ -13,6 +13,9 @@ interface ProgressBarProps {
   showPercentage?: boolean; // 是否显示百分比
   showCount?: boolean; // 是否显示数量
   color?: 'emerald' | 'blue' | 'amber'; // 颜色主题
+  successCount?: number; // 成功数（可选）
+  failedCount?: number; // 失败数（可选）
+  statusHint?: string; // 实时提示（可选）
 }
 
 export const ProgressBar: React.FC<ProgressBarProps> = ({
@@ -22,6 +25,9 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
   showPercentage = true,
   showCount = true,
   color = 'emerald',
+  successCount,
+  failedCount,
+  statusHint,
 }) => {
   const percentage = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0;
   const isComplete = current >= total;
@@ -40,24 +46,39 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
 
   return (
     <div className="w-full space-y-2">
-      {(label || showCount || showPercentage) && (
-        <div className="flex items-center justify-between text-sm">
-          {label && (
-            <span className="text-slate-300 font-medium">{label}</span>
-          )}
-          <div className="flex items-center gap-3">
-            {showCount && (
-              <span className="text-slate-400">
-                {current} / {total}
-              </span>
+      {(label || showCount || showPercentage || statusHint || successCount !== undefined || failedCount !== undefined) && (
+        <div className="flex flex-col gap-1 text-sm">
+          <div className="flex items-center justify-between">
+            {label && (
+              <span className="text-slate-300 font-medium">{label}</span>
             )}
-            {showPercentage && (
-              <span className="text-slate-400 font-medium">{percentage}%</span>
-            )}
-            {!isComplete && (
-              <Loader2 className="w-4 h-4 text-emerald-400 animate-spin" />
-            )}
+            <div className="flex items-center gap-3">
+              {showCount && (
+                <span className="text-slate-400">
+                  {current} / {total}
+                </span>
+              )}
+              {showPercentage && (
+                <span className="text-slate-400 font-medium">{percentage}%</span>
+              )}
+              {!isComplete && (
+                <Loader2 className="w-4 h-4 text-emerald-400 animate-spin" />
+              )}
+            </div>
           </div>
+          {(statusHint || successCount !== undefined || failedCount !== undefined) && (
+            <div className="flex flex-wrap items-center gap-3 text-xs">
+              {statusHint && (
+                <span className="text-slate-300">{statusHint}</span>
+              )}
+              {successCount !== undefined && (
+                <span className="text-emerald-400">成功 {successCount}</span>
+              )}
+              {failedCount !== undefined && (
+                <span className="text-rose-400">失败 {failedCount}</span>
+              )}
+            </div>
+          )}
         </div>
       )}
       <div className={`w-full h-2 rounded-full overflow-hidden ${bgColorClasses[color]}`}>

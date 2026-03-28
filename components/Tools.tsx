@@ -62,6 +62,10 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   const scriptShotCountRaw = activeTask.scriptShotCount;
   const scriptShotCount = Math.min(100, Math.max(10, scriptShotCountRaw || 10));
   const lastProgressUpdateRef = useRef<number>(0);
+  const getToolsHistoryKey = (m: ToolMode, n: NicheType) => {
+    if (m === ToolMode.SCRIPT) return `${ToolMode.SCRIPT}_GLOBAL`;
+    return `${m}_${n}`;
+  };
   
   // 更新当前任务状态
   const updateActiveTask = (updates: Partial<Task>) => {
@@ -72,7 +76,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   
   // 处理模式切换（带历史记录选择）
   const handleModeChange = (newMode: ToolMode) => {
-    const historyKey = `${newMode}_${activeTask.niche}`;
+    const historyKey = getToolsHistoryKey(newMode, activeTask.niche);
     const records = getHistory('tools', historyKey);
     
     if (records.length > 0) {
@@ -86,7 +90,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   
   // 处理赛道切换（带历史记录选择）
   const handleNicheChange = (newNiche: NicheType) => {
-    const historyKey = `${activeTask.mode}_${newNiche}`;
+    const historyKey = getToolsHistoryKey(activeTask.mode, newNiche);
     const records = getHistory('tools', historyKey);
     
     if (records.length > 0) {
@@ -151,6 +155,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   const [pendingModeChange, setPendingModeChange] = useState<{ mode: ToolMode; niche: NicheType } | null>(null);
   // 生成进度
   const [generationProgress, setGenerationProgress] = useState<{ current: number; total: number } | null>(null);
+  const [shotPromptProgress, setShotPromptProgress] = useState<{ success: number; failed: number; hint: string } | null>(null);
   const shotSegmentsRef = useRef<string[] | null>(null);
   const originalScriptInputRef = useRef<string>('');
   
@@ -260,6 +265,53 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     }
 
     return segments.slice(0, targetShots);
+  };
+
+  const buildTwoStagePrompt = (basePrompt: string, stagedSegments: string[] | null): string => {
+    if (!stagedSegments || stagedSegments.length === 0) {
+      return basePrompt;
+    }
+
+    const stage1 = stagedSegments
+      .map((seg, i) => `镜头${i + 1}文案段落：${seg}`)
+      .join('\n');
+
+    return `${basePrompt}\n\n## 二段式输出（强制执行）\n第一段：先仅输出全部镜头文案，按镜头数量平均分割并严格一一对应，不输出图片提示词、视频提示词、景别、语音分镜、音效。\n第二段：在第一段全部完成后，再按镜头序号逐个推理并输出图片提示词与视频提示词等其余字段，禁止跨镜头合并推理。\n\n## 第一段镜头文案预分配（必须逐条对应）\n${stage1}`;
+  };
+
+  const estimatePromptProgress = (script: string, expectedShots: number): { success: number; failed: number; hint: string } => {
+    const maxShot = Math.max(expectedShots, 0);
+    if (maxShot === 0) return { success: 0, failed: 0, hint: '等待输出镜头提示词...' };
+
+    const successSet = new Set<number>();
+    const failedSet = new Set<number>();
+
+    for (let i = 1; i <= maxShot; i++) {
+      const blockRegex = new RegExp(`(?:^|\\n)\\s*(?:镜头|鏡頭)${i}\\s*[\\s\\S]*?(?=(?:\\n\\s*(?:镜头|鏡頭)\\d+\\s*$)|\\n\\s*\\[(?:角色信息|场景信息|場景信息)\\]|$)`, 'm');
+      const block = script.match(blockRegex)?.[0] || '';
+      if (!block) continue;
+
+      const hasCaption = /镜头文案[：:]/.test(block);
+      const hasImage = /(?:图片提示词|圖片提示词)[：:]/.test(block);
+      const hasVideo = /视频提示词[：:]/.test(block);
+
+      if (hasCaption && hasImage && hasVideo) {
+        successSet.add(i);
+      } else if (hasCaption || hasImage || hasVideo) {
+        failedSet.add(i);
+      }
+    }
+
+    const success = successSet.size;
+    const failed = failedSet.size;
+    const pending = Math.max(0, maxShot - success - failed);
+
+    let hint = `镜头提示词进度：成功 ${success}，失败 ${failed}，待生成 ${pending}`;
+    if (failed > 0) {
+      hint += `（失败镜头：${Array.from(failedSet).slice(0, 8).join('、')}${failed > 8 ? '...' : ''}）`;
+    }
+
+    return { success, failed, hint };
   };
 
   // 清理Markdown格式符号，输出纯文本（保留编号格式）
@@ -1128,7 +1180,9 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     };
     
     // 脚本输出模式：不依赖赛道配置，作为独立通用模块
-    const nicheConfig = NICHES[taskNiche];
+    const nicheConfig = taskMode === ToolMode.SCRIPT
+      ? NICHES[NicheType.TCM_METAPHYSICS] // 脚本模式统一使用全局通用模板，不再依赖赛道选择
+      : NICHES[taskNiche];
     let localOutput = '';
     let stagnantRounds = 0; // 连续无进展轮次，用于防卡死
     const skippedReworkShots = new Set<number>(); // 已判定反复卡死的镜头，后续跳过回收
@@ -1137,7 +1191,8 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     const dynamicTargetShots = scriptShotMode === 'custom'
       ? Math.min(100, Math.max(10, scriptShotCount))
       : Math.min(60, Math.ceil(taskInputText.length / 250));
-    if (taskMode === ToolMode.SCRIPT && scriptShotMode === 'custom' && !isRevengeScriptTask) {
+    if (taskMode === ToolMode.SCRIPT && !isRevengeScriptTask) {
+      // 二段式输出：无论自动/自定义镜头数，都先做均分切段，供第一段镜头文案使用
       shotSegmentsRef.current = segmentTextByShots(taskInputText, dynamicTargetShots);
     } else {
       shotSegmentsRef.current = null;
@@ -1149,6 +1204,11 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     
     updateTask({ isGenerating: true, outputText: '' });
     setGenerationProgress({ current: 0, total: 100 }); // 初始化进度（基于百分比）
+    if (taskMode === ToolMode.SCRIPT) {
+      setShotPromptProgress({ success: 0, failed: 0, hint: '开始生成镜头提示词...' });
+    } else {
+      setShotPromptProgress(null);
+    }
     
     // 检测是否为YouTube链接
     const isYouTube = isYouTubeLink(taskInputText.trim());
@@ -1217,6 +1277,7 @@ ${taskInputText}
 **注意**：上述输入包含 YouTube 视频链接和转录文本。请直接处理转录文本内容，忽略链接部分。`
             : `## Input Data
 ${taskInputText}`;
+        const stagedSegments = mode === ToolMode.SCRIPT ? shotSegmentsRef.current : null;
 
     // 检测输入语言（简单判断：如果包含中文字符，认为是中文；否则认为是英文）
     const hasChinese = /[\u4e00-\u9fff]/.test(taskInputText);
@@ -1489,7 +1550,7 @@ ${inputSection}
                 const minChars = isChinese ? Math.max(120, Math.round(avgChars * 0.8)) : Math.max(240, Math.round(avgChars * 0.8));
                 const maxChars = isChinese ? Math.max(minChars + 20, Math.round(avgChars * 1.2)) : Math.max(minChars + 40, Math.round(avgChars * 1.2));
                 
-                return `### 任务指令：视频脚本生成
+                const scriptPrompt = `### 任务指令：视频脚本生成
 
 ${inputSection}
 
@@ -1877,6 +1938,7 @@ ${shotSegmentsRef.current.map((seg, i) => `镜头${i + 1}文案段落：${seg}`)
   - 场景信息：[场景信息] + [名称][别名][描述]
 - 不要输出任何额外的说明、标题或解释
 - 所有镜头、角色信息、场景信息输出完成后，立即结束，不要输出任何其他内容`;
+                return buildTwoStagePrompt(scriptPrompt, stagedSegments);
             default:
                 return '';
         }
@@ -2154,6 +2216,240 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
 
     try {
         initializeGemini(apiKey, { provider });
+
+        // 脚本模式：强制二段式（第一段先均分镜头文案，第二段逐镜头推理提示词）
+        if (taskMode === ToolMode.SCRIPT && !isRevengeScriptTask) {
+            const targetShots = scriptShotMode === 'custom'
+              ? Math.min(100, Math.max(10, scriptShotCount))
+              : Math.min(60, Math.ceil(originalLength / 250));
+            const segments = segmentTextByShots(taskInputText, targetShots);
+
+            // 先准备默认角色/场景，避免前置提取阻塞导致二段式不开始输出
+            let roleSceneBlock = '[角色信息]\n[名称]讲述者\n[别名]旁白\n[描述]中年华人讲述者，黑色中式长衫，神情冷峻克制，直视镜头，面部细节清晰，高对比电影光影，暗红与深蓝色调，写实风格，超清质感。\n\n[场景信息]\n[名称]场景-叙事空间\n[别名]无\n[描述]中式室内叙事空间，书架与木质桌案，低照度环境，局部暖光勾边，空气中轻微尘埃与雾化层次，压抑紧张氛围，电影级构图，超清细节。';
+            let primaryRole = '讲述者';
+            console.log('[Tools][TwoStage] 已进入二段式流程，先按默认角色开始输出');
+
+            // 角色/场景提取加超时，防止卡住主流程
+            try {
+              const roleScenePrompt = `请从以下原文中提取主要角色与主要场景，并严格按模板输出（简体中文）。\n\n关键要求（必须遵守）：\n1) [描述]必须写成可直接用于文生图/文生视频的大模型提示词风格，不要解释性文案。\n2) 角色描述需包含：年龄段、性别、外貌、服装、神态、镜头感、光线/色调、风格关键词。\n3) 场景描述需包含：空间结构、关键物件、光线、氛围、色调、镜头感、风格关键词。\n4) 禁止输出“负责…承担…”“用于…”等说明句。
+5) 只允许输出从原文中可识别的真实角色与场景，禁止新增“核心男性角色/核心女性角色/主角A”等自定义模板名称。\n\n输出模板：\n[角色信息]\n[名称]角色名\n[别名]别名1，别名2（没有写无）\n[描述]（提示词风格，至少50字）\n\n[场景信息]\n[名称]场景名\n[别名]无\n[描述]（提示词风格，至少30字）\n\n原文：\n${taskInputText}`;
+              let roleSceneRaw = '';
+              await Promise.race([
+                streamContentGeneration(roleScenePrompt, systemInstruction, (chunk) => {
+                  roleSceneRaw += chunk;
+                }),
+                new Promise((_, reject) =>
+                  setTimeout(() => reject(new Error('角色场景提取超时')), 12000)
+                ),
+              ]);
+
+              if (roleSceneRaw.trim()) {
+                roleSceneBlock = roleSceneRaw.trim();
+                const firstRole = roleSceneBlock.match(/\[名称\]\s*([^\n\r]+)/)?.[1]?.trim();
+                if (firstRole) primaryRole = firstRole;
+                console.log('[Tools][TwoStage] 角色场景提取成功，主角色:', primaryRole);
+              }
+            } catch (e) {
+              console.warn('[Tools][TwoStage] 角色场景提取超时或失败，使用默认角色场景', e);
+            }
+
+            const stagedShots = segments.map((seg, idx) => ({
+              shotNo: idx + 1,
+              role: primaryRole,
+              caption: seg,
+              imagePrompt: '生成中',
+              videoPrompt: '生成中',
+              shotType: '生成中',
+              voice: primaryRole,
+              sfx: '生成中',
+            }));
+
+            const renderShots = () => stagedShots
+              .map((s) => `镜头${s.shotNo}\n镜头文案: ${s.role || '讲述者'}-平静："${s.caption}"\n图片提示词: ${s.imagePrompt || '生成中'}\n视频提示词: ${s.videoPrompt || '生成中'}\n景别: ${s.shotType || '生成中'}\n语音分镜: ${s.voice || s.role || '讲述者'}\n音效: ${s.sfx || '生成中'}`)
+              .join('\n\n');
+
+            localOutput = renderShots();
+            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+            setGenerationProgress({ current: 20, total: 100 });
+
+            let success = 0;
+            let failed = 0;
+            const shotStatus: Array<'pending' | 'success' | 'failed'> = new Array(segments.length).fill('pending');
+            const buildShotProgressHint = () => {
+              const pending = Math.max(0, segments.length - success - failed);
+              const failedShotNos = shotStatus
+                .map((s, idx) => (s === 'failed' ? idx + 1 : 0))
+                .filter(Boolean);
+              const failedText = failedShotNos.length > 0
+                ? `，失败镜头：${failedShotNos.join('、')}`
+                : '';
+              return `镜头提示词进度：成功 ${success}，失败 ${failed}，待处理 ${pending}（总数 ${segments.length}）${failedText}`;
+            };
+
+            const failedShotIndexes: number[] = [];
+            const runInferForShot = async (i: number) => {
+              const shotNo = i + 1;
+              const caption = segments[i];
+              setShotPromptProgress({
+                success,
+                failed,
+                hint: `正在推理镜头${shotNo}/${segments.length}的图片/视频提示词...；${buildShotProgressHint()}`,
+              });
+
+              let inferenceRaw = '';
+              const roleFromCaption = stagedShots[i]?.role || primaryRole || '讲述者';
+              const visualRule = shotNo <= 2
+                ? '允许人物主导，但仍需交代环境叙事。'
+                : '从本镜头开始，图片提示词必须以场景/空间/物件/氛围为主，人物仅作辅助点缀，禁止人物肖像主导。';
+              const inferPrompt = `你是分镜提示词引擎。请仅基于该镜头文案，推理该镜头的图片提示词和视频提示词，并补齐景别、语音分镜、音效。\n\n硬性要求：\n1) 全部字段必须使用简体中文，禁止任何英文单词。\n2) 语音分镜只能输出“角色名”，不得输出口播文案内容。\n3) 语音分镜必须与镜头文案里的角色一致，本镜头固定为：${roleFromCaption}。\n4) ${visualRule}\n5) 图片提示词必须提炼核心场景元素与环境叙事氛围（光线、空间结构、关键物件、天气/时间、情绪场）。\n\n镜头${shotNo}文案：${caption}\n\n请严格只输出以下5行（不要任何解释）：\n图片提示词: ...\n视频提示词: ...\n景别: ...\n语音分镜: ${roleFromCaption}\n音效: ...`;
+
+              try {
+                await Promise.race([
+                  streamContentGeneration(inferPrompt, systemInstruction, (chunk) => {
+                    inferenceRaw += chunk;
+                  }),
+                  new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('单镜头提示词推理超时')), 35000)
+                  ),
+                ]);
+
+                const roleFromCaption = stagedShots[i]?.role || primaryRole || '讲述者';
+                const imagePromptRaw = inferenceRaw.match(/(?:图片提示词|圖片提示词)[：:]\s*([^\n\r]+)/)?.[1]?.trim() || '中景, 根据镜头文案提炼核心场景元素, 环境叙事氛围';
+                const videoPromptRaw = inferenceRaw.match(/视频提示词[：:]\s*([^\n\r]+)/)?.[1]?.trim() || '8秒: 根据镜头文案呈现场景与动作重点, 固定机位';
+                const shotTypeRaw = (inferenceRaw.match(/(?:景别|景別)[：:]\s*([^\n\r]+)/)?.[1]?.trim() || '中景');
+                const sfxRaw = (inferenceRaw.match(/音效[：:]\s*([^\n\r]+)/)?.[1]?.trim() || '背景环境音');
+
+                const sanitizeZh = (t: string) => {
+                  let x = t || '';
+                  x = x.replace(/\b(\d+)s\b/gi, '$1秒');
+                  x = x.replace(/[A-Za-z]+/g, '');
+                  x = x.replace(/\s{2,}/g, ' ').trim();
+                  return x || '生成中';
+                };
+
+                let imagePrompt = sanitizeZh(imagePromptRaw);
+                if (shotNo > 2) {
+                  imagePrompt = `中景, 场景空间主导, 关键物件与光线层次清晰, 根据镜头文案提炼核心场景元素, 环境叙事氛围`; 
+                  const fromModel = sanitizeZh(imagePromptRaw);
+                  if (fromModel && fromModel.length > 10) {
+                    imagePrompt = fromModel;
+                  }
+                }
+                const videoPrompt = sanitizeZh(videoPromptRaw);
+                const shotType = sanitizeZh(shotTypeRaw) || '中景';
+                const voice = roleFromCaption; // 强制与镜头文案角色一致，只输出角色
+                const sfx = sanitizeZh(sfxRaw);
+
+                stagedShots[i] = { ...stagedShots[i], imagePrompt, videoPrompt, shotType, voice, sfx };
+                const prevStatus = shotStatus[i];
+                if (prevStatus === 'failed') {
+                  failed = Math.max(0, failed - 1);
+                }
+                if (prevStatus !== 'success') {
+                  success += 1;
+                }
+                shotStatus[i] = 'success';
+                console.log(`[Tools][TwoStage] 镜头${shotNo}提示词完成`);
+
+                localOutput = renderShots();
+                updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+
+                const progress = 20 + Math.round(((i + 1) / segments.length) * 80);
+                setGenerationProgress({ current: progress, total: 100 });
+                setShotPromptProgress({
+                  success,
+                  failed,
+                  hint: buildShotProgressHint(),
+                });
+              } catch (e) {
+                const prevStatus = shotStatus[i];
+                if (prevStatus === 'success') {
+                  success = Math.max(0, success - 1);
+                }
+                if (prevStatus !== 'failed') {
+                  failed += 1;
+                }
+                shotStatus[i] = 'failed';
+                failedShotIndexes.push(i);
+                console.warn(`[Tools][TwoStage] 镜头${shotNo}提示词失败，已使用兜底占位`, e);
+                const roleFromCaption = stagedShots[i]?.role || primaryRole || '讲述者';
+                stagedShots[i] = {
+                  ...stagedShots[i],
+                  imagePrompt: '中景, 根据镜头文案提炼核心场景元素, 环境叙事氛围',
+                  videoPrompt: '8秒: 根据镜头文案呈现场景与动作重点, 固定机位',
+                  shotType: '中景',
+                  voice: roleFromCaption,
+                  sfx: '背景环境音',
+                };
+                localOutput = renderShots();
+                updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                const progress = 20 + Math.round(((i + 1) / segments.length) * 80);
+                setGenerationProgress({ current: progress, total: 100 });
+                setShotPromptProgress({
+                  success,
+                  failed,
+                  hint: buildShotProgressHint(),
+                });
+              }
+            }
+
+            const concurrency = 2;
+            for (let start = 0; start < segments.length; start += concurrency) {
+              const batch = Array.from({ length: Math.min(concurrency, segments.length - start) }, (_, k) => start + k);
+              await Promise.all(batch.map((idx) => runInferForShot(idx)));
+            }
+
+            // 第一轮后自动重试失败镜头（最多2轮）
+            const maxRetryRounds = 2;
+            for (let round = 1; round <= maxRetryRounds && failedShotIndexes.length > 0; round++) {
+              const retryTargets = Array.from(new Set(failedShotIndexes.splice(0)));
+              setShotPromptProgress({
+                success,
+                failed,
+                hint: `第${round}轮自动重试失败镜头：${retryTargets.map(x => x + 1).join('、')}；${buildShotProgressHint()}`,
+              });
+              for (let start = 0; start < retryTargets.length; start += concurrency) {
+                const batch = retryTargets.slice(start, start + concurrency);
+                await Promise.all(batch.map((idx) => runInferForShot(idx)));
+              }
+            }
+
+            // 拼接角色信息与场景信息（确保末尾不缺失，且描述为提示词风格）
+            const roleSceneFallback = '[角色信息]\n[名称]讲述者\n[别名]旁白\n[描述]中年华人讲述者，黑色中式长衫，神情冷峻克制，直视镜头，面部细节清晰，高对比电影光影，暗红与深蓝色调，写实风格，超清质感。\n\n[场景信息]\n[名称]场景-叙事空间\n[别名]无\n[描述]中式室内叙事空间，书架与木质桌案，低照度环境，局部暖光勾边，空气中轻微尘埃与雾化层次，压抑紧张氛围，电影级构图，超清细节。';
+
+            const sanitizeRoleScenePromptStyle = (text: string) => {
+              if (!text || !/\[角色信息\]/.test(text) || !/\[(?:场景信息|場景信息)\]/.test(text)) {
+                return roleSceneFallback;
+              }
+              let out = text.replace(/\[場景信息\]/g, '[场景信息]').trim();
+              // 将明显说明性措辞替换为提示词风格（保守处理）
+              out = out
+                .replace(/负责[^。\n]*[。\n]?/g, '')
+                .replace(/用于[^。\n]*[。\n]?/g, '')
+                .replace(/承担[^。\n]*[。\n]?/g, '')
+                .replace(/说明[^。\n]*[。\n]?/g, '');
+
+              // 只保留模型提取结果，不自动新增任何角色模板条目
+              return out.trim() || roleSceneFallback;
+            };
+
+            const normalizedRoleScene = sanitizeRoleScenePromptStyle(roleSceneBlock);
+            localOutput = `${renderShots()}\n\n${normalizedRoleScene}`.trim();
+            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+            setGenerationProgress({ current: 100, total: 100 });
+
+            // 二段式完成后保存历史
+            try {
+              const historyKey = getToolsHistoryKey(taskMode, taskNiche);
+              saveHistory('tools', historyKey, localOutput, { input: taskInputText });
+            } catch {}
+
+            try {
+              localStorage.setItem('lastGeneratedScript', localOutput);
+            } catch {}
+
+            return;
+        }
         
         // 生成初始内容
         const initialPrompt = generateInitialPrompt(taskMode, originalLength);
@@ -2205,6 +2501,12 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                 current: Math.round(progress), 
                 total: 100 
             });
+            if (taskMode === ToolMode.SCRIPT) {
+                const expectedShots = scriptShotMode === 'custom'
+                  ? Math.min(100, Math.max(10, scriptShotCount))
+                  : Math.min(60, Math.ceil(originalLength / 250));
+                setShotPromptProgress(estimatePromptProgress(localOutput, expectedShots));
+            }
         });
         
         // 检查是否需要续写（摘要模式不需要续写，但在生成完成后需要保存历史）
@@ -2395,6 +2697,12 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                         current: Math.round(progress), 
                         total: 100 
                     });
+                    if (taskMode === ToolMode.SCRIPT) {
+                        const expectedShots = scriptShotMode === 'custom'
+                          ? Math.min(100, Math.max(10, scriptShotCount))
+                          : Math.min(60, Math.ceil(originalLength / 250));
+                        setShotPromptProgress(estimatePromptProgress(localOutput, expectedShots));
+                    }
                 });
                 
                 // ⚠️ 关键：每次续写后立即检查是否已输出场景信息
@@ -2540,7 +2848,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
             if (shouldSaveHistory && localOutput.trim()) {
                 console.log('[Tools] Content generation complete, saving history...');
                 try {
-                    const historyKey = `${taskMode}_${taskNiche}`;
+                    const historyKey = getToolsHistoryKey(taskMode, taskNiche);
                     saveHistory('tools', historyKey, localOutput, {
                         input: taskInputText,
                     });
@@ -2552,7 +2860,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                         [ToolMode.EXPAND]: '扩写',
                         [ToolMode.SUMMARIZE]: '摘要总结',
                         [ToolMode.POLISH]: '润色',
-                        [ToolMode.SCRIPT]: '脚本生成',
+                        [ToolMode.SCRIPT]: '脚本生成（全局模板）',
                     };
                     const modeName = modeNames[taskMode] || '内容';
                     
@@ -2574,7 +2882,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                     localStorage.setItem('lastGeneratedScript', localOutput);
                     
                     // 同时保存到历史缓存（最多保留10条）
-                    const historyKey = 'scriptHistory';
+                    const historyKey = 'scriptHistory_GLOBAL';
                     const historyStr = localStorage.getItem(historyKey);
                     let history: Array<{ content: string; timestamp: number }> = [];
                     
@@ -2648,6 +2956,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
     } finally {
         updateTask({ isGenerating: false });
         setGenerationProgress(null); // 清除进度
+        setShotPromptProgress(null);
     }
   };
 
@@ -2735,7 +3044,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                     >
                         {tool.icon}
                         <span>{tool.label}</span>
-                        {getHistory('tools', `${tool.id}_${niche}`).length > 0 && (
+                        {getHistory('tools', getToolsHistoryKey(tool.id as ToolMode, niche)).length > 0 && (
                             <History size={12} className="text-emerald-400" title="有历史记录" />
                         )}
                     </button>
@@ -2744,19 +3053,21 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
 
            <div className="flex items-center gap-4 w-full md:w-auto">
            {/* Niche Context Selector */}
-               <div className="relative group w-[180px] md:w-[180px] md:ml-auto">
-               <label className="text-base font-extrabold text-emerald-400 mb-1 ml-1 tracking-wide">选择赛道</label>
-               <select 
-                    value={niche} 
-                    onChange={(e) => handleNicheChange(e.target.value as NicheType)}
-                    className="w-full appearance-none bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 font-bold focus:outline-none focus:border-emerald-500 cursor-pointer"
-               >
-                   {Object.values(NICHES).map(n => (
-                       <option key={n.id} value={n.id}>{n.icon} {n.name}</option>
-                   ))}
-               </select>
-               <ChevronDown className="absolute right-3 top-8 text-slate-500 pointer-events-none" size={14} />
-               </div>
+               {mode !== ToolMode.SCRIPT && (
+                 <div className="relative group w-[180px] md:w-[180px] md:ml-auto">
+                 <label className="text-base font-extrabold text-emerald-400 mb-1 ml-1 tracking-wide">选择赛道</label>
+                 <select 
+                      value={niche} 
+                      onChange={(e) => handleNicheChange(e.target.value as NicheType)}
+                      className="w-full appearance-none bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 font-bold focus:outline-none focus:border-emerald-500 cursor-pointer"
+                 >
+                     {Object.values(NICHES).map(n => (
+                         <option key={n.id} value={n.id}>{n.icon} {n.name}</option>
+                     ))}
+                 </select>
+                 <ChevronDown className="absolute right-3 top-8 text-slate-500 pointer-events-none" size={14} />
+                 </div>
+               )}
 
                {mode === ToolMode.SCRIPT && (
                  <div className="flex items-center gap-2">
@@ -2857,10 +3168,13 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
           <ProgressBar
             current={generationProgress.current}
             total={generationProgress.total}
-            label="生成进度"
+            label={mode === ToolMode.SCRIPT ? '生成进度（镜头提示词）' : '生成进度'}
             showPercentage={true}
             showCount={true}
             color="emerald"
+            successCount={shotPromptProgress?.success}
+            failedCount={shotPromptProgress?.failed}
+            statusHint={shotPromptProgress?.hint}
           />
         </div>
       )}
@@ -2965,7 +3279,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                }}
                onDelete={(timestamp) => {
                    if (pendingModeChange) {
-                       const historyKey = `${pendingModeChange.mode}_${pendingModeChange.niche}`;
+                       const historyKey = getToolsHistoryKey(pendingModeChange.mode, pendingModeChange.niche);
                        deleteHistory('tools', historyKey, timestamp);
                        setHistoryRecords(getHistory('tools', historyKey));
                    }
