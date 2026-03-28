@@ -2290,27 +2290,27 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
 
             const getCharacterAnchorHint = (captionText: string) => {
               const t = (captionText || '').replace(/\s+/g, '');
-              const female = /晚礼服|女子|女性|她|女孩|女人/.test(t);
-              const male = /疯子男人|男人|男性|他/.test(t);
+              const female = /晚礼服|女子|女性|女孩|女人|高跟鞋|她/.test(t);
+              const male = /疯子|男人|男性|西装|血污|满手鲜血|他/.test(t);
 
               if (female && !male) {
                 return {
                   key: '主要女性角色',
-                  prefix: '主要女性角色（黑色长发、单薄晚礼服、压抑克制神情）',
-                  rule: '若镜头涉及该人物，图片提示词中的人物描述请统一使用“主要女性角色（黑色长发、单薄晚礼服、压抑克制神情）”，保持一致。',
+                  prefix: '主要女性角色（长发、服装贴合剧情、神情隐忍压抑）',
+                  rule: '若镜头涉及女性人物，请统一使用“主要女性角色（长发、服装贴合剧情、神情隐忍压抑）”作为人物锚点。',
                 };
               }
               if (male && !female) {
                 return {
-                  key: '疯子男人角色',
-                  prefix: '疯子男人角色（高大冷峻、破损西装、失控绝望眼神）',
-                  rule: '若镜头涉及该人物，图片提示词中的人物描述请统一使用“疯子男人角色（高大冷峻、破损西装、失控绝望眼神）”，保持一致。',
+                  key: '主要男性角色',
+                  prefix: '主要男性角色（高大、服装略显破损或凌乱、眼神失控绝望）',
+                  rule: '若镜头涉及男性人物，请统一使用“主要男性角色（高大、服装略显破损或凌乱、眼神失控绝望）”作为人物锚点。',
                 };
               }
               return {
                 key: '',
                 prefix: '',
-                rule: '若镜头出现人物，请优先复用已出现的人物外观锚点，避免同一人物在不同镜头描述冲突。',
+                rule: '若镜头出现人物，请复用同一人物锚点命名；图片提示词以场景、空间、环境、物件为主，人物不主导画面。',
               };
             };
 
@@ -2318,6 +2318,91 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
               const percent = segments.length > 0 ? Math.round((success / segments.length) * 100) : 0;
               setGenerationProgress({ current: percent, total: 100 });
               setShotPromptProgress({ success, failed, hint: buildShotProgressHint() });
+            };
+
+            const inferStyleProfile = (text: string) => {
+              const t = text || '';
+              if (/九紫|离火|天象|命理|五行|风水|易经|黄历|壬子|丙午/.test(t)) {
+                return {
+                  styleName: '玄学警示纪实风',
+                  tone: '压迫、克制、警示',
+                  color: '暗红、冷黑、低饱和',
+                  motion: '缓慢推进为主，少量平移',
+                };
+              }
+              if (/都市|职场|创业|金融|股市|投资/.test(t)) {
+                return {
+                  styleName: '都市现实风',
+                  tone: '紧张、冷静、现实',
+                  color: '冷灰、霓虹点缀',
+                  motion: '推镜+横移',
+                };
+              }
+              return {
+                styleName: '写实叙事风',
+                tone: '克制、真实、沉浸',
+                color: '自然低饱和',
+                motion: '缓慢推进',
+              };
+            };
+
+            const styleProfile = inferStyleProfile(taskInputText);
+
+            const enforceSceneDominantPrompt = (raw: string, shotNo: number) => {
+              let p = (raw || '')
+                .replace(/(?:一位|一个|一名)?讲述者[^，。；]*[，。；]?/g, '')
+                .replace(/(?:一位|一个|一名)?旁白[^，。；]*[，。；]?/g, '')
+                .replace(/(?:一位|一个|一名)?人物[^，。；]*入镜[^，。；]*[，。；]?/g, '')
+                .replace(/人物主导[^，。；]*[，。；]?/g, '')
+                .replace(/站在[^，。；]*[，。；]?/g, '')
+                .replace(/立于[^，。；]*[，。；]?/g, '')
+                .replace(/\s{2,}/g, ' ')
+                .replace(/[，,]{2,}/g, '，')
+                .trim();
+
+              // 第1镜头允许轻微人物出场；后续镜头默认纯场景空间环境
+              if (shotNo > 1) {
+                p = p
+                  .replace(/主要男性角色（[^）]+）[，,]?/g, '')
+                  .replace(/主要女性角色（[^）]+）[，,]?/g, '')
+                  .replace(/一名[^，。；]*(男人|女人|人物)[^，。；]*[，。；]?/g, '')
+                  .replace(/一位[^，。；]*(男人|女人|人物)[^，。；]*[，。；]?/g, '')
+                  .trim();
+              }
+
+              if (!/场景|空间|环境|光线|氛围|构图|天气|材质|物件|建筑|室内|室外|地面|墙面|走廊|窗/.test(p)) {
+                p = `场景空间主导，环境叙事氛围，关键物件与光线层次清晰，${p}`;
+              }
+
+              p = p.replace(/^中景[,，]\s*/,'').trim();
+              return p || '场景空间主导，环境叙事氛围，关键物件与光线层次清晰';
+            };
+
+            const buildVideoPromptFromShot = (caption: string, imagePrompt: string) => {
+              const core = (imagePrompt || '')
+                .replace(/^场景空间主导，环境叙事氛围[，,]?\s*/,'')
+                .replace(/^图生视频[:：]?/,'')
+                .trim();
+
+              const c = (caption || '').replace(/\s+/g, '');
+              const hasSnow = /雪|风雪|暴雪|寒风|冰/.test(c + core);
+              const hasBanquet = /晚宴|宴会|酒杯|宾客/.test(c + core);
+              const hasAlley = /暗巷|巷|走廊|狭窄|废弃/.test(c + core);
+              const hasTension = /崩溃|绝望|窒息|压抑|血|追|慌/.test(c + core);
+
+              const motion = hasTension
+                ? '镜头缓慢平移并轻微推进'
+                : hasAlley
+                  ? '镜头低速推进并短幅横移'
+                  : '镜头缓慢平移扫过环境';
+
+              const dynamicParts: string[] = [];
+              if (hasBanquet) dynamicParts.push('以慢动作捕捉宾客交头接耳的细节');
+              if (hasSnow) dynamicParts.push('窗外风雪掠过形成冷暖对比');
+              if (hasAlley) dynamicParts.push('阴影与水渍反光轻微起伏');
+              if (dynamicParts.length === 0) dynamicParts.push('光影与空气颗粒产生轻微动态');
+
+              return `${motion}，${core}。${dynamicParts.join('，')}。`;
             };
 
             const failedShotIndexes: number[] = [];
@@ -2338,10 +2423,11 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
               let inferenceRaw = '';
               const roleFromCaption = stagedShots[i]?.role || primaryRole || '讲述者';
               const visualRule = shotNo <= 2
-                ? '允许人物主导，但仍需交代环境叙事。'
-                : '从本镜头开始，图片提示词必须以场景/空间/物件/氛围为主，人物仅作辅助点缀，禁止人物肖像主导。';
+                ? '前2个镜头可用于人物出场交代，但场景信息必须充分。'
+                : '从本镜头开始，图片提示词必须以场景/空间/物件/氛围为主，人物仅允许简短出现（建议不超过1个短分句），禁止人物肖像主导。';
               const characterAnchor = getCharacterAnchorHint(caption);
-              const inferPrompt = `你是分镜提示词引擎。请仅基于该镜头文案，推理该镜头的图片提示词和视频提示词，并补齐景别、语音分镜、音效。\n\n硬性要求：\n1) 全部字段必须使用简体中文，禁止任何英文单词。\n2) 语音分镜只能输出“角色名”，不得输出口播文案内容。\n3) 语音分镜必须与镜头文案里的角色一致，本镜头固定为：${roleFromCaption}。\n4) ${visualRule}\n5) 图片提示词必须提炼核心场景元素与环境叙事氛围（光线、空间结构、关键物件、天气/时间、情绪场）。\n6) ${characterAnchor.rule}\n\n镜头${shotNo}文案：${caption}\n\n请严格只输出以下5行（不要任何解释）：\n图片提示词: ...\n视频提示词: ...\n景别: ...\n语音分镜: ${roleFromCaption}\n音效: ...`;
+              const inferPrompt = `你是分镜提示词引擎。请仅基于该镜头文案，先推理图片提示词，再基于图片提示词推理图生视频提示词，并补齐景别、语音分镜、音效。\n\n全局风格：${styleProfile.styleName}；色调：${styleProfile.color}；节奏：${styleProfile.motion}；情绪：${styleProfile.tone}。\n\n硬性要求：\n1) 全部字段必须使用简体中文，禁止任何英文单词。\n2) 语音分镜只能输出“角色名”，不得输出口播文案内容。\n3) 语音分镜必须与镜头文案里的角色一致，本镜头固定为：${roleFromCaption}。\n4) ${visualRule}\n5) 图片提示词必须以“场景、空间、环境、物件、光线、天气、材质、构图”描述为主。\n6) ${characterAnchor.rule}\n7) 除镜头1外，图片提示词禁止出现“讲述者站在/立于/入镜/侧影”等人物入镜句式。\n8) 视频提示词按 Wan2.2 风格输出：简洁、2-3句、每句一个视觉动作，不要长串堆砌。\n9) 视频提示词禁止出现“保持一致/主体不改/风格不变/画面要点”等说明词。
+10) 禁止输出规则说明句，只输出可直接用于生成的提示词内容。\n\n镜头${shotNo}文案：${caption}\n\n请严格只输出以下5行（不要任何解释）：\n图片提示词: ...\n视频提示词: ...\n景别: ...\n语音分镜: ${roleFromCaption}\n音效: ...`;
 
               try {
                 await Promise.race([
@@ -2355,7 +2441,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
 
                 const roleFromCaption = stagedShots[i]?.role || primaryRole || '讲述者';
                 const imagePromptRaw = inferenceRaw.match(/(?:图片提示词|圖片提示词)[：:]\s*([^\n\r]+)/)?.[1]?.trim() || '中景, 根据镜头文案提炼核心场景元素, 环境叙事氛围';
-                const videoPromptRaw = inferenceRaw.match(/视频提示词[：:]\s*([^\n\r]+)/)?.[1]?.trim() || '8秒: 根据镜头文案呈现场景与动作重点, 固定机位';
+                const videoPromptRaw = inferenceRaw.match(/视频提示词[：:]\s*([^\n\r]+)/)?.[1]?.trim() || '镜头缓慢平移扫过环境，捕捉关键动作与光影变化。焦点过渡到核心场景，形成压迫与情绪张力。'
                 const shotTypeRaw = (inferenceRaw.match(/(?:景别|景別)[：:]\s*([^\n\r]+)/)?.[1]?.trim() || '中景');
                 const sfxRaw = (inferenceRaw.match(/音效[：:]\s*([^\n\r]+)/)?.[1]?.trim() || '背景环境音');
 
@@ -2367,22 +2453,70 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                   return x || '生成中';
                 };
 
-                let imagePrompt = sanitizeZh(imagePromptRaw);
-                if (shotNo > 2) {
-                  imagePrompt = `中景, 场景空间主导, 关键物件与光线层次清晰, 根据镜头文案提炼核心场景元素, 环境叙事氛围`; 
-                  const fromModel = sanitizeZh(imagePromptRaw);
-                  if (fromModel && fromModel.length > 10) {
-                    imagePrompt = fromModel;
+                let imagePrompt = sanitizeZh(imagePromptRaw)
+                  .replace(/仅作辅助点缀/g, '')
+                  .replace(/人物不能主导/g, '')
+                  .replace(/保持一致/g, '')
+                  .replace(/作为人物锚点描述/g, '')
+                  .replace(/若镜头涉及[^，。]*[，。]?/g, '')
+                  .trim();
+
+                imagePrompt = enforceSceneDominantPrompt(imagePrompt, shotNo);
+
+                // 人物锚点一致性：同一人物跨镜头尽量使用一致描述，便于后续角色提取合并
+                const needAnchorByCaption = /她|他|女子|男人|晚礼服|西装|高跟鞋|女性|男性/.test(caption);
+                const anchorAllowed = shotNo <= 2 || needAnchorByCaption;
+                if (characterAnchor.prefix && anchorAllowed && !imagePrompt.includes(characterAnchor.key)) {
+                  imagePrompt = `${characterAnchor.prefix}，${imagePrompt}`;
+                }
+
+                // 锚定频率控制：同一角色每3个镜头最多显式锚定1次（全局通用）
+                const roleWindow = 3;
+                const roleKey = characterAnchor.key;
+                if (!((runInferForShot as any)._roleAnchorLastShotMap)) {
+                  (runInferForShot as any)._roleAnchorLastShotMap = new Map<string, number>();
+                }
+                const roleAnchorLastShotMap = (runInferForShot as any)._roleAnchorLastShotMap as Map<string, number>;
+                if (roleKey && imagePrompt.includes(roleKey)) {
+                  const lastShot = roleAnchorLastShotMap.get(roleKey) || 0;
+                  if (shotNo - lastShot < roleWindow && shotNo > 2) {
+                    imagePrompt = imagePrompt
+                      .replace(/主要男性角色（[^）]+）[，,]?/g, '')
+                      .replace(/主要女性角色（[^）]+）[，,]?/g, '')
+                      .trim();
+                  } else {
+                    roleAnchorLastShotMap.set(roleKey, shotNo);
                   }
                 }
 
-                // 人物锚点一致性：同一人物跨镜头尽量使用一致描述，便于后续角色提取合并
-                if (characterAnchor.prefix) {
-                  if (!imagePrompt.includes(characterAnchor.key)) {
-                    imagePrompt = `${characterAnchor.prefix}，${imagePrompt}`;
+                // 从第3镜头开始压制人物主导：尽量以场景/空间/环境叙事为核心
+                if (shotNo > 2) {
+                  imagePrompt = imagePrompt
+                    .replace(/主要男性角色（[^）]+）[，,]?/g, '')
+                    .replace(/主要女性角色（[^）]+）[，,]?/g, '')
+                    .replace(/一名[^，。；]*男人[，,]?/g, '')
+                    .replace(/一位[^，。；]*女子[，,]?/g, '')
+                    .replace(/人物特写[^，。；]*[，,]?/g, '')
+                    .replace(/\s{2,}/g, ' ')
+                    .trim();
+
+                  if (!/场景|空间|环境|巷|街|路灯|门|窗|墙|地面|积雪|风雪|光线|阴影|走廊|室内|室外|建筑/.test(imagePrompt)) {
+                    imagePrompt = `场景空间主导，环境叙事氛围，${imagePrompt}`;
                   }
                 }
-                const videoPrompt = sanitizeZh(videoPromptRaw);
+                let videoPrompt = sanitizeZh(videoPromptRaw)
+                  .replace(/保持一致|主体不改|风格不变|画面要点|图生视频/g, '')
+                  .replace(/\s{2,}/g, ' ')
+                  .trim();
+
+                // Wan2.2：视频提示词保持简洁，优先2-3句
+                if (!videoPrompt || videoPrompt.length < 18) {
+                  videoPrompt = buildVideoPromptFromShot(caption, imagePrompt);
+                }
+                if (videoPrompt.length > 140) {
+                  const parts = videoPrompt.split(/[。！？]/).map(s => s.trim()).filter(Boolean).slice(0, 3);
+                  videoPrompt = `${parts.join('。')}。`;
+                }
                 const shotType = sanitizeZh(shotTypeRaw) || '中景';
                 const voice = roleFromCaption; // 强制与镜头文案角色一致，只输出角色
                 const sfx = sanitizeZh(sfxRaw);
@@ -2487,7 +2621,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                 .map((s) => `镜头${s.shotNo} 图片提示词: ${s.imagePrompt}`)
                 .join('\n');
 
-              const roleSceneCrossPrompt = `请基于【原文】和【各镜头图片提示词】联合提取“主要人物角色信息”和“场景信息”。\n\n硬性规则：\n1) 只输出模板，不要解释、不要说明文字。\n2) [角色信息]中至少输出2个角色；若出现女性线索必须包含女性角色，若出现男性线索必须包含男性角色。\n3) [描述]必须是可直接用于文生图/文生视频的提示词风格，不得出现“根据原文提取”“负责/用于/承担/说明”等说明性措辞。\n4) 角色描述要体现：外观、服装、神态、镜头感、光线色调、风格关键词。\n5) 场景描述要体现：空间结构、关键物件、光线、氛围、色调、风格关键词。\n6) 女性线索关键词：晚礼服、女子、女性、她、女孩、女人；男性线索关键词：男人、男性、他、疯子男人。\n\n输出模板（严格）：\n[角色信息]\n[名称]角色名\n[别名]别名（没有写无）\n[描述]提示词描述\n\n[名称]角色名2\n[别名]别名（没有写无）\n[描述]提示词描述\n\n[场景信息]\n[名称]场景名\n[别名]无\n[描述]提示词描述\n\n[名称]场景名2\n[别名]无\n[描述]提示词描述\n\n【原文】\n${taskInputText}\n\n【各镜头图片提示词】\n${imagePromptContext}`;
+              const roleSceneCrossPrompt = `请基于【原文】和【各镜头图片提示词】联合提取“主要人物角色信息”和“场景信息”。\n\n硬性规则：\n1) 只输出模板，不要解释、不要说明文字。\n2) [角色信息]中至少输出2个角色；若出现女性线索必须包含女性角色，若出现男性线索必须包含男性角色。\n3) 女性角色命名优先使用“主要女性角色”，男性角色命名优先使用“主要男性角色”。\n4) 角色描述必须与镜头中锚定写法一致：\n   - 主要女性角色（长发、服装贴合剧情、神情隐忍压抑）\n   - 主要男性角色（高大、服装略显破损或凌乱、眼神失控绝望）\n5) [描述]必须是可直接用于文生图/文生视频的提示词风格，不得出现“根据原文提取”“负责/用于/承担/说明”等说明性措辞。\n6) 场景描述要体现：空间结构、关键物件、光线、氛围、色调、风格关键词。\n7) 女性线索关键词：晚礼服、女子、女性、她、女孩、女人；男性线索关键词：男人、男性、他、疯子男人。\n\n输出模板（严格）：\n[角色信息]\n[名称]角色名\n[别名]别名（没有写无）\n[描述]提示词描述\n\n[名称]角色名2\n[别名]别名（没有写无）\n[描述]提示词描述\n\n[场景信息]\n[名称]场景名\n[别名]无\n[描述]提示词描述\n\n[名称]场景名2\n[别名]无\n[描述]提示词描述\n\n【原文】\n${taskInputText}\n\n【各镜头图片提示词】\n${imagePromptContext}`;
 
               let crossRaw = '';
               await Promise.race([
