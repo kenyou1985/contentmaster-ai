@@ -381,7 +381,7 @@ export const streamContentGeneration = async (
       messages.push({ role: "user", content: prompt });
 
       const payload = {
-        model: model,
+        model: modelName || model,
         messages: messages,
         temperature: temperature,
         max_tokens: maxTokens,
