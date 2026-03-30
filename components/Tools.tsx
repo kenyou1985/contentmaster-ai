@@ -314,12 +314,160 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     return { success, failed, hint };
   };
 
+  const parseLessonNumber = (raw: string): number | null => {
+    const map: Record<string, number> = {
+      '一': 1,
+      '二': 2,
+      '三': 3,
+      '四': 4,
+      '五': 5,
+      '六': 6,
+      '七': 7,
+      '八': 8,
+      '九': 9,
+    };
+    if (!raw) return null;
+    if (/^\d+$/.test(raw)) return Number(raw);
+    return map[raw] ?? null;
+  };
+
+  const getLessonSequence = (text: string): Array<{ num: number; index: number }> => {
+    const matches = [...text.matchAll(/第\s*([一二三四五六七八九]|\d+)\s*(?:节课|堂课)/g)];
+    return matches
+      .map(m => ({ num: parseLessonNumber(m[1]) ?? -1, index: m.index ?? -1 }))
+      .filter(m => m.num > 0 && m.index >= 0);
+  };
+
+  const hasAllNineLessons = (text: string): boolean => {
+    const seq = getLessonSequence(text);
+    const nums = seq.map(s => s.num);
+    for (let i = 1; i <= 9; i += 1) {
+      if (!nums.includes(i)) return false;
+    }
+    const indexByNum = new Map<number, number>();
+    for (const s of seq) {
+      if (!indexByNum.has(s.num)) indexByNum.set(s.num, s.index);
+    }
+    for (let i = 1; i < 9; i += 1) {
+      const a = indexByNum.get(i);
+      const b = indexByNum.get(i + 1);
+      if (a === undefined || b === undefined) return false;
+      if (a >= b) return false;
+    }
+    return true;
+  };
+
+  const getMissingLessons = (text: string): number[] => {
+    const seq = getLessonSequence(text).map(s => s.num);
+    const missing: number[] = [];
+    for (let i = 1; i <= 9; i += 1) {
+      if (!seq.includes(i)) missing.push(i);
+    }
+    return missing;
+  };
+
+  const normalizeRewriteFramework = (text: string): string => {
+    if (!text) return text;
+    let out = text;
+
+    // 超过第9节/堂课时直接截断
+    const invalidLesson = out.match(/(?:^|\n)\s*第\s*(?:10|1[1-9]|[2-9]\d|十|十一|十二|十三|十四|十五|十六|十七|十八|十九|二十)\s*(?:节课|堂课)/mi);
+    if (invalidLesson && typeof invalidLesson.index === 'number') {
+      out = out.slice(0, invalidLesson.index).trim();
+    }
+
+    const hasNine = hasAllNineLessons(out);
+
+    // 若未完成9节课，移除提前收尾语，避免被截断
+    if (!hasNine) {
+      out = out
+        .replace(/下期再见[！!。,.，]*/gi, '')
+        .replace(/下期再見[！!。,.，]*/gi, '')
+        .replace(/下课[！!。,.，]*/gi, '')
+        .replace(/下課[！!。,.，]*/gi, '')
+        .replace(/今天就到这里[！!。,.，]*/gi, '')
+        .replace(/今天就到這[！!。,.，]*/gi, '')
+        .trim();
+      return out;
+    }
+
+    // 若出现收尾词，仅保留到第一次收尾句末，避免“下期再见”后继续输出
+    const endingMatch = out.match(/(下期再见|下期再見|下课|下課|今天就到这里|今天就到這)[^。！？.!?]*[。！？.!?]/i);
+    if (endingMatch && typeof endingMatch.index === 'number') {
+      out = out.slice(0, endingMatch.index + endingMatch[0].length).trim();
+    }
+
+    return out;
+  };
+
+  const truncateToLength = (text: string, maxChars: number): string => {
+    if (!text || text.length <= maxChars) return text;
+    const slice = text.slice(0, maxChars);
+    const lastPunct = Math.max(
+      slice.lastIndexOf('。'),
+      slice.lastIndexOf('！'),
+      slice.lastIndexOf('？'),
+      slice.lastIndexOf('.'),
+      slice.lastIndexOf('!'),
+      slice.lastIndexOf('?')
+    );
+    return (lastPunct > 0 ? slice.slice(0, lastPunct + 1) : slice).trim();
+  };
+
+  const normalizeSummarizeOutput = (text: string): string => {
+    if (!text) return text;
+    const lines = text.split('\n');
+
+    // 1) 热门标签强制带 #
+    let inTagBlock = false;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (/^\s*(熱門標籤|热门标签)[：:]?\s*$/i.test(line)) {
+        inTagBlock = true;
+        continue;
+      }
+      if (inTagBlock && /^\s*$/.test(line)) {
+        inTagBlock = false;
+        continue;
+      }
+      if (inTagBlock) {
+        lines[i] = line.replace(/(^|\s)([^#\s][^\s]*)/g, (m, p1, p2) => {
+          if (/^[#＃]/.test(p2)) return `${p1}${p2}`;
+          return `${p1}#${p2}`;
+        });
+      }
+    }
+
+    // 2) 爆款标题/封面文案中第一人称替换为「倪师」
+    let inTitleOrCover = false;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (/爆款标题|爆款標題|封面标题文案|封面標題文案|封面文案/.test(line)) {
+        inTitleOrCover = true;
+        continue;
+      }
+      if (inTitleOrCover && /^\s*$/.test(line)) {
+        inTitleOrCover = false;
+        continue;
+      }
+      if (inTitleOrCover) {
+        lines[i] = line
+          .replace(/\b我\b/g, '倪师')
+          .replace(/我们|我們|咱们|咱們|本人/g, '倪师');
+      }
+    }
+
+    return lines.join('\n');
+  };
+
   // 清理Markdown格式符号，输出纯文本（保留编号格式）
   const cleanMarkdownFormat = (text: string, mode?: ToolMode): string => {
     if (!text) return '';
     let cleaned = text
       // 移除Markdown标题标记
       .replace(/^#{1,6}\s+/gm, '')
+      // 移除续写占位标记
+      .replace(/^\s*生成中\s*$/gm, '')
       // 移除所有Markdown特殊符号
       .replace(/\*\*/g, '') // 移除 **粗体**
       .replace(/\*/g, '') // 移除 *斜体*（但要保留编号中的点，所以先处理**）
@@ -337,7 +485,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       // 移除续写分隔符行
       cleaned = cleaned
         .replace(/^\s*-{3,}\s*$/gm, '')
-        .replace(/^\s*生成中\s*$/gm, '');
+        .replace(/^\s*生成中[\s。.!！?？-]*$/gm, '');
       // 清理模型偶发输出的说明/自检文本
       cleaned = cleaned
         .replace(/^\s*\d+\.\s*Review against Constraints[\s\S]*?(?=^\s*\d+\.|^\s*镜头\d+|^\s*鏡頭\d+|^\s*\[角色信息\]|^\s*\[场景信息\]|^\s*\[場景信息\]|$)/gmi, '')
@@ -362,10 +510,20 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       cleaned = cleaned.replace(/^\s*\d+\.\s+/gm, '');
     }
     
-    return cleaned
+    let finalText = cleaned
       // 清理多余空行
       .replace(/\n\s*\n\s*\n+/g, '\n\n')
       .trim();
+
+    if (mode === ToolMode.REWRITE && niche === NicheType.TCM_METAPHYSICS) {
+      finalText = normalizeRewriteFramework(finalText);
+    }
+
+    if (mode === ToolMode.SUMMARIZE) {
+      finalText = normalizeSummarizeOutput(finalText);
+    }
+
+    return finalText;
   };
 
   // 清洗脚本输出，保留镜头、角色信息、场景信息，删除重复镜头和无关内容
@@ -655,7 +813,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       };
 
       for (const line of lines) {
-        if (line === '[角色信息]' || line === '[场景信息]' || line === '[場景信息]') continue;
+        if (line === '[角色信息]' || line === '[场景信息]' || line === '[場景信息]' || line === '生成中') continue;
 
         const fieldMatch = line.match(/^\[(名称|名稱|别名|別名|描述)\](.*)$/);
         if (fieldMatch) {
@@ -1082,6 +1240,16 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       // 如果字数不足90%，即使有收尾标点也不算完整
       if (!reachedMinimum) {
         return false;
+      }
+
+      // 中医玄学改写：强制校验9节课框架完整，避免只输出第一节就收尾
+      if (mode === ToolMode.REWRITE && niche === NicheType.TCM_METAPHYSICS) {
+        const hasStartLine = text.includes('好了，我们开始上课。') || text.includes('好了，我们開始上課。');
+        if (!hasStartLine) return false;
+        if (!hasAllNineLessons(text)) return false;
+        // 字数必须贴近原文（±10%），防止越写越长
+        const withinLength = length >= originalLength * 0.9 && length <= originalLength * 1.1;
+        if (!withinLength) return false;
       }
       
       // 字数达到90-95%，且有标点结尾，才算完整
@@ -1973,7 +2141,7 @@ ${needsMore ?
 - 在内容自然結束時，可以使用「下課」「下期再見」等收尾語
 - 添加互動引導（如「歡迎在評論區分享你的看法」）`}
 - **TTS 纯净输出**：严禁输出括號內的描述詞、**、*等特殊符號
-- 第一行必須是「生成中」，第二行開始直接续写`;
+- 直接续写正文，不要输出任何占位词（包括“生成中”）`;
         } else if (mode === ToolMode.EXPAND) {
             const targetMin = Math.floor(originalLength * 1.5);
             const progress = (currentLength / targetMin * 100).toFixed(0);
@@ -1998,7 +2166,7 @@ ${needsMore ?
 - 確保内容完整、邏輯閉環
 - 可以使用適當的收尾語和互動引導`}
 - **TTS 纯净输出**：严禁输出括號內的描述詞、**、*等特殊符號
-- 第一行必須是「生成中」，第二行開始直接续写`;
+- 直接续写正文，不要输出任何占位词（包括“生成中”）`;
         } else if (mode === ToolMode.SCRIPT) {
             // 检测语言
             const isChinese = /[\u4e00-\u9fff]/.test(inputText);
@@ -2768,7 +2936,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                     return Math.min(100, textProgress + roleSceneProgress);
                 } else {
                     // 其他模式：基于输出文本长度（估算，假设输出长度约为输入的1.5-3倍）
-                    const estimatedOutputLength = originalLength * (taskMode === ToolMode.EXPAND ? 3 : taskMode === ToolMode.REWRITE ? 1.5 : 1.2);
+                    const estimatedOutputLength = originalLength * (taskMode === ToolMode.EXPAND ? 3 : taskMode === ToolMode.REWRITE ? 1.1 : 1.2);
                     return Math.min(95, (localOutput.length / estimatedOutputLength) * 100);
                 }
             };
@@ -2920,9 +3088,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                 
                 // 生成续写prompt（使用干净上下文，避免“生成中”干扰模型）
                 const continuePrompt = generateContinuePrompt(localOutput, taskMode, originalLength, cleanInfo, taskInputText);
-                // 添加分隔符（仅用于UI过渡展示）
-                const separator = '\n\n生成中\n\n';
-                localOutput += separator;
+                // 取消“生成中”占位符注入，避免污染正文
                 updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
 
                 // 脚本模式：若已达到或超过原文长度，强制进入角色/场景信息（复仇脚本纯文本模式跳过）
@@ -2964,7 +3130,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                             return Math.min(100, textProgress + roleSceneProgress);
                         } else {
                             // 其他模式：基于输出文本长度（估算）
-                            const estimatedOutputLength = originalLength * (taskMode === ToolMode.EXPAND ? 3 : taskMode === ToolMode.REWRITE ? 1.5 : 1.2);
+                            const estimatedOutputLength = originalLength * (taskMode === ToolMode.EXPAND ? 3 : taskMode === ToolMode.REWRITE ? 1.1 : 1.2);
                             return Math.min(95, (localOutput.length / estimatedOutputLength) * 100);
                         }
                     };
@@ -3119,6 +3285,17 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
             }
             // 清理多余空行
             localOutput = localOutput.replace(/\n\s*\n\s*\n+/g, '\n\n').trim();
+
+            // 中医玄学改写：最终字数兜底（限制在原文±10%内），并再次规范9节课框架
+            if (taskMode === ToolMode.REWRITE && taskNiche === NicheType.TCM_METAPHYSICS) {
+                const maxAllowed = Math.floor(originalLength * 1.1);
+                localOutput = normalizeRewriteFramework(localOutput);
+                if (localOutput.length > maxAllowed) {
+                    localOutput = truncateToLength(localOutput, maxAllowed);
+                }
+                localOutput = normalizeRewriteFramework(localOutput);
+            }
+
             updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
             
             // 保存历史记录（所有模式，包括摘要模式）

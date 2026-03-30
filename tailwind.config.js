@@ -1,11 +1,36 @@
 /** @type {import('tailwindcss').Config} */
+const extractClasses = (content) => {
+  const tokens = [];
+  const classRegex = /(?:class|className)\s*=\s*(?:"([^"]*)"|'([^']*)'|`([^`]*)`)/g;
+  let match;
+
+  while ((match = classRegex.exec(content)) !== null) {
+    const raw = match[1] || match[2] || match[3] || '';
+    raw
+      .split(/\s+/)
+      .map(item => item.trim())
+      .filter(Boolean)
+      .forEach(item => tokens.push(item));
+  }
+
+  return tokens;
+};
+
 export default {
-  content: [
-    "./index.html",
-    "./src/**/*.{js,ts,jsx,tsx}",
-    "./components/**/*.{js,ts,jsx,tsx}",
-    "./*.{js,ts,jsx,tsx}",
-  ],
+  content: {
+    files: [
+      "./index.html",
+      "./components/**/*.{js,jsx,ts,tsx}",
+      "./App.{js,jsx,ts,tsx}",
+      "./main.{js,jsx,ts,tsx}",
+    ],
+    extract: {
+      js: extractClasses,
+      jsx: extractClasses,
+      ts: extractClasses,
+      tsx: extractClasses,
+    },
+  },
   darkMode: 'class',
   theme: {
     extend: {

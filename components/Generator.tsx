@@ -31,13 +31,14 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const MIN_TCM_SCRIPT_CHARS = 7500; // 30 min * 250 chars/min
-  const MAX_TCM_SCRIPT_CHARS = 10000; // 40 min * 250 chars/min
+  const MIN_TCM_SCRIPT_CHARS = 8000; // 最低字数要求
+  const MAX_TCM_SCRIPT_CHARS = 12000; // 最高字数上限
   const MIN_FIN_SCRIPT_CHARS = 7500; // 30 min * 250 chars/min
   const MAX_FIN_SCRIPT_CHARS = 10000; // 40 min * 250 chars/min
   const MIN_NEWS_SCRIPT_CHARS = 4500; // 15 min * 300 chars/min
   const MAX_NEWS_SCRIPT_CHARS = 8000; // 上限8000字，约26-27分钟
   const MAX_SCRIPT_CONTINUATIONS = 3;
+  const MAX_TCM_SCRIPT_CONTINUATIONS = 20;
   const REVENGE_SHORT_MIN = 13500; // 15 min * 900 chars/min
   const REVENGE_SHORT_MAX = 27000; // 30 min * 900 chars/min
   const REVENGE_LONG_CN_MIN = 18000; // 60 min * 300 chars/min
@@ -93,15 +94,20 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     const day = String(now.getUTCDate()).padStart(2, '0');
     const hour = String(now.getUTCHours()).padStart(2, '0');
     const minute = String(now.getUTCMinutes()).padStart(2, '0');
-    return `当前UTC时间：${year}年${month}月${day}日 ${hour}:${minute} UTC（以此为唯一时间锚，所有输出中的年份必须为${year}年，禁止使用其他年份或过期年份）`;
+    return `时间锚（内部推演，不可原样输出）：${year}年${month}月${day}日 ${hour}:${minute}。若用户未给年份，默认按${year}年推演；若用户已给年份，以用户年份为准。正文禁止出现“UTC/系统时间/时间锚”等字样。`;
   };
 
   const shouldInjectUtcAnchor = (): boolean => {
-    // 中医玄学：仅“时辰禁忌”允许注入具体 UTC 时间锚
-    if (niche === NicheType.TCM_METAPHYSICS) {
-      return tcmSubMode === TcmSubModeId.TIME_TABOO;
-    }
+    // 全部赛道都注入内部时间锚，但禁止正文输出技术字样
     return true;
+  };
+
+  const getCurrentUtcYear = (): number => new Date().getUTCFullYear();
+
+  const getChineseZodiac = (year: number): string => {
+    const animals = ['鼠', '牛', '虎', '兔', '龙', '蛇', '马', '羊', '猴', '鸡', '狗', '猪'];
+    const idx = (year - 4) % 12;
+    return animals[(idx + 12) % 12];
   };
 
   // Auto-scroll logic
@@ -343,6 +349,13 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
             if (niche === NicheType.FINANCE_CRYPTO) {
                 prompt += `\n\n# 关键词强制规则\n所有输出标题必须包含关键词「${inputVal}」，不得省略或替换。`;
             }
+            if (niche === NicheType.TCM_METAPHYSICS && tcmSubMode === TcmSubModeId.TIME_TABOO) {
+                prompt += `\n\n# 日期/节气强制规则（最高优先级）\n用户输入：${inputVal}\n- 10个标题必须逐条包含上述输入原词（逐字出现），不得替换为其他日期、不得改写为当天/当前UTC日期。\n- 若输入为节气或节日（如清明节），每条标题必须包含该节气/节日词本身。\n- 标题禁止第一人称（我/我们/俺），必须使用第三方人称“倪海厦”或“倪师”。\n- 标题用大白话，强钩子、强悬念、强警示，禁止堆砌物理术语（磁场/共振/光波/频率等）。\n- 标题尽量附带对应农历节点或民俗吉日点（如观音救难日、文昌日）。\n- 若任一标题未满足以上规则，整组结果作废并重写。`;
+            }
+            if (niche === NicheType.TCM_METAPHYSICS) {
+                prompt += `\n\n# 中医玄学选题标题人称规则（最高优先级）\n- 所有选题标题必须使用第三方人称“倪海厦”或“倪师”。\n- 禁止第一人称（我/我们/俺）出现在标题中。\n- 若任一标题违反，整组结果作废并重写。`;
+
+            }
         } else {
             prompt = prompt.replace(/.*\{input\}.*\n?/g, '').replace('{input}', '');
         }
@@ -547,7 +560,7 @@ Replace words while keeping EXACT same length. That's ALL.
           // Remove continuation markers
           .replace(/^-----+\s*$/gm, '')
           .replace(/\n-----+\n/g, '\n')
-          .replace(/-----+/g, '')
+          .replace(/-----+/g, '').replace(/----+/g, '')
           // Clean up multiple blank lines
           .replace(/\n\s*\n\s*\n+/g, '\n\n')
           .trim();
@@ -897,6 +910,8 @@ ${segmentSourceText}
             .replace(/^\s*Target Language.*$/gmi, '')
             .replace(/^\s*Continuation.*$/gmi, '')
             .replace(/^\s*-----+\s*$/gm, '')
+            .replace(/^\s*----+\s*$/gm, '')
+            .replace(/-{4,}/g, '')
             // 移除技术性提示词和元信息
             .replace(/^\s*Note[:：].*$/gmi, '')
             .replace(/^\s*提示[:：].*$/gmi, '')
@@ -919,10 +934,33 @@ ${segmentSourceText}
             .replace(/^\s*咱们下期再见.*$/gm, '')
             .replace(/^\s*咱們下次.*$/gm, '')
             .replace(/^\s*咱们下次.*$/gm, '')
+            .replace(/^\s*我们下期再见.*$/gm, '')
+            .replace(/^\s*我們下期再見.*$/gm, '')
+            .replace(/^\s*我们下期见.*$/gm, '')
+            .replace(/^\s*我們下期見.*$/gm, '')
+            .replace(/^\s*下期再見.*$/gm, '')
+            .replace(/^\s*下期再见.*$/gm, '')
+            .replace(/^\s*下期見.*$/gm, '')
+            .replace(/^\s*下期见.*$/gm, '')
+            // 移除行内提前收尾语（避免“下期再见”后又被强行续写导致突兀）
+            .replace(/(?:我們|我们|咱們|咱们)?下期再見[！!。,.，]*/gi, '')
+            .replace(/(?:我們|我们|咱們|咱们)?下期再见[！!。,.，]*/gi, '')
+            .replace(/(?:我們|我们|咱們|咱们)?下期見[！!。,.，]*/gi, '')
+            .replace(/(?:我們|我们|咱們|咱们)?下期见[！!。,.，]*/gi, '')
+            .replace(/下課[！!。,.，]*/gi, '')
+            .replace(/下课[！!。,.，]*/gi, '')
+            .replace(/散會[！!。,.，]*/gi, '')
+            .replace(/散会[！!。,.，]*/gi, '')
+            .replace(/今天就到這[！!。,.，]*/gi, '')
+            .replace(/今天就到这[！!。,.，]*/gi, '')
             .replace(/感謝收看/gi, '')
             .replace(/感谢收看/gi, '')
             .replace(/謝謝觀看/gi, '')
             .replace(/谢谢观看/gi, '')
+            .replace(/各位再見/gi, '')
+            .replace(/各位再见/gi, '')
+            .replace(/感谢大家收看/gi, '')
+            .replace(/感謝大家收看/gi, '')
             // 移除摘要标记
             .replace(/^\s*===\s*summary\s*===.*$/gmi, '')
             .replace(/^\s*summary[:：].*$/gmi, '')
@@ -933,6 +971,63 @@ ${segmentSourceText}
             .replace(/^\s+/gm, '')
             .replace(/\s+$/gm, '');
         return text.trim();
+    };
+
+    const stripLessonsAfterNine = (text: string): string => {
+        if (!text) return text;
+        const lines = text.split('\n');
+        const cleanedLines: string[] = [];
+        for (const line of lines) {
+            if (/^\s*第\s*(?:1?0|1[1-9]|十[一二三四五六七八九]?)\s*节课[:：]/.test(line)) {
+                // 发现第十节及以上，直接停止保留后续内容
+                break;
+            }
+            cleanedLines.push(line);
+        }
+        return cleanedLines.join('\n').trim();
+    };
+
+    const countLessonHeaders = (text: string): number => {
+        const matches = text.match(/^\s*第\s*[一二三四五六七八九十0-9]+\s*节课[:：]/gm);
+        return matches ? matches.length : 0;
+    };
+
+    const getRequiredLessonCount = (currentNiche: NicheType, isShort: boolean): number => {
+        if (currentNiche !== NicheType.TCM_METAPHYSICS || isShort) return 0;
+        if (tcmSubMode === TcmSubModeId.TIME_TABOO) return 9;
+        // 其他中医玄学选题默认至少5节（提示词允许5或7节）
+        return 5;
+    };
+
+    const removePrematureEndingsForTcm = (text: string, minLength: number): string => {
+        if (!text) return text;
+        const cleaned = sanitizeTtsScript(text);
+        if (cleaned.length >= minLength) return text;
+        return cleaned;
+    };
+
+    const stripPrematureEndingPhrases = (text: string): string => {
+        if (!text) return text;
+        return text
+            .replace(/(?:我們|我们|咱們|咱们)?下期再見[！!。,.，]*/gi, '')
+            .replace(/(?:我們|我们|咱們|咱们)?下期再见[！!。,.，]*/gi, '')
+            .replace(/(?:我們|我们|咱們|咱们)?下期見[！!。,.，]*/gi, '')
+            .replace(/(?:我們|我们|咱們|咱们)?下期见[！!。,.，]*/gi, '')
+            .replace(/下課[！!。,.，]*/gi, '')
+            .replace(/下课[！!。,.，]*/gi, '')
+            .replace(/散會[！!。,.，]*/gi, '')
+            .replace(/散会[！!。,.，]*/gi, '')
+            .replace(/今天就到這[！!。,.，]*/gi, '')
+            .replace(/今天就到这[！!。,.，]*/gi, '')
+            .replace(/感谢收看[！!。,.，]*/gi, '')
+            .replace(/感謝收看[！!。,.，]*/gi, '')
+            .replace(/谢谢观看[！!。,.，]*/gi, '')
+            .replace(/謝謝觀看[！!。,.，]*/gi, '');
+    };
+
+    const enforceTcmLessonLimit = (text: string): string => {
+        if (!text) return text;
+        return stripLessonsAfterNine(text);
     };
 
     const truncateToMax = (text: string, maxChars: number) => {
@@ -963,7 +1058,15 @@ ${segmentSourceText}
             /我們下期再見/i,
             /我们下期再见/i,
             /我們下期見/i,
-            /我们下期见/i
+            /我们下期见/i,
+            /下課/i,
+            /下课/i,
+            /散會/i,
+            /散会/i,
+            /今天的課到這裡/i,
+            /今天的课到这里/i,
+            /今天就到這/i,
+            /今天就到这/i
         ];
         return endingPatterns.some(pattern => pattern.test(text));
     };
@@ -1083,6 +1186,13 @@ ${segmentSourceText}
         // Use the selected script prompt
         let prompt = scriptTemplate.replace('{topic}', topic.title);
 
+        // 中医玄学（时辰禁忌）脚本：统一注入当前UTC年份生肖锚，修复“2025蛇年”漂移
+        if (niche === NicheType.TCM_METAPHYSICS && tcmSubMode === TcmSubModeId.TIME_TABOO) {
+            const utcYear = getCurrentUtcYear();
+            const zodiac = getChineseZodiac(utcYear);
+            prompt += `\n\n【年份锚定规则（最高优先级）】\n- 若用户输入未明确年份，默认按${utcYear}年推演（${zodiac}年）。\n- 禁止输出${utcYear - 1}年或其他过期年份（如2025蛇年）作为当年。\n- 可以输出“${utcYear}${zodiac}年”这类自然表达，但禁止出现“UTC/系统时间/时间锚”字样。\n- 必须严格按9节课铁律框架分段推进，完整连贯，目标字数8000-12000（允许约±10%自然浮动）。`;
+        }
+
         // 短视频脚本模式：覆盖为短视频文案指令（仅中医玄学/金融投资）
         if ((niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO) && scriptLengthMode === 'SHORT') {
             prompt = [
@@ -1134,12 +1244,18 @@ ${segmentSourceText}
             let localContent = '';
             const appendChunk = (chunk: string) => {
                 localContent += chunk;
+                if (niche === NicheType.TCM_METAPHYSICS && scriptLengthMode !== 'SHORT') {
+                    localContent = enforceTcmLessonLimit(localContent);
+                    if (sanitizeTtsScript(localContent).length < MIN_TCM_SCRIPT_CHARS) {
+                        localContent = stripPrematureEndingPhrases(localContent);
+                    }
+                }
                     setGeneratedContents(prev => {
                         const newArr = [...prev];
                         if (newArr[index]) {
                             newArr[index] = {
                                 ...newArr[index],
-                                content: newArr[index].content + chunk
+                                content: localContent
                             };
                         }
                         
@@ -1165,7 +1281,9 @@ ${segmentSourceText}
             await streamContentGeneration(
                 prompt,
                 systemInstruction,
-                appendChunk
+                appendChunk,
+                undefined,
+                { maxTokens: niche === NicheType.TCM_METAPHYSICS ? 12288 : 8192 }
             );
 
             const shouldEnforceLength =
@@ -1210,7 +1328,17 @@ ${segmentSourceText}
                     console.log('[Generator] Content already complete, skipping continuation');
                 } else {
                     // 需要续写的情况
-                    while (localContent.length < minChars && continueCount < MAX_SCRIPT_CONTINUATIONS) {
+                    const continuationLimit = niche === NicheType.TCM_METAPHYSICS
+                        ? MAX_TCM_SCRIPT_CONTINUATIONS
+                        : MAX_SCRIPT_CONTINUATIONS;
+                    const requiredLessonCount = getRequiredLessonCount(niche, isShortScript);
+                    while (
+                        (
+                            sanitizeTtsScript(localContent).length < (niche === NicheType.TCM_METAPHYSICS && !isShortScript ? MIN_TCM_SCRIPT_CHARS : minChars)
+                            || (requiredLessonCount > 0 && countLessonHeaders(localContent) < requiredLessonCount)
+                        )
+                        && continueCount < continuationLimit
+                    ) {
                         // 对于新闻评论，每次续写前都检查是否已经完整
                         if (niche === NicheType.GENERAL_VIRAL && isContentComplete(localContent, minChars, maxChars)) {
                             console.log('[Generator] Content became complete during continuation, stopping');
@@ -1239,7 +1367,11 @@ ${segmentSourceText}
                                         : niche === NicheType.EMOTION_TABOO
                                             ? `请继续补充短视频文案，保持禁忌张力与心理崩塌感，当前已写${currentLength}字，目标400-500字，结尾自然互动引导，必须有标点。`
                                             : `请继续补充短视频文案，保持一环接一环的节奏与排比句结构，加入“第一、第二、第三”的总结排列。当前已写${currentLength}字，目标300-500字，必须有标点。`)
-                                : niche === NicheType.GENERAL_VIRAL
+                                : niche === NicheType.TCM_METAPHYSICS
+                                    ? (tcmSubMode === TcmSubModeId.TIME_TABOO
+                                        ? `请严格继续生成中医玄学长文（时辰禁忌），必须遵循9节课铁律框架且按顺序推进，当前已写${currentLength}字，目标总字数8000-12000字（允许上下浮动10%）。在达到最低字数前（<8000字）禁止出现任何结束语（如“下期再见/下课/散会/今天就到这/各位再见”）。每节标题（第一节课/第二节课…）必须与正文无缝衔接，语气自然承接上文，禁止生硬断裂。严禁输出“第十节课”及以上章节，最多只能到第九节课。不要改写已生成内容，不要跳节，不要提前收尾，不要输出分隔符（如----/-----/生成中）。若第9节未完成，继续补全到完整连贯后再自然收束。`
+                                        : `请严格继续生成中医玄学长文（${tcmSubMode}），必须按课程化结构顺序推进（至少${requiredLessonCount}节课，建议5或7节），当前已写${currentLength}字，目标总字数8000-12000字（允许上下浮动10%）。在达到最低字数前（<8000字）禁止出现任何结束语（如“下期再见/下课/散会/今天就到这/各位再见”）。每节标题（第一节课/第二节课…）必须与正文无缝衔接，语气自然承接上文，禁止生硬断裂。不要改写已生成内容，不要跳节，不要提前收尾，不要输出分隔符（如----/-----/生成中）。若课程节数未达标或内容未写满，继续补全后再自然收束。`)
+                                    : niche === NicheType.GENERAL_VIRAL
                                     ? `请用第一人称续写新聞評論，保持評論員的犀利與獨家視角，不要重覆前文。當前已寫${currentLength}字，如果內容充分完整且達到4000字以上，可以自然收尾並以「下期再見」「我們下期見」或「咱們下期再見」結束。如果內容尚不完整，请繼續深入分析，暫時不要收尾。`
                                     : niche === NicheType.EMOTION_TABOO
                                         ? (remainingBudget <= 400
@@ -1247,7 +1379,7 @@ ${segmentSourceText}
                                             : `请继续续写，重点加强禁忌与羞耻的心理描写与含蓄暗示，确保故事完整闭合，目标2000-2500字，最多不超过3000字。当前已写${currentLength}字。`)
                                         : '请续写以下內容，保持原風格與第一人称口吻，不要重覆前文。',
                             '不要出現「下課」「今天的課到這裡」等其他收尾語。',
-                            '输出第一行必須是「-----」，下一行直接续写正文。',
+                            '直接续写正文，不要任何分隔符、标记或元信息。',
                             `目標字數：至少 ${minChars} 字，當前已${currentLength}字。`,
                             '',
                             '【上文】',
@@ -1257,10 +1389,12 @@ ${segmentSourceText}
                         await streamContentGeneration(
                             continuePrompt,
                             systemInstruction,
-                            appendChunk
+                            appendChunk,
+                            undefined,
+                            { maxTokens: niche === NicheType.TCM_METAPHYSICS ? 12288 : 8192 }
                         );
 
-                        if (localContent.length >= maxChars) {
+                        if (sanitizeTtsScript(localContent).length >= (niche === NicheType.TCM_METAPHYSICS && !isShortScript ? MAX_TCM_SCRIPT_CHARS : maxChars)) {
                             break;
                         }
                         
@@ -1289,7 +1423,7 @@ ${segmentSourceText}
                         const endPrompt = [
                             '请用第一人称對上述內容進行总结收尾，結尾要升華點題並形成明確觀點收束。',
                             '最後必須以「下期再見」或「咱們下期再見」或「我們下期見」作為結尾語。',
-                            '输出第一行必須是「-----」，下一行直接续写收尾段落。',
+                            '直接输出收尾段落，不要任何分隔符、标记或元信息。',
                             '不要标题、不要段落标记、不要元信息。',
                             '收尾段落控制在300-500字之內，要簡潔有力、點題升華。',
                             '',
@@ -1307,17 +1441,102 @@ ${segmentSourceText}
 
                 let cleaned = sanitizeTtsScript(localContent);
                 if (niche === NicheType.TCM_METAPHYSICS) {
-                    const capped = truncateToMax(cleaned, maxChars);
-                    if (capped !== localContent) {
-                        localContent = capped;
+                    const requiredLessonCount = getRequiredLessonCount(niche, isShortScript);
+                    if (!isShortScript && cleaned.length < MIN_TCM_SCRIPT_CHARS) {
+                        let autoFillRounds = 0;
+                        let lastLength = cleaned.length;
+                        while (cleaned.length < MIN_TCM_SCRIPT_CHARS && autoFillRounds < 12) {
+                            autoFillRounds += 1;
+                            const tcmAutoPrompt = [
+                                `继续无缝衔接上文，不要重复已输出内容。当前约${cleaned.length}字，必须补足到至少${MIN_TCM_SCRIPT_CHARS}字。`,
+                                '必须保持“好了，我们开始上课。”后的课程化结构，课程标题与正文自然衔接，不生硬。',
+                                '若已进入某节中间，则继续该节；若该节完成，再进入下一节。禁止跳节、禁止重写已完成内容。',
+                                '不要输出任何分隔符、说明文字、元信息。',
+                                '',
+                                '【上文】',
+                                cleaned.slice(-2600)
+                            ].join('\n');
+
+                            await streamContentGeneration(
+                                tcmAutoPrompt,
+                                systemInstruction,
+                                appendChunk,
+                                undefined,
+                                { maxTokens: 12288 }
+                            );
+
+                            cleaned = sanitizeTtsScript(localContent);
+                            cleaned = stripLessonsAfterNine(cleaned);
+                            localContent = cleaned;
+                            if (cleaned.length <= lastLength + 120) {
+                                // 进展过小，放宽约束再补一次
+                                const rescuePrompt = [
+                                    `继续补充正文，不要重复，直接承接当前段落写下去，至少新增800字，直到总字数达到${MIN_TCM_SCRIPT_CHARS}字。`,
+                                    '保持第一人称与课堂口吻，禁止输出分隔符和注释。',
+                                    '',
+                                    cleaned.slice(-2000)
+                                ].join('\n');
+                                await streamContentGeneration(
+                                    rescuePrompt,
+                                    systemInstruction,
+                                    appendChunk,
+                                    undefined,
+                                    { maxTokens: 12288 }
+                                );
+                                cleaned = sanitizeTtsScript(localContent);
+                                cleaned = stripLessonsAfterNine(cleaned);
+                                localContent = cleaned;
+                            }
+                            lastLength = cleaned.length;
+                        }
                     }
+
+                    // 若节数不足，优先补足课程节数
+                    if (!isShortScript && requiredLessonCount > 0) {
+                        let lessonFillRounds = 0;
+                        let currentLessonCount = countLessonHeaders(cleaned);
+                        while (currentLessonCount < requiredLessonCount && lessonFillRounds < 8) {
+                            lessonFillRounds += 1;
+                            const tcmLessonFillPrompt = [
+                                `继续无缝衔接上文，确保补足到至少${requiredLessonCount}节课。当前已出现${currentLessonCount}节课。`,
+                                '必须保持“好了，我们开始上课。”后的课程化结构，课程标题与正文自然衔接，不生硬。',
+                                '若已进入某节中间，则继续该节；若该节完成，再进入下一节。禁止跳节、禁止重写已完成内容。',
+                                '不要输出任何分隔符、说明文字、元信息。',
+                                '',
+                                '【上文】',
+                                cleaned.slice(-2600)
+                            ].join('\n');
+
+                            await streamContentGeneration(
+                                tcmLessonFillPrompt,
+                                systemInstruction,
+                                appendChunk,
+                                undefined,
+                                { maxTokens: 12288 }
+                            );
+
+                            cleaned = sanitizeTtsScript(localContent);
+                            cleaned = stripLessonsAfterNine(cleaned);
+                            localContent = cleaned;
+                            currentLessonCount = countLessonHeaders(cleaned);
+                        }
+                    }
+
+                    const capped = truncateToMax(cleaned, Math.round(MAX_TCM_SCRIPT_CHARS * 1.1));
+                    cleaned = sanitizeTtsScript(capped);
+                    localContent = stripLessonsAfterNine(cleaned);
                     if (isShortScript) {
                         localContent = truncateToMax(localContent, 500);
                     } else {
-                        // Append CTA for TCM niche
-                        const ctaWord = getCtaKeyword(topic.title);
-                        const cta = `\n\n如果覺得今天倪師講的這番話對你有幫助，请動動你的手，點個讚、訂閱並轉發。如果你聽懂了，请在留言區打一個「${ctaWord}」或留一句祈福的話，為自己與家人積聚正向磁場。`;
-                        localContent = `${localContent}${cta}`;
+                        localContent = removePrematureEndingsForTcm(localContent, MIN_TCM_SCRIPT_CHARS);
+                        const finalCleanLength = sanitizeTtsScript(localContent).length;
+                        const lessonCount = countLessonHeaders(localContent);
+                        if (finalCleanLength >= MIN_TCM_SCRIPT_CHARS && lessonCount >= requiredLessonCount) {
+                            // Append CTA for TCM niche
+                            const ctaWord = getCtaKeyword(topic.title);
+                            const cta = `\n\n如果覺得今天倪師講的這番話對你有幫助，请動動你的手，點個讚、訂閱並轉發。如果你聽懂了，请在留言區打一個「${ctaWord}」或留一句祈福的話，為自己與家人積聚正向磁場。`;
+                            localContent = `${localContent}${cta}`;
+                        }
                     }
                     
                     // 保存到 Map 中，用于最后统一保存历史记录
@@ -1433,8 +1652,8 @@ ${segmentSourceText}
                     const context = localContent.slice(-2500);
                     const continuePrompt = [
                         isEnglish
-                            ? 'Continue the story in first person. Start your output with a single line of "-----" and then continue immediately. Use a brief, natural transition sentence and move the plot forward. Do not repeat earlier content. Do not output any meta text.'
-                            : '请用第一人称续写故事。输出第一行必須是「-----」，下一行直接续写正文。使用簡短自然的過渡句直接銜接情節，保持原有風格與節奏，不要重覆前文。不要输出任何元信息。',
+                            ? 'Continue the story in first person. Continue directly with a brief natural transition and move the plot forward. Do not repeat earlier content. Do not output separators or any meta text.'
+                            : '请用第一人称续写故事。直接续写正文，使用简短自然的过渡句直接衔接情节，保持原有风格与节奏，不要重复前文。不要输出分隔符或任何元信息。',
                         cnLongFlavor,
                         isEnglish
                             ? `Requirement: total length at least ${minChars} characters; keep it within about ${maxChars} characters if possible.`
@@ -1453,8 +1672,8 @@ ${segmentSourceText}
                 if (!ended) {
                     const endPrompt = [
                         isEnglish
-                            ? 'Conclude the story now with a clear, final ending. Start your output with a single line of "-----" and then continue immediately. Keep first person and do not add any headings or summaries. Make sure it reads like a complete short story.'
-                            : '请用第一人称收尾。输出第一行必须是「-----」，下一行直接续写正文。给出清楚结局，不要标题或总结。',
+                            ? 'Conclude the story now with a clear, final ending. Continue directly, keep first person, and do not add any headings, separators, or summaries. Make sure it reads like a complete short story.'
+                            : '请用第一人称收尾。直接输出结尾正文，给出清楚结局，不要标题、分隔符或总结。',
                         cnLongFlavor,
                         '',
                         localContent.slice(-2500)
