@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ApiProvider, NicheType, Topic, GeneratedContent, GenerationStatus, TcmSubModeId, FinanceSubModeId, RevengeSubModeId, NewsSubModeId, StoryLanguage, StoryDuration } from '../types';
-import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT } from '../constants';
+import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT, YI_JING_SHORT_SCRIPT_PROMPT, applyTopicCountToPrompt } from '../constants';
 import { NicheSelector } from './NicheSelector';
 import { generateTopics, streamContentGeneration, initializeGemini } from '../services/geminiService';
-import { Sparkles, Calendar, Loader2, Download, Eye, Zap, AlertTriangle, Copy, Check, Globe, Clock, PlusCircle, History } from 'lucide-react';
+import { needsParagraphNormalization, normalizeDenseChineseParagraphs } from '../services/textFormat';
+import { Sparkles, Calendar, Loader2, Download, Eye, Zap, AlertTriangle, Copy, Check, Globe, Clock, PlusCircle, History, ListOrdered } from 'lucide-react';
 import JSZip from 'jszip';
 import { saveHistory, getHistory, getHistoryKey, deleteHistory, HistoryRecord } from '../services/historyService';
 import { HistorySelector } from './HistorySelector';
@@ -31,8 +32,16 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const MIN_TCM_SCRIPT_CHARS = 8000; // 最低字数要求
-  const MAX_TCM_SCRIPT_CHARS = 12000; // 最高字数上限
+  /** 中医玄学长文：达到此字数后才允许节目收尾语；与续写停止条件一致 */
+  const MIN_TCM_SCRIPT_CHARS = 7500;
+  const MAX_TCM_SCRIPT_CHARS = 12000;
+  const MIN_YI_JING_SCRIPT_CHARS = 8000;
+  const MAX_YI_JING_SCRIPT_CHARS = 12000;
+  const MAX_YI_JING_SCRIPT_CONTINUATIONS = 20;
+  /** 清洗后字数未满此时，禁止出现最后一节（第9节/第5节等）标题与收束 */
+  const TCM_MIN_CHARS_BEFORE_FINAL_LESSON = 7000;
+  /** 清洗后字数未满此时，剥离提前出现的收尾语 */
+  const TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES = 7500;
   const MIN_FIN_SCRIPT_CHARS = 7500; // 30 min * 250 chars/min
   const MAX_FIN_SCRIPT_CHARS = 10000; // 40 min * 250 chars/min
   const MIN_NEWS_SCRIPT_CHARS = 4500; // 15 min * 300 chars/min
@@ -56,6 +65,11 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   
   // Script length mode for TCM/Finance/Psychology
   const [scriptLengthMode, setScriptLengthMode] = useState<'LONG' | 'SHORT'>('LONG');
+
+  /** 策划选题条数：默认 5；预设 5/10/15/20 或自定义 1–50 */
+  const [planTopicCountPreset, setPlanTopicCountPreset] = useState<5 | 10 | 15 | 20>(5);
+  const [planTopicCountIsCustom, setPlanTopicCountIsCustom] = useState(false);
+  const [planTopicCountCustomValue, setPlanTopicCountCustomValue] = useState('8');
 
   // Revenge Story Settings
   const [storyLanguage, setStoryLanguage] = useState<StoryLanguage>(StoryLanguage.ENGLISH);
@@ -228,6 +242,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (niche === NicheType.FINANCE_CRYPTO) return FINANCE_SUB_MODES[financeSubMode];
     if (niche === NicheType.STORY_REVENGE) return REVENGE_SUB_MODES[revengeSubMode];
     if (niche === NicheType.GENERAL_VIRAL) return NEWS_SUB_MODES[newsSubMode];
+    if (niche === NicheType.YI_JING_METAPHYSICS) return null;
     if (niche === NicheType.PSYCHOLOGY) return null;
     if (niche === NicheType.PHILOSOPHY_WISDOM) return null;
     if (niche === NicheType.EMOTION_TABOO) return null;
@@ -239,6 +254,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
      if (niche === NicheType.FINANCE_CRYPTO) return FINANCE_SUB_MODES;
      if (niche === NicheType.STORY_REVENGE) return REVENGE_SUB_MODES;
      if (niche === NicheType.GENERAL_VIRAL) return NEWS_SUB_MODES;
+     if (niche === NicheType.YI_JING_METAPHYSICS) return null;
      if (niche === NicheType.PSYCHOLOGY) return null;
      if (niche === NicheType.PHILOSOPHY_WISDOM) return null;
      if (niche === NicheType.EMOTION_TABOO) return null;
@@ -248,6 +264,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const isInputRequired = () => {
     const config = getCurrentSubModeConfig();
     if (config) return config.requiresInput;
+    if (niche === NicheType.YI_JING_METAPHYSICS) return false;
     if (niche === NicheType.PSYCHOLOGY) return false;
     if (niche === NicheType.PHILOSOPHY_WISDOM) return false;
     if (niche === NicheType.EMOTION_TABOO) return false;
@@ -257,6 +274,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const shouldShowInput = () => {
     const config = getCurrentSubModeConfig();
     if (config) return config.requiresInput || config.optionalInput;
+    if (niche === NicheType.YI_JING_METAPHYSICS) return true;
     if (niche === NicheType.PSYCHOLOGY) return false;
     if (niche === NicheType.PHILOSOPHY_WISDOM) return false;
     if (niche === NicheType.EMOTION_TABOO) return false;
@@ -266,6 +284,9 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const getInputPlaceholder = () => {
       const config = getCurrentSubModeConfig();
       if (config) return config.inputPlaceholder || "输入关键词";
+      if (niche === NicheType.YI_JING_METAPHYSICS) {
+        return '（可选）侧重方向、关键词或素材提示，留空则按易经命理爆款逻辑生成';
+      }
       return "输入关键词/趋势";
   };
 
@@ -328,6 +349,10 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
         return;
     }
 
+    const resolvedPlanTopicCount = planTopicCountIsCustom
+      ? Math.min(50, Math.max(1, parseInt(planTopicCountCustomValue, 10) || 5))
+      : planTopicCountPreset;
+
     let prompt = '';
 
     // Logic for Niches with Sub-Modes
@@ -350,7 +375,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
                 prompt += `\n\n# 关键词强制规则\n所有输出标题必须包含关键词「${inputVal}」，不得省略或替换。`;
             }
             if (niche === NicheType.TCM_METAPHYSICS && tcmSubMode === TcmSubModeId.TIME_TABOO) {
-                prompt += `\n\n# 日期/节气强制规则（最高优先级）\n用户输入：${inputVal}\n- 10个标题必须逐条包含上述输入原词（逐字出现），不得替换为其他日期、不得改写为当天/当前UTC日期。\n- 若输入为节气或节日（如清明节），每条标题必须包含该节气/节日词本身。\n- 标题禁止第一人称（我/我们/俺），必须使用第三方人称“倪海厦”或“倪师”。\n- 标题用大白话，强钩子、强悬念、强警示，禁止堆砌物理术语（磁场/共振/光波/频率等）。\n- 标题尽量附带对应农历节点或民俗吉日点（如观音救难日、文昌日）。\n- 若任一标题未满足以上规则，整组结果作废并重写。`;
+                prompt += `\n\n# 日期/节气强制规则（最高优先级）\n用户输入：${inputVal}\n- ${resolvedPlanTopicCount}个标题必须逐条包含上述输入原词（逐字出现），不得替换为其他日期、不得改写为当天/当前UTC日期。\n- 若输入为节气或节日（如清明节），每条标题必须包含该节气/节日词本身。\n- 标题禁止第一人称（我/我们/俺），必须使用第三方人称“倪海厦”或“倪师”。\n- 标题用大白话，强钩子、强悬念、强警示，禁止堆砌物理术语（磁场/共振/光波/频率等）。\n- 标题尽量附带对应农历节点或民俗吉日点（如观音救难日、文昌日）。\n- 若任一标题未满足以上规则，整组结果作废并重写。`;
             }
             if (niche === NicheType.TCM_METAPHYSICS) {
                 prompt += `\n\n# 中医玄学选题标题人称规则（最高优先级）\n- 所有选题标题必须使用第三方人称“倪海厦”或“倪师”。\n- 禁止第一人称（我/我们/俺）出现在标题中。\n- 若任一标题违反，整组结果作废并重写。`;
@@ -382,6 +407,11 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
             }
         } else if (niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO) {
             prompt = config.topicPromptTemplate;
+        } else if (niche === NicheType.YI_JING_METAPHYSICS) {
+            prompt = config.topicPromptTemplate;
+            if (inputVal.trim()) {
+                prompt += `\n\n# 用户侧重（可选）\n用户输入：${inputVal}\n各选题须与此相关或可自然延伸，禁止完全无关主题。`;
+            }
         } else {
             if (!inputVal) {
                 toast.warning("请输入关键词。");
@@ -394,11 +424,21 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
           prompt = `${getUtcAnchor()}\n\n${prompt}`;
         }
     }
+
+    prompt = applyTopicCountToPrompt(prompt, resolvedPlanTopicCount);
+
+    if (niche === NicheType.YI_JING_METAPHYSICS) {
+      const n = resolvedPlanTopicCount;
+      const womenMin = n >= 2 ? 2 : 1;
+      prompt += `\n\n【女性向选题铁律·最高优先级】本次须恰好输出 ${n} 条标题，其中至少 ${womenMin} 条必须为「女性向爆款」（标题须显式出现：女人/女性/妻子/母亲/宝妈/儿媳妇 等之一，或语义上明确写女性之财富、家运、心态、改运、面相印记等；可参考爆款向：女人想暴富、命好女人不炫耀、命苦女人特征、女性改运）。若不足 ${womenMin} 条满足，整组作废重写。`;
+    }
     
     // Status already set above
 
     try {
-      const rawTopics = await generateTopics(prompt, config.systemInstruction);
+      const rawTopics = await generateTopics(prompt, config.systemInstruction, {
+        topicCount: resolvedPlanTopicCount,
+      });
       
       const newTopics: Topic[] = rawTopics.map((t, i) => ({
         id: `topic-${i}`,
@@ -973,30 +1013,69 @@ ${segmentSourceText}
         return text.trim();
     };
 
-    const stripLessonsAfterNine = (text: string): string => {
+    /** 强力移除第十节及以后（无换行密文同样有效：按全文匹配第一节「第十节」位置截断） */
+    const stripBeyondLesson9 = (text: string): string => {
         if (!text) return text;
-        const lines = text.split('\n');
-        const cleanedLines: string[] = [];
-        for (const line of lines) {
-            if (/^\s*第\s*(?:1?0|1[1-9]|十[一二三四五六七八九]?)\s*节课[:：]/.test(line)) {
-                // 发现第十节及以上，直接停止保留后续内容
-                break;
-            }
-            cleanedLines.push(line);
+        let t = text.replace(/^#{1,6}\s+/gm, '').trim();
+        const reLesson10 =
+            /第\s*(?:1?0|十零|十[一二三四五六七八九]|[1-9][0-9])\s*(?:节课|堂课)[:：]/;
+        const m = reLesson10.exec(t);
+        if (m && m.index !== undefined) {
+            return t.slice(0, m.index).trim();
         }
-        return cleanedLines.join('\n').trim();
+        return t;
     };
 
+    /** 提前出现第九节标题 → 截断至该标题之前（配合字数限制，防止模型在字数不足时跳入第九节） */
+    const stripPrematureLesson9 = (
+        text: string,
+        cleanedLen: number,
+        minBefore: number
+    ): string => {
+        if (!text || cleanedLen >= minBefore) return text;
+        const re = /第\s*(?:九|9)\s*(?:节课|堂课)[:：]/;
+        const m = re.exec(text);
+        if (m && m.index !== undefined) {
+            return text.slice(0, m.index).replace(/\s+$/u, '');
+        }
+        return text;
+    };
+
+    /** 统计课程标题次数（全文匹配，不依赖换行；修复备用模型无换行导致节数为 0、无限续写） */
     const countLessonHeaders = (text: string): number => {
-        const matches = text.match(/^\s*第\s*[一二三四五六七八九十0-9]+\s*节课[:：]/gm);
+        const matches = text.match(/第\s*[一二三四五六七八九十0-9]+\s*(?:节课|堂课)[:：]/g);
         return matches ? matches.length : 0;
     };
 
-    const getRequiredLessonCount = (currentNiche: NicheType, isShort: boolean): number => {
+    const getRequiredLessonCount = (currentNiche: NicheType, isShort: boolean, subModeId?: string): number => {
         if (currentNiche !== NicheType.TCM_METAPHYSICS || isShort) return 0;
-        if (tcmSubMode === TcmSubModeId.TIME_TABOO) return 9;
-        // 其他中医玄学选题默认至少5节（提示词允许5或7节）
+        const sub = subModeId ?? tcmSubMode;
+        if (sub === TcmSubModeId.TIME_TABOO) return 9;
         return 5;
+    };
+
+    const TCM_LESSON_CN = ['一', '二', '三', '四', '五', '六', '七', '八', '九'];
+
+    /** 未满 minBefore 字时，若已出现最后一节课标题，截断至该标题之前，避免过早第9节/第5节 */
+    const stripPrematureFinalLessonHeader = (
+        text: string,
+        finalLessonNum: number,
+        cleanedLen: number,
+        minBefore: number
+    ): string => {
+        if (!text || cleanedLen >= minBefore || finalLessonNum < 1 || finalLessonNum > 9) return text;
+        const cn = TCM_LESSON_CN[finalLessonNum - 1];
+        const re = new RegExp(`第\\s*${cn}\\s*(?:节课|堂课)[:：]`);
+        const m = re.exec(text);
+        if (m && m.index !== undefined) {
+            return text.slice(0, m.index).replace(/\s+$/u, '');
+        }
+        const reDigit = new RegExp(`第\\s*${finalLessonNum}\\s*(?:节课|堂课)[:：]`);
+        const m2 = reDigit.exec(text);
+        if (m2 && m2.index !== undefined) {
+            return text.slice(0, m2.index).replace(/\s+$/u, '');
+        }
+        return text;
     };
 
     const removePrematureEndingsForTcm = (text: string, minLength: number): string => {
@@ -1011,6 +1090,8 @@ ${segmentSourceText}
         return text
             .replace(/(?:我們|我们|咱們|咱们)?下期再見[！!。,.，]*/gi, '')
             .replace(/(?:我們|我们|咱們|咱们)?下期再见[！!。,.，]*/gi, '')
+            .replace(/(?:我們|我们|咱們|咱们)?下期节目再见[！!。,.，]*/gi, '')
+            .replace(/(?:我們|我们|咱們|咱们)?下期節目再見[！!。,.，]*/gi, '')
             .replace(/(?:我們|我们|咱們|咱们)?下期見[！!。,.，]*/gi, '')
             .replace(/(?:我們|我们|咱們|咱们)?下期见[！!。,.，]*/gi, '')
             .replace(/下課[！!。,.，]*/gi, '')
@@ -1022,12 +1103,44 @@ ${segmentSourceText}
             .replace(/感谢收看[！!。,.，]*/gi, '')
             .replace(/感謝收看[！!。,.，]*/gi, '')
             .replace(/谢谢观看[！!。,.，]*/gi, '')
-            .replace(/謝謝觀看[！!。,.，]*/gi, '');
+            .replace(/謝謝觀看[！!。,.，]*/gi, '')
+            .replace(/这堂课讲到这里[^。！？]*[。！？]?/gi, '')
+            .replace(/這堂課講到這裡[^。！？]*[。！？]?/gi, '')
+            .replace(/今天这堂课讲到这里[^。！？]*[。！？]?/gi, '')
+            .replace(/今天這堂課講到這裡[^。！？]*[。！？]?/gi, '')
+            .replace(/节目再见[！!。,.，]*/gi, '')
+            .replace(/節目再見[！!。,.，]*/gi, '');
+    };
+
+    /** 易经长文：致谢/收场后仍有大段正文 → 视为假收尾，截断至致谢前，避免「谢谢后再强行续写」的割裂感 */
+    const stripPrematureZengThanksClosing = (text: string, minLen: number): string => {
+        if (!text || minLen <= 0) return text;
+        if (sanitizeTtsScript(text).length >= minLen) return text;
+        const re =
+            /谢谢大家|謝謝大家|感谢各位|感謝各位|谢谢你的耐心|謝謝你的耐心|感谢收听|感謝收聽|感谢观看|謝謝觀看|今天先聊|今天就先聊|咱们今天就说到|咱們今天就說到|刚才我说谢谢大家|剛才我說謝謝大家/g;
+        let earliest = -1;
+        let m: RegExpExecArray | null;
+        const copy = text;
+        re.lastIndex = 0;
+        while ((m = re.exec(copy)) !== null) {
+            const beforeLen = sanitizeTtsScript(copy.slice(0, m.index)).length;
+            const afterMatch = copy.slice(m.index + m[0].length);
+            const tailCompact = afterMatch.replace(/[\s\u3000\u00a0]/gu, '');
+            const hasSubstantialTail = tailCompact.length > 35;
+            if (beforeLen < minLen && hasSubstantialTail && m.index >= 120) {
+                if (earliest < 0 || m.index < earliest) earliest = m.index;
+            }
+        }
+        if (earliest >= 0) {
+            return copy.slice(0, earliest).replace(/[\s\u3000\u00a0]+$/u, '');
+        }
+        return text;
     };
 
     const enforceTcmLessonLimit = (text: string): string => {
         if (!text) return text;
-        return stripLessonsAfterNine(text);
+        // 强力移除第十节及以后所有内容（标题+正文）
+        return stripBeyondLesson9(text);
     };
 
     const truncateToMax = (text: string, maxChars: number) => {
@@ -1049,6 +1162,8 @@ ${segmentSourceText}
         const endingPatterns = [
             /下期再見/i,
             /下期再见/i,
+            /下期节目再见/i,
+            /下期節目再見/i,
             /下期見/i,
             /下期见/i,
             /咱們下期再見/i,
@@ -1059,6 +1174,8 @@ ${segmentSourceText}
             /我们下期再见/i,
             /我們下期見/i,
             /我们下期见/i,
+            /我們下期节目再見/i,
+            /我们下期节目再见/i,
             /下課/i,
             /下课/i,
             /散會/i,
@@ -1066,9 +1183,29 @@ ${segmentSourceText}
             /今天的課到這裡/i,
             /今天的课到这里/i,
             /今天就到這/i,
-            /今天就到这/i
+            /今天就到这/i,
+            /这堂课讲到这里/i,
+            /這堂課講到這裡/i,
+            /这节课讲到这里/i,
+            /這節課講到這裡/i,
+            /今天这堂课讲到这里/i,
+            /今天這堂課講到這裡/i,
+            /节目再见/i,
+            /節目再見/i,
+            /诸位乡亲.*再见/i,
+            /諸位鄉親.*再見/i,
         ];
         return endingPatterns.some(pattern => pattern.test(text));
+    };
+
+    /** 已达字数、收尾语、节数齐全 → 不再强制续写 */
+    const shouldStopTcmContinuation = (text: string, requiredLessons: number): boolean => {
+        if (requiredLessons <= 0) return false;
+        const cleanedLen = sanitizeTtsScript(text).length;
+        if (cleanedLen < TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES) return false;
+        if (!hasEndingIndicators(text)) return false;
+        if (countLessonHeaders(text) < requiredLessons) return false;
+        return true;
     };
 
     // 检查内容是否完整且字数合理（用于新闻评论）
@@ -1121,27 +1258,36 @@ ${segmentSourceText}
                 niche === NicheType.PSYCHOLOGY ||
                 niche === NicheType.PHILOSOPHY_WISDOM ||
                 niche === NicheType.EMOTION_TABOO ||
+                niche === NicheType.YI_JING_METAPHYSICS ||
                 niche === NicheType.GENERAL_VIRAL;
             const isRevengeShort =
                 niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.SHORT;
             const isRevengeLong =
                 niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.LONG;
             const isShortScript =
-                (niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO) &&
+                (niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS) &&
                 scriptLengthMode === 'SHORT';
             
             if (shouldEnforceLength) {
                 if (isShortScript) {
-                    totalExpected += niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO ? 450 : 500;
+                    totalExpected +=
+                        niche === NicheType.PSYCHOLOGY ||
+                        niche === NicheType.PHILOSOPHY_WISDOM ||
+                        niche === NicheType.EMOTION_TABOO ||
+                        niche === NicheType.YI_JING_METAPHYSICS
+                            ? 450
+                            : 500;
                 } else {
                     const minChars =
                         niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO
                             ? 2000
-                            : niche === NicheType.TCM_METAPHYSICS
-                                ? MIN_TCM_SCRIPT_CHARS
-                                : niche === NicheType.FINANCE_CRYPTO
-                                    ? MIN_FIN_SCRIPT_CHARS
-                                    : MIN_NEWS_SCRIPT_CHARS;
+                            : niche === NicheType.YI_JING_METAPHYSICS
+                                ? MIN_YI_JING_SCRIPT_CHARS
+                                : niche === NicheType.TCM_METAPHYSICS
+                                    ? MIN_TCM_SCRIPT_CHARS
+                                    : niche === NicheType.FINANCE_CRYPTO
+                                        ? MIN_FIN_SCRIPT_CHARS
+                                        : MIN_NEWS_SCRIPT_CHARS;
                     totalExpected += minChars;
                 }
             } else if (isRevengeShort) {
@@ -1159,10 +1305,24 @@ ${segmentSourceText}
     
     const expectedTotalLength = calculateExpectedTotalLength();
     
-    // 初始化进度条（基于百分比）
-    setBatchProgress({ current: 0, total: 100 });
+    // 初始化进度条：首包未到时避免长时间显示 0%
+    setBatchProgress({ current: 3, total: 100 });
     
     const generationPromises = selectedTopics.map(async (topic, index) => {
+        const mapIsShortScript =
+            (niche === NicheType.TCM_METAPHYSICS ||
+                niche === NicheType.FINANCE_CRYPTO ||
+                niche === NicheType.PSYCHOLOGY ||
+                niche === NicheType.PHILOSOPHY_WISDOM ||
+                niche === NicheType.EMOTION_TABOO ||
+                niche === NicheType.YI_JING_METAPHYSICS) &&
+            scriptLengthMode === 'SHORT';
+        const tcmRequiredLessons = getRequiredLessonCount(
+            niche,
+            mapIsShortScript,
+            currentSubModeId
+        );
+
         // Determine the correct script template
         let scriptTemplate = config.scriptPromptTemplate;
         const subModeConfig = getCurrentSubModeConfig();
@@ -1181,6 +1341,9 @@ ${segmentSourceText}
             scriptTemplate = scriptLengthMode === 'SHORT'
                 ? EMOTION_TABOO_SHORT_SCRIPT_PROMPT
                 : EMOTION_TABOO_LONG_SCRIPT_PROMPT;
+        } else if (niche === NicheType.YI_JING_METAPHYSICS) {
+            scriptTemplate =
+                scriptLengthMode === 'SHORT' ? YI_JING_SHORT_SCRIPT_PROMPT : config.scriptPromptTemplate;
         }
 
         // Use the selected script prompt
@@ -1190,7 +1353,19 @@ ${segmentSourceText}
         if (niche === NicheType.TCM_METAPHYSICS && tcmSubMode === TcmSubModeId.TIME_TABOO) {
             const utcYear = getCurrentUtcYear();
             const zodiac = getChineseZodiac(utcYear);
-            prompt += `\n\n【年份锚定规则（最高优先级）】\n- 若用户输入未明确年份，默认按${utcYear}年推演（${zodiac}年）。\n- 禁止输出${utcYear - 1}年或其他过期年份（如2025蛇年）作为当年。\n- 可以输出“${utcYear}${zodiac}年”这类自然表达，但禁止出现“UTC/系统时间/时间锚”字样。\n- 必须严格按9节课铁律框架分段推进，完整连贯，目标字数8000-12000（允许约±10%自然浮动）。`;
+            prompt += `\n\n【年份锚定规则（最高优先级）】\n- 若用户输入未明确年份，默认按${utcYear}年推演（${zodiac}年）。\n- 禁止输出${utcYear - 1}年或其他过期年份（如2025蛇年）作为当年。\n- 可以输出“${utcYear}${zodiac}年”这类自然表达，但禁止出现“UTC/系统时间/时间锚”字样。\n- 必须严格按9节课铁律框架分段推进，完整连贯，目标字数${MIN_TCM_SCRIPT_CHARS}-${MAX_TCM_SCRIPT_CHARS}（允许约±8%自然浮动）。`;
+        }
+
+        if (niche === NicheType.TCM_METAPHYSICS && scriptLengthMode !== 'SHORT') {
+            const lastCn =
+                tcmRequiredLessons > 0 && tcmRequiredLessons <= 9
+                    ? TCM_LESSON_CN[tcmRequiredLessons - 1]
+                    : '九';
+            prompt += `\n\n【中医玄学长文节奏铁律（全子模式通用·最高优先级）】
+1. 以正文有效字数计：全文未满约 ${TCM_MIN_CHARS_BEFORE_FINAL_LESSON} 字前，禁止出现「第${lastCn}节课」或「第${lastCn}堂课」及其后的收束、总结、互动收尾段。
+2. 未满 ${TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES} 字前，禁止使用任何节目收尾语（如下期再见、下期节目再见、下课、散会、今天就讲到这、节目再见、各位/诸位乡亲道别等）。
+3. 仅当字数≥${TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES}、且已按顺序完成全部 ${tcmRequiredLessons} 节课、并在最后一节课内自然收束时，才输出收尾语；收尾语输出后即视为终稿，不要重复前文。
+4. 目标总字数约 ${MIN_TCM_SCRIPT_CHARS}–${MAX_TCM_SCRIPT_CHARS} 字，优先充实第1–${Math.max(1, tcmRequiredLessons - 1)}节后再进入最后一节。`;
         }
 
         // 短视频脚本模式：覆盖为短视频文案指令（仅中医玄学/金融投资）
@@ -1207,6 +1382,13 @@ ${segmentSourceText}
         // UTC 时间锚定（中医玄学仅时辰禁忌注入）
         if (shouldInjectUtcAnchor()) {
           prompt = `${getUtcAnchor()}\n\n${prompt}`;
+        }
+
+        if (niche === NicheType.YI_JING_METAPHYSICS && !mapIsShortScript) {
+            prompt += `\n\n【易经命理长文字数铁律（最高优先级）】
+1) 目标总字数约 ${MIN_YI_JING_SCRIPT_CHARS}–${MAX_YI_JING_SCRIPT_CHARS} 字；全文为一篇连贯口播，禁止输出「模块一」「第二节」等章节标记。
+2) **未满 ${MIN_YI_JING_SCRIPT_CHARS} 字前**：禁止「谢谢大家」「谢谢各位」「感谢各位」「感谢收听」「今天先聊到这」及任何节目收场语；禁止互动引导后再接致谢、又接「话说到这份上还不能停」式二次开场。
+3) **第五模块（结语）**仅在前四模块（痛点、易经理、故事、心法）已写透且有效字数已达约 ${MIN_YI_JING_SCRIPT_CHARS} 字后再写；**结语只写一轮**，写完即终稿，禁止自我否定式续写。`;
         }
         
         // Inject Story Variables if applicable
@@ -1241,13 +1423,64 @@ ${segmentSourceText}
         }
         
         try {
+            const layoutEligibleNiche =
+                niche === NicheType.TCM_METAPHYSICS ||
+                niche === NicheType.FINANCE_CRYPTO ||
+                niche === NicheType.PSYCHOLOGY ||
+                niche === NicheType.PHILOSOPHY_WISDOM ||
+                niche === NicheType.EMOTION_TABOO ||
+                niche === NicheType.YI_JING_METAPHYSICS ||
+                niche === NicheType.GENERAL_VIRAL;
+
+            const maybeNormalizeLayout = (content: string): string => {
+                if (mapIsShortScript) return content;
+                if (
+                    !layoutEligibleNiche &&
+                    !(niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.LONG)
+                ) {
+                    return content;
+                }
+                if (content.length < 400) return content;
+                if (!needsParagraphNormalization(content)) return content;
+                return normalizeDenseChineseParagraphs(content);
+            };
+
             let localContent = '';
-            const appendChunk = (chunk: string) => {
+                const appendChunk = (chunk: string) => {
                 localContent += chunk;
                 if (niche === NicheType.TCM_METAPHYSICS && scriptLengthMode !== 'SHORT') {
-                    localContent = enforceTcmLessonLimit(localContent);
-                    if (sanitizeTtsScript(localContent).length < MIN_TCM_SCRIPT_CHARS) {
+                    // 顺序：先 sanitize（清除 markdown/编号残留以防干扰匹配），再 strip 第10节及内容
+                    let cleanedLen = sanitizeTtsScript(localContent).length;
+
+                    // 仅 9 节课模式：提前第九节标题（字数不足时）
+                    if (tcmRequiredLessons === 9) {
+                        localContent = stripPrematureLesson9(
+                            localContent,
+                            cleanedLen,
+                            TCM_MIN_CHARS_BEFORE_FINAL_LESSON
+                        );
+                        cleanedLen = sanitizeTtsScript(localContent).length;
+                    }
+
+                    // 强力移除第十节及以后所有内容（标题+正文）
+                    localContent = stripBeyondLesson9(localContent);
+                    cleanedLen = sanitizeTtsScript(localContent).length;
+
+                    if (cleanedLen < TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES) {
                         localContent = stripPrematureEndingPhrases(localContent);
+                    }
+                }
+                if (niche === NicheType.YI_JING_METAPHYSICS && !mapIsShortScript) {
+                    let yjLen = sanitizeTtsScript(localContent).length;
+                    if (yjLen < MIN_YI_JING_SCRIPT_CHARS) {
+                        localContent = stripPrematureZengThanksClosing(
+                            localContent,
+                            MIN_YI_JING_SCRIPT_CHARS
+                        );
+                        yjLen = sanitizeTtsScript(localContent).length;
+                        if (yjLen < MIN_YI_JING_SCRIPT_CHARS) {
+                            localContent = stripPrematureEndingPhrases(localContent);
+                        }
                     }
                 }
                     setGeneratedContents(prev => {
@@ -1269,8 +1502,11 @@ ${segmentSourceText}
                                 }
                             });
                             
-                            // 计算百分比（最多95%，留5%给收尾和清理）
-                            const progress = Math.min(95, (totalGeneratedLength / expectedTotalLength) * 100);
+                            // 最多 99%，完成时由 Promise.all 后设为 100（避免长期卡在 95%）
+                            const progress = Math.min(
+                              99,
+                              Math.max(3, (totalGeneratedLength / expectedTotalLength) * 100)
+                            );
                             setBatchProgress({ current: Math.round(progress), total: 100 });
                         }
                         
@@ -1283,8 +1519,15 @@ ${segmentSourceText}
                 systemInstruction,
                 appendChunk,
                 undefined,
-                { maxTokens: niche === NicheType.TCM_METAPHYSICS ? 12288 : 8192 }
+                {
+                    maxTokens:
+                        niche === NicheType.TCM_METAPHYSICS ||
+                        (niche === NicheType.YI_JING_METAPHYSICS && !mapIsShortScript)
+                            ? 12288
+                            : 8192,
+                }
             );
+            localContent = maybeNormalizeLayout(localContent);
 
             const shouldEnforceLength =
                 niche === NicheType.TCM_METAPHYSICS ||
@@ -1292,35 +1535,40 @@ ${segmentSourceText}
                 niche === NicheType.PSYCHOLOGY ||
                 niche === NicheType.PHILOSOPHY_WISDOM ||
                 niche === NicheType.EMOTION_TABOO ||
+                niche === NicheType.YI_JING_METAPHYSICS ||
                 niche === NicheType.GENERAL_VIRAL;
             const isRevengeShort =
                 niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.SHORT;
             const isRevengeLong =
                 niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.LONG;
             const isShortScript =
-                (niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO) &&
+                (niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS) &&
                 scriptLengthMode === 'SHORT';
 
             if (shouldEnforceLength) {
                 let continueCount = 0;
                 const minChars = isShortScript
-                    ? (niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO ? 400 : 300)
+                    ? (niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS ? 400 : 300)
                     : niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO
                         ? 2000
-                        : niche === NicheType.TCM_METAPHYSICS
-                            ? MIN_TCM_SCRIPT_CHARS
-                            : niche === NicheType.FINANCE_CRYPTO
-                                ? MIN_FIN_SCRIPT_CHARS
-                                : MIN_NEWS_SCRIPT_CHARS;
+                        : niche === NicheType.YI_JING_METAPHYSICS
+                            ? MIN_YI_JING_SCRIPT_CHARS
+                            : niche === NicheType.TCM_METAPHYSICS
+                                ? MIN_TCM_SCRIPT_CHARS
+                                : niche === NicheType.FINANCE_CRYPTO
+                                    ? MIN_FIN_SCRIPT_CHARS
+                                    : MIN_NEWS_SCRIPT_CHARS;
                 const maxChars = isShortScript
                     ? 500
                     : niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO
                         ? 3000
-                        : niche === NicheType.TCM_METAPHYSICS
-                            ? MAX_TCM_SCRIPT_CHARS
-                            : niche === NicheType.FINANCE_CRYPTO
-                                ? MAX_FIN_SCRIPT_CHARS
-                                : MAX_NEWS_SCRIPT_CHARS;
+                        : niche === NicheType.YI_JING_METAPHYSICS
+                            ? MAX_YI_JING_SCRIPT_CHARS
+                            : niche === NicheType.TCM_METAPHYSICS
+                                ? MAX_TCM_SCRIPT_CHARS
+                                : niche === NicheType.FINANCE_CRYPTO
+                                    ? MAX_FIN_SCRIPT_CHARS
+                                    : MAX_NEWS_SCRIPT_CHARS;
                 
                 // 对于新闻评论，先检查是否已经完整（有收尾且字数合理）
                 if (niche === NicheType.GENERAL_VIRAL && isContentComplete(localContent, minChars, maxChars)) {
@@ -1328,17 +1576,44 @@ ${segmentSourceText}
                     console.log('[Generator] Content already complete, skipping continuation');
                 } else {
                     // 需要续写的情况
-                    const continuationLimit = niche === NicheType.TCM_METAPHYSICS
-                        ? MAX_TCM_SCRIPT_CONTINUATIONS
-                        : MAX_SCRIPT_CONTINUATIONS;
-                    const requiredLessonCount = getRequiredLessonCount(niche, isShortScript);
-                    while (
-                        (
-                            sanitizeTtsScript(localContent).length < (niche === NicheType.TCM_METAPHYSICS && !isShortScript ? MIN_TCM_SCRIPT_CHARS : minChars)
-                            || (requiredLessonCount > 0 && countLessonHeaders(localContent) < requiredLessonCount)
-                        )
-                        && continueCount < continuationLimit
-                    ) {
+                    const continuationLimit =
+                        niche === NicheType.TCM_METAPHYSICS
+                            ? MAX_TCM_SCRIPT_CONTINUATIONS
+                            : niche === NicheType.YI_JING_METAPHYSICS && !isShortScript
+                                ? MAX_YI_JING_SCRIPT_CONTINUATIONS
+                                : MAX_SCRIPT_CONTINUATIONS;
+                    const requiredLessonCount = getRequiredLessonCount(niche, isShortScript, currentSubModeId);
+                    while (continueCount < continuationLimit) {
+                        if (
+                            niche === NicheType.TCM_METAPHYSICS &&
+                            !isShortScript &&
+                            shouldStopTcmContinuation(localContent, requiredLessonCount)
+                        ) {
+                            console.log('[Generator] 中医玄学：已达收尾与节数要求，停止续写');
+                            if (expectedTotalLength > 0) {
+                                setBatchProgress({ current: 99, total: 100 });
+                            }
+                            break;
+                        }
+                        const cleanedLoop = sanitizeTtsScript(localContent).length;
+                        const lessonLoop = countLessonHeaders(localContent);
+                        const tcmMinTarget =
+                            niche === NicheType.TCM_METAPHYSICS && !isShortScript
+                                ? MIN_TCM_SCRIPT_CHARS
+                                : minChars;
+                        const needMoreBody =
+                            cleanedLoop < tcmMinTarget ||
+                            (requiredLessonCount > 0 && lessonLoop < requiredLessonCount);
+                        const tcmNeedClosingOnly =
+                            niche === NicheType.TCM_METAPHYSICS &&
+                            !isShortScript &&
+                            cleanedLoop >= TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES &&
+                            requiredLessonCount > 0 &&
+                            lessonLoop >= requiredLessonCount &&
+                            !hasEndingIndicators(localContent);
+                        if (!needMoreBody && !tcmNeedClosingOnly) {
+                            break;
+                        }
                         // 对于新闻评论，每次续写前都检查是否已经完整
                         if (niche === NicheType.GENERAL_VIRAL && isContentComplete(localContent, minChars, maxChars)) {
                             console.log('[Generator] Content became complete during continuation, stopping');
@@ -1366,19 +1641,31 @@ ${segmentSourceText}
                                         ? `请继续补充短视频文案，保持禅意与觉醒心理学口吻，当前已写${currentLength}字，目标400-500字，结尾要有“结善缘/能量共振/留下一句xxx”的引导，必须有标点。`
                                         : niche === NicheType.EMOTION_TABOO
                                             ? `请继续补充短视频文案，保持禁忌张力与心理崩塌感，当前已写${currentLength}字，目标400-500字，结尾自然互动引导，必须有标点。`
-                                            : `请继续补充短视频文案，保持一环接一环的节奏与排比句结构，加入“第一、第二、第三”的总结排列。当前已写${currentLength}字，目标300-500字，必须有标点。`)
+                                            : niche === NicheType.YI_JING_METAPHYSICS
+                                                ? `请继续补充短视频易经命理文案，保持曾仕强口吻（各位朋友、易经告诉我们、老祖宗说等），当前已写${currentLength}字，目标400-500字，结尾自然互动引导，必须有标点。`
+                                                : `请继续补充短视频文案，保持一环接一环的节奏与排比句结构，加入“第一、第二、第三”的总结排列。当前已写${currentLength}字，目标300-500字，必须有标点。`)
                                 : niche === NicheType.TCM_METAPHYSICS
-                                    ? (tcmSubMode === TcmSubModeId.TIME_TABOO
-                                        ? `请严格继续生成中医玄学长文（时辰禁忌），必须遵循9节课铁律框架且按顺序推进，当前已写${currentLength}字，目标总字数8000-12000字（允许上下浮动10%）。在达到最低字数前（<8000字）禁止出现任何结束语（如“下期再见/下课/散会/今天就到这/各位再见”）。每节标题（第一节课/第二节课…）必须与正文无缝衔接，语气自然承接上文，禁止生硬断裂。严禁输出“第十节课”及以上章节，最多只能到第九节课。不要改写已生成内容，不要跳节，不要提前收尾，不要输出分隔符（如----/-----/生成中）。若第9节未完成，继续补全到完整连贯后再自然收束。`
-                                        : `请严格继续生成中医玄学长文（${tcmSubMode}），必须按课程化结构顺序推进（至少${requiredLessonCount}节课，建议5或7节），当前已写${currentLength}字，目标总字数8000-12000字（允许上下浮动10%）。在达到最低字数前（<8000字）禁止出现任何结束语（如“下期再见/下课/散会/今天就到这/各位再见”）。每节标题（第一节课/第二节课…）必须与正文无缝衔接，语气自然承接上文，禁止生硬断裂。不要改写已生成内容，不要跳节，不要提前收尾，不要输出分隔符（如----/-----/生成中）。若课程节数未达标或内容未写满，继续补全后再自然收束。`)
+                                    ? (tcmNeedClosingOnly
+                                        ? `请承接上文，仅输出自然收尾段落（约150–400字）：感谢收听、叮嘱身体、引导点赞订阅转发与留言区互动。必须以「下期再见」「下期节目再见」「咱们下期再见」或「我们下期见」之一结尾。禁止重复已写正文、禁止从第一节重讲、禁止输出分隔符。当前已写${currentLength}字，节数已齐，只需收束。`
+                                        : tcmSubMode === TcmSubModeId.TIME_TABOO
+                                        ? `请严格继续生成中医玄学长文（时辰禁忌），必须遵循9节课铁律且按顺序推进，当前已写${currentLength}字，目标总字数${MIN_TCM_SCRIPT_CHARS}-${MAX_TCM_SCRIPT_CHARS}字。在未满约${TCM_MIN_CHARS_BEFORE_FINAL_LESSON}字前禁止出现「第九节课/第九堂课」及其正文；在未满${TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES}字前禁止任何节目收尾语（如下期再见/下课/节目再见/这堂课讲到这里等）。严禁第十节课及以上。满${TCM_MIN_CHARS_BEFORE_FINAL_LESSON}字后才可进入第9节；满${TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES}字且第9节写完后才可收尾。严禁输出第十节课及以上内容。不要改写已生成内容，不要跳节，不要输出分隔符。`
+                                        : `请严格继续生成中医玄学长文（${tcmSubMode}），按课程化结构顺序推进（至少${requiredLessonCount}节课，建议5或7节），当前已写${currentLength}字，目标${MIN_TCM_SCRIPT_CHARS}-${MAX_TCM_SCRIPT_CHARS}字。在未满约${TCM_MIN_CHARS_BEFORE_FINAL_LESSON}字前禁止出现「第${TCM_LESSON_CN[requiredLessonCount - 1]}节课/堂课」及最后一节收束；在未满${TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES}字前禁止任何节目收尾语。满${TCM_MIN_CHARS_BEFORE_FINAL_LESSON}字后再写最后一节；满${TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES}字并完成全部节次后才可收尾。不要改写已生成内容，不要跳节，不要输出分隔符。`)
                                     : niche === NicheType.GENERAL_VIRAL
                                     ? `请用第一人称续写新聞評論，保持評論員的犀利與獨家視角，不要重覆前文。當前已寫${currentLength}字，如果內容充分完整且達到4000字以上，可以自然收尾並以「下期再見」「我們下期見」或「咱們下期再見」結束。如果內容尚不完整，请繼續深入分析，暫時不要收尾。`
-                                    : niche === NicheType.EMOTION_TABOO
+                                    : niche === NicheType.YI_JING_METAPHYSICS
+                                        ? (remainingBudget <= 400
+                                            ? `请用200-400字完成收束：曾仕强式通透结语与金句，可自然引导评论互动。当前已写${currentLength}字，勿重复前文。`
+                                            : `请严格续写曾仕强风格易经命理长文，从上文**最后一句**自然接下去，把曾氏5大模块里尚未写透的故事与心法继续写深写细；禁止输出章节标题或「模块一」等字样；禁止整段重复已写内容；**全文未满${MIN_YI_JING_SCRIPT_CHARS}字前禁止再写「谢谢大家」「感谢各位」等收场语**；若上文曾出现过早致谢且后面又自我纠正续写，当作无效，直接接前文伏笔续讲。保持「各位朋友」「易经告诉我们」「老祖宗说」等口吻。当前已写${currentLength}字，目标${MIN_YI_JING_SCRIPT_CHARS}-${MAX_YI_JING_SCRIPT_CHARS}字。`)
+                                        : niche === NicheType.EMOTION_TABOO
                                         ? (remainingBudget <= 400
                                             ? `请用200-400字完成收束，确保故事完整闭合与反思结尾，保持禁忌张力与心理崩塌感。当前已写${currentLength}字，务必在字数上限内完成。`
                                             : `请继续续写，重点加强禁忌与羞耻的心理描写与含蓄暗示，确保故事完整闭合，目标2000-2500字，最多不超过3000字。当前已写${currentLength}字。`)
                                         : '请续写以下內容，保持原風格與第一人称口吻，不要重覆前文。',
-                            '不要出現「下課」「今天的課到這裡」等其他收尾語。',
+                            ...(niche === NicheType.TCM_METAPHYSICS && tcmNeedClosingOnly
+                                ? []
+                                : niche === NicheType.YI_JING_METAPHYSICS && !isShortScript
+                                  ? []
+                                  : ['不要出現「下課」「今天的課到這裡」等其他收尾語。']),
                             '直接续写正文，不要任何分隔符、标记或元信息。',
                             `目標字數：至少 ${minChars} 字，當前已${currentLength}字。`,
                             '',
@@ -1391,10 +1678,24 @@ ${segmentSourceText}
                             systemInstruction,
                             appendChunk,
                             undefined,
-                            { maxTokens: niche === NicheType.TCM_METAPHYSICS ? 12288 : 8192 }
+                            {
+                                maxTokens:
+                                    niche === NicheType.TCM_METAPHYSICS ||
+                                    (niche === NicheType.YI_JING_METAPHYSICS && !isShortScript)
+                                        ? 12288
+                                        : 8192,
+                            }
                         );
+                        localContent = maybeNormalizeLayout(localContent);
 
-                        if (sanitizeTtsScript(localContent).length >= (niche === NicheType.TCM_METAPHYSICS && !isShortScript ? MAX_TCM_SCRIPT_CHARS : maxChars)) {
+                        if (
+                            sanitizeTtsScript(localContent).length >=
+                            (niche === NicheType.TCM_METAPHYSICS && !isShortScript
+                                ? MAX_TCM_SCRIPT_CHARS
+                                : niche === NicheType.YI_JING_METAPHYSICS && !isShortScript
+                                  ? MAX_YI_JING_SCRIPT_CHARS
+                                  : maxChars)
+                        ) {
                             break;
                         }
                         
@@ -1436,13 +1737,18 @@ ${segmentSourceText}
                             systemInstruction,
                             appendChunk
                         );
+                        localContent = maybeNormalizeLayout(localContent);
                     }
                 }
 
                 let cleaned = sanitizeTtsScript(localContent);
                 if (niche === NicheType.TCM_METAPHYSICS) {
-                    const requiredLessonCount = getRequiredLessonCount(niche, isShortScript);
-                    if (!isShortScript && cleaned.length < MIN_TCM_SCRIPT_CHARS) {
+                    const requiredLessonCount = getRequiredLessonCount(niche, isShortScript, currentSubModeId);
+                    if (
+                        !isShortScript &&
+                        cleaned.length < MIN_TCM_SCRIPT_CHARS &&
+                        !shouldStopTcmContinuation(localContent, requiredLessonCount)
+                    ) {
                         let autoFillRounds = 0;
                         let lastLength = cleaned.length;
                         while (cleaned.length < MIN_TCM_SCRIPT_CHARS && autoFillRounds < 12) {
@@ -1451,6 +1757,7 @@ ${segmentSourceText}
                                 `继续无缝衔接上文，不要重复已输出内容。当前约${cleaned.length}字，必须补足到至少${MIN_TCM_SCRIPT_CHARS}字。`,
                                 '必须保持“好了，我们开始上课。”后的课程化结构，课程标题与正文自然衔接，不生硬。',
                                 '若已进入某节中间，则继续该节；若该节完成，再进入下一节。禁止跳节、禁止重写已完成内容。',
+                                `严禁第十节课及以上（仅允许${tcmRequiredLessons}节课）。`,
                                 '不要输出任何分隔符、说明文字、元信息。',
                                 '',
                                 '【上文】',
@@ -1464,14 +1771,15 @@ ${segmentSourceText}
                                 undefined,
                                 { maxTokens: 12288 }
                             );
+                            localContent = maybeNormalizeLayout(localContent);
 
                             cleaned = sanitizeTtsScript(localContent);
-                            cleaned = stripLessonsAfterNine(cleaned);
+                            cleaned = stripBeyondLesson9(cleaned);
                             localContent = cleaned;
                             if (cleaned.length <= lastLength + 120) {
                                 // 进展过小，放宽约束再补一次
                                 const rescuePrompt = [
-                                    `继续补充正文，不要重复，直接承接当前段落写下去，至少新增800字，直到总字数达到${MIN_TCM_SCRIPT_CHARS}字。`,
+                                    `继续补充正文，不要重复，直接承接当前段落写下去，直到总字数达到${MIN_TCM_SCRIPT_CHARS}字。严禁第十节课及以上（仅允许${tcmRequiredLessons}节课）。`,
                                     '保持第一人称与课堂口吻，禁止输出分隔符和注释。',
                                     '',
                                     cleaned.slice(-2000)
@@ -1483,16 +1791,21 @@ ${segmentSourceText}
                                     undefined,
                                     { maxTokens: 12288 }
                                 );
+                                localContent = maybeNormalizeLayout(localContent);
                                 cleaned = sanitizeTtsScript(localContent);
-                                cleaned = stripLessonsAfterNine(cleaned);
+                                cleaned = stripBeyondLesson9(cleaned);
                                 localContent = cleaned;
                             }
                             lastLength = cleaned.length;
                         }
                     }
 
-                    // 若节数不足，优先补足课程节数
-                    if (!isShortScript && requiredLessonCount > 0) {
+                    // 若节数不足，优先补足课程节数（已自然收尾且达标则跳过）
+                    if (
+                        !isShortScript &&
+                        requiredLessonCount > 0 &&
+                        !shouldStopTcmContinuation(localContent, requiredLessonCount)
+                    ) {
                         let lessonFillRounds = 0;
                         let currentLessonCount = countLessonHeaders(cleaned);
                         while (currentLessonCount < requiredLessonCount && lessonFillRounds < 8) {
@@ -1501,6 +1814,7 @@ ${segmentSourceText}
                                 `继续无缝衔接上文，确保补足到至少${requiredLessonCount}节课。当前已出现${currentLessonCount}节课。`,
                                 '必须保持“好了，我们开始上课。”后的课程化结构，课程标题与正文自然衔接，不生硬。',
                                 '若已进入某节中间，则继续该节；若该节完成，再进入下一节。禁止跳节、禁止重写已完成内容。',
+                                `严禁第十节课及以上（仅允许${requiredLessonCount}节课）。`,
                                 '不要输出任何分隔符、说明文字、元信息。',
                                 '',
                                 '【上文】',
@@ -1514,9 +1828,10 @@ ${segmentSourceText}
                                 undefined,
                                 { maxTokens: 12288 }
                             );
+                            localContent = maybeNormalizeLayout(localContent);
 
                             cleaned = sanitizeTtsScript(localContent);
-                            cleaned = stripLessonsAfterNine(cleaned);
+                            cleaned = stripBeyondLesson9(cleaned);
                             localContent = cleaned;
                             currentLessonCount = countLessonHeaders(cleaned);
                         }
@@ -1524,7 +1839,7 @@ ${segmentSourceText}
 
                     const capped = truncateToMax(cleaned, Math.round(MAX_TCM_SCRIPT_CHARS * 1.1));
                     cleaned = sanitizeTtsScript(capped);
-                    localContent = stripLessonsAfterNine(cleaned);
+                    localContent = stripBeyondLesson9(cleaned);
                     if (isShortScript) {
                         localContent = truncateToMax(localContent, 500);
                     } else {
@@ -1571,8 +1886,14 @@ ${segmentSourceText}
                         }
                         return newArr;
                     });
-                } else if (niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO) {
+                } else if (niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS) {
                     localContent = cleaned;
+                    if (niche === NicheType.YI_JING_METAPHYSICS && !isShortScript) {
+                        localContent = stripPrematureZengThanksClosing(
+                            localContent,
+                            MIN_YI_JING_SCRIPT_CHARS
+                        );
+                    }
                     if (localContent.length > maxChars + 200) {
                         localContent = truncateToMax(localContent, maxChars);
                     }
@@ -1667,6 +1988,7 @@ ${segmentSourceText}
                         systemInstruction,
                         appendChunk
                     );
+                    localContent = maybeNormalizeLayout(localContent);
                 }
 
                 if (!ended) {
@@ -1684,6 +2006,7 @@ ${segmentSourceText}
                         systemInstruction,
                         appendChunk
                     );
+                    localContent = maybeNormalizeLayout(localContent);
                     ended = true;
                 }
 
@@ -1759,8 +2082,10 @@ ${segmentSourceText}
                         totalGeneratedLength += item.content.length;
                     });
                     
-                    // 计算百分比（最多95%，留5%给收尾和清理）
-                    const progress = Math.min(95, (totalGeneratedLength / expectedTotalLength) * 100);
+                    const progress = Math.min(
+                      99,
+                      Math.max(3, (totalGeneratedLength / expectedTotalLength) * 100)
+                    );
                     return { current: Math.round(progress), total: 100 };
                 }
                 return prev;
@@ -1776,58 +2101,56 @@ ${segmentSourceText}
     // 所有文章生成完成，进度条设为100%
     setBatchProgress({ current: 100, total: 100 });
     
-    // 获取最终生成的内容数量（从 Map 中获取，因为状态可能还没更新）
-    const finalCount = generatedContentsMap.size > 0 ? generatedContentsMap.size : generatedContents.length;
-    
-    // 显示完成通知
-    console.log('[Generator] 准备显示 Toast 通知:', { 
-      finalCount, 
+    const totalBatch = selectedTopics.length;
+    const successBatchCount = generatedContentsMap.size;
+    const failBatchCount = totalBatch - successBatchCount;
+
+    // 显示完成通知（成功数以 Map 为准，避免闭包中 generatedContents 过期导致误报）
+    console.log('[Generator] 准备显示 Toast 通知:', {
+      totalBatch,
+      successBatchCount,
+      failBatchCount,
       hasToast: !!toast,
       isExternal: toast === externalToast,
-      isInternal: toast === internalToast,
-      toastType: typeof toast,
-      hasSuccess: toast && 'success' in toast,
-      successType: toast && typeof toast.success,
-      currentToasts: toast?.toasts?.length || 0,
     });
-    
-    // ⚠️ 关键：必须使用 externalToast（App.tsx 中的 toast 实例）
-    // 因为 ToastContainer 在 App.tsx 中使用的是 App 的 toast.toasts
+
     if (!externalToast) {
       console.error('[Generator] externalToast 未传入！无法显示 Toast 通知');
       return;
     }
-    
-    console.log('[Generator] 使用 externalToast:', {
-      hasSuccess: typeof externalToast.success === 'function',
-      currentToasts: externalToast.toasts?.length || 0,
-      toastKeys: Object.keys(externalToast)
-    });
-    
-    if (typeof externalToast.success === 'function') {
-      try {
-        console.log('[Generator] 调用 externalToast.success，参数:', {
-          message: `成功生成 ${finalCount} 篇文章！`,
-          duration: 8000
-        });
-        const result = externalToast.success(`成功生成 ${finalCount} 篇文章！`, 8000);
-        console.log('[Generator] externalToast.success 调用成功，返回 ID:', result);
-        
-        // 延迟检查状态（React 状态更新是异步的）
-        setTimeout(() => {
-          console.log('[Generator] Toast 状态检查（延迟 200ms）:', {
-            toastsLength: externalToast.toasts?.length || 0,
-            toasts: externalToast.toasts?.map(t => ({ id: t.id, type: t.type, message: t.message })) || []
-          });
-        }, 200);
-      } catch (error) {
-        console.error('[Generator] externalToast.success 调用失败:', error);
+
+    try {
+      if (successBatchCount === totalBatch && totalBatch > 0) {
+        if (typeof externalToast.success === 'function') {
+          externalToast.success(`成功生成 ${successBatchCount} 篇文章！`, 8000);
+        }
+      } else if (successBatchCount === 0) {
+        if (typeof externalToast.error === 'function') {
+          externalToast.error(
+            `生成失敗：${totalBatch} 篇均未完成，請查看正文中的系統提示或稍後重試（若頻繁出現請檢查 API 配額與網路）。`,
+            10000
+          );
+        } else if (typeof externalToast.warning === 'function') {
+          externalToast.warning(
+            `生成失敗：${totalBatch} 篇均未完成，請查看正文中的系統提示。`,
+            10000
+          );
+        }
+      } else {
+        if (typeof externalToast.warning === 'function') {
+          externalToast.warning(
+            `部分完成：成功 ${successBatchCount} 篇，失敗 ${failBatchCount} 篇，請檢查未完成篇的正文提示。`,
+            10000
+          );
+        } else if (typeof externalToast.success === 'function') {
+          externalToast.success(
+            `完成 ${successBatchCount}/${totalBatch} 篇，其餘篇請查看正文錯誤提示。`,
+            10000
+          );
+        }
       }
-    } else {
-      console.error('[Generator] externalToast.success 不是函数:', {
-        success: externalToast.success,
-        successType: typeof externalToast.success
-      });
+    } catch (error) {
+      console.error('[Generator] 显示批量完成 Toast 失败:', error);
     }
     
     // 延迟清除进度条，让用户看到完成状态
@@ -2086,6 +2409,63 @@ ${segmentSourceText}
           <span className="bg-emerald-600 w-6 h-6 rounded-full flex items-center justify-center text-xs text-white">2</span>
           策划选题 (Plan Topics)
         </h2>
+
+        {/* 选题数量：默认 5，可选 10/15/20 或自定义 */}
+        <div className="mb-6 rounded-xl border border-slate-700/70 bg-gradient-to-br from-slate-950/80 to-slate-900/40 p-4 md:p-5">
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-3">
+            <label className="text-xs font-bold text-emerald-400 flex items-center gap-2">
+              <ListOrdered size={16} className="text-emerald-500 shrink-0" />
+              生成选题数量
+            </label>
+            <p className="text-[10px] text-slate-500 leading-relaxed max-w-md">
+              默认每次生成 <span className="text-slate-400">5</span> 条；可快速选 10 / 15 / 20，或自定义 1–50 条（适用于全部赛道与子模式）。
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2 items-center">
+            {([5, 10, 15, 20] as const).map((n) => (
+              <button
+                key={n}
+                type="button"
+                onClick={() => {
+                  setPlanTopicCountPreset(n);
+                  setPlanTopicCountIsCustom(false);
+                }}
+                className={`min-w-[4.5rem] px-3 py-2 rounded-lg text-xs font-semibold border transition-all ${
+                  !planTopicCountIsCustom && planTopicCountPreset === n
+                    ? 'bg-emerald-600 text-white border-emerald-500 shadow-md shadow-emerald-900/30'
+                    : 'bg-slate-900/80 border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200'
+                }`}
+              >
+                {n} 条
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => setPlanTopicCountIsCustom(true)}
+              className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-all ${
+                planTopicCountIsCustom
+                  ? 'bg-emerald-600 text-white border-emerald-500 shadow-md shadow-emerald-900/30'
+                  : 'bg-slate-900/80 border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200'
+              }`}
+            >
+              自定义
+            </button>
+            {planTopicCountIsCustom && (
+              <div className="flex items-center gap-2 w-full sm:w-auto mt-1 sm:mt-0">
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={planTopicCountCustomValue}
+                  onChange={(e) => setPlanTopicCountCustomValue(e.target.value)}
+                  className="w-24 bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                  aria-label="自定义选题数量"
+                />
+                <span className="text-xs text-slate-500 whitespace-nowrap">条（1–50）</span>
+              </div>
+            )}
+          </div>
+        </div>
         
         {/* Sub-Category Selection Grid */}
         {activeSubModes && (
@@ -2198,7 +2578,7 @@ ${segmentSourceText}
         )}
 
         {/* Script length selector for TCM/Finance */}
-        {(niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO) && (
+        {(niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS) && (
           <div className="mb-6 animate-in fade-in duration-300 bg-slate-800/30 p-4 rounded-xl border border-slate-700/50">
             <label className="text-xs font-bold text-emerald-400 flex items-center gap-1 mb-2">
               <Clock size={14} /> 脚本时长
@@ -2232,7 +2612,9 @@ ${segmentSourceText}
                   ? '短视频：400-500字，开篇即高潮，痛点+底层逻辑+金句+引导，结尾结善缘。'
                   : niche === NicheType.EMOTION_TABOO
                     ? '短视频：400-500字，悬念开场+感官铺垫+心理拉扯+高光瞬间+反思引导。'
-                    : '短视频：在选题基础上详细展开，加入排比与总结排列，输出 500 字以内短视频文案。'}
+                    : niche === NicheType.YI_JING_METAPHYSICS
+                      ? '长视频：约8000-12000字，曾氏5大模块融于一篇口播；短视频：≤500字，曾仕强口吻快讲。'
+                      : '短视频：在选题基础上详细展开，加入排比与总结排列，输出 500 字以内短视频文案。'}
             </p>
           </div>
         )}
@@ -2318,7 +2700,11 @@ ${segmentSourceText}
                 className={`mt-0 md:mt-7 px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-medium rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 w-full md:w-auto justify-center whitespace-nowrap shadow-lg shadow-emerald-900/20`}
             >
                 {status === GenerationStatus.PLANNING ? <Loader2 className="animate-spin" /> : <Sparkles />}
-                {isInputRequired() ? '预测选题' : '一键生成爆款Hooks'}
+                {isInputRequired()
+                  ? '预测选题'
+                  : niche === NicheType.YI_JING_METAPHYSICS
+                    ? '一键生成爆款选题'
+                    : '一键生成爆款Hooks'}
             </button>
         </div>
         )}

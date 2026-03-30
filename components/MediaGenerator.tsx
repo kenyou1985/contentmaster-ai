@@ -491,7 +491,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     const allRecords: HistoryRecord[] = [];
     
     // 1. 从 Tools 模块的新历史记录系统读取（SCRIPT 模式）
-    const niches = [NicheType.TCM_METAPHYSICS, NicheType.FINANCE_CRYPTO, NicheType.STORY_REVENGE, NicheType.GENERAL_VIRAL];
+    const niches = [NicheType.YI_JING_METAPHYSICS, NicheType.TCM_METAPHYSICS, NicheType.FINANCE_CRYPTO, NicheType.STORY_REVENGE, NicheType.GENERAL_VIRAL];
     niches.forEach(niche => {
       const historyKey = `${ToolMode.SCRIPT}_${niche}`;
       const records = getHistory('tools', historyKey);
