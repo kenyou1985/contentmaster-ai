@@ -3,6 +3,7 @@ import { ApiProvider, NicheType, Topic, GeneratedContent, GenerationStatus, TcmS
 import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT, YI_JING_SHORT_SCRIPT_PROMPT, applyTopicCountToPrompt } from '../constants';
 import { NicheSelector } from './NicheSelector';
 import { generateTopics, streamContentGeneration, initializeGemini } from '../services/geminiService';
+import { fetchMacroNewsDigestForPrompt } from '../services/macroNewsFeedService';
 import { needsParagraphNormalization, normalizeDenseChineseParagraphs } from '../services/textFormat';
 import { Sparkles, Calendar, Loader2, Download, Eye, Zap, AlertTriangle, Copy, Check, Globe, Clock, PlusCircle, History, ListOrdered } from 'lucide-react';
 import JSZip from 'jszip';
@@ -94,6 +95,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   // errorMsg 已移除，改用 Toast 通知
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** 金融·宏观预警：最近一次「一键生成选题」拉取的国际 RSS 摘要，供长文引子对齐 */
+  const financeMacroNewsDigestRef = useRef<string>('');
   
   // 历史记录相关状态
   const [showHistorySelector, setShowHistorySelector] = useState(false);
@@ -431,6 +434,22 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       const n = resolvedPlanTopicCount;
       const womenMin = n >= 2 ? 2 : 1;
       prompt += `\n\n【女性向选题铁律·最高优先级】本次须恰好输出 ${n} 条标题，其中至少 ${womenMin} 条必须为「女性向爆款」（标题须显式出现：女人/女性/妻子/母亲/宝妈/儿媳妇 等之一，或语义上明确写女性之财富、家运、心态、改运、面相印记等；可参考爆款向：女人想暴富、命好女人不炫耀、命苦女人特征、女性改运）。若不足 ${womenMin} 条满足，整组作废重写。`;
+    }
+
+    if (niche === NicheType.FINANCE_CRYPTO && financeSubMode === FinanceSubModeId.MACRO_WARNING) {
+      toast.info('正在抓取国际 RSS 要闻（BBC / DW / Al Jazeera 等）…');
+      try {
+        const digest = await fetchMacroNewsDigestForPrompt();
+        financeMacroNewsDigestRef.current = digest;
+        prompt =
+          `${digest}\n\n---\n\n` +
+          prompt +
+          `\n\n【选题对齐铁律】每条标题须与上方「国际要闻投喂」中至少一条新闻在主题上可对应（可芒格式改写）；禁止 10 条标题只围绕同一条新闻换皮，须尽量覆盖不同地缘/市场线索。`;
+      } catch (e) {
+        console.error('[Generator] 宏观要闻 RSS 抓取失败', e);
+        financeMacroNewsDigestRef.current = '';
+        toast.warning('国际要闻抓取失败，已退回纯模型生成选题。');
+      }
     }
     
     // Status already set above
@@ -1348,6 +1367,18 @@ ${segmentSourceText}
 
         // Use the selected script prompt
         let prompt = scriptTemplate.replace('{topic}', topic.title);
+
+        if (
+          currentNiche === NicheType.FINANCE_CRYPTO &&
+          currentSubModeId === FinanceSubModeId.MACRO_WARNING &&
+          scriptLengthMode === 'LONG' &&
+          financeMacroNewsDigestRef.current
+        ) {
+          prompt =
+            `${financeMacroNewsDigestRef.current}\n\n---\n\n` +
+            prompt +
+            `\n\n【长文铁律】引子必须从上方「国际要闻投喂」中择取具体事实落笔（国家/人物/市场或机构），勿用与要闻列表无关的空泛开场。`;
+        }
 
         // 中医玄学（时辰禁忌）脚本：统一注入当前UTC年份生肖锚，修复“2025蛇年”漂移
         if (niche === NicheType.TCM_METAPHYSICS && tcmSubMode === TcmSubModeId.TIME_TABOO) {
