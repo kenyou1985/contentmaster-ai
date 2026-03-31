@@ -97,6 +97,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const scrollRef = useRef<HTMLDivElement>(null);
   /** 金融·宏观预警：最近一次「一键生成选题」拉取的国际 RSS 摘要，供长文引子对齐 */
   const financeMacroNewsDigestRef = useRef<string>('');
+  const newsMacroNewsDigestRef = useRef<string>('');
   
   // 历史记录相关状态
   const [showHistorySelector, setShowHistorySelector] = useState(false);
@@ -436,18 +437,34 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       prompt += `\n\n【女性向选题铁律·最高优先级】本次须恰好输出 ${n} 条标题，其中至少 ${womenMin} 条必须为「女性向爆款」（标题须显式出现：女人/女性/妻子/母亲/宝妈/儿媳妇 等之一，或语义上明确写女性之财富、家运、心态、改运、面相印记等；可参考爆款向：女人想暴富、命好女人不炫耀、命苦女人特征、女性改运）。若不足 ${womenMin} 条满足，整组作废重写。`;
     }
 
-    if (niche === NicheType.FINANCE_CRYPTO && financeSubMode === FinanceSubModeId.MACRO_WARNING) {
+    if (
+      (niche === NicheType.FINANCE_CRYPTO && financeSubMode === FinanceSubModeId.MACRO_WARNING) ||
+      niche === NicheType.GENERAL_VIRAL
+    ) {
       toast.info('正在抓取国际 RSS 要闻（BBC / DW / Al Jazeera 等）…');
       try {
         const digest = await fetchMacroNewsDigestForPrompt();
-        financeMacroNewsDigestRef.current = digest;
+        if (niche === NicheType.GENERAL_VIRAL) {
+          newsMacroNewsDigestRef.current = digest;
+        } else {
+          financeMacroNewsDigestRef.current = digest;
+        }
+        const isNews = niche === NicheType.GENERAL_VIRAL;
+        const extraRules = isNews
+          ? `\n\n【选题对齐铁律】每条标题须与上方「国际要闻投喂」中至少一条新闻在主题上可对应（小美辣评风格改写）；禁止 10 条标题只围绕同一条新闻换皮，须尽量覆盖不同地缘/市场线索。\n【标题党铁律】每条须含强钩子：悬念/反问/震撼词/第二人称刺痛至少其二；禁止写成通讯社导语或「……说明……」式说明体；单条建议 22–48 字，可用冒号或破折号断句，追求「一眼想点进去」。`
+          : `\n\n【选题对齐铁律】每条标题须与上方「国际要闻投喂」中至少一条新闻在主题上可对应（可芒格式改写）；禁止 10 条标题只围绕同一条新闻换皮，须尽量覆盖不同地缘/市场线索。\n【标题党铁律】每条须含强钩子：悬念/反问/震撼词/读者切身利益至少其二；禁止写成通讯社导语或「……说明……」式说明体；单条建议 22–48 字，可用冒号或破折号断句，追求「一眼想点进去」。`;
         prompt =
           `${digest}\n\n---\n\n` +
           prompt +
-          `\n\n【选题对齐铁律】每条标题须与上方「国际要闻投喂」中至少一条新闻在主题上可对应（可芒格式改写）；禁止 10 条标题只围绕同一条新闻换皮，须尽量覆盖不同地缘/市场线索。`;
+          extraRules;
       } catch (e) {
         console.error('[Generator] 宏观要闻 RSS 抓取失败', e);
         financeMacroNewsDigestRef.current = '';
+        if (niche === NicheType.GENERAL_VIRAL) {
+          newsMacroNewsDigestRef.current = '';
+        } else {
+          financeMacroNewsDigestRef.current = '';
+        }
         toast.warning('国际要闻抓取失败，已退回纯模型生成选题。');
       }
     }
@@ -1368,14 +1385,17 @@ ${segmentSourceText}
         // Use the selected script prompt
         let prompt = scriptTemplate.replace('{topic}', topic.title);
 
-        if (
-          currentNiche === NicheType.FINANCE_CRYPTO &&
-          currentSubModeId === FinanceSubModeId.MACRO_WARNING &&
-          scriptLengthMode === 'LONG' &&
-          financeMacroNewsDigestRef.current
-        ) {
+        const macroRef =
+          currentNiche === NicheType.GENERAL_VIRAL
+            ? newsMacroNewsDigestRef.current
+            : (currentNiche === NicheType.FINANCE_CRYPTO &&
+               currentSubModeId === FinanceSubModeId.MACRO_WARNING &&
+               scriptLengthMode === 'LONG'
+              ? financeMacroNewsDigestRef.current
+              : '');
+        if (macroRef) {
           prompt =
-            `${financeMacroNewsDigestRef.current}\n\n---\n\n` +
+            `${macroRef}\n\n---\n\n` +
             prompt +
             `\n\n【长文铁律】引子必须从上方「国际要闻投喂」中择取具体事实落笔（国家/人物/市场或机构），勿用与要闻列表无关的空泛开场。`;
         }
