@@ -274,6 +274,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (niche === NicheType.PSYCHOLOGY) return false;
     if (niche === NicheType.PHILOSOPHY_WISDOM) return false;
     if (niche === NicheType.EMOTION_TABOO) return false;
+    if (niche === NicheType.RICH_MINDSET) return false;
     return true; // Default input required for other niches
   };
 
@@ -284,6 +285,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (niche === NicheType.PSYCHOLOGY) return false;
     if (niche === NicheType.PHILOSOPHY_WISDOM) return false;
     if (niche === NicheType.EMOTION_TABOO) return false;
+    if (niche === NicheType.RICH_MINDSET) return true;
     return true;
   };
 
@@ -292,6 +294,9 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       if (config) return config.inputPlaceholder || "输入关键词";
       if (niche === NicheType.YI_JING_METAPHYSICS) {
         return '（可选）侧重方向、关键词或素材提示，留空则按易经命理爆款逻辑生成';
+      }
+      if (niche === NicheType.RICH_MINDSET) {
+        return '（可选）输入选题方向关键词，如：子女啃老、亲戚算计、养老困境';
       }
       return "输入关键词/趋势";
   };
