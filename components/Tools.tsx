@@ -74,31 +74,41 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     ));
   };
   
-  // 处理模式切换（带历史记录选择）
+  // 处理模式切换（不带自动弹窗）
   const handleModeChange = (newMode: ToolMode) => {
-    const historyKey = getToolsHistoryKey(newMode, activeTask.niche);
+    console.log('[Tools] 切换模式:', newMode);
+    updateActiveTask({ mode: newMode });
+  };
+
+  // 手动触发模式历史记录弹窗
+  const handleManualModeHistoryClick = (e: React.MouseEvent, mode: ToolMode) => {
+    e.stopPropagation();
+    const historyKey = getToolsHistoryKey(mode, activeTask.niche);
     const records = getHistory('tools', historyKey);
     
     if (records.length > 0) {
       setHistoryRecords(records);
-      setPendingModeChange({ mode: newMode, niche: activeTask.niche });
+      setPendingModeChange({ mode, niche: activeTask.niche });
       setShowHistorySelector(true);
-    } else {
-      updateActiveTask({ mode: newMode });
     }
   };
-  
-  // 处理赛道切换（带历史记录选择）
+
+  // 处理赛道切换（不带自动弹窗）
   const handleNicheChange = (newNiche: NicheType) => {
-    const historyKey = getToolsHistoryKey(activeTask.mode, newNiche);
+    console.log('[Tools] 切换赛道:', newNiche);
+    updateActiveTask({ niche: newNiche });
+  };
+
+  // 手动触发赛道历史记录弹窗
+  const handleManualNicheHistoryClick = (e: React.MouseEvent, niche: NicheType) => {
+    e.stopPropagation();
+    const historyKey = getToolsHistoryKey(activeTask.mode, niche);
     const records = getHistory('tools', historyKey);
     
     if (records.length > 0) {
       setHistoryRecords(records);
-      setPendingModeChange({ mode: activeTask.mode, niche: newNiche });
+      setPendingModeChange({ mode: activeTask.mode, niche });
       setShowHistorySelector(true);
-    } else {
-      updateActiveTask({ niche: newNiche });
     }
   };
   
@@ -3072,11 +3082,25 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
             const roleSceneFallback = '[角色信息]\n[名称]讲述者\n[别名]旁白\n[描述]中年华人讲述者，黑色中式长衫，神情冷峻克制，直视镜头，面部细节清晰，高对比电影光影，暗红与深蓝色调，写实风格，超清质感。\n\n[名称]主要人物\n[别名]无\n[描述]东亚人物写实风格，服装与神态贴合剧情，面部细节清晰，电影级光影与构图，色调克制，超清质感。\n\n[场景信息]\n[名称]场景-叙事空间\n[别名]无\n[描述]中式室内叙事空间，书架与木质桌案，低照度环境，局部暖光勾边，空气中轻微尘埃与雾化层次，压抑紧张氛围，电影级构图，超清细节。';
 
             const extractRoleSceneByCrossRef = async () => {
-              const imagePromptContext = stagedShots
-                .map((s) => `镜头${s.shotNo} 图片提示词: ${s.imagePrompt}`)
+              // 构建包含角色和文案上下文的完整信息
+              const shotContext = stagedShots
+                .map((s) => `镜头${s.shotNo} [语音分镜: ${s.voice || s.role || '讲述者'}] [镜头文案片段: ${s.caption.substring(0, 100)}${s.caption.length > 100 ? '...' : ''}] 图片提示词: ${s.imagePrompt}`)
                 .join('\n');
 
-              const roleSceneCrossPrompt = `请基于【原文】和【各镜头图片提示词】联合提取“主要人物角色信息”和“场景信息”。\n\n硬性规则：\n1) 只输出模板，不要解释、不要说明文字。\n2) [角色信息]中至少输出2个角色；若出现女性线索必须包含女性角色，若出现男性线索必须包含男性角色。\n3) 女性角色命名优先使用“主要女性角色”，男性角色命名优先使用“主要男性角色”。\n4) 角色描述必须与镜头中锚定写法一致：\n   - 主要女性角色（长发、服装贴合剧情、神情隐忍压抑）\n   - 主要男性角色（高大、服装略显破损或凌乱、眼神失控绝望）\n5) [描述]必须是可直接用于文生图/文生视频的提示词风格，不得出现“根据原文提取”“负责/用于/承担/说明”等说明性措辞。\n6) 场景描述要体现：空间结构、关键物件、光线、氛围、色调、风格关键词。\n7) 女性线索关键词：晚礼服、女子、女性、她、女孩、女人；男性线索关键词：男人、男性、他、疯子男人。\n\n输出模板（严格）：\n[角色信息]\n[名称]角色名\n[别名]别名（没有写无）\n[描述]提示词描述\n\n[名称]角色名2\n[别名]别名（没有写无）\n[描述]提示词描述\n\n[场景信息]\n[名称]场景名\n[别名]无\n[描述]提示词描述\n\n[名称]场景名2\n[别名]无\n[描述]提示词描述\n\n【原文】\n${taskInputText}\n\n【各镜头图片提示词】\n${imagePromptContext}`;
+              // 提取所有出现在语音分镜中的角色
+              const allRoles = Array.from(new Set(
+                stagedShots
+                  .map(s => (s.voice || s.role || '讲述者').trim())
+                  .filter(Boolean)
+              ));
+
+              const roleSceneCrossPrompt = `请基于【原文】、【各镜头语音分镜角色】和【各镜头图片提示词】联合提取“主要人物角色信息”和“场景信息”。\n\n硬性规则：
+【重要】必须包含的角色：
+${allRoles.map(r => `- ${r}`).join('\n')}
+⚠️ 以上角色均来自镜头语音分镜，必须在[角色信息]中逐一输出，不能遗漏任何一个！
+
+1) 只输出模板，不要解释、不要说明文字。
+2) [角色信息]中必须包含上述所有角色（至少包含${allRoles.length}个角色），不得遗漏。\n3) 女性角色命名优先使用“主要女性角色”，男性角色命名优先使用“主要男性角色”。\n4) 角色描述必须与镜头中锚定写法一致：\n   - 主要女性角色（长发、服装贴合剧情、神情隐忍压抑）\n   - 主要男性角色（高大、服装略显破损或凌乱、眼神失控绝望）\n5) [描述]必须是可直接用于文生图/文生视频的提示词风格，不得出现“根据原文提取”“负责/用于/承担/说明”等说明性措辞。\n6) 场景描述要体现：空间结构、关键物件、光线、氛围、色调、风格关键词。\n7) 女性线索关键词：晚礼服、女子、女性、她、女孩、女人；男性线索关键词：男人、男性、他、疯子男人。\n\n输出模板（严格）：\n[角色信息]\n[名称]角色名\n[别名]别名（没有写无）\n[描述]提示词描述\n\n[名称]角色名2\n[别名]别名（没有写无）\n[描述]提示词描述\n\n[场景信息]\n[名称]场景名\n[别名]无\n[描述]提示词描述\n\n[名称]场景名2\n[别名]无\n[描述]提示词描述\n\n【原文】\n${taskInputText}\n\n【各镜头语音分镜角色与图片提示词】\n${shotContext}`;
 
               let crossRaw = '';
               await Promise.race([
@@ -3835,47 +3859,70 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
          <div className="flex flex-wrap lg:flex-nowrap items-center gap-2">
            <div className="flex flex-wrap lg:flex-nowrap items-center gap-1.5 min-w-0">
              {/* Tool Modes */}
-             {[
-               { id: ToolMode.REWRITE, label: '改写/洗稿', icon: <RefreshCw size={15} /> },
-               { id: ToolMode.EXPAND, label: '深度扩写', icon: <Maximize2 size={15} /> },
-               { id: ToolMode.SUMMARIZE, label: '摘要总结', icon: <Scissors size={15} /> },
-               { id: ToolMode.POLISH, label: '润色优化', icon: <FileText size={15} /> },
-               { id: ToolMode.SCRIPT, label: '脚本输出', icon: <Video size={15} /> },
-             ].map((tool) => (
-               <button
-                 key={tool.id}
-                 onClick={() => handleModeChange(tool.id as ToolMode)}
-                 className={`px-3 py-1.5 rounded-lg border flex items-center gap-1.5 transition-all text-[13px] font-semibold whitespace-nowrap ${
-                   mode === tool.id
-                     ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm'
-                     : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
-                 }`}
-               >
-                 {tool.icon}
-                 <span>{tool.label}</span>
-                 {getHistory('tools', getToolsHistoryKey(tool.id as ToolMode, niche)).length > 0 && (
-                   <History size={11} className="text-emerald-300" title="有历史记录" />
-                 )}
-               </button>
-             ))}
+            {[
+              { id: ToolMode.REWRITE, label: '改写/洗稿', icon: <RefreshCw size={15} /> },
+              { id: ToolMode.EXPAND, label: '深度扩写', icon: <Maximize2 size={15} /> },
+              { id: ToolMode.SUMMARIZE, label: '摘要总结', icon: <Scissors size={15} /> },
+              { id: ToolMode.POLISH, label: '润色优化', icon: <FileText size={15} /> },
+              { id: ToolMode.SCRIPT, label: '脚本输出', icon: <Video size={15} /> },
+            ].map((tool) => {
+              const hasHistory = getHistory('tools', getToolsHistoryKey(tool.id as ToolMode, niche)).length > 0;
+              return (
+                <button
+                  key={tool.id}
+                  onClick={() => handleModeChange(tool.id as ToolMode)}
+                  className={`px-3 py-1.5 rounded-lg border flex items-center gap-1.5 transition-all text-[13px] font-semibold whitespace-nowrap ${
+                    mode === tool.id
+                      ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm'
+                      : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
+                  }`}
+                >
+                  {tool.icon}
+                  <span>{tool.label}</span>
+                  {hasHistory && (
+                    <button
+                      onClick={(e) => handleManualModeHistoryClick(e, tool.id as ToolMode)}
+                      className="p-0.5 rounded hover:bg-slate-600/50 transition-colors"
+                      title="点击查看历史记录"
+                    >
+                      <History size={13} className="text-emerald-300 hover:text-emerald-200" />
+                    </button>
+                  )}
+                </button>
+              );
+            })}
            </div>
 
            <div className="flex items-center gap-2 lg:ml-auto w-full lg:w-auto">
              {/* Niche Context Selector */}
-             {mode !== ToolMode.SCRIPT && (
-               <div className="relative group w-full sm:w-[220px]">
-                 <select
-                   value={niche}
-                   onChange={(e) => handleNicheChange(e.target.value as NicheType)}
-                   className="w-full appearance-none bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-200 font-semibold focus:outline-none focus:border-emerald-500 cursor-pointer"
-                 >
-                   {Object.values(NICHES).map(n => (
-                     <option key={n.id} value={n.id}>{n.icon} {n.name}</option>
-                   ))}
-                 </select>
-                 <ChevronDown className="absolute right-3 top-2.5 text-slate-500 pointer-events-none" size={14} />
-               </div>
-             )}
+            {mode !== ToolMode.SCRIPT && (
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <div className="relative group w-full sm:w-[220px]">
+                  <select
+                    value={niche}
+                    onChange={(e) => handleNicheChange(e.target.value as NicheType)}
+                    className="w-full appearance-none bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-200 font-semibold focus:outline-none focus:border-emerald-500 cursor-pointer pr-8"
+                  >
+                    {Object.values(NICHES).map(n => (
+                      <option key={n.id} value={n.id}>{n.icon} {n.name}</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="absolute right-3 top-2.5 text-slate-500 pointer-events-none" size={14} />
+                </div>
+                {(() => {
+                  const hasNicheHistory = getHistory('tools', getToolsHistoryKey(mode, niche)).length > 0;
+                  return hasNicheHistory ? (
+                    <button
+                      onClick={(e) => handleManualNicheHistoryClick(e, niche)}
+                      className="p-1.5 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 transition-colors"
+                      title="点击查看历史记录"
+                    >
+                      <History size={15} className="text-emerald-300" />
+                    </button>
+                  ) : null;
+                })()}
+              </div>
+            )}
 
              {mode === ToolMode.SCRIPT && (
                <div className="flex items-center gap-2 w-full sm:w-auto">

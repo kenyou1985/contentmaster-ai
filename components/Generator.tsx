@@ -43,10 +43,10 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const TCM_MIN_CHARS_BEFORE_FINAL_LESSON = 7000;
   /** 清洗后字数未满此时，剥离提前出现的收尾语 */
   const TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES = 7500;
-  const MIN_FIN_SCRIPT_CHARS = 7500; // 30 min * 250 chars/min
-  const MAX_FIN_SCRIPT_CHARS = 10000; // 40 min * 250 chars/min
-  const MIN_NEWS_SCRIPT_CHARS = 4500; // 15 min * 300 chars/min
-  const MAX_NEWS_SCRIPT_CHARS = 8000; // 上限8000字，约26-27分钟
+  const MIN_FIN_SCRIPT_CHARS = 7000; // 28 min * 250 chars/min
+  const MAX_FIN_SCRIPT_CHARS = 8200; // ~33 min * 250 chars/min, hard ceiling
+  const MIN_NEWS_SCRIPT_CHARS = 7000; // 软目标下限
+  const MAX_NEWS_SCRIPT_CHARS = 9000; // 硬上限
   const MAX_SCRIPT_CONTINUATIONS = 3;
   const MAX_TCM_SCRIPT_CONTINUATIONS = 20;
   const REVENGE_SHORT_MIN = 13500; // 15 min * 900 chars/min
@@ -140,32 +140,34 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     return `${nicheType}_${submodeId}`;
   };
 
-  // 处理子模式切换（带历史记录选择）
+  // 处理子模式切换（不带自动弹窗）
   const handleSubModeChange = (nicheType: NicheType, submodeId: string, setFunc: (id: any) => void) => {
+    console.log('[Generator] 切换子模式:', { nicheType, submodeId });
+    // 直接切换，不自动弹窗
+    setFunc(submodeId);
+    setInputVal('');
+    setTopics([]);
+    setAdaptedContent('');
+    setIsAdapting(false);
+  };
+
+  // 手动触发历史记录选择弹窗
+  const handleManualHistoryClick = (e: React.MouseEvent, nicheType: NicheType, submodeId: string) => {
+    e.stopPropagation(); // 阻止冒泡到父按钮
     const historyKey = getHistoryKeyForSubMode(nicheType, submodeId);
     const records = getHistory('generator', historyKey);
     
-    console.log('[Generator] 切换子模式:', { 
-      nicheType, 
-      submodeId, 
-      historyKey, 
-      recordsCount: records.length,
-      recordTopics: records.map(r => r.metadata?.topic)
+    console.log('[Generator] 手动点击历史记录:', {
+      nicheType,
+      submodeId,
+      historyKey,
+      recordsCount: records.length
     });
     
     if (records.length > 0) {
-      // 有历史记录，显示选择器
-      console.log('[Generator] 显示历史记录选择器，记录数:', records.length, '第一条记录主题:', records[0]?.metadata?.topic);
       setHistoryRecords(records);
       setPendingSubModeChange({ niche: nicheType, submode: submodeId });
       setShowHistorySelector(true);
-    } else {
-      // 没有历史记录，直接切换
-      setFunc(submodeId);
-      setInputVal('');
-      setTopics([]);
-      setAdaptedContent('');
-      setIsAdapting(false);
     }
   };
   
@@ -1179,23 +1181,58 @@ ${segmentSourceText}
         return stripBeyondLesson9(text);
     };
 
+    /**
+     * 语义截断：优先在段落边界（\n\n）截断，其次完整句末，其次单换行。
+     * 确保截断不发生在句子中间，且在收尾语处停止。
+     */
     const truncateToMax = (text: string, maxChars: number) => {
         if (text.length <= maxChars) return text;
+
+        // 0. 如果文末有收尾语（说明不该截断），跳过截断直接返回原文
+        // 用原始文本检测（sanitize 会删「咱们下期见」）
+        const tail = text.slice(-2000);
+        if (
+            /咱们下期见|咱们下期再见|咱们下期继续拆|咱们下期再聊|咱们下期再|下期再见/.test(tail)
+        ) {
+            console.log(`[Generator] truncateToMax: detected closing phrase, skipping truncation`);
+            return text;
+        }
+
         const slice = text.slice(0, maxChars);
-        const lastPunct = Math.max(
-            slice.lastIndexOf('。'),
-            slice.lastIndexOf('！'),
-            slice.lastIndexOf('？'),
-            slice.lastIndexOf('.'),
-            slice.lastIndexOf('!'),
-            slice.lastIndexOf('?')
-        );
-        return (lastPunct > 0 ? slice.slice(0, lastPunct + 1) : slice).trim();
+
+        // 1. 最近段落边界
+        const lastDoubleNl = slice.lastIndexOf('\n\n');
+        if (lastDoubleNl > maxChars * 0.6) {
+            return text.slice(0, lastDoubleNl).trim();
+        }
+
+        // 2. 向前扩展最多 500 字符，找最近的完整句末（包括中文句号、感叹号、问号）
+        const extended = text.slice(0, maxChars + 500);
+        const sentenceEndings = ['。', '！', '？', '.', '!', '?'];
+        let lastPunct = -1;
+        for (const punct of sentenceEndings) {
+            const idx = extended.lastIndexOf(punct);
+            if (idx > lastPunct) lastPunct = idx;
+        }
+        if (lastPunct > maxChars * 0.75 && lastPunct < text.length) {
+            return text.slice(0, lastPunct + 1).trim();
+        }
+        if (lastPunct > 0) {
+            return text.slice(0, lastPunct + 1).trim();
+        }
+
+        // 3. 最近单换行
+        const lastNl = slice.lastIndexOf('\n');
+        if (lastNl > maxChars * 0.7) {
+            return text.slice(0, lastNl).trim();
+        }
+
+        return slice.trim();
     };
 
-    // 检查内容是否已经有收尾的迹象（检查原始文本，不清理）
+    // 检查内容是否已经有收尾的迹象
     const hasEndingIndicators = (text: string): boolean => {
-        const endingPatterns = [
+        const strictPatterns = [
             /下期再見/i,
             /下期再见/i,
             /下期节目再见/i,
@@ -1231,7 +1268,22 @@ ${segmentSourceText}
             /诸位乡亲.*再见/i,
             /諸位鄉親.*再見/i,
         ];
-        return endingPatterns.some(pattern => pattern.test(text));
+        if (strictPatterns.some((pattern) => pattern.test(text))) {
+            return true;
+        }
+        // 仅在文末 2000 字范围内检测新闻人设收尾，避免正文「咱们下期继续分析」误判
+        const tail = text.length <= 2000 ? text : text.slice(-2000);
+        const newsTailClosingPatterns = [
+            // 狭义：仅「下期」+ 继续/再 X
+            /咱[們们]下期[，,、]?\s*继续/i,
+            /咱[們们]下期[，,、]?\s*再[相见聊會会]/i,
+            /下期[，,、]?\s*继续(撕|拆|聊)/i,
+            /咱[們们]下期[，,、]?\s*(接着|再)(撕|拆)/i,
+            // 广义：评论区引导 + 咱们下期见（组合模式，同时覆盖「评论区留言，咱们下期见」）
+            /评论区[留说告诉].*咱[們们]下期/i,
+            /咱[們们]下期[，,、]?\s*(见|聊|拆|撕|潜|唠)/i,
+        ];
+        return newsTailClosingPatterns.some((pattern) => pattern.test(tail));
     };
 
     /** 已达字数、收尾语、节数齐全 → 不再强制续写 */
@@ -1244,19 +1296,63 @@ ${segmentSourceText}
         return true;
     };
 
-    // 检查内容是否完整且字数合理（用于新闻评论）
-    // 当出现收尾语且字数>=4000时，认为内容已完整
-    const isContentComplete = (text: string, minChars: number, maxChars: number): boolean => {
-        // 检查原始文本是否有收尾语
-        const hasEnding = hasEndingIndicators(text);
-        if (!hasEnding) {
-            return false;
+    /** 新闻终稿：扫描文末约 2000 字，找正式收尾语（含互动引导）。在原始文本上检测（sanitize 会删除收尾语） */
+    const hasNewsFormalClosingInTail = (text: string): boolean => {
+        const cleaned = text; // 不用 sanitizeTtsScript，因为 sanitize 会删「咱们下期见」
+        if (cleaned.length < 80) return false;
+        const t = cleaned.slice(-2000);
+        if (/下期再见|下期再見/.test(t)) return true;
+        if (/咱们下期见|咱們下期見|咱们下期再见|咱們下期再見/.test(t)) return true;
+        if (/咱们下期继续拆/.test(t)) return true;
+        if (/咱们下期再聊/.test(t)) return true;
+        if (/咱们下期[，,、]?\s*继续撕/.test(t)) return true;
+        if (/咱们下期再/.test(t)) return true;
+        if ((/评论区|留言区|留言/.test(t) || /点赞|转发/.test(t)) && /下期/.test(t)) return true;
+        return false;
+    };
+
+    /** 新闻/金融：找到收尾语「咱们下期见」等在文中的最后位置，截断其后所有内容，防止强制续写。在原始文本上检测 */
+    const stripAfterClosingPhrase = (text: string): string => {
+        const cleaned = text; // 不用 sanitizeTtsScript
+        if (cleaned.length < 200) return text;
+
+        // 从后往前扫描最后 2000 字，找「咱们下期见」等正式收尾语的最后位置
+        const tail = cleaned.slice(-2000);
+        const closingPatterns = [
+            /咱们下期见/,
+            /咱们下期再见/,
+            /咱们下期继续拆/,
+            /咱们下期再聊/,
+            /咱们下期再/,
+            /咱们下期[，,、]继续撕/,
+            /下期再见/,
+            /下期再見/,
+        ];
+
+        let lastClosingPos = -1;
+        for (const pattern of closingPatterns) {
+            const match = tail.match(pattern);
+            if (match && match.index !== undefined) {
+                const pos = cleaned.length - 2000 + match.index + match[0].length;
+                if (pos > lastClosingPos) lastClosingPos = pos;
+            }
         }
-        // 检查字数（使用清理后的文本计算）
-        const cleaned = sanitizeTtsScript(text);
-        const length = cleaned.length;
-        // 有收尾语且字数>=4000，认为内容完整（不限制上限，优先保证完整性）
-        return length >= 4000;
+
+        // 收尾语在文末超过 30% 位置就截断（更激进保留）
+        if (lastClosingPos > cleaned.length * 0.3) {
+            // 截断到句末（找收尾语后面的句号/感叹号/问号）
+            const afterClosing = cleaned.slice(lastClosingPos);
+            const sentenceEndMatch = afterClosing.match(/[。！？.!?]/);
+            if (sentenceEndMatch && sentenceEndMatch.index !== undefined) {
+                lastClosingPos = lastClosingPos + sentenceEndMatch.index + 1;
+            }
+            const truncated = cleaned.slice(0, lastClosingPos).trim();
+            if (truncated.length > 5000) {
+                console.log(`[Generator] stripAfterClosingPhrase: stripped content after closing, kept ${truncated.length} chars`);
+                return truncated;
+            }
+        }
+        return text;
     };
 
     const getCtaKeyword = (topic: string) => {
@@ -1480,8 +1576,7 @@ ${segmentSourceText}
                 niche === NicheType.PSYCHOLOGY ||
                 niche === NicheType.PHILOSOPHY_WISDOM ||
                 niche === NicheType.EMOTION_TABOO ||
-                niche === NicheType.YI_JING_METAPHYSICS ||
-                niche === NicheType.GENERAL_VIRAL;
+                niche === NicheType.YI_JING_METAPHYSICS;
 
             const maybeNormalizeLayout = (content: string): string => {
                 if (mapIsShortScript) return content;
@@ -1491,6 +1586,8 @@ ${segmentSourceText}
                 ) {
                     return content;
                 }
+                // 新闻赛道不需要段落规范化（且正则会误插「第X节课」标题）
+                if (niche === NicheType.GENERAL_VIRAL) return content;
                 if (content.length < 400) return content;
                 if (!needsParagraphNormalization(content)) return content;
                 return normalizeDenseChineseParagraphs(content);
@@ -1573,7 +1670,8 @@ ${segmentSourceText}
                 {
                     maxTokens:
                         niche === NicheType.TCM_METAPHYSICS ||
-                        (niche === NicheType.YI_JING_METAPHYSICS && !mapIsShortScript)
+                        (niche === NicheType.YI_JING_METAPHYSICS && !mapIsShortScript) ||
+                        niche === NicheType.GENERAL_VIRAL
                             ? 12288
                             : 8192,
                 }
@@ -1621,10 +1719,75 @@ ${segmentSourceText}
                                     ? MAX_FIN_SCRIPT_CHARS
                                     : MAX_NEWS_SCRIPT_CHARS;
                 
-                // 对于新闻评论，先检查是否已经完整（有收尾且字数合理）
-                if (niche === NicheType.GENERAL_VIRAL && isContentComplete(localContent, minChars, maxChars)) {
-                    // 内容已经完整，直接进入收尾阶段，不再续写
-                    console.log('[Generator] Content already complete, skipping continuation');
+                // GENERAL_VIRAL（小美）：严格字数控制，禁止强制续写
+                // 核心原则：正文未满 minC 前禁止出现收尾语 → 达标后才写收尾 → 收尾后停笔
+                if (niche === NicheType.GENERAL_VIRAL) {
+                    const minC = MIN_NEWS_SCRIPT_CHARS; // 7000
+                    const maxC = MAX_NEWS_SCRIPT_CHARS; // 9000
+                    let clLen = sanitizeTtsScript(localContent).length;
+
+                    // Step 1: 严格字数控制循环
+                    // 参考金融宏观逻辑：在 minC 达标前，如果检测到收尾语则剥离（视为无效），
+                    // 如果字数不足则补足正文，禁止写收尾。
+                    // 循环上限 3 次，防止无限循环。
+                    let salvageRounds = 0;
+                    while (clLen < minC && salvageRounds < 3) {
+                        salvageRounds += 1;
+                        // 如果有无效收尾语，先剥离
+                        localContent = stripAfterClosingPhrase(localContent);
+                        clLen = sanitizeTtsScript(localContent).length;
+                        if (clLen >= minC) break;
+
+                        console.log(`[Generator] News: body ${clLen} < ${minC}, salvage pass #${salvageRounds}`);
+                        await streamContentGeneration(
+                            [
+                                `第一人称新闻口播（小美犀利视角），承接上文继续深入分析。**绝对禁止写任何收尾语、互动引导、点赞/留言要求、「咱们下期见」等。**继续展开正文分析。`,
+                                `当前约${clLen}字，目标至少${minC}字。不要分段标记，不要分隔符。`,
+                                '',
+                                '【上文】',
+                                localContent.slice(-3000)
+                            ].join('\n'),
+                            systemInstruction,
+                            appendChunk,
+                            undefined,
+                            { maxTokens: 8192 }
+                        );
+                        localContent = maybeNormalizeLayout(localContent);
+                        clLen = sanitizeTtsScript(localContent).length;
+                    }
+
+                    // 达标后，再次剥离可能提前出现的无效收尾语
+                    localContent = stripAfterClosingPhrase(localContent);
+                    clLen = sanitizeTtsScript(localContent).length;
+
+                    // Step 2: 正文已达标（≥ minC），且没有正式收尾 → 写一次收尾
+                    if (!hasNewsFormalClosingInTail(localContent)) {
+                        console.log(`[Generator] News: body ${clLen} >= ${minC}, writing closing`);
+                        await streamContentGeneration(
+                            [
+                                `上文约${clLen}字，已达目标字数。现在写最后收束段（约500–700字）：先升华点题形成终局判断，然后用互动引导（选一：「评论区聊聊」「点赞咱们下期见」「转发给朋友」），**文末必须以「咱们下期见」或「咱们下期继续拆」结尾；写完即停笔，绝对不得续写任何内容。**`,
+                                '不要分段标记，不要分隔符。',
+                                '',
+                                '【上文】',
+                                localContent.slice(-3000)
+                            ].join('\n'),
+                            systemInstruction,
+                            appendChunk,
+                            undefined,
+                            { maxTokens: 4096 }
+                        );
+                        localContent = maybeNormalizeLayout(localContent);
+                    }
+
+                    // Step 3: 剥离收尾后可能又续写的内容（写完「咱们下期见」后又写了新内容）
+                    localContent = stripAfterClosingPhrase(localContent);
+                    clLen = sanitizeTtsScript(localContent).length;
+
+                    // Step 4: 语义截断，确保不超过硬上限
+                    if (clLen > maxC) {
+                        localContent = truncateToMax(localContent, maxC);
+                        console.log(`[Generator] News truncated to ${localContent.length} chars (semantic boundary)`);
+                    }
                 } else {
                     // 需要续写的情况
                     const continuationLimit =
@@ -1665,20 +1828,7 @@ ${segmentSourceText}
                         if (!needMoreBody && !tcmNeedClosingOnly) {
                             break;
                         }
-                        // 对于新闻评论，每次续写前都检查是否已经完整
-                        if (niche === NicheType.GENERAL_VIRAL && isContentComplete(localContent, minChars, maxChars)) {
-                            console.log('[Generator] Content became complete during continuation, stopping');
-                            break;
-                        }
-                        
-                        // 对于新闻评论，如果字数已经达到4000以上，停止续写，进入强制收尾阶段
-                        if (niche === NicheType.GENERAL_VIRAL) {
-                            const cleanedLength = sanitizeTtsScript(localContent).length;
-                            if (cleanedLength >= 4000 && !hasEndingIndicators(localContent)) {
-                                console.log('[Generator] Content reached 4000+ chars, stopping continuation to force ending');
-                                break;
-                            }
-                        }
+                        // [GENERAL_VIRAL moved to dedicated block above — safe to remove]
                         
                         continueCount += 1;
                         const context = localContent.slice(-2000);
@@ -1701,8 +1851,6 @@ ${segmentSourceText}
                                         : tcmSubMode === TcmSubModeId.TIME_TABOO
                                         ? `请严格继续生成中医玄学长文（时辰禁忌），必须遵循9节课铁律且按顺序推进，当前已写${currentLength}字，目标总字数${MIN_TCM_SCRIPT_CHARS}-${MAX_TCM_SCRIPT_CHARS}字。在未满约${TCM_MIN_CHARS_BEFORE_FINAL_LESSON}字前禁止出现「第九节课/第九堂课」及其正文；在未满${TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES}字前禁止任何节目收尾语（如下期再见/下课/节目再见/这堂课讲到这里等）。严禁第十节课及以上。满${TCM_MIN_CHARS_BEFORE_FINAL_LESSON}字后才可进入第9节；满${TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES}字且第9节写完后才可收尾。严禁输出第十节课及以上内容。不要改写已生成内容，不要跳节，不要输出分隔符。`
                                         : `请严格继续生成中医玄学长文（${tcmSubMode}），按课程化结构顺序推进（至少${requiredLessonCount}节课，建议5或7节），当前已写${currentLength}字，目标${MIN_TCM_SCRIPT_CHARS}-${MAX_TCM_SCRIPT_CHARS}字。在未满约${TCM_MIN_CHARS_BEFORE_FINAL_LESSON}字前禁止出现「第${TCM_LESSON_CN[requiredLessonCount - 1]}节课/堂课」及最后一节收束；在未满${TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES}字前禁止任何节目收尾语。满${TCM_MIN_CHARS_BEFORE_FINAL_LESSON}字后再写最后一节；满${TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES}字并完成全部节次后才可收尾。不要改写已生成内容，不要跳节，不要输出分隔符。`)
-                                    : niche === NicheType.GENERAL_VIRAL
-                                    ? `请用第一人称续写新聞評論，保持評論員的犀利與獨家視角，不要重覆前文。當前已寫${currentLength}字，如果內容充分完整且達到4000字以上，可以自然收尾並以「下期再見」「我們下期見」或「咱們下期再見」結束。如果內容尚不完整，请繼續深入分析，暫時不要收尾。`
                                     : niche === NicheType.YI_JING_METAPHYSICS
                                         ? (remainingBudget <= 400
                                             ? `请用200-400字完成收束：曾仕强式通透结语与金句，可自然引导评论互动。当前已写${currentLength}字，勿重复前文。`
@@ -1714,7 +1862,7 @@ ${segmentSourceText}
                                         : '请续写以下內容，保持原風格與第一人称口吻，不要重覆前文。',
                             ...(niche === NicheType.TCM_METAPHYSICS && tcmNeedClosingOnly
                                 ? []
-                                : niche === NicheType.YI_JING_METAPHYSICS && !isShortScript
+                                : (niche === NicheType.YI_JING_METAPHYSICS && !isShortScript) || niche === NicheType.FINANCE_CRYPTO
                                   ? []
                                   : ['不要出現「下課」「今天的課到這裡」等其他收尾語。']),
                             '直接续写正文，不要任何分隔符、标记或元信息。',
@@ -1750,45 +1898,6 @@ ${segmentSourceText}
                             break;
                         }
                         
-                        // 对于新闻评论，检查是否已经出现"下期再见"，如果是则立即停止
-                        if (niche === NicheType.GENERAL_VIRAL && hasEndingIndicators(localContent)) {
-                            console.log('[Generator] Detected "下期再见" during continuation, stopping immediately');
-                            break;
-                        }
-                    }
-                }
-
-                if (niche === NicheType.GENERAL_VIRAL) {
-                    // 检查内容是否已经完整（有收尾语且字数>=4000）
-                    const hasEnding = hasEndingIndicators(localContent);
-                    const cleanedBeforeEnd = sanitizeTtsScript(localContent);
-                    
-                    if (isContentComplete(localContent, minChars, maxChars)) {
-                        // 内容已完整（有收尾语且字数>=4000），直接结束，不做任何额外操作
-                        console.log('[Generator] Content is complete with ending and sufficient length, finishing');
-                    } else if (hasEnding && cleanedBeforeEnd.length < 4000) {
-                        // 有收尾语但字数不足4000，警告但不续写（避免循环）
-                        console.log('[Generator] Warning: Content has ending but length < 4000, skipping to avoid loop');
-                    } else if (cleanedBeforeEnd.length >= 4000) {
-                        // 字数已经达到4000以上但没有收尾语，必须强制收尾
-                        console.log('[Generator] Content reached 4000+ chars without ending, forcing conclusion');
-                        const endPrompt = [
-                            '请用第一人称對上述內容進行总结收尾，結尾要升華點題並形成明確觀點收束。',
-                            '最後必須以「下期再見」或「咱們下期再見」或「我們下期見」作為結尾語。',
-                            '直接输出收尾段落，不要任何分隔符、标记或元信息。',
-                            '不要标题、不要段落标记、不要元信息。',
-                            '收尾段落控制在300-500字之內，要簡潔有力、點題升華。',
-                            '',
-                            '【需要收尾的內容】',
-                            localContent.slice(-2000)
-                        ].join('\n');
-
-                        await streamContentGeneration(
-                            endPrompt,
-                            systemInstruction,
-                            appendChunk
-                        );
-                        localContent = maybeNormalizeLayout(localContent);
                     }
                 }
 
@@ -1919,11 +2028,119 @@ ${segmentSourceText}
                         return newArr;
                     });
                 } else if (niche === NicheType.FINANCE_CRYPTO) {
-                    localContent = cleaned;
+                    // 金融宏观预警处理流程：
+                    // 1. 先剥离可能提前出现的无效续写内容
+                    // 2. 检测字数是否达标 → 未达标则补足正文
+                    // 3. 检测是否有正式收尾 → 没有则写收尾
+                    // 4. 再次剥离收尾后可能又续写的内容
+                    // 5. 最后才做语义截断（保证收尾语不被截掉）
                     if (isShortScript) {
                         localContent = truncateToMax(localContent, 500);
+                    } else {
+                        // Step 1: 剥离提前的续写
+                        localContent = stripAfterClosingPhrase(localContent);
+
+                        // Step 2: 严格字数控制循环（在 minC 达标前禁止写收尾）
+                        let finLen = sanitizeTtsScript(localContent).length;
+                        let salvageRounds = 0;
+                        while (finLen < minChars && salvageRounds < 3) {
+                            salvageRounds += 1;
+                            // 先剥离可能无效的收尾语
+                            localContent = stripAfterClosingPhrase(localContent);
+                            finLen = sanitizeTtsScript(localContent).length;
+                            if (finLen >= minChars) break;
+
+                            console.log(`[Generator] Finance: body ${finLen} < ${minChars}, salvage pass #${salvageRounds}`);
+                            await streamContentGeneration(
+                                [
+                                    `第一人称查理·芒格口吻，承接上文继续深入分析。**绝对禁止写任何收尾语、互动引导、「咱们下期见」等。**继续展开正文分析。`,
+                                    `当前约${finLen}字，目标至少${minChars}字。不要分段标记，不要分隔符。`,
+                                    '',
+                                    '【上文】',
+                                    localContent.slice(-3000)
+                                ].join('\n'),
+                                systemInstruction,
+                                appendChunk,
+                                undefined,
+                                { maxTokens: 4096 }
+                            );
+                            localContent = maybeNormalizeLayout(localContent);
+                            finLen = sanitizeTtsScript(localContent).length;
+                        }
+
+                        // 达标后，再次剥离可能提前出现的无效收尾语
+                        localContent = stripAfterClosingPhrase(localContent);
+                        finLen = sanitizeTtsScript(localContent).length;
+
+                        // Step 3: 正文已达标（≥ minChars），且没有正式收尾 → 写一次收尾
+                        if (!hasNewsFormalClosingInTail(localContent)) {
+                            console.log(`[Generator] Finance: body ${finLen} >= ${minChars}, writing closing`);
+                            await streamContentGeneration(
+                                [
+                                    `上文约${finLen}字，已达目标字数。现在写最后收束段（约400–600字）：先用芒格式冷笑话或对华尔街的调侃收束，然后自然过渡到互动引导（选一：「评论区聊聊」「点赞咱们下期见」「转发给朋友」），**文末必须以「咱们下期见」或「咱们下期继续拆」结尾；出现这句话后立即停笔，绝对不得续写任何内容。**`,
+                                    '不要分段标记，不要分隔符。',
+                                    '',
+                                    '【上文】',
+                                    localContent.slice(-3000)
+                                ].join('\n'),
+                                systemInstruction,
+                                appendChunk,
+                                undefined,
+                                { maxTokens: 4096 }
+                            );
+                            localContent = maybeNormalizeLayout(localContent);
+                        }
+
+                        // Step 4: 剥离收尾后可能续写的内容（raw）
+                        localContent = stripAfterClosingPhrase(localContent);
+
+                        // Step 5: 语义截断（raw文本，在收尾检测之后）
+                        const finFinalLen = localContent.length;
+                        if (finFinalLen > maxChars) {
+                            localContent = truncateToMax(localContent, maxChars);
+                            console.log(`[Generator] Finance truncated to ${localContent.length} chars`);
+                        }
+
+                        // Step 6: sanitize（收尾语在 raw 中，sanitize 后会被删）
+                        const beforeSanitize = localContent;
+                        localContent = sanitizeTtsScript(localContent);
+
+                        // Step 7: 剥离金融内容中不应该出现的"第X节课/第X堂课"等中医玄学模式
+                        localContent = localContent
+                            .replace(/第[一二三四五六七八九十百0-9]+节课[：:]/g, '')
+                            .replace(/第[一二三四五六七八九十百0-9]+堂课[：:]/g, '')
+                            .replace(/第[一二三四五六七八九十百0-9]+节[：:]/g, '')
+                            .replace(/第一[层节模块][：:]/gi, '')
+                            .replace(/第二[层节模块][：:]/gi, '')
+                            .replace(/第三[层节模块][：:]/gi, '')
+                            .replace(/第四[层节模块][：:]/gi, '')
+                            .replace(/第五[层节模块][：:]/gi, '')
+                            .replace(/第六[层节模块][：:]/gi, '')
+                            .replace(/第七[层节模块][：:]/gi, '')
+                            .replace(/第八[层节模块][：:]/gi, '')
+                            .replace(/第九[层节模块][：:]/gi, '')
+                            .replace(/\n\s*第[一二三四五六七八九十]+节课\n*/g, '\n')
+                            .replace(/\n\s*第[一二三四五六七八九十]+堂课\n*/g, '\n');
+
+                        // Step 8: sanitize 后收尾语被删，若内容达标则补上
+                        // 达标条件：sanitize 后 ≥ minChars，且 sanitize 前文末有收尾语
+                        const sanitizedLen = localContent.length;
+                        if (
+                            sanitizedLen >= minChars &&
+                            hasNewsFormalClosingInTail(beforeSanitize) &&
+                            !hasNewsFormalClosingInTail(localContent)
+                        ) {
+                            const closingOption = [
+                                '各位朋友，这期内容如果让你觉得有点东西，别忘了点个赞，咱们下期见。',
+                                '如果你也有想让我拆解的宏观热点，评论区留言，咱们下期见。',
+                                '各位观众，你们觉得这局面谁才是真正的输家？评论区告诉我，咱们下期继续拆。',
+                            ][Math.floor(Math.random() * 3)];
+                            localContent = localContent.trimEnd() + '\n\n' + closingOption;
+                            console.log(`[Generator] Finance: re-added closing phrase after sanitize (len=${localContent.length})`);
+                        }
                     }
-                    
+                    cleaned = localContent;
+
                     // 保存到 Map 中，用于最后统一保存历史记录
                     generatedContentsMap.set(index, { topic: topic.title, content: localContent });
                     
@@ -1963,30 +2180,11 @@ ${segmentSourceText}
                         return newArr;
                     });
                 } else {
-                    // 新闻评论：优先保证内容完整性
-                    if (niche === NicheType.GENERAL_VIRAL) {
-                        // 检查是否有"下期再见"收尾
-                        const hasEnding = hasEndingIndicators(cleaned);
-                        if (hasEnding) {
-                            // 有收尾语，保留完整内容，即使超过8000字
-                            console.log('[Generator] Content has proper ending, keeping full content even if exceeds limit');
-                            localContent = cleaned;
-                        } else if (cleaned.length > maxChars) {
-                            // 没有收尾语且超过上限（不应该发生），截断到上限
-                            console.log('[Generator] Content exceeds limit without ending, truncating');
-                            const capped = truncateToMax(cleaned, maxChars);
-                            localContent = capped;
-                        } else {
-                            localContent = cleaned;
-                        }
+                    // 其他类型内容
+                    if (cleaned.length > maxChars) {
+                        localContent = truncateToMax(cleaned, maxChars);
                     } else {
-                        // 其他类型内容的处理
-                        if (cleaned.length > maxChars) {
-                            const capped = truncateToMax(cleaned, maxChars);
-                            localContent = capped;
-                        } else {
-                            localContent = cleaned;
-                        }
+                        localContent = cleaned;
                     }
                     
                     // 保存到 Map 中，用于最后统一保存历史记录
@@ -2562,7 +2760,13 @@ ${segmentSourceText}
                                     {mode.title.split('：')[0].split('(')[0]}
                                 </span>
                                 {hasHistory && (
-                                    <History size={12} className="text-emerald-400" title="有历史记录" />
+                                    <button
+                                      onClick={(e) => handleManualHistoryClick(e, niche, mode.id)}
+                                      className="ml-auto p-0.5 rounded hover:bg-slate-700/50 transition-colors"
+                                      title="点击查看历史记录"
+                                    >
+                                        <History size={14} className="text-emerald-400 hover:text-emerald-300" />
+                                    </button>
                                 )}
                             </div>
                             <p className="text-[10px] text-slate-500 leading-tight">
