@@ -1485,15 +1485,17 @@ ${segmentSourceText}
                             : 500;
                 } else {
                     const minChars =
-                        niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.MINDFUL_PSYCHOLOGY
-                            ? 3000 // Mindful Psychology 长视频约 3000-5000 字
-                            : niche === NicheType.YI_JING_METAPHYSICS
-                                ? MIN_YI_JING_SCRIPT_CHARS
-                                : niche === NicheType.TCM_METAPHYSICS
-                                    ? MIN_TCM_SCRIPT_CHARS
-                                    : niche === NicheType.FINANCE_CRYPTO
-                                        ? MIN_FIN_SCRIPT_CHARS
-                                        : MIN_NEWS_SCRIPT_CHARS;
+                        niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO
+                            ? 3000
+                            : niche === NicheType.MINDFUL_PSYCHOLOGY
+                                ? 5000  // Mindful Psychology 5000-10000 字
+                                : niche === NicheType.YI_JING_METAPHYSICS
+                                    ? MIN_YI_JING_SCRIPT_CHARS
+                                    : niche === NicheType.TCM_METAPHYSICS
+                                        ? MIN_TCM_SCRIPT_CHARS
+                                        : niche === NicheType.FINANCE_CRYPTO
+                                            ? MIN_FIN_SCRIPT_CHARS
+                                            : MIN_NEWS_SCRIPT_CHARS;
                     totalExpected += minChars;
                 }
             } else if (isRevengeShort) {
@@ -1788,7 +1790,7 @@ ${segmentSourceText}
                                 : niche === NicheType.FINANCE_CRYPTO
                                     ? MIN_FIN_SCRIPT_CHARS
                                     : niche === NicheType.MINDFUL_PSYCHOLOGY
-                                        ? 9000  // Mindful Psychology 长视频 9000-15000 字
+                                        ? 5000  // Mindful Psychology 5000-10000 字，自动匹配
                                         : MIN_NEWS_SCRIPT_CHARS;
                 const maxChars = isShortScript
                     ? 500
@@ -1801,7 +1803,7 @@ ${segmentSourceText}
                                 : niche === NicheType.FINANCE_CRYPTO
                                     ? MAX_FIN_SCRIPT_CHARS
                                     : niche === NicheType.MINDFUL_PSYCHOLOGY
-                                        ? 15000  // Mindful Psychology 长视频 9000-15000 字
+                                        ? 10000  // Mindful Psychology 5000-10000 字，自动匹配
                                         : MAX_NEWS_SCRIPT_CHARS;
                 
                 // GENERAL_VIRAL（小美）：严格字数控制，禁止强制续写
@@ -1872,6 +1874,39 @@ ${segmentSourceText}
                     if (clLen > maxC) {
                         localContent = truncateToMax(localContent, maxC);
                         console.log(`[Generator] News truncated to ${localContent.length} chars (semantic boundary)`);
+                    }
+                } else if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+                    // Mindful Psychology：禁止强制续写，按照选题内容自然输出
+                    // 核心原则：AI 根据选题复杂度自动匹配字数，完成后自然停笔
+                    const minC = 5000;
+                    const maxC = 10000;
+                    let clLen = sanitizeTtsScript(localContent).length;
+
+                    // 如果字数低于下限，续写一次补充内容
+                    if (clLen < minC) {
+                        console.log(`[Generator] Mindful Psychology: body ${clLen} < ${minC}, supplementary pass`);
+                        await streamContentGeneration(
+                            [
+                                `请承接上文继续深入展开心理学内容，保持温暖治愈的咨询师口吻。`,
+                                `当前约${clLen}字，目标是${minC}-${maxC}字（根据选题复杂度自动匹配）。`,
+                                `只续写正文内容，不要任何收尾语或分隔符。`,
+                                '',
+                                '【上文】',
+                                localContent.slice(-3000)
+                            ].join('\n'),
+                            systemInstruction,
+                            appendChunk,
+                            undefined,
+                            { maxTokens: 8192 }
+                        );
+                        localContent = maybeNormalizeLayout(localContent);
+                        clLen = sanitizeTtsScript(localContent).length;
+                    }
+
+                    // 语义截断，确保不超过硬上限
+                    if (clLen > maxC) {
+                        localContent = truncateToMax(localContent, maxC);
+                        console.log(`[Generator] Mindful Psychology truncated to ${localContent.length} chars`);
                     }
                 } else {
                     // 需要续写的情况
