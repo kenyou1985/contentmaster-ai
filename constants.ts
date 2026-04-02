@@ -539,7 +539,7 @@ export const MINDFUL_PSYCHOLOGY_SCRIPT_PROMPT = `
 {topic}
 
 ## 任务目标
-根据选定主题，撰写一篇 TTS 纯净语音文案。
+根据选定主题，撰写 TTS 纯净语音文案。
 
 ## 语言要求
 默认为英文（English），除非用户特别指定。
@@ -553,15 +553,21 @@ export const MINDFUL_PSYCHOLOGY_SCRIPT_PROMPT = `
 ## 内容结构
 Hook(0-15s) -> Empathy Bridge -> Deep Dive(5-7个要点) -> Healing Solution -> Outro & CTA
 
-## 字数要求
-5000 - 10000 字。根据选题复杂度自动匹配：
-- 简单单点主题：5000-7000 字
-- 中等复合主题：7000-8500 字
-- 深度复杂主题：8500-10000 字
+## 字数要求（按配音语速 8-15 分钟）
+按英文单词平均约 4-5 个字母 + 1 个空格来算，折合字符（含空格）：
+- 8 分钟视频：约 4800–6000 字符
+- 15 分钟视频：约 9000–11250 字符
+- 正常语速：1 分钟 ≈ 600–750 字符
+
+根据选题复杂度自动匹配：
+- 简单单点主题：4800-6000 字符（8-10分钟）
+- 中等复合主题：6000-9000 字符（10-12分钟）
+- 深度复杂主题：9000-11250 字符（12-15分钟）
+
 深度展开，引入实验案例、潜意识剖析、日常疗愈步骤。只输出纯文案内容，不要任何前缀说明。
 
-## 互动引导要求（末尾必须有）
-在文案结尾处，必须包含以下互动引导（选一）：
+## 互动引导要求（末尾必须有，不可省略）
+在文案结尾处，必须包含以下互动引导（**必须完整输出，不能省略**）：
 - "If you found this helpful, give this video a thumbs up and subscribe for more healing content."
 - "Let me know in the comments: which type resonates most with you?"
 - "Follow for more gentle reminders on your healing journey."

@@ -1488,7 +1488,7 @@ ${segmentSourceText}
                         niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO
                             ? 3000
                             : niche === NicheType.MINDFUL_PSYCHOLOGY
-                                ? 5000  // Mindful Psychology 5000-10000 字
+                                ? 4800  // Mindful Psychology 4800-11250 字符
                                 : niche === NicheType.YI_JING_METAPHYSICS
                                     ? MIN_YI_JING_SCRIPT_CHARS
                                     : niche === NicheType.TCM_METAPHYSICS
@@ -1790,7 +1790,7 @@ ${segmentSourceText}
                                 : niche === NicheType.FINANCE_CRYPTO
                                     ? MIN_FIN_SCRIPT_CHARS
                                     : niche === NicheType.MINDFUL_PSYCHOLOGY
-                                        ? 5000  // Mindful Psychology 5000-10000 字，自动匹配
+                                        ? 4800  // Mindful Psychology 4800-11250 字符（8-15分钟）
                                         : MIN_NEWS_SCRIPT_CHARS;
                 const maxChars = isShortScript
                     ? 500
@@ -1803,7 +1803,7 @@ ${segmentSourceText}
                                 : niche === NicheType.FINANCE_CRYPTO
                                     ? MAX_FIN_SCRIPT_CHARS
                                     : niche === NicheType.MINDFUL_PSYCHOLOGY
-                                        ? 10000  // Mindful Psychology 5000-10000 字，自动匹配
+                                        ? 11250  // Mindful Psychology 4800-11250 字符（8-15分钟）
                                         : MAX_NEWS_SCRIPT_CHARS;
                 
                 // GENERAL_VIRAL（小美）：严格字数控制，禁止强制续写
@@ -1878,8 +1878,8 @@ ${segmentSourceText}
                 } else if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
                     // Mindful Psychology：禁止强制续写，按照选题内容自然输出
                     // 核心原则：AI 根据选题复杂度自动匹配字数，完成后自然停笔
-                    const minC = 5000;
-                    const maxC = 10000;
+                    const minC = 4800;
+                    const maxC = 11250;
                     let clLen = sanitizeTtsScript(localContent).length;
 
                     // 如果字数低于下限，续写一次补充内容
