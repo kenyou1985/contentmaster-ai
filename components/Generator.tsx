@@ -575,497 +575,71 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
     let localContent = '';
 
-    /** 与模板一致：支持「角色信息」或「[角色信息]」 */
-    const hasMindfulRoleHeader = (t: string) =>
-      t.includes('角色信息') || t.includes('角色信息');
-    const hasMindfulSceneHeader = (t: string) =>
-      t.includes('场景信息') || t.includes('場景信息') || t.includes('场景信息');
-
-    /** 从「场景信息」起只保留到场景块内最后一条 [描述] 行，去掉模型在收尾后又续写的分镜 */
-    const truncateMindfulStoryboardAfterSceneInfo = (text: string): string => {
-      if (!text) return text;
-      let s = text.replace(/(\[描述\][^\r\n]*?)镜头(?:序号)?[:：]?\s*\d+[\s\S]*/gu, '$1');
-      s = s.replace(/(\[描述\][^\r\n]*?)镜头\d+[\s\S]*/gu, '$1');
-      const sceneHeaderRe = /(?:^|\n)((?:\[场景信息\]|\[場景信息\]|场景信息|場景信息))\s*\r?\n/m;
-      const hm = sceneHeaderRe.exec(s);
-      if (!hm || hm.index === undefined) return s.trimEnd();
-      const headEnd = hm.index + hm[0].length;
-      const afterHeader = s.slice(headEnd);
-      const sceneOnly = afterHeader.split(/\r?\n(?=镜头(?:序号)?[:：]?\s*\d+|鏡頭\d+)/)[0];
-      const row = /\[名称\][^\r\n]*\r?\n\[别名\][^\r\n]*\r?\n\[描述\][^\r\n]*/g;
-      let m: RegExpExecArray | null;
-      let lastEnd = headEnd;
-      while ((m = row.exec(sceneOnly)) !== null) {
-        lastEnd = headEnd + m.index + m[0].length;
-      }
-      if (lastEnd <= headEnd) return s.trimEnd();
-      return s.slice(0, lastEnd).replace(/(\[描述\][^\r\n]*?)镜头(?:序号)?[:：]?\s*\d+.*/gu, '$1').replace(/(\[描述\][^\r\n]*?)镜头\d+.*/gu, '$1').trimEnd();
-    };
-
-    /** 与原文比对时去掉所有空白（换行/空格），避免「原文多行」与「镜头内单行」导致假字数差 */
-    const normalizeMindfulTextForCompare = (s: string): string =>
-      s.replace(/\r\n/g, '\n').replace(/\s+/g, '');
-
-    /**
-     * 用纯 indexOf 提取所有镜头的「镜头文案」（去标签后拼接），用于总字数比对。
-     * 以「图片提示词」为锚点，每个锚点之前找「镜头文案:」，只取真正的镜头块内容。
-     */
-    const concatMindfulCaptions = (text: string): string => {
-      const parts: string[] = [];
-      let searchPos = 0;
-      while (true) {
-        // 找下一个图片提示词锚点
-        const imgIdx = text.indexOf('\n图片提示词', searchPos);
-        const imgIdxT = text.indexOf('\n圖片提示詞', searchPos);
-        const anchorIdx = imgIdxT === -1 ? imgIdx : imgIdx === -1 ? imgIdxT : Math.min(imgIdx, imgIdxT);
-        if (anchorIdx === -1) break;
-
-        // 在锚点之前一小段（500字符内）找「镜头文案:」
-        const windowStart = Math.max(0, anchorIdx - 500);
-        const window = text.slice(windowStart, anchorIdx);
-        const labelIdx = Math.max(
-          window.lastIndexOf('镜头文案'),
-          window.lastIndexOf('鏡頭文案')
-        );
-        if (labelIdx !== -1) {
-          const labelGlobal = windowStart + labelIdx;
-          const colonIdx = Math.max(
-            text.indexOf('：', labelGlobal),
-            text.indexOf(':', labelGlobal)
-          );
-          if (colonIdx > labelGlobal) {
-            parts.push(text.slice(colonIdx + 1, anchorIdx).trim());
-          }
-        }
-        searchPos = anchorIdx + 1;
-      }
-      return parts.join('');
-    };
-
-    /** 最后一个镜头的「镜头文案」（从最后一个「图片提示词」往前找「镜头文案:」），用于尾部比对 */
-    const lastMindfulShotCaption = (text: string): string => {
-      // 从后往前找「图片提示词」（一定是镜头字段的锚点），再往前找「镜头文案:」
-      const imgIdx = text.lastIndexOf('\n图片提示词');
-      const imgIdxT = text.lastIndexOf('\n圖片提示詞');
-      const anchorIdx = imgIdxT === -1 ? imgIdx : imgIdx === -1 ? imgIdxT : Math.max(imgIdx, imgIdxT);
-      if (anchorIdx === -1) return '';
-
-      // 在 anchorIdx 之前找「镜头文案:」
-      const before = text.slice(0, anchorIdx);
-      const labelIdx = Math.max(
-        before.lastIndexOf('\n镜头文案'),
-        before.lastIndexOf('\n鏡頭文案')
-      );
-      if (labelIdx === -1) return '';
-
-      // 找冒号（中文或英文）
-      const colonIdx = Math.max(
-        before.indexOf('：', labelIdx),
-        before.indexOf(':', labelIdx)
-      );
-      if (colonIdx <= labelIdx) return '';
-
-      return before.slice(colonIdx + 1).trim();
-    };
-
-    /** 比对策略1：原文去空格后总字数 == 所有镜头文案去空格后总字数 */
-    const captionsMatchTotal = (text: string, original: string): boolean => {
-      const origNorm = normalizeMindfulTextForCompare(original.trim());
-      const capNorm = normalizeMindfulTextForCompare(concatMindfulCaptions(text));
-      console.log(
-        `[Storyboard] 比对1-总字数：原文norm长度=${origNorm.length}，` +
-          `镜头文案norm长度=${capNorm.length}，` +
-          `原文norm前50=${JSON.stringify(origNorm.slice(0, 50))}，` +
-          `文案norm前50=${JSON.stringify(capNorm.slice(0, 50))}`
-      );
-      return origNorm.length > 0 && capNorm.length > 0 && origNorm === capNorm;
-    };
-
-    /**
-     * 提取原文「尚未被任何镜头文案覆盖」的后缀部分。
-     * 逻辑：找到最后一个已分配的镜头文案，在原文中定位其末尾位置，剩余部分即为未分配内容。
-     */
-    const getRemainingOriginalText = (text: string, original: string): string => {
-      const lastCap = lastMindfulShotCaption(text).trim();
-      if (!lastCap) return original.trim();
-
-      const orig = original.trim();
-      const idx = orig.indexOf(lastCap);
-
-      if (idx === -1) {
-        // 最后一个镜头文案不在原文中（可能被改写），回退：用总字数差估算
-        const capNorm = normalizeMindfulTextForCompare(concatMindfulCaptions(text));
-        const origNorm = normalizeMindfulTextForCompare(orig);
-        if (capNorm.length < origNorm.length) {
-          // 找 capNorm 在 origNorm 中的起点，取 origNorm 之后的内容
-          const startIdx = origNorm.indexOf(capNorm.slice(0, 50));
-          if (startIdx !== -1) {
-            return orig.slice(startIdx + capNorm.length);
-          }
-        }
-        return '';
-      }
-
-      const remaining = orig.slice(idx + lastCap.length);
-      return remaining.trim();
-    };
-
-    /** 比对策略2：原文末尾 == 最后镜头文案（去空格后逐字相同） */
-    const captionsMatchTail = (text: string, original: string): boolean => {
-      const origNorm = normalizeMindfulTextForCompare(original.trim());
-      const lastCapNorm = normalizeMindfulTextForCompare(lastMindfulShotCaption(text));
-      console.log(
-        `[Storyboard] 比对2-末尾：原文末尾50=${JSON.stringify(origNorm.slice(-50))}，` +
-          `最后caption前50=${JSON.stringify(lastCapNorm.slice(0, 50))}`
-      );
-      return origNorm.length > 0 && lastCapNorm.length > 0 && origNorm === lastCapNorm;
-    };
-
-    /** 仅检查最后一个镜头块（含镜头N、镜头文案、图片提示词、视频提示词、景别、语音分镜、音效），排除角色/场景信息区域 */
-    const isLastMindfulShotFieldsComplete = (text: string): boolean => {
-      // 找到最后一个"镜头N"标题（可能有"镜头序号"）
-      const allShotMatches = [...text.matchAll(/^镜头(?:序号)?[:：]?\s*(\d+)\s*$/gm)];
-      if (allShotMatches.length === 0) return false;
-
-      const lastShotMatch = allShotMatches[allShotMatches.length - 1];
-      const lastShotIndex = lastShotMatch.index! + lastShotMatch[0].length;
-
-      // 角色信息区域之前的内容 = 最后一个镜头的全部字段
-      const roleLine = /(?:^|\r?\n)(?:\[角色信息\]|角色信息)\s*(?:\r?\n|$)/m.exec(text);
-      const roleIdx = roleLine?.index ?? text.length;
-      const lastShotBlock = text.slice(lastShotIndex, roleIdx);
-
-      if (!lastShotBlock.trim()) return false;
-      return (
-        /(?:图片提示词|圖片提示词)[：:]/.test(lastShotBlock) &&
-        /视频提示词[：:]/.test(lastShotBlock) &&
-        /景别|景別/.test(lastShotBlock) &&
-        /语音分镜|語音分鏡/.test(lastShotBlock) &&
-        /音效[：:]/.test(lastShotBlock)
-      );
-    };
-
-    const getMindfulStructureComplete = (text: string) => {
-      const hasRoleInfo = hasMindfulRoleHeader(text);
-      const hasSceneInfo = hasMindfulSceneHeader(text);
-      const lastShotComplete = isLastMindfulShotFieldsComplete(text);
-      return {
-        structureComplete: lastShotComplete && hasRoleInfo && hasSceneInfo,
-        hasRoleInfo,
-        hasSceneInfo,
-        lastShotComplete,
-      };
-    };
-
-    /**
-     * 判断分镜是否完整。
-     * 核心原则：只有镜头文案全部完成（与原文完全一致）后才接受角色/场景信息。
-     * 阶段一：镜头文案还在输出 → 必须全部镜头文案与原文一致才认为镜头完成
-     * 阶段二：镜头文案已全部完成 → 此时输出角色/场景信息才是合法的
-     *
-     * 逻辑：
-     * 1. 镜头文案末尾 == 原文末尾（captionsMatchTail=true）→ 镜头全部完成
-     *    - 角色信息 + 场景信息 + 最后镜头字段完整 → ✅ 完成
-     *    - 角色信息已出现但场景信息未出现 → 补充场景信息
-     *    - 角色信息未出现 → 补充角色信息和场景信息
-     * 2. 镜头文案末尾 != 原文末尾 → 镜头文案未写完，无论是否已输出角色/场景信息，都视为未完成
-     */
-    const isStoryboardComplete = (text: string): { complete: boolean; reason: string } => {
-      if (!text || text.trim().length === 0) {
-        return { complete: false, reason: '内容为空' };
-      }
-
-      const { hasRoleInfo, hasSceneInfo, lastShotComplete } = getMindfulStructureComplete(text);
-      const tailMatch = captionsMatchTail(text, effectiveScript);
-
-      // 调试
-      const hasRoleKw = /角色信息/.test(text);
-      const tail50 = JSON.stringify(text.slice(Math.max(0, text.length - 100), text.length));
-      console.log(
-        `[Storyboard] 角色信息=${hasRoleInfo}（关键字=${hasRoleKw}），` +
-          `场景信息=${hasSceneInfo}，最后镜头字段完整=${lastShotComplete}，` +
-          `末尾一致（镜头文案已完成）=${tailMatch}，文本长度=${text.trim().length}，` +
-          `文本末尾100=${tail50}`
-      );
-
-      // ✅ 阶段一：镜头文案全部完成，才接受角色/场景信息
-      if (tailMatch) {
-        if (lastShotComplete && hasRoleInfo && hasSceneInfo) {
-          return { complete: true, reason: '分镜完整' };
-        }
-        if (hasRoleInfo && !hasSceneInfo) {
-          return { complete: false, reason: '镜头文案已全部完成，补充场景信息…' };
-        }
-        if (!hasRoleInfo) {
-          return { complete: false, reason: '镜头文案已全部完成，补充角色信息和场景信息…' };
-        }
-        if (!lastShotComplete) {
-          return { complete: false, reason: '镜头文案已全部完成，最后镜头字段不完整…' };
-        }
-      }
-
-      // ❌ 阶段二：镜头文案未完成 → 忽略角色/场景信息，持续续写镜头
-      return { complete: false, reason: '镜头文案未写完，忽略角色/场景信息，继续续写镜头…' };
-    };
-
-    // 清理输出中的 [TYPE:...] 标签
-    const cleanOutput = (text: string): string => {
-      return text
-        .replace(/\[TYPE:[^\]]+\]\s*/g, '')
-        .replace(/(\[描述\][^\r\n]*?)已完整[。.]?/g, '$1')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim();
-    };
-
-    /**
-     * 清理截断/续写期间模型误输出的角色/场景信息块（镜头文案未完成时不应出现）
-     * 规则：只有镜头文案完成（captionsMatchTail=true）时才保留角色/场景信息
-     */
-    const syncLocalFromModel = () => {
-      const tailMatch = captionsMatchTail(localContent, effectiveScript);
-      let cleaned = cleanOutput(localContent);
-
-      // 镜头文案未完成 → 去掉角色/场景信息（它们是误输出的）
-      if (!tailMatch) {
-        // 去掉角色信息块（含标题行）
-        cleaned = cleaned.replace(
-          /(?:^|\n)(?:\[角色信息\]|角色信息)\s*[\s\S]*?(?=\n(?:\[场景信息\]|\[場景信息\]|场景信息|場景信息)\s*(?:\n|$))/gm,
-          ''
-        );
-        // 去掉场景信息块（含标题行）
-        cleaned = cleaned.replace(
-          /(?:^|\n)(?:\[场景信息\]|\[場景信息\]|场景信息|場景信息)\s*[\s\S]*/gm,
-          ''
-        );
-      }
-
-      localContent = truncateMindfulStoryboardAfterSceneInfo(cleaned);
-    };
+    const cleanOutput = (text: string): string =>
+      text.replace(/\[TYPE:[^\]]+\]\s*/g, '').replace(/\n{3,}/g, '\n\n').trim();
 
     try {
       const { MINDFUL_PSYCHOLOGY_STORYBOARD_PROMPT } = await import('../constants');
 
-      const systemInstruction = '你是一个科普动画分镜生成器。严格按照格式输出分镜内容，不要任何前缀说明。输出时不要包含 [TYPE:...] 这样的类型标签。';
-      const originalText = effectiveScript;
-      const estimatedShots = Math.max(10, Math.ceil(originalText.length / 250));
+      // 每个镜头平均约 250 字，控制总镜头数在合理范围
+      const charsPerShot = 250;
+      const estimatedShots = Math.max(10, Math.min(50, Math.ceil(effectiveScript.length / charsPerShot)));
 
-      const prompt = `${MINDFUL_PSYCHOLOGY_STORYBOARD_PROMPT}\n\n# 用户脚本内容（共 ${originalText.length} 字，预计 ${estimatedShots} 个镜头）：\n${effectiveScript}`;
+      const systemInstruction =
+        '你是一个科普动画分镜生成器。严格按照格式输出分镜内容，不要任何前缀说明。输出时不要包含 [TYPE:...] 这样的类型标签。';
+
+      const prompt = `${MINDFUL_PSYCHOLOGY_STORYBOARD_PROMPT}
+
+# 用户脚本（共 ${effectiveScript.length} 字，预计 ${estimatedShots} 个镜头）
+
+**【数量铁律】必须严格输出 ${estimatedShots} 个镜头，不许多一个也不能少一个。**
+**【序号格式】镜头序号用"镜头 1"、"镜头 2"格式，禁止用"镜头[1]"格式。**
+**【角色风格】图片提示词中：Q版卡通年轻女性（齐肩深棕长直发，简约黑圆眼，灰蓝色罗纹毛衣，米白休闲裤，红平底鞋）；西伯利亚哈士奇（灰蓝白毛发，竖立尖耳，蓬松卷尾，黑鼻头蓝眼睛）。**
+**【内容铁律】每个镜头的镜头文案必须 100% 包含对应的原文内容。允许将多个相邻句子合并到一个镜头文案中，以合理划分镜头边界。每个镜头文案不得删减、不得改写原文。**
+${effectiveScript}`;
 
       const appendChunk = (chunk: string) => {
         localContent += chunk;
-        // 实时清理 TYPE 标签
-        const cleaned = cleanOutput(localContent);
-        setStoryboard(cleaned);
+        setStoryboard(cleanOutput(localContent));
       };
 
-      // 第一阶段：生成所有镜头
-      console.log('[Storyboard] 第一阶段：生成所有镜头');
-      toast.info(`正在生成分镜（预计 ${estimatedShots} 个镜头）...`);
+      const model = 'gpt-5.4-mini';
+
+      console.log(`[Storyboard] 启动，模型=${model}，预计 ${estimatedShots} 个镜头`);
+      toast.info(`正在生成分镜（${estimatedShots} 个镜头）…`);
 
       await streamContentGeneration(
         prompt,
         systemInstruction,
         appendChunk,
-        undefined,
-        { maxTokens: 16384, idleTimeoutMs: 180_000 }
+        model,
+        { maxTokens: 128_000, idleTimeoutMs: 180_000, firstChunkTimeoutMs: 60_000 }
       );
 
-      syncLocalFromModel();
+      localContent = cleanOutput(localContent);
       setStoryboard(localContent);
+      console.log('[Storyboard] 生成完成');
 
-      // 第二阶段：续写镜头直到镜头文案完成（captionsMatchTail=true）。
-      // 由于提示词禁止在镜头文案完成前输出角色/场景信息，structureOk 永远为 false，
-      // 所以以 captionsMatchTail 为主要退出条件，structureOk 仅作安全兜底。
-      let continuationRound = 0;
-      const MAX_CONTINUATION = 6;
-
-      while (
-        !captionsMatchTail(localContent, effectiveScript) &&
-        !getMindfulStructureComplete(localContent).structureComplete &&
-        continuationRound < MAX_CONTINUATION
-      ) {
-        continuationRound++;
-        const tailNow = captionsMatchTail(localContent, effectiveScript);
-        console.log(`[Storyboard] 续写阶段 ${continuationRound}: tailMatch=${tailNow}`);
-
-        toast.info(`镜头文案未完成，正在续写...（第 ${continuationRound} 轮）`);
-
-        const lastShotMatch = [...localContent.matchAll(/^镜头(\d+)\s*$/gm)];
-        const lastShotNumber =
-          lastShotMatch.length > 0 ? parseInt(lastShotMatch[lastShotMatch.length - 1][1], 10) : 0;
-
-        const continuationPrompt = `## 续写指令（最高优先级）
-
-请继续输出剩余的分镜内容。已输出到镜头${lastShotNumber}。
-
-**【铁律一】禁止提前输出角色/场景信息**
-**在所有镜头文案全部完成（与原文末尾完全一致）之前，禁止输出角色信息或场景信息。**一旦输出角色信息，即代表镜头文案已全部完成；若镜头文案实际未完成而输出了角色信息，该输出无效，将被系统忽略并强制续写镜头。
-
-**【铁律二】必须完成所有镜头文案**
-继续输出镜头${lastShotNumber + 1}、${lastShotNumber + 2}…，每个镜头格式：镜头序号、镜头文案（原文100%还原）、图片提示词、视频提示词、景别、语音分镜、音效。
-
-**【铁律三】结束条件**
-只有满足以下全部条件才输出角色/场景信息并结束：
-- 所有镜头文案拼接后（去空白）与原文末尾完全一致
-- 最后镜头字段完整（图片提示词、视频提示词、景别、语音分镜、音效齐全）
-
-若符合结束条件，输出：
-
-角色信息
-[名称]极简人类角色
-[别名]Human Character
-[描述]极简扁平风格的人类形象，温暖治愈风格
-
-[名称]治愈系小狗
-[别名]Healing Dog
-[描述]可爱治愈的小狗形象，陪伴角色
-
-场景信息
-[名称]场景-温馨室内空间
-[别名]Cozy Indoor Space
-[描述]简约治愈的室内环境，米白墙地，柔和光线
-
-[名称]场景-抽象心灵空间
-[别名]Abstract Mind Space
-[描述]用于展示心理学概念和内心世界的抽象空间
-
-**格式铁律**：不要输出 [TYPE:...] 标签
-
-**以下原文内容尚未分配到任何镜头文案中（请续写镜头，精确还原这些内容，不要改写或翻译）**：
-${(() => {
-  const remaining = getRemainingOriginalText(localContent, effectiveScript);
-  if (!remaining) return '（所有原文内容均已分配到镜头文案中）';
-  return remaining;
-})()}`;
-
-        await streamContentGeneration(
-          continuationPrompt,
-          systemInstruction,
-          appendChunk,
-          undefined,
-          { maxTokens: 8192, idleTimeoutMs: 180_000 }
-        );
-
-        syncLocalFromModel();
-        setStoryboard(localContent);
-      }
-
-      // 第三阶段：Phase 2 循环退出后（角色/场景已被 syncLocalFromModel 清理），
-      // 继续补充剩余镜头，直到镜头文案完成或达到最大轮次。
-      // 只有镜头文案完成（captionsMatchTail=true）时才输出角色/场景信息。
-      const tailMatchAtPhase3Start = captionsMatchTail(localContent, effectiveScript);
-      console.log(
-        `[Storyboard] 自检（Phase 3 入口）：末尾一致=${tailMatchAtPhase3Start}，` +
-          `文本长度=${localContent.trim().length}，` +
-          `文本末尾=${JSON.stringify(localContent.slice(-80))}`
-      );
-
-      let phase3Round = 0;
-      const MAX_PHASE3 = 3;
-
-      while (!captionsMatchTail(localContent, effectiveScript) && phase3Round < MAX_PHASE3) {
-        phase3Round++;
-        toast.info(`镜头文案未完成，Phase 3 补充中…（第 ${phase3Round} 轮）`);
-
-        const lastShotMatch = [...localContent.matchAll(/^镜头(\d+)\s*$/gm)];
-        const lastShotNum = lastShotMatch.length > 0
-          ? parseInt(lastShotMatch[lastShotMatch.length - 1][1], 10) : 0;
-
-        await streamContentGeneration(
-          `## Phase 3 续写指令（最高优先级）
-
-已输出到镜头${lastShotNum}，但镜头文案尚未完成（末尾与原文不一致）。
-
-**【铁律】禁止输出角色/场景信息**（镜头文案未完成前绝对禁止）。
-
-请继续输出镜头${lastShotNum + 1}、${lastShotNum + 2}…：
-- 每个镜头格式：镜头序号、镜头文案（原文100%还原）、图片提示词、视频提示词、景别、语音分镜、音效
-- **必须将原文末尾内容完整分配到最后一个镜头文案中**
-- 绝对不要输出角色信息或场景信息（这是铁律）
-
-**格式铁律**：不要输出 [TYPE:...] 标签
-
-**以下原文内容尚未分配到任何镜头文案中（请续写镜头，精确还原这些内容，不要改写或翻译）**：
-${(() => {
-  const remaining = getRemainingOriginalText(localContent, effectiveScript);
-  if (!remaining) return '（所有原文内容均已分配到镜头文案中）';
-  return remaining;
-})()}`,
-          systemInstruction,
-          appendChunk,
-          undefined,
-          { maxTokens: 8192, idleTimeoutMs: 180_000 }
-        );
-
-        syncLocalFromModel();
-        setStoryboard(localContent);
-      }
-
-      // 镜头文案已完成 → 输出角色信息和场景信息（只需一次）
-      if (captionsMatchTail(localContent, effectiveScript)) {
-        toast.info('镜头文案已完成，输出角色与场景信息…');
-        await streamContentGeneration(
-          `## Phase 3 完成：输出角色与场景信息
-
-上文所有镜头文案已完成，且与原文完全一致。请立即输出角色信息与场景信息，**不要再输出任何镜头**。
-
-角色信息
-[名称]极简人类角色
-[别名]Human Character
-[描述]极简扁平风格的人类形象，温暖治愈风格
-
-[名称]治愈系小狗
-[别名]Healing Dog
-[描述]可爱治愈的小狗形象，陪伴角色
-
-场景信息
-[名称]场景-温馨室内空间
-[别名]Cozy Indoor Space
-[描述]简约治愈的室内环境，米白墙地，柔和光线
-
-[名称]场景-抽象心灵空间
-[别名]Abstract Mind Space
-[描述]用于展示心理学概念和内心世界的抽象空间`,
-          systemInstruction,
-          appendChunk,
-          undefined,
-          { maxTokens: 2048, idleTimeoutMs: 180_000 }
-        );
-        syncLocalFromModel();
-        setStoryboard(localContent);
-      } else {
-        console.warn('[Storyboard] Phase 3 仍无法完成镜头文案，放弃');
-      }
-
-      syncLocalFromModel();
-      const finalOutput = localContent;
-
-      const tailMatchFinal = captionsMatchTail(finalOutput, effectiveScript);
-      const { hasRoleInfo, hasSceneInfo } = getMindfulStructureComplete(finalOutput);
-
-      if (tailMatchFinal && hasRoleInfo && hasSceneInfo) {
-        toast.success('分镜生成完成！所有镜头、角色信息和场景信息均已输出。');
-      } else if (tailMatchFinal) {
-        toast.warning(
-          `镜头文案已完成${hasRoleInfo ? '（角色信息）' : ''}${hasSceneInfo ? '（场景信息）' : ''}，请手动补充${!hasRoleInfo ? '角色信息' : ''}${!hasRoleInfo && !hasSceneInfo ? '和' : ''}${!hasSceneInfo ? '场景信息' : ''}。`
-        );
-      } else {
-        console.warn(`[Storyboard] 镜头文案仍未完成，文本末尾=${JSON.stringify(finalOutput.slice(-80))}`);
-        toast.error('分镜生成超时：镜头文案未能完整输出，请手动续写或缩短脚本长度后重试。');
-      }
-
-      setStoryboard(finalOutput);
-
-      if (!finalOutput || finalOutput.trim().length === 0) {
+      if (!localContent || localContent.trim().length === 0) {
         toast.error('分镜生成失败：返回内容为空');
         return;
       }
 
-      // 保存分镜到历史记录
+      const hasRoleInfo = /角色信息/.test(localContent);
+      const hasSceneInfo = /场景信息/.test(localContent);
+
+      if (hasRoleInfo && hasSceneInfo) {
+        toast.success('分镜生成完成！');
+      } else if (hasRoleInfo || hasSceneInfo) {
+        toast.warning('分镜已生成，请检查角色/场景信息是否完整。');
+      } else {
+        toast.warning('分镜已生成，但未检测到角色/场景信息，请检查输出内容。');
+      }
+
       try {
         const historyKey = getHistoryKeyForSubMode(NicheType.MINDFUL_PSYCHOLOGY, 'mindful_mode2');
         const scriptPreview = effectiveScript.slice(0, 100);
-        saveHistory('generator', historyKey, finalOutput, {
+        saveHistory('generator', historyKey, localContent, {
           topic: `分镜-${scriptPreview}${scriptPreview.length >= 100 ? '…' : ''}`,
           input: effectiveScript,
         });
