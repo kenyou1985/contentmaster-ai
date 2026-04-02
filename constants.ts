@@ -551,7 +551,7 @@ export const MINDFUL_PSYCHOLOGY_SCRIPT_PROMPT = `
 - **绝对不要**输出任何说明文字、格式说明或元信息
 
 ## 内容结构
-Hook(0-15s) -> Empathy Bridge -> Deep Dive(5-7个要点) -> Healing Solution -> Outro & CTA
+Hook(0-15s) -> Empathy Bridge -> Deep Dive(5-7个要点) -> Healing Solution -> **必须输出互动引导 CTA（不可省略）**
 
 ## 字数要求（按配音语速 8-15 分钟）
 按英文单词平均约 4-5 个字母 + 1 个空格来算，折合字符（含空格）：
@@ -564,13 +564,13 @@ Hook(0-15s) -> Empathy Bridge -> Deep Dive(5-7个要点) -> Healing Solution -> 
 - 中等复合主题：6000-9000 字符（10-12分钟）
 - 深度复杂主题：9000-11250 字符（12-15分钟）
 
-深度展开，引入实验案例、潜意识剖析、日常疗愈步骤。只输出纯文案内容，不要任何前缀说明。
+**重要**：在达到目标字数后，必须在末尾输出互动引导 CTA，不可省略！
 
-## 互动引导要求（末尾必须有，不可省略）
-在文案结尾处，必须包含以下互动引导（**必须完整输出，不能省略**）：
-- "If you found this helpful, give this video a thumbs up and subscribe for more healing content."
-- "Let me know in the comments: which type resonates most with you?"
-- "Follow for more gentle reminders on your healing journey."
+## 互动引导要求（末尾必须完整输出这四行，不能删减任何内容）
+If you found this video helpful, give it a thumbs up and hit subscribe.
+Your journey to self-validation starts with one small step.
+Let me know in the comments: which insight resonated most with you today?
+Follow for more gentle reminders on your healing journey.
 `;
 
 export const MINDFUL_PSYCHOLOGY_STORYBOARD_PROMPT = `

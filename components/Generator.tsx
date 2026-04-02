@@ -1903,9 +1903,23 @@ ${segmentSourceText}
                         clLen = sanitizeTtsScript(localContent).length;
                     }
 
+                    // 检查是否缺少 CTA，如果没有则强制补充
+                    const hasCTA = /thumbs up|subscribe|comment|follow|healing journey/i.test(localContent);
+                    if (!hasCTA) {
+                        console.log(`[Generator] Mindful Psychology: CTA not found, adding mandatory CTA`);
+                        const ctaText = `\n\nIf you found this video helpful, give it a thumbs up and hit subscribe.\nYour journey to self-validation starts with one small step.\nLet me know in the comments: which insight resonated most with you today?\nFollow for more gentle reminders on your healing journey.`;
+                        localContent = localContent.trimEnd() + ctaText;
+                    }
+
                     // 语义截断，确保不超过硬上限
                     if (clLen > maxC) {
                         localContent = truncateToMax(localContent, maxC);
+                        // 截断后再次检查并补充 CTA
+                        const hasCTAAfterTruncate = /thumbs up|subscribe|comment|follow|healing journey/i.test(localContent);
+                        if (!hasCTAAfterTruncate) {
+                            const ctaText = `\n\nIf you found this video helpful, give it a thumbs up and hit subscribe.\nYour journey to self-validation starts with one small step.\nLet me know in the comments: which insight resonated most with you today?\nFollow for more gentle reminders on your healing journey.`;
+                            localContent = localContent.trimEnd() + ctaText;
+                        }
                         console.log(`[Generator] Mindful Psychology truncated to ${localContent.length} chars`);
                     }
                 } else {
