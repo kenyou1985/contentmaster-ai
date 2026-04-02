@@ -5,7 +5,7 @@ import { NicheSelector } from './NicheSelector';
 import { generateTopics, streamContentGeneration, initializeGemini } from '../services/geminiService';
 import { fetchMacroNewsDigestForPrompt } from '../services/macroNewsFeedService';
 import { needsParagraphNormalization, normalizeDenseChineseParagraphs } from '../services/textFormat';
-import { Sparkles, Calendar, Loader2, Download, Eye, Zap, AlertTriangle, Copy, Check, Globe, Clock, PlusCircle, History, ListOrdered, Film } from 'lucide-react';
+import { Sparkles, Calendar, Loader2, Download, Eye, Zap, AlertTriangle, Copy, Check, Globe, Clock, PlusCircle, History, ListOrdered, Film, ChevronDown, ChevronRight } from 'lucide-react';
 import JSZip from 'jszip';
 import { saveHistory, getHistory, getHistoryKey, deleteHistory, HistoryRecord } from '../services/historyService';
 import { HistorySelector } from './HistorySelector';
@@ -109,6 +109,9 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const [mindfulScript, setMindfulScript] = useState('');
   const [storyboard, setStoryboard] = useState('');
   const [isGeneratingStoryboard, setIsGeneratingStoryboard] = useState(false);
+  /** 治愈心理学：一键动画分镜默认折叠，点击标题展开 */
+  const [mindfulStoryboardExpanded, setMindfulStoryboardExpanded] = useState(false);
+  const mindfulStoryboardAnchorRef = useRef<HTMLDivElement>(null);
 
   // UTC 时间锚定（仅在需要时间锚的赛道/子模式注入）
   const getUtcAnchor = (): string => {
@@ -144,6 +147,29 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   // 生成历史记录 key 的统一函数
   const getHistoryKeyForSubMode = (nicheType: NicheType, submodeId: string): string => {
     return `${nicheType}_${submodeId}`;
+  };
+
+  /**
+   * 无「子选题」网格的赛道：用固定虚拟 subModeId 读写历史，须与 saveHistory 使用同一 id。
+   * （易经 / 心理学 / 哲学 / 情感禁忌 / 富人思维 / 治愈心理学）
+   */
+  const getStaticGeneratorSubModeId = (nicheType: NicheType): string | null => {
+    switch (nicheType) {
+      case NicheType.YI_JING_METAPHYSICS:
+        return 'yi_jing';
+      case NicheType.PSYCHOLOGY:
+        return 'psychology';
+      case NicheType.PHILOSOPHY_WISDOM:
+        return 'philosophy';
+      case NicheType.EMOTION_TABOO:
+        return 'emotion_taboo';
+      case NicheType.RICH_MINDSET:
+        return 'rich_mindset';
+      case NicheType.MINDFUL_PSYCHOLOGY:
+        return 'mindful_mode1';
+      default:
+        return null;
+    }
   };
 
   // 处理子模式切换（不带自动弹窗）
@@ -272,6 +298,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
      if (niche === NicheType.PSYCHOLOGY) return null;
      if (niche === NicheType.PHILOSOPHY_WISDOM) return null;
      if (niche === NicheType.EMOTION_TABOO) return null;
+     if (niche === NicheType.RICH_MINDSET) return null;
+     if (niche === NicheType.MINDFUL_PSYCHOLOGY) return null;
      return null;
   };
 
@@ -459,6 +487,12 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       prompt += `\n\n【女性向选题铁律·最高优先级】本次须恰好输出 ${n} 条标题，其中至少 ${womenMin} 条必须为「女性向爆款」（标题须显式出现：女人/女性/妻子/母亲/宝妈/儿媳妇 等之一，或语义上明确写女性之财富、家运、心态、改运、面相印记等；可参考爆款向：女人想暴富、命好女人不炫耀、命苦女人特征、女性改运）。若不足 ${womenMin} 条满足，整组作废重写。`;
     }
 
+    if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+      const n = resolvedPlanTopicCount;
+      const dogMin = n >= 2 ? 2 : 1;
+      prompt += `\n\n【狗主题铁律·最高优先级】本次须恰好输出 ${n} 条标题，其中**至少 ${dogMin} 条**必须显式包含狗/宠物元素（英文标题须含 dog、puppy、paw、canine、man's best friend、furry、pet、companion 等关键词之一；中文标题须含"狗""汪星人""毛孩子"等）。其余选题也须围绕宠物/动物与心理健康的交叉主题。若不足 ${dogMin} 条满足狗主题要求，整组作废重写。`;
+    }
+
     if (
       (niche === NicheType.FINANCE_CRYPTO && financeSubMode === FinanceSubModeId.MACRO_WARNING) ||
       niche === NicheType.GENERAL_VIRAL
@@ -513,16 +547,26 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     }
   };
 
-  // Mindful Psychology 频道：生成分镜
-  const handleGenerateStoryboard = async () => {
+  // Mindful Psychology 频道：生成分镜（可选 scriptOverride 避免 setState 异步导致未取到最新文案）
+  const handleGenerateStoryboard = async (scriptOverride?: string) => {
     if (!apiKey || !apiKey.trim()) {
       toast.error("请先在设置中输入您的 API Key。");
       return;
     }
 
-    if (!mindfulScript || !mindfulScript.trim()) {
+    if (isGeneratingStoryboard) {
+      toast.info('分镜正在生成中，请稍候…');
+      return;
+    }
+
+    const effectiveScript = (scriptOverride ?? mindfulScript).trim();
+    if (!effectiveScript) {
       toast.warning("请先在左侧输入要生成分镜的脚本内容。");
       return;
+    }
+
+    if (scriptOverride !== undefined && scriptOverride.trim()) {
+      setMindfulScript(scriptOverride);
     }
 
     initializeGemini(apiKey, { provider });
@@ -637,6 +681,35 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       return origNorm.length > 0 && capNorm.length > 0 && origNorm === capNorm;
     };
 
+    /**
+     * 提取原文「尚未被任何镜头文案覆盖」的后缀部分。
+     * 逻辑：找到最后一个已分配的镜头文案，在原文中定位其末尾位置，剩余部分即为未分配内容。
+     */
+    const getRemainingOriginalText = (text: string, original: string): string => {
+      const lastCap = lastMindfulShotCaption(text).trim();
+      if (!lastCap) return original.trim();
+
+      const orig = original.trim();
+      const idx = orig.indexOf(lastCap);
+
+      if (idx === -1) {
+        // 最后一个镜头文案不在原文中（可能被改写），回退：用总字数差估算
+        const capNorm = normalizeMindfulTextForCompare(concatMindfulCaptions(text));
+        const origNorm = normalizeMindfulTextForCompare(orig);
+        if (capNorm.length < origNorm.length) {
+          // 找 capNorm 在 origNorm 中的起点，取 origNorm 之后的内容
+          const startIdx = origNorm.indexOf(capNorm.slice(0, 50));
+          if (startIdx !== -1) {
+            return orig.slice(startIdx + capNorm.length);
+          }
+        }
+        return '';
+      }
+
+      const remaining = orig.slice(idx + lastCap.length);
+      return remaining.trim();
+    };
+
     /** 比对策略2：原文末尾 == 最后镜头文案（去空格后逐字相同） */
     const captionsMatchTail = (text: string, original: string): boolean => {
       const origNorm = normalizeMindfulTextForCompare(original.trim());
@@ -648,17 +721,27 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       return origNorm.length > 0 && lastCapNorm.length > 0 && origNorm === lastCapNorm;
     };
 
+    /** 仅检查最后一个镜头块（含镜头N、镜头文案、图片提示词、视频提示词、景别、语音分镜、音效），排除角色/场景信息区域 */
     const isLastMindfulShotFieldsComplete = (text: string): boolean => {
+      // 找到最后一个"镜头N"标题（可能有"镜头序号"）
+      const allShotMatches = [...text.matchAll(/^镜头(?:序号)?[:：]?\s*(\d+)\s*$/gm)];
+      if (allShotMatches.length === 0) return false;
+
+      const lastShotMatch = allShotMatches[allShotMatches.length - 1];
+      const lastShotIndex = lastShotMatch.index! + lastShotMatch[0].length;
+
+      // 角色信息区域之前的内容 = 最后一个镜头的全部字段
       const roleLine = /(?:^|\r?\n)(?:\[角色信息\]|角色信息)\s*(?:\r?\n|$)/m.exec(text);
-      const beforeRole =
-        roleLine && roleLine.index !== undefined ? text.slice(0, roleLine.index) : text;
-      if (!beforeRole.trim()) return false;
+      const roleIdx = roleLine?.index ?? text.length;
+      const lastShotBlock = text.slice(lastShotIndex, roleIdx);
+
+      if (!lastShotBlock.trim()) return false;
       return (
-        /(?:图片提示词|圖片提示词)[：:]/.test(beforeRole) &&
-        /视频提示词[：:]/.test(beforeRole) &&
-        /景别|景別/.test(beforeRole) &&
-        /语音分镜|語音分鏡/.test(beforeRole) &&
-        /音效[：:]/.test(beforeRole)
+        /(?:图片提示词|圖片提示词)[：:]/.test(lastShotBlock) &&
+        /视频提示词[：:]/.test(lastShotBlock) &&
+        /景别|景別/.test(lastShotBlock) &&
+        /语音分镜|語音分鏡/.test(lastShotBlock) &&
+        /音效[：:]/.test(lastShotBlock)
       );
     };
 
@@ -676,10 +759,16 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
     /**
      * 判断分镜是否完整。
+     * 核心原则：只有镜头文案全部完成（与原文完全一致）后才接受角色/场景信息。
+     * 阶段一：镜头文案还在输出 → 必须全部镜头文案与原文一致才认为镜头完成
+     * 阶段二：镜头文案已全部完成 → 此时输出角色/场景信息才是合法的
+     *
      * 逻辑：
-     * 1. 最后镜头字段完整 + 角色信息 + 场景信息 + 最后镜头文案末尾 == 原文末尾 → ✅ 完成
-     * 2. 最后镜头字段完整 + 角色信息 + 场景信息，但末尾不一致 → 镜头文案未写完，继续
-     * 3. 角色信息未出现 → 镜头文案还在输出中，继续
+     * 1. 镜头文案末尾 == 原文末尾（captionsMatchTail=true）→ 镜头全部完成
+     *    - 角色信息 + 场景信息 + 最后镜头字段完整 → ✅ 完成
+     *    - 角色信息已出现但场景信息未出现 → 补充场景信息
+     *    - 角色信息未出现 → 补充角色信息和场景信息
+     * 2. 镜头文案末尾 != 原文末尾 → 镜头文案未写完，无论是否已输出角色/场景信息，都视为未完成
      */
     const isStoryboardComplete = (text: string): { complete: boolean; reason: string } => {
       if (!text || text.trim().length === 0) {
@@ -687,43 +776,36 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       }
 
       const { hasRoleInfo, hasSceneInfo, lastShotComplete } = getMindfulStructureComplete(text);
-      const tailMatch = captionsMatchTail(text, mindfulScript);
+      const tailMatch = captionsMatchTail(text, effectiveScript);
 
-      // 调试：直接搜索角色信息关键字
+      // 调试
       const hasRoleKw = /角色信息/.test(text);
-      const roleIdx = text.indexOf('角色信息');
       const tail50 = JSON.stringify(text.slice(Math.max(0, text.length - 100), text.length));
       console.log(
-        `[Storyboard] 角色信息=${hasRoleInfo}（关键字=${hasRoleKw}，位置=${roleIdx}），` +
+        `[Storyboard] 角色信息=${hasRoleInfo}（关键字=${hasRoleKw}），` +
           `场景信息=${hasSceneInfo}，最后镜头字段完整=${lastShotComplete}，` +
-          `末尾一致=${tailMatch}，文本长度=${text.trim().length}，` +
+          `末尾一致（镜头文案已完成）=${tailMatch}，文本长度=${text.trim().length}，` +
           `文本末尾100=${tail50}`
       );
 
-      // 必须同时满足：字段完整 + 角色信息 + 场景信息 + 末尾一致
-      if (lastShotComplete && hasRoleInfo && hasSceneInfo && tailMatch) {
-        return { complete: true, reason: '分镜完整' };
+      // ✅ 阶段一：镜头文案全部完成，才接受角色/场景信息
+      if (tailMatch) {
+        if (lastShotComplete && hasRoleInfo && hasSceneInfo) {
+          return { complete: true, reason: '分镜完整' };
+        }
+        if (hasRoleInfo && !hasSceneInfo) {
+          return { complete: false, reason: '镜头文案已全部完成，补充场景信息…' };
+        }
+        if (!hasRoleInfo) {
+          return { complete: false, reason: '镜头文案已全部完成，补充角色信息和场景信息…' };
+        }
+        if (!lastShotComplete) {
+          return { complete: false, reason: '镜头文案已全部完成，最后镜头字段不完整…' };
+        }
       }
 
-      // 角色信息未出现 → 镜头文案还在输出中
-      if (!hasRoleInfo) {
-        return { complete: false, reason: '角色信息未出现，镜头文案输出中…' };
-      }
-
-      // 角色信息已出现但末尾不一致 → 镜头文案未写完（模型提前输出了角色信息），继续生成
-      if (!tailMatch) {
-        return { complete: false, reason: '镜头文案末尾与原文不一致，继续生成…' };
-      }
-
-      if (!lastShotComplete) {
-        return { complete: false, reason: '最后一个镜头不完整' };
-      }
-
-      if (!hasSceneInfo) {
-        return { complete: false, reason: '场景信息未出现' };
-      }
-
-      return { complete: false, reason: '分镜不完整' };
+      // ❌ 阶段二：镜头文案未完成 → 忽略角色/场景信息，持续续写镜头
+      return { complete: false, reason: '镜头文案未写完，忽略角色/场景信息，继续续写镜头…' };
     };
 
     // 清理输出中的 [TYPE:...] 标签
@@ -735,18 +817,39 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
         .trim();
     };
 
+    /**
+     * 清理截断/续写期间模型误输出的角色/场景信息块（镜头文案未完成时不应出现）
+     * 规则：只有镜头文案完成（captionsMatchTail=true）时才保留角色/场景信息
+     */
     const syncLocalFromModel = () => {
-      localContent = truncateMindfulStoryboardAfterSceneInfo(cleanOutput(localContent));
+      const tailMatch = captionsMatchTail(localContent, effectiveScript);
+      let cleaned = cleanOutput(localContent);
+
+      // 镜头文案未完成 → 去掉角色/场景信息（它们是误输出的）
+      if (!tailMatch) {
+        // 去掉角色信息块（含标题行）
+        cleaned = cleaned.replace(
+          /(?:^|\n)(?:\[角色信息\]|角色信息)\s*[\s\S]*?(?=\n(?:\[场景信息\]|\[場景信息\]|场景信息|場景信息)\s*(?:\n|$))/gm,
+          ''
+        );
+        // 去掉场景信息块（含标题行）
+        cleaned = cleaned.replace(
+          /(?:^|\n)(?:\[场景信息\]|\[場景信息\]|场景信息|場景信息)\s*[\s\S]*/gm,
+          ''
+        );
+      }
+
+      localContent = truncateMindfulStoryboardAfterSceneInfo(cleaned);
     };
 
     try {
       const { MINDFUL_PSYCHOLOGY_STORYBOARD_PROMPT } = await import('../constants');
 
       const systemInstruction = '你是一个科普动画分镜生成器。严格按照格式输出分镜内容，不要任何前缀说明。输出时不要包含 [TYPE:...] 这样的类型标签。';
-      const originalText = mindfulScript.trim();
+      const originalText = effectiveScript;
       const estimatedShots = Math.max(10, Math.ceil(originalText.length / 250));
 
-      const prompt = `${MINDFUL_PSYCHOLOGY_STORYBOARD_PROMPT}\n\n# 用户脚本内容（共 ${originalText.length} 字，预计 ${estimatedShots} 个镜头）：\n${mindfulScript}`;
+      const prompt = `${MINDFUL_PSYCHOLOGY_STORYBOARD_PROMPT}\n\n# 用户脚本内容（共 ${originalText.length} 字，预计 ${estimatedShots} 个镜头）：\n${effectiveScript}`;
 
       const appendChunk = (chunk: string) => {
         localContent += chunk;
@@ -764,44 +867,49 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
         systemInstruction,
         appendChunk,
         undefined,
-        { maxTokens: 16384 }
+        { maxTokens: 16384, idleTimeoutMs: 180_000 }
       );
 
       syncLocalFromModel();
       setStoryboard(localContent);
 
-      // 第二阶段：仅当「结构」不完整时续写（缺字段/缺角色场景/最后一镜缺行）。文案是否与原文一致由去空白比对，不用 raw 字数误判。
-      let checkResult = isStoryboardComplete(localContent);
-      let structureOk = getMindfulStructureComplete(localContent).structureComplete;
+      // 第二阶段：续写镜头直到镜头文案完成（captionsMatchTail=true）。
+      // 由于提示词禁止在镜头文案完成前输出角色/场景信息，structureOk 永远为 false，
+      // 所以以 captionsMatchTail 为主要退出条件，structureOk 仅作安全兜底。
       let continuationRound = 0;
-      const MAX_CONTINUATION = 3;
+      const MAX_CONTINUATION = 6;
 
-      while (!structureOk && continuationRound < MAX_CONTINUATION) {
+      while (
+        !captionsMatchTail(localContent, effectiveScript) &&
+        !getMindfulStructureComplete(localContent).structureComplete &&
+        continuationRound < MAX_CONTINUATION
+      ) {
         continuationRound++;
-        console.log(`[Storyboard] 续写阶段 ${continuationRound}: ${checkResult.reason}`);
+        const tailNow = captionsMatchTail(localContent, effectiveScript);
+        console.log(`[Storyboard] 续写阶段 ${continuationRound}: tailMatch=${tailNow}`);
 
-        toast.info(`分镜结构不完整，正在续写...（第 ${continuationRound} 轮）`);
+        toast.info(`镜头文案未完成，正在续写...（第 ${continuationRound} 轮）`);
 
         const lastShotMatch = [...localContent.matchAll(/^镜头(\d+)\s*$/gm)];
         const lastShotNumber =
           lastShotMatch.length > 0 ? parseInt(lastShotMatch[lastShotMatch.length - 1][1], 10) : 0;
 
-        const roleBlockRe =
-          /(?:^|\n)(?:\[角色信息\]|角色信息)\s*\r?\n([\s\S]*?)(?=\r?\n(?:\[场景信息\]|\[場景信息\]|场景信息|場景信息)\s*\r?\n|$)/m;
-        const roleInfoMatch = localContent.match(roleBlockRe);
-        const roleInfoText = roleInfoMatch ? roleInfoMatch[0] : '';
-
-        const sceneBlockRe = /(?:^|\n)(?:\[场景信息\]|\[場景信息\]|场景信息|場景信息)\s*\r?\n[\s\S]*/m;
-        const sceneInfoMatch = localContent.match(sceneBlockRe);
-        const sceneInfoText = sceneInfoMatch ? sceneInfoMatch[0] : '';
-
         const continuationPrompt = `## 续写指令（最高优先级）
 
 请继续输出剩余的分镜内容。已输出到镜头${lastShotNumber}。
 
-**铁律**：若上文已含完整「角色信息」与「场景信息」、且各镜「镜头文案」拼接后与用户原文在去空白后完全一致，**禁止再输出任何镜头或重复角色/场景**，仅回复：已完整。
+**【铁律一】禁止提前输出角色/场景信息**
+**在所有镜头文案全部完成（与原文末尾完全一致）之前，禁止输出角色信息或场景信息。**一旦输出角色信息，即代表镜头文案已全部完成；若镜头文案实际未完成而输出了角色信息，该输出无效，将被系统忽略并强制续写镜头。
 
-${!roleInfoText ? `**必须输出角色信息块**（所有镜头完成后必须输出）：
+**【铁律二】必须完成所有镜头文案**
+继续输出镜头${lastShotNumber + 1}、${lastShotNumber + 2}…，每个镜头格式：镜头序号、镜头文案（原文100%还原）、图片提示词、视频提示词、景别、语音分镜、音效。
+
+**【铁律三】结束条件**
+只有满足以下全部条件才输出角色/场景信息并结束：
+- 所有镜头文案拼接后（去空白）与原文末尾完全一致
+- 最后镜头字段完整（图片提示词、视频提示词、景别、语音分镜、音效齐全）
+
+若符合结束条件，输出：
 
 角色信息
 [名称]极简人类角色
@@ -810,9 +918,7 @@ ${!roleInfoText ? `**必须输出角色信息块**（所有镜头完成后必须
 
 [名称]治愈系小狗
 [别名]Healing Dog
-[描述]可爱治愈的小狗形象，陪伴角色` : ''}
-
-${!sceneInfoText ? `**必须输出场景信息块**：
+[描述]可爱治愈的小狗形象，陪伴角色
 
 场景信息
 [名称]场景-温馨室内空间
@@ -821,68 +927,96 @@ ${!sceneInfoText ? `**必须输出场景信息块**：
 
 [名称]场景-抽象心灵空间
 [别名]Abstract Mind Space
-[描述]用于展示心理学概念和内心世界的抽象空间` : ''}
+[描述]用于展示心理学概念和内心世界的抽象空间
 
-**格式要求**：
-- 不要输出 [TYPE:...] 标签
-- 每个镜头格式：镜头序号、镜头文案（原文100%还原）、图片提示词、视频提示词、景别、语音分镜、音效
-- 若仅缺角色/场景，只补全这两段，不要重新生成分镜`;
+**格式铁律**：不要输出 [TYPE:...] 标签
+
+**以下原文内容尚未分配到任何镜头文案中（请续写镜头，精确还原这些内容，不要改写或翻译）**：
+${(() => {
+  const remaining = getRemainingOriginalText(localContent, effectiveScript);
+  if (!remaining) return '（所有原文内容均已分配到镜头文案中）';
+  return remaining;
+})()}`;
 
         await streamContentGeneration(
           continuationPrompt,
           systemInstruction,
           appendChunk,
           undefined,
-          { maxTokens: 8192 }
+          { maxTokens: 8192, idleTimeoutMs: 180_000 }
         );
 
         syncLocalFromModel();
         setStoryboard(localContent);
-        checkResult = isStoryboardComplete(localContent);
-        structureOk = getMindfulStructureComplete(localContent).structureComplete;
       }
 
-      // 第三阶段：处理循环退出后的边界情况
-      // 1. 角色信息已出现但末尾不一致 → 模型提前跳到了角色信息，镜头文案未写完，继续输出镜头
-      // 2. 角色信息已出现 + 末尾一致 + 场景信息未出现 → 只补充场景信息
-      const prePhase3HasRole = getMindfulStructureComplete(localContent).hasRoleInfo;
-      const prePhase3HasScene = getMindfulStructureComplete(localContent).hasSceneInfo;
-      const prePhase3LastShot = getMindfulStructureComplete(localContent).lastShotComplete;
-      const prePhase3Tail = captionsMatchTail(localContent, originalText);
+      // 第三阶段：Phase 2 循环退出后（角色/场景已被 syncLocalFromModel 清理），
+      // 继续补充剩余镜头，直到镜头文案完成或达到最大轮次。
+      // 只有镜头文案完成（captionsMatchTail=true）时才输出角色/场景信息。
+      const tailMatchAtPhase3Start = captionsMatchTail(localContent, effectiveScript);
       console.log(
-        `[Storyboard] 自检：角色信息=${prePhase3HasRole}，场景信息=${prePhase3HasScene}，` +
-          `最后镜头完整=${prePhase3LastShot}，末尾一致=${prePhase3Tail}`
+        `[Storyboard] 自检（Phase 3 入口）：末尾一致=${tailMatchAtPhase3Start}，` +
+          `文本长度=${localContent.trim().length}，` +
+          `文本末尾=${JSON.stringify(localContent.slice(-80))}`
       );
 
-      if (prePhase3HasRole && !prePhase3Tail) {
-        // 模型提前输出了角色信息，镜头文案未写完，强制继续写镜头
-        toast.info('镜头文案未写完，继续生成剩余镜头…');
+      let phase3Round = 0;
+      const MAX_PHASE3 = 3;
+
+      while (!captionsMatchTail(localContent, effectiveScript) && phase3Round < MAX_PHASE3) {
+        phase3Round++;
+        toast.info(`镜头文案未完成，Phase 3 补充中…（第 ${phase3Round} 轮）`);
+
         const lastShotMatch = [...localContent.matchAll(/^镜头(\d+)\s*$/gm)];
         const lastShotNum = lastShotMatch.length > 0
           ? parseInt(lastShotMatch[lastShotMatch.length - 1][1], 10) : 0;
+
         await streamContentGeneration(
-          `## 紧急续写指令（最高优先级）
+          `## Phase 3 续写指令（最高优先级）
 
-上文镜头${lastShotNum}的「镜头文案」未写完就跳到了角色信息！原文还未输出完毕。
+已输出到镜头${lastShotNum}，但镜头文案尚未完成（末尾与原文不一致）。
 
-**必须执行**：
-- 不要重复输出角色信息和场景信息
-- 在镜头${lastShotNum}之后继续输出镜头${lastShotNum + 1}、${lastShotNum + 2}…，直到原文所有内容都已分配到镜头文案中
+**【铁律】禁止输出角色/场景信息**（镜头文案未完成前绝对禁止）。
+
+请继续输出镜头${lastShotNum + 1}、${lastShotNum + 2}…：
 - 每个镜头格式：镜头序号、镜头文案（原文100%还原）、图片提示词、视频提示词、景别、语音分镜、音效
-- 原文末尾必须出现在最后一个镜头文案中
+- **必须将原文末尾内容完整分配到最后一个镜头文案中**
+- 绝对不要输出角色信息或场景信息（这是铁律）
 
-**格式铁律**：不要输出 [TYPE:...] 标签`,
+**格式铁律**：不要输出 [TYPE:...] 标签
+
+**以下原文内容尚未分配到任何镜头文案中（请续写镜头，精确还原这些内容，不要改写或翻译）**：
+${(() => {
+  const remaining = getRemainingOriginalText(localContent, effectiveScript);
+  if (!remaining) return '（所有原文内容均已分配到镜头文案中）';
+  return remaining;
+})()}`,
           systemInstruction,
           appendChunk,
           undefined,
-          { maxTokens: 8192 }
+          { maxTokens: 8192, idleTimeoutMs: 180_000 }
         );
+
         syncLocalFromModel();
         setStoryboard(localContent);
-      } else if (prePhase3HasRole && !prePhase3HasScene) {
-        toast.info('角色信息已出现，补充场景信息…');
+      }
+
+      // 镜头文案已完成 → 输出角色信息和场景信息（只需一次）
+      if (captionsMatchTail(localContent, effectiveScript)) {
+        toast.info('镜头文案已完成，输出角色与场景信息…');
         await streamContentGeneration(
-          `上文已输出角色信息，但缺少场景信息。请只输出场景信息块，不要重复输出镜头或角色信息。
+          `## Phase 3 完成：输出角色与场景信息
+
+上文所有镜头文案已完成，且与原文完全一致。请立即输出角色信息与场景信息，**不要再输出任何镜头**。
+
+角色信息
+[名称]极简人类角色
+[别名]Human Character
+[描述]极简扁平风格的人类形象，温暖治愈风格
+
+[名称]治愈系小狗
+[别名]Healing Dog
+[描述]可爱治愈的小狗形象，陪伴角色
 
 场景信息
 [名称]场景-温馨室内空间
@@ -895,21 +1029,29 @@ ${!sceneInfoText ? `**必须输出场景信息块**：
           systemInstruction,
           appendChunk,
           undefined,
-          { maxTokens: 2048 }
+          { maxTokens: 2048, idleTimeoutMs: 180_000 }
         );
         syncLocalFromModel();
         setStoryboard(localContent);
+      } else {
+        console.warn('[Storyboard] Phase 3 仍无法完成镜头文案，放弃');
       }
 
       syncLocalFromModel();
       const finalOutput = localContent;
 
-      const finalCheck = isStoryboardComplete(finalOutput);
-      if (finalCheck.complete) {
+      const tailMatchFinal = captionsMatchTail(finalOutput, effectiveScript);
+      const { hasRoleInfo, hasSceneInfo } = getMindfulStructureComplete(finalOutput);
+
+      if (tailMatchFinal && hasRoleInfo && hasSceneInfo) {
         toast.success('分镜生成完成！所有镜头、角色信息和场景信息均已输出。');
+      } else if (tailMatchFinal) {
+        toast.warning(
+          `镜头文案已完成${hasRoleInfo ? '（角色信息）' : ''}${hasSceneInfo ? '（场景信息）' : ''}，请手动补充${!hasRoleInfo ? '角色信息' : ''}${!hasRoleInfo && !hasSceneInfo ? '和' : ''}${!hasSceneInfo ? '场景信息' : ''}。`
+        );
       } else {
-        console.warn(`[Storyboard] 最终检查未通过: ${finalCheck.reason}`);
-        toast.warning(`分镜生成完成，但 ${finalCheck.reason}，请手动检查。`);
+        console.warn(`[Storyboard] 镜头文案仍未完成，文本末尾=${JSON.stringify(finalOutput.slice(-80))}`);
+        toast.error('分镜生成超时：镜头文案未能完整输出，请手动续写或缩短脚本长度后重试。');
       }
 
       setStoryboard(finalOutput);
@@ -922,10 +1064,10 @@ ${!sceneInfoText ? `**必须输出场景信息块**：
       // 保存分镜到历史记录
       try {
         const historyKey = getHistoryKeyForSubMode(NicheType.MINDFUL_PSYCHOLOGY, 'mindful_mode2');
-        const scriptPreview = mindfulScript.trim().slice(0, 100);
+        const scriptPreview = effectiveScript.slice(0, 100);
         saveHistory('generator', historyKey, finalOutput, {
           topic: `分镜-${scriptPreview}${scriptPreview.length >= 100 ? '…' : ''}`,
-          input: mindfulScript,
+          input: effectiveScript,
         });
         console.log('[Generator] 分镜已保存历史记录，key:', historyKey);
       } catch (e) {
@@ -1344,7 +1486,8 @@ ${segmentSourceText}
     } else if (niche === NicheType.GENERAL_VIRAL) {
       currentSubModeId = newsSubMode;
     } else {
-      currentSubModeId = currentSubModeConfig?.id || '';
+      currentSubModeId =
+        getStaticGeneratorSubModeId(niche) || currentSubModeConfig?.id || '';
     }
     
     console.log('[Generator] 锁定子模式配置:', { 
@@ -3098,10 +3241,10 @@ ${segmentSourceText}
                 currentSubModeIdForHistory = revengeSubMode;
               } else if (niche === NicheType.GENERAL_VIRAL) {
                 currentSubModeIdForHistory = newsSubMode;
-              } else if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
-                currentSubModeIdForHistory = 'mindful_mode1';
               } else {
-                return; // 无法确定子模式，不保存
+                const sid = getStaticGeneratorSubModeId(niche);
+                if (!sid) return;
+                currentSubModeIdForHistory = sid;
               }
               
               const historyKey = getHistoryKeyForSubMode(currentNicheForHistory, currentSubModeIdForHistory);
@@ -3150,6 +3293,22 @@ ${segmentSourceText}
     setTimeout(() => setCopiedId(null), 2000);
   };
 
+  /** 从即時編輯器跳转：展开上方分镜区、填入当前文稿并立即开始流式生成分镜 */
+  const openMindfulStoryboardFromEditor = () => {
+    const item = generatedContents[viewIndex];
+    const text = item?.content?.trim() ?? '';
+    if (!text) {
+      toast.warning('当前暂无文案，无法生成分镜');
+      return;
+    }
+    setMindfulScript(text);
+    setMindfulStoryboardExpanded(true);
+    void handleGenerateStoryboard(text);
+    window.setTimeout(() => {
+      mindfulStoryboardAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 120);
+  };
+
   const activeSubModes = getSubModesForRender();
 
   return (
@@ -3165,10 +3324,45 @@ ${segmentSourceText}
 
       {/* 2. Planning Phase */}
       <section className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6">
-         <h2 className="text-lg font-medium text-slate-300 mb-6 flex items-center gap-2">
-          <span className="bg-emerald-600 w-6 h-6 rounded-full flex items-center justify-center text-xs text-white">2</span>
-          策划选题 (Plan Topics)
-        </h2>
+        <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
+          <h2 className="text-lg font-medium text-slate-300 flex items-center gap-2">
+            <span className="bg-emerald-600 w-6 h-6 rounded-full flex items-center justify-center text-xs text-white shrink-0">
+              2
+            </span>
+            策划选题 (Plan Topics)
+          </h2>
+          {(() => {
+            const staticSid = getStaticGeneratorSubModeId(niche);
+            if (!staticSid) return null;
+            const hk = getHistoryKeyForSubMode(niche, staticSid);
+            const cnt = getHistory('generator', hk).length;
+            return (
+              <button
+                type="button"
+                onClick={() => {
+                  const records = getHistory('generator', hk);
+                  if (records.length === 0) {
+                    toast.info('暂无脚本历史记录，请先生成长文后再试');
+                    return;
+                  }
+                  setHistoryRecords(records);
+                  setPendingSubModeChange({ niche, submode: staticSid });
+                  setShowHistorySelector(true);
+                }}
+                className="shrink-0 flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-600 bg-slate-800/80 hover:bg-slate-700/90 text-slate-300 text-sm transition-colors"
+                title="查看并加载本赛道已保存的成稿脚本"
+              >
+                <History size={16} className="text-emerald-400" />
+                脚本历史
+                {cnt > 0 && (
+                  <span className="text-[10px] font-mono text-emerald-400/90 bg-emerald-950/50 px-1.5 py-0.5 rounded">
+                    {cnt}
+                  </span>
+                )}
+              </button>
+            );
+          })()}
+        </div>
 
         {/* 选题数量：默认 5，可选 10/15/20 或自定义 */}
         <div className="mb-6 rounded-xl border border-slate-700/70 bg-gradient-to-br from-slate-950/80 to-slate-900/40 p-4 md:p-5">
@@ -3470,9 +3664,7 @@ ${segmentSourceText}
                   ? '预测选题'
                   : niche === NicheType.YI_JING_METAPHYSICS
                     ? '一键生成爆款选题'
-                    : niche === NicheType.MINDFUL_PSYCHOLOGY
-                      ? '模式一：生成选题'
-                      : '一键生成爆款Hooks'}
+                    : '一键生成爆款Hooks'}
             </button>
         </div>
         )}
@@ -3483,28 +3675,10 @@ ${segmentSourceText}
             <div className="flex items-center gap-2 mb-4">
               <span className="text-lg">🐾</span>
               <span className="text-slate-200 font-medium">治愈心理学频道</span>
-              {/* 历史记录入口 */}
-              <button
-                onClick={() => {
-                  const historyKey = getHistoryKeyForSubMode(niche, 'mindful_mode1');
-                  const records = getHistory('generator', historyKey);
-                  if (records.length === 0) {
-                    toast.info('暂无历史记录');
-                    return;
-                  }
-                  setHistoryRecords(records);
-                  setShowHistorySelector(true);
-                }}
-                className="ml-auto p-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 transition-colors"
-                title="查看历史记录"
-              >
-                <History size={16} className="text-slate-300" />
-              </button>
             </div>
 
-            {/* 模式一：爆款选题（默认展开） */}
+            {/* 爆款选题列表 */}
             <div className="space-y-4 mb-4">
-              {/* 选题结果展示区 */}
               {topics.length > 0 && (
                 <div className="space-y-2">
                   <div className="flex items-center gap-2 text-sm text-emerald-400 font-medium">
@@ -3512,7 +3686,7 @@ ${segmentSourceText}
                     已生成 {topics.length} 个选题
                   </div>
                   <div className="space-y-2">
-                    {topics.map((topic, idx) => (
+                    {topics.map((topic) => (
                       <div
                         key={topic.id}
                         className={`p-3 rounded-lg border transition-all cursor-pointer ${
@@ -3523,9 +3697,11 @@ ${segmentSourceText}
                         onClick={() => toggleTopic(topic.id)}
                       >
                         <div className="flex items-start gap-2">
-                          <div className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
-                            topic.selected ? 'bg-emerald-500 border-emerald-500' : 'border-slate-500'
-                          }`}>
+                          <div
+                            className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
+                              topic.selected ? 'bg-emerald-500 border-emerald-500' : 'border-slate-500'
+                            }`}
+                          >
                             {topic.selected && <Check size={12} className="text-white" />}
                           </div>
                           <span className="text-slate-200 text-sm">{topic.title}</span>
@@ -3533,20 +3709,19 @@ ${segmentSourceText}
                       </div>
                     ))}
                   </div>
-                  {/* 一键生成按钮 */}
                   <button
                     onClick={() => {
-                      const selectedTopics = topics.filter(t => t.selected);
+                      const selectedTopics = topics.filter((t) => t.selected);
                       if (selectedTopics.length === 0) {
                         toast.warning('请至少选择一个选题');
                         return;
                       }
-                      handleGenerateContent(selectedTopics);
+                      handleBatchGenerate();
                     }}
                     className="w-full px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-medium rounded-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Zap size={16} />
-                    一键生成爆款文案（已选 {topics.filter(t => t.selected).length} 篇）
+                    一键生成爆款文案（已选 {topics.filter((t) => t.selected).length} 篇）
                   </button>
                 </div>
               )}
@@ -3555,82 +3730,93 @@ ${segmentSourceText}
             {/* 分隔线 */}
             <div className="border-t border-slate-700 my-4" />
 
-            {/* 一键动画分镜入口 */}
-            <div>
-              <div className="flex items-center gap-2 mb-2">
-                <Film size={14} className="text-purple-400" />
-                <span className="text-sm text-slate-300 font-medium">一键动画分镜</span>
-              </div>
-              <div className="flex gap-4">
-                {/* 左侧：输入区域 */}
-                <div className="flex-1">
-                  <textarea
-                    value={mindfulScript}
-                    onChange={(e) => setMindfulScript(e.target.value)}
-                    placeholder="在此粘贴脚本内容，一键生成动画分镜..."
-                    className="w-full h-[280px] bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-slate-200 focus:outline-none focus:border-emerald-500 resize-none custom-scrollbar text-sm"
-                  />
-                </div>
-
-                {/* 右侧：输出区域 */}
-                <div className="flex-1">
-                  <div className="flex justify-between items-center mb-2">
-                    <label className="text-sm text-slate-400">分镜输出</label>
-                    {storyboard && (
-                      <button
-                        onClick={() => {
-                          navigator.clipboard.writeText(storyboard);
-                          toast.success('分镜内容已复制到剪贴板');
-                        }}
-                        className="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm rounded-lg flex items-center gap-1 transition-all"
-                      >
-                        <Copy size={12} /> 复制
-                      </button>
-                    )}
-                  </div>
-                  <div className="w-full h-[280px] bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-slate-200 overflow-y-auto whitespace-pre-wrap leading-relaxed custom-scrollbar text-sm">
-                    {storyboard ? (
-                      <>
-                        {storyboard}
-                        {isGeneratingStoryboard && (
-                          <div className="mt-3 pt-3 border-t border-slate-800 flex items-center gap-2 text-slate-500 text-sm">
-                            <Loader2 className="animate-spin shrink-0" size={14} />
-                            <span>正在流式输出…</span>
-                          </div>
+            {/* 一键动画分镜：默认折叠，点击标题展开 */}
+            <div ref={mindfulStoryboardAnchorRef}>
+              <button
+                type="button"
+                onClick={() => setMindfulStoryboardExpanded((v) => !v)}
+                className="w-full flex items-center justify-between gap-2 rounded-lg border border-slate-600 bg-slate-900/50 px-3 py-2.5 mb-2 text-left hover:bg-slate-800/70 transition-colors"
+              >
+                <span className="flex items-center gap-2 text-sm text-slate-300 font-medium min-w-0">
+                  <Film size={14} className="text-purple-400 shrink-0" />
+                  <span className="truncate">一键动画分镜</span>
+                  <span className="text-xs font-normal text-slate-500 shrink-0">（点击展开）</span>
+                </span>
+                {mindfulStoryboardExpanded ? (
+                  <ChevronDown size={18} className="text-slate-400 shrink-0" />
+                ) : (
+                  <ChevronRight size={18} className="text-slate-400 shrink-0" />
+                )}
+              </button>
+              {mindfulStoryboardExpanded && (
+                <>
+                  <div className="flex gap-4">
+                    <div className="flex-1">
+                      <textarea
+                        value={mindfulScript}
+                        onChange={(e) => setMindfulScript(e.target.value)}
+                        placeholder="在此粘贴脚本内容，一键生成动画分镜..."
+                        className="w-full h-[280px] bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-slate-200 focus:outline-none focus:border-emerald-500 resize-none custom-scrollbar text-sm"
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex justify-between items-center mb-2">
+                        <label className="text-sm text-slate-400">分镜输出</label>
+                        {storyboard && (
+                          <button
+                            onClick={() => {
+                              navigator.clipboard.writeText(storyboard);
+                              toast.success('分镜内容已复制到剪贴板');
+                            }}
+                            className="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm rounded-lg flex items-center gap-1 transition-all"
+                          >
+                            <Copy size={12} /> 复制
+                          </button>
                         )}
-                      </>
-                    ) : isGeneratingStoryboard ? (
-                      <div className="flex items-center gap-2 text-slate-500">
-                        <Loader2 className="animate-spin" size={14} />
-                        <span>正在生成分镜...</span>
                       </div>
-                    ) : (
-                      <div className="text-slate-600 text-sm">分镜结果将显示在此处</div>
-                    )}
+                      <div className="w-full h-[280px] bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-slate-200 overflow-y-auto whitespace-pre-wrap leading-relaxed custom-scrollbar text-sm">
+                        {storyboard ? (
+                          <>
+                            {storyboard}
+                            {isGeneratingStoryboard && (
+                              <div className="mt-3 pt-3 border-t border-slate-800 flex items-center gap-2 text-slate-500 text-sm">
+                                <Loader2 className="animate-spin shrink-0" size={14} />
+                                <span>正在流式输出…</span>
+                              </div>
+                            )}
+                          </>
+                        ) : isGeneratingStoryboard ? (
+                          <div className="flex items-center gap-2 text-slate-500">
+                            <Loader2 className="animate-spin" size={14} />
+                            <span>正在生成分镜...</span>
+                          </div>
+                        ) : (
+                          <div className="text-slate-600 text-sm">分镜结果将显示在此处</div>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
-
-              {/* 生成按钮 */}
-              <div className="flex justify-center mt-3">
-                <button
-                  onClick={handleGenerateStoryboard}
-                  disabled={isGeneratingStoryboard || !mindfulScript.trim()}
-                  className="px-8 py-2.5 bg-purple-600 hover:bg-purple-500 text-white font-medium rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                >
-                  {isGeneratingStoryboard ? (
-                    <>
-                      <Loader2 className="animate-spin" size={14} />
-                      生成分镜中...
-                    </>
-                  ) : (
-                    <>
-                      <Film size={14} />
-                      🎬 一键生成动画分镜
-                    </>
-                  )}
-                </button>
-              </div>
+                  <div className="flex justify-center mt-3">
+                    <button
+                      onClick={() => void handleGenerateStoryboard()}
+                      disabled={isGeneratingStoryboard || !mindfulScript.trim()}
+                      className="px-8 py-2.5 bg-purple-600 hover:bg-purple-500 text-white font-medium rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                    >
+                      {isGeneratingStoryboard ? (
+                        <>
+                          <Loader2 className="animate-spin" size={14} />
+                          生成分镜中...
+                        </>
+                      ) : (
+                        <>
+                          <Film size={14} />
+                          🎬 一键生成动画分镜
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )}
@@ -3661,7 +3847,9 @@ ${segmentSourceText}
         {/* 错误提示已改用 Toast 通知 */}
 
         {/* Topics List - Hide in Adaptation Mode */}
-        {topics.length > 0 && !(niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION) && (
+        {topics.length > 0 &&
+          !(niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION) &&
+          niche !== NicheType.MINDFUL_PSYCHOLOGY && (
             <div className="mt-8 animate-in slide-in-from-bottom-4 duration-500">
                 <div className="flex justify-between items-center mb-3">
                     <span className="text-sm text-slate-400">
@@ -3787,9 +3975,18 @@ ${segmentSourceText}
                                     {generatedContents[viewIndex].topic}
                                 </h3>
                                 
-                                <div className="flex items-center gap-2 flex-shrink-0">
-                                    {/* Continue button removed: auto-continue only */}
-
+                                <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
+                                    {niche === NicheType.MINDFUL_PSYCHOLOGY && (
+                                        <button
+                                            type="button"
+                                            onClick={openMindfulStoryboardFromEditor}
+                                            className="px-3 py-2 bg-purple-600/20 hover:bg-purple-600/35 text-purple-200 hover:text-purple-50 border border-purple-500/40 rounded-md transition-all flex items-center gap-1.5 text-xs"
+                                            title="展开策划区「一键动画分镜」并填入当前文案"
+                                        >
+                                            <Film size={14} />
+                                            一键动画分镜
+                                        </button>
+                                    )}
                                     <button
                                         onClick={() => handleCopy(generatedContents[viewIndex].content, viewIndex)}
                                         className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-md transition-all flex items-center gap-2 text-xs"
@@ -3857,7 +4054,7 @@ ${segmentSourceText}
               setHistoryRecords(getHistory('generator', historyKey));
             }
           }}
-          title="选择历史记录"
+          title="脚本历史记录"
         />
       )}
     </div>

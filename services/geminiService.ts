@@ -14,12 +14,18 @@ export const STREAM_FALLBACK_MODEL_OPENAI = "gpt-5.4-mini";
 
 const STREAM_FIRST_CHUNK_STALL = "STREAM_FIRST_CHUNK_STALL";
 const GOOGLE_GENERATION_STALL = "GOOGLE_GENERATION_STALL";
+/** 流式输出在收到首包之后，若超过此时间未再收到任何 token，则中止（避免服务端挂起导致界面永远转圈） */
+export const STREAM_IDLE_TIMEOUT = "STREAM_IDLE_TIMEOUT";
+/** 分块间默认最长静默时间（毫秒），用于长分镜等长流式输出 */
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 180_000;
 
 export type StreamContentOptions = {
   temperature?: number;
   maxTokens?: number;
   /** 首段输出超时（毫秒），默认 60000 */
   firstChunkTimeoutMs?: number;
+  /** 首包之后，若超过此毫秒未再收到新 token 则中止连接；不设则不限制（长输出可能卡死） */
+  idleTimeoutMs?: number;
   /** 超时后使用的备用模型；设为 false 关闭自动切换 */
   fallbackModelOnStall?: string | false;
 };
@@ -461,7 +467,8 @@ async function streamYunwuOpenAIOnce(
   temperature: number,
   maxTokens: number,
   onChunk: (chunk: string) => void,
-  firstChunkMs: number
+  firstChunkMs: number,
+  idleTimeoutMs?: number
 ): Promise<void> {
   if (!apiKey) {
     throw new Error("API Key 未設置。請在設置中輸入您的 API Key。");
@@ -477,6 +484,24 @@ async function streamYunwuOpenAIOnce(
       ac.abort();
     }
   }, firstChunkMs);
+
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearIdle = () => {
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  };
+  const bumpIdle = () => {
+    clearIdle();
+    if (!idleTimeoutMs || idleTimeoutMs <= 0 || !gotFirstChunk) return;
+    idleTimer = setTimeout(() => {
+      console.warn(
+        `[Gemini Service] ${idleTimeoutMs}ms 内未收到新的流式片段，中止连接（模型: ${resolvedModel}）`
+      );
+      ac.abort();
+    }, idleTimeoutMs);
+  };
 
   const clearStall = () => {
     clearTimeout(stallTimer);
@@ -518,6 +543,9 @@ async function streamYunwuOpenAIOnce(
       if (!gotFirstChunk && (name === "AbortError" || ac.signal.aborted || msg.toLowerCase().includes("abort"))) {
         throw new Error(STREAM_FIRST_CHUNK_STALL);
       }
+      if (gotFirstChunk && idleTimeoutMs && idleTimeoutMs > 0 && (name === "AbortError" || ac.signal.aborted)) {
+        throw new Error(STREAM_IDLE_TIMEOUT);
+      }
       if (msg.includes("ERR_HTTP2_PROTOCOL_ERROR") || msg.includes("HTTP2")) {
         throw new Error("HTTP2协议错误，可能是网络连接不稳定，系统将自动重试");
       }
@@ -554,6 +582,14 @@ async function streamYunwuOpenAIOnce(
           ) {
             throw new Error(STREAM_FIRST_CHUNK_STALL);
           }
+          if (
+            gotFirstChunk &&
+            idleTimeoutMs &&
+            idleTimeoutMs > 0 &&
+            (readErr?.name === "AbortError" || ac.signal.aborted)
+          ) {
+            throw new Error(STREAM_IDLE_TIMEOUT);
+          }
           throw readErr;
         }
 
@@ -582,6 +618,7 @@ async function streamYunwuOpenAIOnce(
                   gotFirstChunk = true;
                   clearStall();
                 }
+                bumpIdle();
                 onChunk(piece);
               }
             } catch {
@@ -592,6 +629,7 @@ async function streamYunwuOpenAIOnce(
       }
     } finally {
       clearStall();
+      clearIdle();
     }
 
     if (!gotFirstChunk) {
@@ -599,6 +637,7 @@ async function streamYunwuOpenAIOnce(
     }
   } finally {
     clearStall();
+    clearIdle();
   }
 }
 
@@ -640,6 +679,7 @@ export const streamContentGeneration = async (
       const maxTokens = options?.maxTokens ?? 8192;
       const firstChunkMs =
         options?.firstChunkTimeoutMs ?? STREAM_FIRST_CHUNK_TIMEOUT_MS;
+      const idleTimeoutMs = options?.idleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
       const fallbackOpenAI =
         options?.fallbackModelOnStall === false
           ? null
@@ -711,6 +751,7 @@ export const streamContentGeneration = async (
         const msg = (err?.message || String(err)).toLowerCase();
         return (
           msg === STREAM_FIRST_CHUNK_STALL.toLowerCase() ||
+          msg === STREAM_IDLE_TIMEOUT.toLowerCase() ||
           msg.includes('429') ||
           msg.includes('quota') ||
           msg.includes('配額') ||
@@ -749,14 +790,16 @@ export const streamContentGeneration = async (
             temperature,
             maxTokens,
             onChunk,
-            timeoutMs
+            timeoutMs,
+            idleTimeoutMs
           );
           return; // 成功
         } catch (err: any) {
           const isQuota = isQuotaError(err);
           const isStall = err?.message === STREAM_FIRST_CHUNK_STALL;
+          const isIdle = err?.message === STREAM_IDLE_TIMEOUT;
           console.warn(
-            `[Gemini Service] Model ${modelToUse} failed: ${err?.message || err} (isStall=${isStall}, isQuota=${isQuota})`
+            `[Gemini Service] Model ${modelToUse} failed: ${err?.message || err} (isStall=${isStall}, isIdle=${isIdle}, isQuota=${isQuota})`
           );
           // STALL 和配额错误均立即失败，触发外层 fallback 切换
           throw err;
@@ -798,6 +841,11 @@ export const streamContentGeneration = async (
       if (errorMsg === STREAM_FIRST_CHUNK_STALL) {
         throw new Error(
           "模型在设定时间内未返回首段文本，请稍后重试或检查网络。"
+        );
+      }
+      if (errorMsg === STREAM_IDLE_TIMEOUT) {
+        throw new Error(
+          "分镜生成超时（服务端长时间无输出），已截断当前进度。下方将自动续写剩余镜头。"
         );
       }
       if (errorMsg === GOOGLE_GENERATION_STALL) {
