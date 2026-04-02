@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ApiProvider, NicheType, Topic, GeneratedContent, GenerationStatus, TcmSubModeId, FinanceSubModeId, RevengeSubModeId, NewsSubModeId, StoryLanguage, StoryDuration } from '../types';
-import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT, YI_JING_SHORT_SCRIPT_PROMPT, applyTopicCountToPrompt } from '../constants';
+import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT, YI_JING_SHORT_SCRIPT_PROMPT, MINDFUL_PSYCHOLOGY_SCRIPT_PROMPT, applyTopicCountToPrompt } from '../constants';
 import { NicheSelector } from './NicheSelector';
 import { generateTopics, streamContentGeneration, initializeGemini } from '../services/geminiService';
 import { fetchMacroNewsDigestForPrompt } from '../services/macroNewsFeedService';
@@ -103,6 +103,12 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const [showHistorySelector, setShowHistorySelector] = useState(false);
   const [historyRecords, setHistoryRecords] = useState<HistoryRecord[]>([]);
   const [pendingSubModeChange, setPendingSubModeChange] = useState<{ niche: NicheType; submode: string } | null>(null);
+
+  // Mindful Psychology 频道相关状态
+  const [mindfulMode, setMindfulMode] = useState<'mode1' | 'mode2'>('mode1');
+  const [mindfulScript, setMindfulScript] = useState('');
+  const [storyboard, setStoryboard] = useState('');
+  const [isGeneratingStoryboard, setIsGeneratingStoryboard] = useState(false);
 
   // UTC 时间锚定（仅在需要时间锚的赛道/子模式注入）
   const getUtcAnchor = (): string => {
@@ -252,6 +258,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (niche === NicheType.PSYCHOLOGY) return null;
     if (niche === NicheType.PHILOSOPHY_WISDOM) return null;
     if (niche === NicheType.EMOTION_TABOO) return null;
+    if (niche === NicheType.RICH_MINDSET) return null;
+    if (niche === NicheType.MINDFUL_PSYCHOLOGY) return null;
     return null;
   };
 
@@ -275,6 +283,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (niche === NicheType.PHILOSOPHY_WISDOM) return false;
     if (niche === NicheType.EMOTION_TABOO) return false;
     if (niche === NicheType.RICH_MINDSET) return false;
+    if (niche === NicheType.MINDFUL_PSYCHOLOGY) return false;
     return true; // Default input required for other niches
   };
 
@@ -286,6 +295,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (niche === NicheType.PHILOSOPHY_WISDOM) return false;
     if (niche === NicheType.EMOTION_TABOO) return false;
     if (niche === NicheType.RICH_MINDSET) return true;
+    if (niche === NicheType.MINDFUL_PSYCHOLOGY) return true;
     return true;
   };
 
@@ -297,6 +307,9 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       }
       if (niche === NicheType.RICH_MINDSET) {
         return '（可选）输入选题方向关键词，如：子女啃老、亲戚算计、养老困境';
+      }
+      if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+        return '（可选）输入选题方向关键词，如：性格心理学、情绪疗愈、潜意识';
       }
       return "输入关键词/趋势";
   };
@@ -423,11 +436,13 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
             if (inputVal.trim()) {
                 prompt += `\n\n# 用户侧重（可选）\n用户输入：${inputVal}\n各选题须与此相关或可自然延伸，禁止完全无关主题。`;
             }
-        } else {
-            if (!inputVal) {
-                toast.warning("请输入关键词。");
-                return;
+        } else if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+            // Mindful Psychology 频道选题生成
+            prompt = config.topicPromptTemplate;
+            if (inputVal.trim()) {
+                prompt += `\n\n# 用户侧重（可选）\n用户输入：${inputVal}\n各选题须与此相关或可自然延伸。`;
             }
+        } else {
             prompt = config.topicPromptTemplate.replace('{input}', inputVal);
         }
         // UTC 时间锚定（中医玄学仅时辰禁忌注入）
@@ -495,6 +510,58 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       const errorMsg = parseErrorMessage(err);
       toast.error(errorMsg);
       setStatus(GenerationStatus.ERROR);
+    }
+  };
+
+  // Mindful Psychology 频道：生成分镜
+  const handleGenerateStoryboard = async () => {
+    if (!apiKey || !apiKey.trim()) {
+      toast.error("请先在设置中输入您的 API Key。");
+      return;
+    }
+
+    if (!mindfulScript || !mindfulScript.trim()) {
+      toast.warning("请先在左侧输入要生成分镜的脚本内容。");
+      return;
+    }
+
+    initializeGemini(apiKey, { provider });
+    setIsGeneratingStoryboard(true);
+    setStoryboard('');
+
+    let localContent = '';
+
+    try {
+      const { MINDFUL_PSYCHOLOGY_STORYBOARD_PROMPT } = await import('../constants');
+
+      const systemInstruction = '你是一个科普动画分镜生成器。严格按照格式输出分镜内容，不要任何前缀说明。';
+      const prompt = `${MINDFUL_PSYCHOLOGY_STORYBOARD_PROMPT}\n\n# 用户脚本内容：\n${mindfulScript}`;
+
+      const appendChunk = (chunk: string) => {
+        localContent += chunk;
+        setStoryboard(localContent);
+      };
+
+      // 使用流式生成获取完整分镜内容
+      await streamContentGeneration(
+        prompt,
+        systemInstruction,
+        appendChunk,
+        undefined,
+        { maxTokens: 16384 }
+      );
+
+      if (localContent && localContent.trim().length > 0) {
+        toast.success('分镜生成完成！');
+      } else {
+        toast.error('分镜生成失败：返回内容为空');
+      }
+    } catch (err: any) {
+      console.error(err);
+      const errorMsg = parseErrorMessage(err);
+      toast.error(errorMsg);
+    } finally {
+      setIsGeneratingStoryboard(false);
     }
   };
 
@@ -1396,13 +1463,14 @@ ${segmentSourceText}
                 niche === NicheType.PHILOSOPHY_WISDOM ||
                 niche === NicheType.EMOTION_TABOO ||
                 niche === NicheType.YI_JING_METAPHYSICS ||
-                niche === NicheType.GENERAL_VIRAL;
+                niche === NicheType.GENERAL_VIRAL ||
+                niche === NicheType.MINDFUL_PSYCHOLOGY;
             const isRevengeShort =
                 niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.SHORT;
             const isRevengeLong =
                 niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.LONG;
             const isShortScript =
-                (niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS) &&
+                (niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.MINDFUL_PSYCHOLOGY) &&
                 scriptLengthMode === 'SHORT';
             
             if (shouldEnforceLength) {
@@ -1411,13 +1479,14 @@ ${segmentSourceText}
                         niche === NicheType.PSYCHOLOGY ||
                         niche === NicheType.PHILOSOPHY_WISDOM ||
                         niche === NicheType.EMOTION_TABOO ||
-                        niche === NicheType.YI_JING_METAPHYSICS
+                        niche === NicheType.YI_JING_METAPHYSICS ||
+                        niche === NicheType.MINDFUL_PSYCHOLOGY
                             ? 450
                             : 500;
                 } else {
                     const minChars =
-                        niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO
-                            ? 2000
+                        niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.MINDFUL_PSYCHOLOGY
+                            ? 3000 // Mindful Psychology 长视频约 3000-5000 字
                             : niche === NicheType.YI_JING_METAPHYSICS
                                 ? MIN_YI_JING_SCRIPT_CHARS
                                 : niche === NicheType.TCM_METAPHYSICS
@@ -1452,7 +1521,8 @@ ${segmentSourceText}
                 niche === NicheType.PSYCHOLOGY ||
                 niche === NicheType.PHILOSOPHY_WISDOM ||
                 niche === NicheType.EMOTION_TABOO ||
-                niche === NicheType.YI_JING_METAPHYSICS) &&
+                niche === NicheType.YI_JING_METAPHYSICS ||
+                niche === NicheType.MINDFUL_PSYCHOLOGY) &&
             scriptLengthMode === 'SHORT';
         const tcmRequiredLessons = getRequiredLessonCount(
             niche,
@@ -1463,7 +1533,7 @@ ${segmentSourceText}
         // Determine the correct script template
         let scriptTemplate = config.scriptPromptTemplate;
         const subModeConfig = getCurrentSubModeConfig();
-        
+
         if (subModeConfig && subModeConfig.scriptPromptTemplate) {
             scriptTemplate = subModeConfig.scriptPromptTemplate;
         } else if (niche === NicheType.PSYCHOLOGY) {
@@ -1481,6 +1551,9 @@ ${segmentSourceText}
         } else if (niche === NicheType.YI_JING_METAPHYSICS) {
             scriptTemplate =
                 scriptLengthMode === 'SHORT' ? YI_JING_SHORT_SCRIPT_PROMPT : config.scriptPromptTemplate;
+        } else if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+            // Mindful Psychology 使用自己的脚本模板
+            scriptTemplate = MINDFUL_PSYCHOLOGY_SCRIPT_PROMPT;
         }
 
         // Use the selected script prompt
@@ -1581,7 +1654,8 @@ ${segmentSourceText}
                 niche === NicheType.PSYCHOLOGY ||
                 niche === NicheType.PHILOSOPHY_WISDOM ||
                 niche === NicheType.EMOTION_TABOO ||
-                niche === NicheType.YI_JING_METAPHYSICS;
+                niche === NicheType.YI_JING_METAPHYSICS ||
+                niche === NicheType.MINDFUL_PSYCHOLOGY;
 
             const maybeNormalizeLayout = (content: string): string => {
                 if (mapIsShortScript) return content;
@@ -1690,13 +1764,14 @@ ${segmentSourceText}
                 niche === NicheType.PHILOSOPHY_WISDOM ||
                 niche === NicheType.EMOTION_TABOO ||
                 niche === NicheType.YI_JING_METAPHYSICS ||
-                niche === NicheType.GENERAL_VIRAL;
+                niche === NicheType.GENERAL_VIRAL ||
+                niche === NicheType.MINDFUL_PSYCHOLOGY;
             const isRevengeShort =
                 niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.SHORT;
             const isRevengeLong =
                 niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.LONG;
             const isShortScript =
-                (niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS) &&
+                (niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.MINDFUL_PSYCHOLOGY) &&
                 scriptLengthMode === 'SHORT';
 
             if (shouldEnforceLength) {
@@ -2159,7 +2234,7 @@ ${segmentSourceText}
                         }
                         return newArr;
                     });
-                } else if (niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS) {
+                } else if (niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.MINDFUL_PSYCHOLOGY) {
                     localContent = cleaned;
                     if (niche === NicheType.YI_JING_METAPHYSICS && !isShortScript) {
                         localContent = stripPrematureZengThanksClosing(
@@ -2838,7 +2913,7 @@ ${segmentSourceText}
         )}
 
         {/* Script length selector for TCM/Finance */}
-        {(niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS) && (
+        {(niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.MINDFUL_PSYCHOLOGY) && (
           <div className="mb-6 animate-in fade-in duration-300 bg-slate-800/30 p-4 rounded-xl border border-slate-700/50">
             <label className="text-xs font-bold text-emerald-400 flex items-center gap-1 mb-2">
               <Clock size={14} /> 脚本时长
@@ -2932,8 +3007,8 @@ ${segmentSourceText}
                         </label>
                         <div className="relative">
                             <Calendar className="absolute left-3 top-3 text-slate-500 w-5 h-5" />
-                            <input 
-                                type="text" 
+                            <input
+                                type="text"
                                 value={inputVal}
                                 onChange={(e) => setInputVal(e.target.value)}
                                 placeholder={getInputPlaceholder()}
@@ -2954,7 +3029,7 @@ ${segmentSourceText}
                 )}
             </div>
 
-            <button 
+            <button
                 onClick={handlePlanTopics}
                 disabled={status === GenerationStatus.PLANNING}
                 className={`mt-0 md:mt-7 px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-medium rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 w-full md:w-auto justify-center whitespace-nowrap shadow-lg shadow-emerald-900/20`}
@@ -2964,9 +3039,115 @@ ${segmentSourceText}
                   ? '预测选题'
                   : niche === NicheType.YI_JING_METAPHYSICS
                     ? '一键生成爆款选题'
-                    : '一键生成爆款Hooks'}
+                    : niche === NicheType.MINDFUL_PSYCHOLOGY
+                      ? '模式一：生成选题'
+                      : '一键生成爆款Hooks'}
             </button>
         </div>
+        )}
+
+        {/* Mindful Psychology 频道特殊UI */}
+        {niche === NicheType.MINDFUL_PSYCHOLOGY && (
+          <div className="mt-6 p-4 bg-slate-800/50 border border-slate-700 rounded-xl">
+            <div className="flex items-center gap-2 mb-4">
+              <span className="text-lg">🐾</span>
+              <span className="text-slate-200 font-medium">治愈心理学频道</span>
+            </div>
+
+            {/* 模式切换标签 */}
+            <div className="flex gap-2 mb-4">
+              <button
+                onClick={() => setMindfulMode('mode1')}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                  mindfulMode === 'mode1'
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                }`}
+              >
+                📝 模式一：爆款选题
+              </button>
+              <button
+                onClick={() => setMindfulMode('mode2')}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                  mindfulMode === 'mode2'
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                }`}
+              >
+                🎬 模式二：动画分镜
+              </button>
+            </div>
+
+            {/* 模式二：左右编辑器分镜生成 */}
+            {mindfulMode === 'mode2' && (
+              <div className="space-y-4">
+                <div className="flex gap-4">
+                  {/* 左侧：输入区域 */}
+                  <div className="flex-1">
+                    <div className="flex justify-between items-center mb-2">
+                      <label className="text-sm text-slate-400">输入脚本原文</label>
+                    </div>
+                    <textarea
+                      value={mindfulScript}
+                      onChange={(e) => setMindfulScript(e.target.value)}
+                      placeholder="在此粘贴或输入脚本内容..."
+                      className="w-full h-[400px] bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-slate-200 focus:outline-none focus:border-emerald-500 resize-none custom-scrollbar"
+                    />
+                  </div>
+
+                  {/* 右侧：输出区域 */}
+                  <div className="flex-1">
+                    <div className="flex justify-between items-center mb-2">
+                      <label className="text-sm text-slate-400">分镜输出</label>
+                      {storyboard && (
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(storyboard);
+                            toast.success('分镜内容已复制到剪贴板');
+                          }}
+                          className="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm rounded-lg flex items-center gap-1 transition-all"
+                        >
+                          <Copy size={14} /> 复制
+                        </button>
+                      )}
+                    </div>
+                    <div className="w-full h-[400px] bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-slate-200 overflow-y-auto whitespace-pre-wrap leading-relaxed custom-scrollbar">
+                      {isGeneratingStoryboard ? (
+                        <div className="flex items-center gap-2 text-slate-500">
+                          <Loader2 className="animate-spin" size={16} />
+                          <span>正在生成分镜...</span>
+                        </div>
+                      ) : storyboard ? (
+                        storyboard
+                      ) : (
+                        <div className="text-slate-600 text-sm">分镜结果将显示在此处</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 生成按钮 */}
+                <div className="flex justify-center">
+                  <button
+                    onClick={handleGenerateStoryboard}
+                    disabled={isGeneratingStoryboard || !mindfulScript.trim()}
+                    className={`px-8 py-3 bg-purple-600 hover:bg-purple-500 text-white font-medium rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-lg shadow-purple-900/20`}
+                  >
+                    {isGeneratingStoryboard ? (
+                      <>
+                        <Loader2 className="animate-spin" />
+                        生成分镜中...
+                      </>
+                    ) : (
+                      <>
+                        🎬 一键生成动画分镜
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         )}
 
         {/* Adaptation Mode Button */}
