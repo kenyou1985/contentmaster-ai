@@ -1750,8 +1750,9 @@ ${segmentSourceText}
                     maxTokens:
                         niche === NicheType.TCM_METAPHYSICS ||
                         (niche === NicheType.YI_JING_METAPHYSICS && !mapIsShortScript) ||
-                        niche === NicheType.GENERAL_VIRAL
-                            ? 12288
+                        niche === NicheType.GENERAL_VIRAL ||
+                        niche === NicheType.MINDFUL_PSYCHOLOGY
+                            ? 24576
                             : 8192,
                 }
             );
@@ -1786,7 +1787,9 @@ ${segmentSourceText}
                                 ? MIN_TCM_SCRIPT_CHARS
                                 : niche === NicheType.FINANCE_CRYPTO
                                     ? MIN_FIN_SCRIPT_CHARS
-                                    : MIN_NEWS_SCRIPT_CHARS;
+                                    : niche === NicheType.MINDFUL_PSYCHOLOGY
+                                        ? 9000  // Mindful Psychology 长视频 9000-15000 字
+                                        : MIN_NEWS_SCRIPT_CHARS;
                 const maxChars = isShortScript
                     ? 500
                     : niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO
@@ -1797,7 +1800,9 @@ ${segmentSourceText}
                                 ? MAX_TCM_SCRIPT_CHARS
                                 : niche === NicheType.FINANCE_CRYPTO
                                     ? MAX_FIN_SCRIPT_CHARS
-                                    : MAX_NEWS_SCRIPT_CHARS;
+                                    : niche === NicheType.MINDFUL_PSYCHOLOGY
+                                        ? 15000  // Mindful Psychology 长视频 9000-15000 字
+                                        : MAX_NEWS_SCRIPT_CHARS;
                 
                 // GENERAL_VIRAL（小美）：严格字数控制，禁止强制续写
                 // 核心原则：正文未满 minC 前禁止出现收尾语 → 达标后才写收尾 → 收尾后停笔
