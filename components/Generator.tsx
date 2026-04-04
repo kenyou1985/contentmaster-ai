@@ -1,16 +1,129 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { ApiProvider, NicheType, Topic, GeneratedContent, GenerationStatus, TcmSubModeId, FinanceSubModeId, RevengeSubModeId, NewsSubModeId, StoryLanguage, StoryDuration } from '../types';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import {
+  ApiProvider,
+  NicheType,
+  NicheConfig,
+  Topic,
+  GeneratedContent,
+  GenerationStatus,
+  TcmSubModeId,
+  FinanceSubModeId,
+  RevengeSubModeId,
+  NewsSubModeId,
+  StoryLanguage,
+  StoryDuration,
+} from '../types';
 import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT, YI_JING_SHORT_SCRIPT_PROMPT, MINDFUL_PSYCHOLOGY_SCRIPT_PROMPT, applyTopicCountToPrompt } from '../constants';
 import { NicheSelector } from './NicheSelector';
 import { generateTopics, streamContentGeneration, initializeGemini } from '../services/geminiService';
 import { fetchMacroNewsDigestForPrompt } from '../services/macroNewsFeedService';
 import { needsParagraphNormalization, normalizeDenseChineseParagraphs } from '../services/textFormat';
-import { Sparkles, Calendar, Loader2, Download, Eye, Zap, AlertTriangle, Copy, Check, Globe, Clock, PlusCircle, History, ListOrdered, Film, ChevronDown, ChevronRight } from 'lucide-react';
+import { Sparkles, Calendar, Loader2, Download, Eye, Zap, AlertTriangle, Copy, Check, Globe, Clock, PlusCircle, History, ListOrdered, Film, ChevronDown, ChevronRight, Rocket, Trash2 } from 'lucide-react';
+import {
+  buildParallelOutlineUserPrompt,
+  buildParallelOutlineSystem,
+  buildParallelSegmentUserPrompt,
+  buildParallelMergeUserPrompt,
+  buildParallelMergeSystem,
+  parseYiJingOutline,
+  rescaleChapterWordCounts,
+  outlinePayloadToJsonPretty,
+  computeParallelSegmentCount,
+  YI_JING_CHARS_PER_SEGMENT_SOFT_CAP,
+  YI_JING_BAND1_MAX,
+  YI_JING_BAND2_MAX,
+  PARALLEL_LOGIC_GENERIC,
+  PARALLEL_LOGIC_YI_JING,
+  type YiJingOutlinePayload,
+  type YiJingChapterPlan,
+} from '../services/yiJingParallelLongForm';
 import JSZip from 'jszip';
 import { saveHistory, getHistory, getHistoryKey, deleteHistory, HistoryRecord } from '../services/historyService';
 import { HistorySelector } from './HistorySelector';
 import { useToast } from './Toast';
 import { ProgressBar } from './ProgressBar';
+
+function clampSystemSummary(raw: string, maxLen = 960): string {
+  const s = raw.replace(/\s+/g, ' ').trim();
+  return s.length > maxLen ? `${s.slice(0, maxLen)}…` : s;
+}
+
+/** 各赛道分段并行：大纲 / 分段 / 合并 的提示与人设 */
+function getParallelPipelineBundle(
+  niche: NicheType,
+  scriptLengthMode: 'LONG' | 'SHORT',
+  storyLanguage: StoryLanguage,
+  storyDuration: StoryDuration,
+  nicheConfig: NicheConfig
+) {
+  const baseName = nicheConfig.name;
+  const isEnRevenge =
+    niche === NicheType.STORY_REVENGE && storyLanguage === StoryLanguage.ENGLISH;
+  const isMindfulEnglish = niche === NicheType.MINDFUL_PSYCHOLOGY;
+  const outputLanguage: 'zh' | 'en' = isEnRevenge || isMindfulEnglish ? 'en' : 'zh';
+
+  let logicBlueprint = PARALLEL_LOGIC_GENERIC;
+  let channelLabel = `「${baseName}」频道长内容`;
+  let contentKindOutline =
+    scriptLengthMode === 'SHORT' ? '短视频口播/解说大纲' : '长视频口播/解说大纲';
+  let contentKindMerge = '口播';
+  let directorLine = `你是「${baseName}」频道的长内容总编导，须严格符合该频道人设与输出规范。`;
+  let mergeEditorLine =
+    outputLanguage === 'en'
+      ? 'You are a senior editor merging long-form scripts for audio/video.'
+      : `你是资深长文编辑，熟悉「${baseName}」的叙事与语气。`;
+
+  if (niche === NicheType.YI_JING_METAPHYSICS) {
+    logicBlueprint = PARALLEL_LOGIC_YI_JING;
+    channelLabel = '曾仕强风格长视频口播';
+    contentKindOutline = '口播大纲';
+    contentKindMerge = '口播';
+    directorLine = '你是曾仕强教授风格的易经命理长视频总编导。';
+    mergeEditorLine = '你是资深口播编辑，熟悉曾仕强讲学风格。';
+  }
+
+  if (niche === NicheType.STORY_REVENGE) {
+    channelLabel = `「复仇故事」${storyLanguage} 叙事`;
+    contentKindOutline =
+      storyDuration === StoryDuration.LONG ? '长篇叙事分章大纲' : '短篇叙事分章大纲';
+    contentKindMerge = '叙事脚本';
+    directorLine = `你是专业叙事总编导；须规划 **${storyLanguage}** 语种的分章结构，符合该赛道复仇/打脸叙事节奏。`;
+    if (outputLanguage === 'en') {
+      mergeEditorLine = 'You are a senior story editor merging serialized narrative acts.';
+    }
+  }
+
+  if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+    channelLabel = 'Mindful Paws–style English healing psychology voice-over';
+    contentKindOutline =
+      scriptLengthMode === 'SHORT' ? 'short-form voice-over outline (English)' : 'long-form voice-over outline (English)';
+    contentKindMerge = 'voice-over script';
+    directorLine =
+      'You are the lead producer for a faceless YouTube healing-psychology channel (dog–human emotional metaphors). Plan and write for **English** TTS unless the user explicitly asks for Chinese in this task.';
+    mergeEditorLine =
+      'You are a senior editor merging English voice-over scripts; keep warm, spoken, therapist-like English. End with a simple subscribe line: say "my channel", never the brand name.';
+  }
+
+  const voiceRules = `1. 严格遵循下列「频道创作铁律摘要」与人设。\n2. 禁止【】、[] 舞台提示、禁止「模块一/第一节」等露骨章节标、禁止 Markdown 标题层级、避免纯列表骨架。\n【频道创作铁律摘要】\n${clampSystemSummary(nicheConfig.systemInstruction)}`;
+
+  const mergeTone =
+    outputLanguage === 'en'
+      ? 'Unify narrative voice, tense, and pacing; keep the same language as the segment drafts.'
+      : `全文语气、视角与「${baseName}」人设保持一致，衔接自然。`;
+
+  return {
+    outline: { channelLabel, contentKind: contentKindOutline, logicBlueprint },
+    outlineSystem: buildParallelOutlineSystem(directorLine),
+    segment: { outputLanguage, voiceRules },
+    merge: {
+      channelTag: baseName,
+      toneInstruction: mergeTone,
+      outputLanguage,
+      contentKind: contentKindMerge,
+    },
+    mergeSystem: buildParallelMergeSystem(mergeEditorLine),
+  };
+}
 
 interface GeneratorProps {
   apiKey: string;
@@ -113,6 +226,30 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const [mindfulStoryboardExpanded, setMindfulStoryboardExpanded] = useState(false);
   const mindfulStoryboardAnchorRef = useRef<HTMLDivElement>(null);
 
+  /** 易经命理·长视频：大纲 + 分段并行 + 合并润色 */
+  /** 全文目标字数（分段并行的总目标，默认 3500，与各章 min/max 联动） */
+  const [yiJingTotalTargetChars, setYiJingTotalTargetChars] = useState(3500);
+  /** 按目标总字数与单次输出上限自动推算章数（非固定 3–7） */
+  const yiJingComputedSegCount = useMemo(
+    () =>
+      computeParallelSegmentCount(
+        yiJingTotalTargetChars,
+        scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
+      ),
+    [yiJingTotalTargetChars, scriptLengthMode]
+  );
+  const [yiJingOutlineText, setYiJingOutlineText] = useState('');
+  const [yiJingOutlineParsed, setYiJingOutlineParsed] = useState<YiJingOutlinePayload | null>(null);
+  /** 可读浏览 / 表单编辑（不再默认编辑 JSON） */
+  const [yiJingOutlineViewMode, setYiJingOutlineViewMode] = useState<'readable' | 'edit'>('readable');
+  /** 表单编辑时的草稿（与 yiJingOutlineParsed 分离，取消可丢弃） */
+  const [yiJingOutlineEditDraft, setYiJingOutlineEditDraft] = useState<YiJingOutlinePayload | null>(null);
+  const [yiJingSegDrafts, setYiJingSegDrafts] = useState<string[]>([]);
+  const [yiJingSegStatus, setYiJingSegStatus] = useState<('idle' | 'running' | 'done' | 'error')[]>([]);
+  const [yiJingPipelineLogs, setYiJingPipelineLogs] = useState<string[]>([]);
+  const [yiJingMergedOutput, setYiJingMergedOutput] = useState('');
+  const [yiJingPipelineBusy, setYiJingPipelineBusy] = useState(false);
+
   // UTC 时间锚定（仅在需要时间锚的赛道/子模式注入）
   const getUtcAnchor = (): string => {
     const now = new Date();
@@ -136,6 +273,27 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     const idx = (year - 4) % 12;
     return animals[(idx + 12) % 12];
   };
+
+  /** 分段并行·生成大纲时前置：时间锚 / 宏观 RSS / 新闻摘要等 */
+  const getParallelOutlineLeadContext = useCallback((): string => {
+    const parts: string[] = [];
+    if (shouldInjectUtcAnchor()) {
+      parts.push(getUtcAnchor());
+    }
+    if (
+      niche === NicheType.FINANCE_CRYPTO &&
+      financeSubMode === FinanceSubModeId.MACRO_WARNING &&
+      scriptLengthMode === 'LONG'
+    ) {
+      const m = financeMacroNewsDigestRef.current?.trim();
+      if (m) parts.push(m);
+    }
+    if (niche === NicheType.GENERAL_VIRAL) {
+      const n = newsMacroNewsDigestRef.current?.trim();
+      if (n) parts.push(n);
+    }
+    return parts.join('\n\n');
+  }, [niche, financeSubMode, scriptLengthMode]);
 
   // Auto-scroll logic
   useEffect(() => {
@@ -171,6 +329,17 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
         return null;
     }
   };
+
+  /** 分段并行保存历史：与当前子模式 id 对齐 */
+  const getParallelHistorySubModeId = useCallback((): string => {
+    const st = getStaticGeneratorSubModeId(niche);
+    if (st) return st;
+    if (niche === NicheType.TCM_METAPHYSICS) return tcmSubMode;
+    if (niche === NicheType.FINANCE_CRYPTO) return financeSubMode;
+    if (niche === NicheType.STORY_REVENGE) return revengeSubMode;
+    if (niche === NicheType.GENERAL_VIRAL) return newsSubMode;
+    return 'default';
+  }, [niche, tcmSubMode, financeSubMode, revengeSubMode, newsSubMode]);
 
   // 处理子模式切换（不带自动弹窗）
   const handleSubModeChange = (nicheType: NicheType, submodeId: string, setFunc: (id: any) => void) => {
@@ -1031,7 +1200,551 @@ ${segmentSourceText}
   };
 
   // 批量生成进度状态
-  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(null);
+  const [batchProgress, setBatchProgress] = useState<{
+    current: number;
+    total: number;
+    hint?: string;
+  } | null>(null);
+
+  const pushYiJingLog = useCallback((line: string) => {
+    const ts = new Date().toLocaleTimeString();
+    setYiJingPipelineLogs((prev) => [...prev.slice(-220), `[${ts}] ${line}`]);
+  }, []);
+
+  const collectStreamText = useCallback(
+    async (prompt: string, systemInstruction: string, maxTokens?: number): Promise<string> => {
+      let acc = '';
+      await streamContentGeneration(prompt, systemInstruction, (chunk) => {
+        acc += chunk;
+      }, undefined, { maxTokens: maxTokens ?? 8192 });
+      return acc;
+    },
+    []
+  );
+
+  const normalizeYiJingBody = useCallback((content: string): string => {
+    if (!content || content.length < 400) return content;
+    if (!needsParagraphNormalization(content)) return content;
+    return normalizeDenseChineseParagraphs(content);
+  }, []);
+
+  const clearYiJingPipelinePanel = useCallback(() => {
+    setYiJingOutlineText('');
+    setYiJingOutlineParsed(null);
+    setYiJingOutlineViewMode('readable');
+    setYiJingOutlineEditDraft(null);
+    setYiJingSegDrafts([]);
+    setYiJingSegStatus([]);
+    setYiJingPipelineLogs([]);
+    setYiJingMergedOutput('');
+  }, []);
+
+  const emptyYiJingChapter = (i: number): YiJingChapterPlan => ({
+    title: `第 ${i + 1} 章（请修改标题）`,
+    min_chars: 800,
+    max_chars: 1200,
+    core_brief: '',
+    opening_echo: '',
+    closing_snippet_hint: '',
+    bridge_to_next: '',
+  });
+
+  const clampYiJingTotalTarget = (v: number) =>
+    Math.min(70000, Math.max(1000, Math.round(Number.isFinite(v) ? v : 8000)));
+
+  /** 在已有大纲上按当前「目标全文字数」重算各章 min_chars / max_chars，并同步 JSON 文本 */
+  const applyYiJingTotalTargetToOutline = useCallback((total: number) => {
+    const n = clampYiJingTotalTarget(total);
+    setYiJingTotalTargetChars(n);
+    setYiJingOutlineParsed((prev) => {
+      if (!prev) return null;
+      const next = rescaleChapterWordCounts(prev, n);
+      setYiJingOutlineText(outlinePayloadToJsonPretty(next));
+      return next;
+    });
+  }, []);
+
+  /** 仅生成并解析大纲（可编辑后再并行） */
+  const handleYiJingGenerateOutline = useCallback(async () => {
+    const sel = topics.filter((t) => t.selected);
+    if (!sel[0]) {
+      toast.warning('请先选择一个选题');
+      return;
+    }
+    if (!apiKey?.trim()) {
+      toast.error('请先配置 API Key');
+      return;
+    }
+    initializeGemini(apiKey, { provider });
+    setYiJingPipelineBusy(true);
+    const segN = yiJingComputedSegCount;
+    const bundle = getParallelPipelineBundle(
+      niche,
+      scriptLengthMode,
+      storyLanguage,
+      storyDuration,
+      NICHES[niche]
+    );
+    const lead = getParallelOutlineLeadContext();
+    setBatchProgress({
+      current: 0,
+      total: 1,
+      hint: `正在生成大纲（约 ${segN} 章）…`,
+    });
+    pushYiJingLog(
+      `开始生成大纲（自动约 ${segN} 章，全文目标约 ${yiJingTotalTargetChars} 字）…`
+    );
+    try {
+      const raw = await collectStreamText(
+        buildParallelOutlineUserPrompt(
+          sel[0].title,
+          segN,
+          yiJingTotalTargetChars,
+          bundle.outline,
+          lead || undefined
+        ),
+        bundle.outlineSystem,
+        6144
+      );
+      const parsedRaw = parseYiJingOutline(raw);
+      const parsed = parsedRaw
+        ? rescaleChapterWordCounts(parsedRaw, yiJingTotalTargetChars)
+        : null;
+      setYiJingOutlineParsed(parsed);
+      setYiJingOutlineText(parsed ? outlinePayloadToJsonPretty(parsed) : raw);
+      setYiJingOutlineViewMode('readable');
+      setYiJingOutlineEditDraft(null);
+      if (parsed) {
+        pushYiJingLog(`大纲已解析：${parsed.chapters.length} 章`);
+        setYiJingSegDrafts(Array(parsed.chapters.length).fill(''));
+        setYiJingSegStatus(Array(parsed.chapters.length).fill('idle'));
+        setBatchProgress({ current: 1, total: 1, hint: '大纲已生成' });
+      } else {
+        pushYiJingLog('大纲 JSON 解析失败，请检查模型输出或点击「清空面板」重试');
+        toast.error('大纲解析失败，请重试');
+        setBatchProgress({ current: 0, total: 1, hint: '大纲解析失败' });
+      }
+    } catch (e: any) {
+      pushYiJingLog(`大纲失败：${e?.message || e}`);
+      toast.error(e?.message || '大纲生成失败');
+      setBatchProgress({ current: 0, total: 1, hint: '大纲请求失败' });
+    } finally {
+      setYiJingPipelineBusy(false);
+      setTimeout(() => setBatchProgress(null), 1000);
+    }
+  }, [
+    apiKey,
+    provider,
+    niche,
+    scriptLengthMode,
+    storyLanguage,
+    storyDuration,
+    topics,
+    yiJingComputedSegCount,
+    yiJingTotalTargetChars,
+    collectStreamText,
+    pushYiJingLog,
+    toast,
+    getParallelOutlineLeadContext,
+  ]);
+
+  /** 基于已解析大纲，分段并行生成 */
+  const handleYiJingRunSegments = useCallback(async () => {
+    const sel = topics.filter((t) => t.selected);
+    if (!sel[0]) {
+      toast.warning('请先选择一个选题');
+      return;
+    }
+    let parsed = yiJingOutlineParsed;
+    if (!parsed) {
+      parsed = parseYiJingOutline(yiJingOutlineText);
+      if (!parsed) {
+        toast.error('请先「生成大纲」，或在编辑大纲中保存有效结构');
+        return;
+      }
+      parsed = rescaleChapterWordCounts(parsed, yiJingTotalTargetChars);
+      setYiJingOutlineParsed(parsed);
+      setYiJingOutlineText(outlinePayloadToJsonPretty(parsed));
+    } else {
+      parsed = rescaleChapterWordCounts(parsed, yiJingTotalTargetChars);
+      setYiJingOutlineParsed(parsed);
+      setYiJingOutlineText(outlinePayloadToJsonPretty(parsed));
+    }
+    if (!apiKey?.trim()) {
+      toast.error('请先配置 API Key');
+      return;
+    }
+    initializeGemini(apiKey, { provider });
+    const config = NICHES[niche];
+    const sys = config.systemInstruction;
+    const bundle = getParallelPipelineBundle(
+      niche,
+      scriptLengthMode,
+      storyLanguage,
+      storyDuration,
+      config
+    );
+    const topicTitle = sel[0].title;
+    const n = parsed.chapters.length;
+    setYiJingPipelineBusy(true);
+    setYiJingSegDrafts(Array(n).fill(''));
+    setYiJingSegStatus(Array(n).fill('idle'));
+    pushYiJingLog(`并行生成 ${n} 段…`);
+    const segDone = new Set<number>();
+    setBatchProgress({ current: 0, total: n, hint: `并行生成 0/${n} 段` });
+
+    try {
+      const results = await Promise.all(
+        parsed.chapters.map(async (ch, idx) => {
+          setYiJingSegStatus((prev) => {
+            const next = [...prev];
+            next[idx] = 'running';
+            return next;
+          });
+          pushYiJingLog(`第 ${idx + 1}/${n} 段 开始…`);
+          try {
+            const user = buildParallelSegmentUserPrompt(
+              {
+                topic: topicTitle,
+                coreTheme: parsed!.core_theme,
+                logicLine: parsed!.logic_line,
+                chapter: ch,
+                chapterIndex: idx,
+                totalChapters: n,
+              },
+              bundle.segment
+            );
+            let local = '';
+            await streamContentGeneration(user, sys, (c) => {
+              local += c;
+              setYiJingSegDrafts((prev) => {
+                const arr = [...prev];
+                arr[idx] = local;
+                return arr;
+              });
+            }, undefined, { maxTokens: 12288 });
+            setYiJingSegStatus((prev) => {
+              const next = [...prev];
+              next[idx] = 'done';
+              return next;
+            });
+            pushYiJingLog(`第 ${idx + 1}/${n} 段 完成（约 ${local.length} 字）`);
+            segDone.add(idx);
+            setBatchProgress({
+              current: segDone.size,
+              total: n,
+              hint: `并行生成 ${segDone.size}/${n} 段`,
+            });
+            return local;
+          } catch (err: any) {
+            setYiJingSegStatus((prev) => {
+              const next = [...prev];
+              next[idx] = 'error';
+              return next;
+            });
+            pushYiJingLog(`第 ${idx + 1} 段 错误：${err?.message || err}`);
+            segDone.add(idx);
+            setBatchProgress({
+              current: segDone.size,
+              total: n,
+              hint: `并行生成 ${segDone.size}/${n} 段（含失败）`,
+            });
+            return `[本段生成失败：${err?.message || err}]`;
+          }
+        })
+      );
+      setYiJingSegDrafts(results);
+      pushYiJingLog('全部分段请求已结束');
+      setBatchProgress({ current: n, total: n, hint: '各段请求已结束' });
+    } finally {
+      setYiJingPipelineBusy(false);
+      setTimeout(() => setBatchProgress(null), 900);
+    }
+  }, [
+    apiKey,
+    provider,
+    niche,
+    scriptLengthMode,
+    storyLanguage,
+    storyDuration,
+    topics,
+    yiJingOutlineParsed,
+    yiJingOutlineText,
+    yiJingTotalTargetChars,
+    pushYiJingLog,
+    toast,
+  ]);
+
+  const handleYiJingMergeFinal = useCallback(async () => {
+    const sel = topics.filter((t) => t.selected);
+    if (!sel[0]) {
+      toast.warning('请先选择一个选题');
+      return;
+    }
+    const parts = yiJingSegDrafts.filter((s) => s && s.trim());
+    if (parts.length === 0) {
+      toast.error('没有可合并的分段正文');
+      return;
+    }
+    if (!apiKey?.trim()) {
+      toast.error('请先配置 API Key');
+      return;
+    }
+    initializeGemini(apiKey, { provider });
+    setYiJingPipelineBusy(true);
+    pushYiJingLog('合并初稿 + 统一全文语气…');
+    setBatchProgress({ current: 0, total: 1, hint: '正在合并、统一语气…' });
+    try {
+      const bundle = getParallelPipelineBundle(
+        niche,
+        scriptLengthMode,
+        storyLanguage,
+        storyDuration,
+        NICHES[niche]
+      );
+      const combined = parts.join('\n\n');
+      const merged = await collectStreamText(
+        buildParallelMergeUserPrompt(sel[0].title, combined, yiJingTotalTargetChars, bundle.merge),
+        bundle.mergeSystem,
+        24576
+      );
+      const norm = normalizeYiJingBody(merged);
+      setYiJingMergedOutput(norm);
+      setBatchProgress({ current: 1, total: 1, hint: '合并完成' });
+      setGeneratedContents((prev) => {
+        if (prev.length === 0) return [{ topic: sel[0].title, content: norm }];
+        const next = [...prev];
+        const hit = next.findIndex((x) => x.topic === sel[0].title);
+        if (hit >= 0) {
+          next[hit] = { ...next[hit], content: norm };
+          return next;
+        }
+        return [{ topic: sel[0].title, content: norm }];
+      });
+      pushYiJingLog(`合并完成，终稿约 ${norm.length} 字`);
+      toast.success('已合并并写入右侧编辑器');
+      try {
+        const historyKey = getHistoryKeyForSubMode(niche, getParallelHistorySubModeId());
+        if (norm.length > 200) {
+          saveHistory('generator', historyKey, norm, { topic: sel[0].title, input: inputVal });
+        }
+      } catch {
+        /* ignore */
+      }
+    } catch (e: any) {
+      pushYiJingLog(`合并失败：${e?.message || e}`);
+      toast.error(e?.message || '合并失败');
+      setBatchProgress({ current: 0, total: 1, hint: '合并失败' });
+    } finally {
+      setYiJingPipelineBusy(false);
+      setTimeout(() => setBatchProgress(null), 1000);
+    }
+  }, [
+    apiKey,
+    provider,
+    niche,
+    scriptLengthMode,
+    storyLanguage,
+    storyDuration,
+    topics,
+    yiJingSegDrafts,
+    yiJingTotalTargetChars,
+    collectStreamText,
+    pushYiJingLog,
+    normalizeYiJingBody,
+    toast,
+    inputVal,
+    getParallelHistorySubModeId,
+  ]);
+
+  const handleYiJingAutoPilot = useCallback(async (): Promise<boolean> => {
+    const sel = topics.filter((t) => t.selected);
+    if (!sel[0]) {
+      toast.warning('请先选择一个选题');
+      return false;
+    }
+    if (!apiKey?.trim()) {
+      toast.error('请先配置 API Key');
+      return false;
+    }
+    initializeGemini(apiKey, { provider });
+    setYiJingPipelineBusy(true);
+    const topicTitle = sel[0].title;
+    const plannedSeg = computeParallelSegmentCount(
+      yiJingTotalTargetChars,
+      scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
+    );
+    const bundle = getParallelPipelineBundle(
+      niche,
+      scriptLengthMode,
+      storyLanguage,
+      storyDuration,
+      NICHES[niche]
+    );
+    const outlineLead = getParallelOutlineLeadContext();
+    setBatchProgress({
+      current: 0,
+      total: plannedSeg + 2,
+      hint: '正在生成章节大纲…',
+    });
+    pushYiJingLog(
+      `全自动：大纲 → 并行分段 → 合并（全文目标约 ${yiJingTotalTargetChars} 字，约 ${plannedSeg} 章）`
+    );
+    try {
+      const raw = await collectStreamText(
+        buildParallelOutlineUserPrompt(
+          topicTitle,
+          plannedSeg,
+          yiJingTotalTargetChars,
+          bundle.outline,
+          outlineLead || undefined
+        ),
+        bundle.outlineSystem,
+        6144
+      );
+      const parsedRaw = parseYiJingOutline(raw);
+      if (!parsedRaw) {
+        setYiJingOutlineText(raw);
+        setYiJingOutlineViewMode('readable');
+        throw new Error('大纲 JSON 解析失败');
+      }
+      const parsed = rescaleChapterWordCounts(parsedRaw, yiJingTotalTargetChars);
+      const n = parsed.chapters.length;
+      setYiJingOutlineText(outlinePayloadToJsonPretty(parsed));
+      setYiJingOutlineParsed(parsed);
+      setYiJingOutlineEditDraft(null);
+      setYiJingOutlineViewMode('readable');
+      setBatchProgress({
+        current: 1,
+        total: n + 2,
+        hint: `大纲就绪（${n} 章），并行生成各段…`,
+      });
+      pushYiJingLog(`大纲 OK，${n} 章，开始并行…`);
+      setYiJingSegDrafts(Array(n).fill(''));
+      setYiJingSegStatus(Array(n).fill('idle'));
+
+      const config = NICHES[niche];
+      const sys = config.systemInstruction;
+      const segDone = new Set<number>();
+      const results = await Promise.all(
+        parsed.chapters.map(async (ch, idx) => {
+          setYiJingSegStatus((prev) => {
+            const next = [...prev];
+            next[idx] = 'running';
+            return next;
+          });
+          let local = '';
+          const user = buildParallelSegmentUserPrompt(
+            {
+              topic: topicTitle,
+              coreTheme: parsed.core_theme,
+              logicLine: parsed.logic_line,
+              chapter: ch,
+              chapterIndex: idx,
+              totalChapters: n,
+            },
+            bundle.segment
+          );
+          try {
+            await streamContentGeneration(user, sys, (c) => {
+              local += c;
+              setYiJingSegDrafts((prev) => {
+                const arr = [...prev];
+                arr[idx] = local;
+                return arr;
+              });
+            }, undefined, { maxTokens: 12288 });
+            setYiJingSegStatus((prev) => {
+              const next = [...prev];
+              next[idx] = 'done';
+              return next;
+            });
+            segDone.add(idx);
+            setBatchProgress({
+              current: 1 + segDone.size,
+              total: n + 2,
+              hint: `并行生成 ${segDone.size}/${n} 段`,
+            });
+            return local;
+          } catch (err: any) {
+            setYiJingSegStatus((prev) => {
+              const next = [...prev];
+              next[idx] = 'error';
+              return next;
+            });
+            pushYiJingLog(`第 ${idx + 1} 段 错误：${err?.message || err}`);
+            segDone.add(idx);
+            setBatchProgress({
+              current: 1 + segDone.size,
+              total: n + 2,
+              hint: `并行生成 ${segDone.size}/${n} 段（含失败）`,
+            });
+            return `[本段生成失败：${err?.message || err}]`;
+          }
+        })
+      );
+      setYiJingSegDrafts(results);
+      pushYiJingLog('分段完成，正在合并润色…');
+      setBatchProgress({
+        current: n + 1,
+        total: n + 2,
+        hint: '正在合并、统一语气…',
+      });
+      const combined = results.join('\n\n');
+      const merged = await collectStreamText(
+        buildParallelMergeUserPrompt(topicTitle, combined, yiJingTotalTargetChars, bundle.merge),
+        bundle.mergeSystem,
+        24576
+      );
+      const norm = normalizeYiJingBody(merged);
+      setYiJingMergedOutput(norm);
+      setGeneratedContents([{ topic: topicTitle, content: norm }]);
+      setViewIndex(0);
+      setBatchProgress({
+        current: n + 2,
+        total: n + 2,
+        hint: '全文已就绪',
+      });
+      pushYiJingLog(`全流程完成，终稿约 ${norm.length} 字`);
+      toast.success('分段并行全文已生成');
+      try {
+        const historyKey = getHistoryKeyForSubMode(niche, getParallelHistorySubModeId());
+        if (norm.length > 200) {
+          saveHistory('generator', historyKey, norm, { topic: topicTitle, input: inputVal });
+        }
+      } catch {
+        /* ignore */
+      }
+      return true;
+    } catch (e: any) {
+      pushYiJingLog(`失败：${e?.message || e}`);
+      toast.error(e?.message || '全自动流程失败');
+      setBatchProgress((prev) =>
+        prev
+          ? { ...prev, hint: `未完成：${e?.message || e}` }
+          : { current: 0, total: 1, hint: '流程失败' }
+      );
+      return false;
+    } finally {
+      setYiJingPipelineBusy(false);
+    }
+  }, [
+    apiKey,
+    provider,
+    niche,
+    scriptLengthMode,
+    storyLanguage,
+    storyDuration,
+    topics,
+    yiJingTotalTargetChars,
+    collectStreamText,
+    pushYiJingLog,
+    normalizeYiJingBody,
+    toast,
+    inputVal,
+    getParallelOutlineLeadContext,
+    getParallelHistorySubModeId,
+  ]);
 
   const handleBatchGenerate = async () => {
     if (!apiKey || !apiKey.trim()) {
@@ -1072,6 +1785,45 @@ ${segmentSourceText}
 
     // Initialize API
     initializeGemini(apiKey, { provider });
+
+    /** 全赛道统一：大纲 → 分段并行 → 合并（复仇改编模式仍走原流式路径） */
+    const useGlobalParallelPipeline =
+      !(niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION);
+
+    if (useGlobalParallelPipeline) {
+      if (selectedTopics.length > 1) {
+        toast.warning('分段并行模式每次仅处理第一个已选选题；多篇请分批执行。');
+      }
+      const first = selectedTopics[0];
+      setStatus(GenerationStatus.WRITING);
+      setGeneratedContents([{ topic: first.title, content: '' }]);
+      setActiveIndices(new Set([0]));
+      setViewIndex(0);
+      const planned =
+        computeParallelSegmentCount(
+          yiJingTotalTargetChars,
+          scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
+        ) + 2;
+      setBatchProgress({
+        current: 0,
+        total: planned,
+        hint: '分段并行流水线启动…',
+      });
+      let pipelineOk = false;
+      try {
+        pipelineOk = await handleYiJingAutoPilot();
+        if (pipelineOk) {
+          setBatchProgress((prev) =>
+            prev ? { ...prev, current: prev.total, hint: '生成完成' } : null
+          );
+        }
+      } finally {
+        setStatus(GenerationStatus.COMPLETED);
+        setActiveIndices(new Set());
+        setTimeout(() => setBatchProgress(null), pipelineOk ? 1400 : 2600);
+      }
+      return;
+    }
 
     setStatus(GenerationStatus.WRITING);
     // 清除错误消息（使用 Toast 后不再需要）
@@ -1979,9 +2731,9 @@ ${segmentSourceText}
                         console.log(`[Generator] Mindful Psychology: body ${clLen} < ${minC}, supplementary pass`);
                         await streamContentGeneration(
                             [
-                                `请承接上文继续深入展开心理学内容，保持温暖治愈的咨询师口吻。`,
-                                `当前约${clLen}字，目标是${minC}-${maxC}字（根据选题复杂度自动匹配）。`,
-                                `只续写正文内容，不要任何收尾语或分隔符。`,
+                                `Continue the voice-over in **English** with the same warm, healing-psychology tone (dog–human emotional metaphors when relevant).`,
+                                `Current ~${clLen} characters; target ${minC}–${maxC} characters.`,
+                                `Extend the body only—no closing subscribe CTA or sign-off yet.`,
                                 '',
                                 '【上文】',
                                 localContent.slice(-3000)
@@ -1995,21 +2747,21 @@ ${segmentSourceText}
                         clLen = sanitizeTtsScript(localContent).length;
                     }
 
-                    // 检查是否缺少 CTA，如果没有则强制补充
-                    const hasCTA = /thumbs up|subscribe|comment|follow|healing journey/i.test(localContent);
-                    if (!hasCTA) {
+                    // 检查是否缺少 CTA，如果没有则强制补充（与 constants 中英收尾规则一致）
+                    const mindfulCtaOk = (t: string) =>
+                      /please like and subscribe to my channel/i.test(t) ||
+                      /请点赞并订阅我的频道/.test(t);
+                    if (!mindfulCtaOk(localContent)) {
                         console.log(`[Generator] Mindful Psychology: CTA not found, adding mandatory CTA`);
-                        const ctaText = `\n\nIf you found this video helpful, give it a thumbs up and hit subscribe.\nYour journey to self-validation starts with one small step.\nLet me know in the comments: which insight resonated most with you today?\nFollow for more gentle reminders on your healing journey.`;
+                        const ctaText = `\n\nPlease like and subscribe to my channel.`;
                         localContent = localContent.trimEnd() + ctaText;
                     }
 
                     // 语义截断，确保不超过硬上限
                     if (clLen > maxC) {
                         localContent = truncateToMax(localContent, maxC);
-                        // 截断后再次检查并补充 CTA
-                        const hasCTAAfterTruncate = /thumbs up|subscribe|comment|follow|healing journey/i.test(localContent);
-                        if (!hasCTAAfterTruncate) {
-                            const ctaText = `\n\nIf you found this video helpful, give it a thumbs up and hit subscribe.\nYour journey to self-validation starts with one small step.\nLet me know in the comments: which insight resonated most with you today?\nFollow for more gentle reminders on your healing journey.`;
+                        if (!mindfulCtaOk(localContent)) {
+                            const ctaText = `\n\nPlease like and subscribe to my channel.`;
                             localContent = localContent.trimEnd() + ctaText;
                         }
                         console.log(`[Generator] Mindful Psychology truncated to ${localContent.length} chars`);
@@ -3024,10 +3776,18 @@ ${segmentSourceText}
                     const hasHistory = getHistory('generator', historyKey).length > 0;
                     
                     return (
-                        <button
+                        <div
                             key={mode.id}
+                            role="button"
+                            tabIndex={0}
                             onClick={() => handleSubModeChange(niche, mode.id, setActiveFunc)}
-                            className={`p-3 rounded-lg border text-left transition-all relative overflow-hidden ${
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                handleSubModeChange(niche, mode.id, setActiveFunc);
+                              }
+                            }}
+                            className={`p-3 rounded-lg border text-left transition-all relative overflow-hidden cursor-pointer ${
                                 isSelected 
                                 ? 'bg-emerald-900/40 border-emerald-500 ring-1 ring-emerald-500' 
                                 : 'bg-slate-800/40 border-slate-700 hover:bg-slate-800 hover:border-slate-600'
@@ -3040,6 +3800,7 @@ ${segmentSourceText}
                                 </span>
                                 {hasHistory && (
                                     <button
+                                      type="button"
                                       onClick={(e) => handleManualHistoryClick(e, niche, mode.id)}
                                       className="ml-auto p-0.5 rounded hover:bg-slate-700/50 transition-colors"
                                       title="点击查看历史记录"
@@ -3051,7 +3812,7 @@ ${segmentSourceText}
                             <p className="text-[10px] text-slate-500 leading-tight">
                                 {mode.subtitle}
                             </p>
-                        </button>
+                        </div>
                     );
                 })}
             </div>
@@ -3147,7 +3908,7 @@ ${segmentSourceText}
                   : niche === NicheType.EMOTION_TABOO
                     ? '短视频：400-500字，悬念开场+感官铺垫+心理拉扯+高光瞬间+反思引导。'
                     : niche === NicheType.YI_JING_METAPHYSICS
-                      ? '长视频：约8000-12000字，曾氏5大模块融于一篇口播；短视频：≤500字，曾仕强口吻快讲。'
+                      ? '长视频：默认「大纲→多段并行→合并润色」生成约万字口播，减轻单请求截断；仍沿用曾氏口吻；短视频：≤500字快讲。'
                       : '短视频：在选题基础上详细展开，加入排比与总结排列，输出 500 字以内短视频文案。'}
             </p>
           </div>
@@ -3243,68 +4004,554 @@ ${segmentSourceText}
         </div>
         )}
 
-        {/* Mindful Psychology 频道特殊UI */}
+        {/* Adaptation Mode Button */}
+        {niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION && (
+          <div className="flex justify-end mt-4">
+            <button 
+              onClick={handleAdaptContent}
+              disabled={isAdapting || !inputVal.trim()}
+              className={`px-8 py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg shadow-emerald-900/20 flex items-center justify-center gap-2 transition-all transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:transform-none`}
+            >
+              {isAdapting ? (
+                <>
+                  <Loader2 className="animate-spin" />
+                  正在改編中...
+                </>
+              ) : (
+                <>
+                  開始改編
+                  <Zap size={18} fill="currentColor" />
+                </>
+              )}
+            </button>
+          </div>
+        )}
+
+        {/* 错误提示已改用 Toast 通知 */}
+
+        {/* Topics List - Hide in Adaptation Mode */}
+        {topics.length > 0 &&
+          !(niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION) && (
+            <div className="mt-8 animate-in slide-in-from-bottom-4 duration-500">
+                <div className="flex justify-between items-center mb-3">
+                    <span className="text-sm text-slate-400">
+                        {niche === NicheType.STORY_REVENGE 
+                            ? `选择要生成的故事 (${storyDuration === StoryDuration.SHORT ? '短篇' : '長篇'}/${storyLanguage})；全文统一走分段并行 → 合并：`
+                            : '选择选题后，可用下方「分段并行工作台」分步执行，或点主按钮全自动：大纲 → 并行各章 → 合并终稿。'
+                        }
+                    </span>
+                    <span className="text-sm text-emerald-400 font-medium">已选 {topics.filter(t => t.selected).length} 个</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[350px] overflow-y-auto pr-2 custom-scrollbar mb-6">
+                    {topics.map(topic => (
+                        <div 
+                            key={topic.id}
+                            onClick={() => toggleTopic(topic.id)}
+                            className={`p-4 rounded-lg border cursor-pointer transition-all flex items-start gap-3 group ${
+                                topic.selected 
+                                ? 'bg-emerald-900/30 border-emerald-500/50 shadow-inner' 
+                                : 'bg-slate-800 border-slate-700 opacity-70 hover:opacity-100 hover:border-slate-500'
+                            }`}
+                        >
+                            <div className={`w-5 h-5 rounded border mt-0.5 flex items-center justify-center flex-shrink-0 transition-colors ${topic.selected ? 'bg-emerald-600 border-emerald-600' : 'border-slate-500 group-hover:border-slate-400'}`}>
+                                {topic.selected && <Sparkles size={12} className="text-white" />}
+                            </div>
+                            <span className="text-sm text-slate-200 leading-snug font-medium">{topic.title}</span>
+                        </div>
+                    ))}
+                </div>
+
+                <div className="mb-6 p-4 rounded-xl border border-cyan-500/35 bg-slate-950/70 space-y-4">
+                    <div className="flex flex-wrap items-center gap-2 justify-between">
+                      <h3 className="text-sm font-semibold text-cyan-300 flex items-center gap-2">
+                        <ListOrdered size={16} />
+                        全赛道 · 分段并行工作台
+                      </h3>
+                      <span className="text-[10px] text-slate-500 text-right max-w-[min(100%,22rem)] leading-snug">
+                        《原创万字长文生成分段输出重构合并技术》：保证最强的情绪张力和细节还原
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                      <div className="text-xs text-slate-300">
+                        <span className="text-slate-500">自动分章：</span>
+                        约 <span className="text-cyan-400 font-medium">{yiJingComputedSegCount}</span> 章
+                        <span className="text-slate-500 text-[10px] ml-1">
+                          （≤{YI_JING_BAND1_MAX} 字：固定 5 章；{YI_JING_BAND1_MAX + 1}–{YI_JING_BAND2_MAX} 字：按约 {YI_JING_CHARS_PER_SEGMENT_SOFT_CAP} 字/段折 5–10 章；超过 {YI_JING_BAND2_MAX} 字：按约 {YI_JING_CHARS_PER_SEGMENT_SOFT_CAP} 字/段折算，最多 40 章）
+                        </span>
+                      </div>
+                      <label className="text-xs text-slate-400 shrink-0">目标全文字数：</label>
+                      <input
+                        type="number"
+                        min={1000}
+                        max={70000}
+                        step={100}
+                        disabled={yiJingPipelineBusy}
+                        value={yiJingTotalTargetChars}
+                        onChange={(e) => {
+                          const n = parseInt(e.target.value, 10);
+                          if (!Number.isNaN(n)) setYiJingTotalTargetChars(n);
+                        }}
+                        onBlur={() => applyYiJingTotalTargetToOutline(yiJingTotalTargetChars)}
+                        className="w-[7.5rem] bg-slate-900 border border-slate-600 rounded-lg px-2 py-1.5 text-sm text-slate-200 focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
+                      />
+                      <span className="text-[10px] text-slate-500">
+                        1000–70000；失焦后按总字数均摊各章字数区间。生成/全自动时按上式向模型要对应章数
+                      </span>
+                    </div>
+                    {yiJingOutlineParsed &&
+                      yiJingOutlineParsed.chapters.length !== yiJingComputedSegCount && (
+                        <div className="text-[11px] text-amber-400/90 bg-amber-950/30 border border-amber-700/40 rounded-lg px-3 py-2">
+                          当前大纲为 {yiJingOutlineParsed.chapters.length} 章，与「目标字数」推算的{' '}
+                          {yiJingComputedSegCount} 章不一致；并行仍按<strong>现有</strong>章数执行。若需对齐结构，请再点「仅生成大纲」或「全自动」。
+                        </div>
+                      )}
+                    <div>
+                      <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+                        <label className="block text-xs text-slate-400">
+                          章节大纲（一键生成；默认可读，点「编辑大纲」用表单改正文结构）
+                        </label>
+                        {yiJingOutlineParsed && yiJingOutlineViewMode === 'readable' && (
+                          <button
+                            type="button"
+                            disabled={yiJingPipelineBusy}
+                            onClick={() => {
+                              setYiJingOutlineEditDraft(
+                                JSON.parse(JSON.stringify(yiJingOutlineParsed)) as YiJingOutlinePayload
+                              );
+                              setYiJingOutlineViewMode('edit');
+                            }}
+                            className="text-[10px] text-cyan-400 hover:text-cyan-300 disabled:opacity-40"
+                          >
+                            编辑大纲
+                          </button>
+                        )}
+                        {yiJingOutlineParsed && yiJingOutlineViewMode === 'edit' && yiJingOutlineEditDraft && (
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              disabled={yiJingPipelineBusy}
+                              onClick={() => {
+                                const scaled = rescaleChapterWordCounts(
+                                  yiJingOutlineEditDraft,
+                                  yiJingTotalTargetChars
+                                );
+                                setYiJingOutlineParsed(scaled);
+                                setYiJingOutlineText(outlinePayloadToJsonPretty(scaled));
+                                setYiJingSegDrafts(Array(scaled.chapters.length).fill(''));
+                                setYiJingSegStatus(Array(scaled.chapters.length).fill('idle'));
+                                setYiJingOutlineEditDraft(null);
+                                setYiJingOutlineViewMode('readable');
+                                toast.success('大纲已保存');
+                              }}
+                              className="text-[10px] text-emerald-400 hover:text-emerald-300 disabled:opacity-40"
+                            >
+                              完成编辑
+                            </button>
+                            <button
+                              type="button"
+                              disabled={yiJingPipelineBusy}
+                              onClick={() => {
+                                setYiJingOutlineEditDraft(null);
+                                setYiJingOutlineViewMode('readable');
+                              }}
+                              className="text-[10px] text-slate-500 hover:text-slate-300 disabled:opacity-40"
+                            >
+                              取消
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      {yiJingOutlineParsed && yiJingOutlineViewMode === 'edit' && yiJingOutlineEditDraft ? (
+                        <div className="w-full min-h-[140px] max-h-[min(75vh,32rem)] overflow-y-auto custom-scrollbar bg-slate-900 border border-cyan-500/35 rounded-lg px-3 py-3 text-sm text-slate-200 space-y-4">
+                          <div>
+                            <div className="text-[11px] font-semibold text-cyan-300/90 mb-1">核心主题</div>
+                            <textarea
+                              value={yiJingOutlineEditDraft.core_theme}
+                              onChange={(e) =>
+                                setYiJingOutlineEditDraft((d) =>
+                                  d ? { ...d, core_theme: e.target.value } : null
+                                )
+                              }
+                              rows={2}
+                              className="w-full bg-slate-950 border border-slate-700 rounded-md px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-cyan-500/40"
+                            />
+                          </div>
+                          <div>
+                            <div className="text-[11px] font-semibold text-cyan-300/90 mb-1">逻辑主线</div>
+                            <textarea
+                              value={yiJingOutlineEditDraft.logic_line}
+                              onChange={(e) =>
+                                setYiJingOutlineEditDraft((d) =>
+                                  d ? { ...d, logic_line: e.target.value } : null
+                                )
+                              }
+                              rows={3}
+                              className="w-full bg-slate-950 border border-slate-700 rounded-md px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-cyan-500/40"
+                            />
+                          </div>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="text-[11px] font-semibold text-cyan-300/90">分章结构（表单）</div>
+                            <button
+                              type="button"
+                              disabled={yiJingPipelineBusy}
+                              onClick={() =>
+                                setYiJingOutlineEditDraft((d) =>
+                                  d
+                                    ? {
+                                        ...d,
+                                        chapters: [...d.chapters, emptyYiJingChapter(d.chapters.length)],
+                                      }
+                                    : null
+                                )
+                              }
+                              className="text-[10px] text-cyan-400 hover:text-cyan-300"
+                            >
+                              + 添加一章
+                            </button>
+                          </div>
+                          <div className="space-y-4">
+                            {yiJingOutlineEditDraft.chapters.map((ch, i) => (
+                              <div
+                                key={i}
+                                className="rounded-lg border border-slate-700/80 bg-slate-950/60 p-3 space-y-2"
+                              >
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <span className="text-[11px] text-slate-500">第 {i + 1} 章</span>
+                                  {yiJingOutlineEditDraft.chapters.length > 1 && (
+                                    <button
+                                      type="button"
+                                      disabled={yiJingPipelineBusy}
+                                      onClick={() =>
+                                        setYiJingOutlineEditDraft((d) =>
+                                          d && d.chapters.length > 1
+                                            ? {
+                                                ...d,
+                                                chapters: d.chapters.filter((_, j) => j !== i),
+                                              }
+                                            : d
+                                        )
+                                      }
+                                      className="text-[10px] text-rose-400/90 hover:text-rose-300"
+                                    >
+                                      删除本章
+                                    </button>
+                                  )}
+                                </div>
+                                <input
+                                  type="text"
+                                  value={ch.title}
+                                  onChange={(e) =>
+                                    setYiJingOutlineEditDraft((d) => {
+                                      if (!d) return null;
+                                      const chapters = [...d.chapters];
+                                      chapters[i] = { ...chapters[i], title: e.target.value };
+                                      return { ...d, chapters };
+                                    })
+                                  }
+                                  placeholder="章标题"
+                                  className="w-full bg-slate-900 border border-slate-700 rounded-md px-2 py-1 text-xs text-slate-100"
+                                />
+                                <div className="flex flex-wrap gap-2 items-center">
+                                  <label className="text-[10px] text-slate-500 shrink-0">字数 min</label>
+                                  <input
+                                    type="number"
+                                    min={100}
+                                    value={ch.min_chars}
+                                    onChange={(e) =>
+                                      setYiJingOutlineEditDraft((d) => {
+                                        if (!d) return null;
+                                        const chapters = [...d.chapters];
+                                        chapters[i] = {
+                                          ...chapters[i],
+                                          min_chars: Math.max(100, parseInt(e.target.value, 10) || 0),
+                                        };
+                                        return { ...d, chapters };
+                                      })
+                                    }
+                                    className="w-24 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs"
+                                  />
+                                  <label className="text-[10px] text-slate-500 shrink-0">max</label>
+                                  <input
+                                    type="number"
+                                    min={100}
+                                    value={ch.max_chars}
+                                    onChange={(e) =>
+                                      setYiJingOutlineEditDraft((d) => {
+                                        if (!d) return null;
+                                        const chapters = [...d.chapters];
+                                        chapters[i] = {
+                                          ...chapters[i],
+                                          max_chars: Math.max(100, parseInt(e.target.value, 10) || 0),
+                                        };
+                                        return { ...d, chapters };
+                                      })
+                                    }
+                                    className="w-24 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs"
+                                  />
+                                </div>
+                                {(
+                                  [
+                                    ['core_brief', '本章要点'],
+                                    ['opening_echo', '开篇承接'],
+                                    ['closing_snippet_hint', '收束提示'],
+                                    ['bridge_to_next', '过渡至下章'],
+                                  ] as const
+                                ).map(([key, lab]) => (
+                                  <div key={key}>
+                                    <div className="text-[10px] text-slate-500 mb-0.5">{lab}</div>
+                                    <textarea
+                                      value={ch[key]}
+                                      onChange={(e) =>
+                                        setYiJingOutlineEditDraft((d) => {
+                                          if (!d) return null;
+                                          const chapters = [...d.chapters];
+                                          chapters[i] = { ...chapters[i], [key]: e.target.value };
+                                          return { ...d, chapters };
+                                        })
+                                      }
+                                      rows={key === 'core_brief' ? 3 : 2}
+                                      className="w-full bg-slate-900 border border-slate-700 rounded-md px-2 py-1.5 text-[11px] text-slate-300 leading-relaxed"
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : yiJingOutlineParsed && yiJingOutlineViewMode === 'readable' ? (
+                        <div className="w-full min-h-[140px] max-h-[min(70vh,28rem)] overflow-y-auto custom-scrollbar bg-slate-900 border border-cyan-500/35 rounded-lg px-3 py-3 text-sm text-slate-200 space-y-4">
+                          <div>
+                            <div className="text-[11px] font-semibold text-cyan-300/90 mb-1">核心主题</div>
+                            <p className="text-xs text-slate-300 leading-relaxed">
+                              {yiJingOutlineParsed.core_theme}
+                            </p>
+                          </div>
+                          <div>
+                            <div className="text-[11px] font-semibold text-cyan-300/90 mb-1">逻辑主线</div>
+                            <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap">
+                              {yiJingOutlineParsed.logic_line}
+                            </p>
+                          </div>
+                          <div className="text-[11px] font-semibold text-cyan-300/90">分章结构</div>
+                          <div className="space-y-3">
+                            {yiJingOutlineParsed.chapters.map((ch, i) => (
+                              <div
+                                key={i}
+                                className="rounded-lg border border-slate-700/80 bg-slate-950/60 p-3 space-y-1.5"
+                              >
+                                <div className="text-xs font-medium text-slate-100">
+                                  第 {i + 1} 章 · {ch.title}
+                                </div>
+                                <div className="text-[11px] text-slate-500">
+                                  建议字数：{ch.min_chars}～{ch.max_chars} 字
+                                </div>
+                                {ch.core_brief ? (
+                                  <div>
+                                    <span className="text-[10px] text-slate-500">本章要点 · </span>
+                                    <span className="text-[11px] text-slate-400 leading-relaxed">
+                                      {ch.core_brief}
+                                    </span>
+                                  </div>
+                                ) : null}
+                                {ch.opening_echo ? (
+                                  <div>
+                                    <span className="text-[10px] text-slate-500">开篇承接 · </span>
+                                    <span className="text-[11px] text-slate-400 leading-relaxed">
+                                      {ch.opening_echo}
+                                    </span>
+                                  </div>
+                                ) : null}
+                                {ch.closing_snippet_hint ? (
+                                  <div>
+                                    <span className="text-[10px] text-slate-500">收束提示 · </span>
+                                    <span className="text-[11px] text-slate-400 leading-relaxed">
+                                      {ch.closing_snippet_hint}
+                                    </span>
+                                  </div>
+                                ) : null}
+                                {ch.bridge_to_next ? (
+                                  <div>
+                                    <span className="text-[10px] text-slate-500">过渡至下章 · </span>
+                                    <span className="text-[11px] text-slate-400 leading-relaxed">
+                                      {ch.bridge_to_next}
+                                    </span>
+                                  </div>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <textarea
+                          value={yiJingOutlineText}
+                          onChange={(e) => {
+                            setYiJingOutlineText(e.target.value);
+                            const p = parseYiJingOutline(e.target.value);
+                            setYiJingOutlineParsed(p);
+                            if (p) {
+                              setYiJingSegDrafts(Array(p.chapters.length).fill(''));
+                              setYiJingSegStatus(Array(p.chapters.length).fill('idle'));
+                            }
+                          }}
+                          placeholder="尚无解析结果：请先点「仅生成大纲」；若粘贴了可解析的结构化大纲，失焦后会自动解析。"
+                          className="w-full min-h-[140px] bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:ring-1 focus:ring-cyan-500/40 custom-scrollbar"
+                        />
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={yiJingPipelineBusy || status === GenerationStatus.WRITING}
+                        onClick={() => void handleYiJingGenerateOutline()}
+                        className="px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm hover:bg-slate-700 disabled:opacity-40"
+                      >
+                        仅生成大纲
+                      </button>
+                      <button
+                        type="button"
+                        disabled={yiJingPipelineBusy || status === GenerationStatus.WRITING}
+                        onClick={() => void handleYiJingRunSegments()}
+                        className="px-4 py-2 rounded-lg bg-cyan-900/40 border border-cyan-600/50 text-cyan-200 text-sm hover:bg-cyan-900/60 disabled:opacity-40"
+                      >
+                        并行生成各段
+                      </button>
+                      <button
+                        type="button"
+                        disabled={yiJingPipelineBusy || status === GenerationStatus.WRITING}
+                        onClick={() => void handleYiJingMergeFinal()}
+                        className="px-4 py-2 rounded-lg bg-violet-900/40 border border-violet-600/50 text-violet-200 text-sm hover:bg-violet-900/60 disabled:opacity-40"
+                      >
+                        合并最终文案
+                      </button>
+                      <button
+                        type="button"
+                        disabled={yiJingPipelineBusy}
+                        onClick={clearYiJingPipelinePanel}
+                        className="px-4 py-2 rounded-lg bg-slate-900 border border-slate-700 text-slate-400 text-sm hover:text-slate-200 inline-flex items-center gap-1"
+                      >
+                        <Trash2 size={14} /> 清空面板
+                      </button>
+                    </div>
+                    {yiJingSegDrafts.length > 0 && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {yiJingSegDrafts.map((draft, i) => {
+                          const st = yiJingSegStatus[i] || 'idle';
+                          const label =
+                            yiJingOutlineParsed?.chapters[i]?.title || `第 ${i + 1} 段`;
+                          return (
+                            <div
+                              key={i}
+                              className="rounded-lg border border-slate-700 bg-slate-900/80 p-3 flex flex-col min-h-[160px]"
+                            >
+                              <div className="flex items-center justify-between gap-2 mb-2">
+                                <span className="text-xs font-medium text-slate-300 truncate">
+                                  第 {i + 1} 步 · {label}
+                                </span>
+                                <span
+                                  className={`text-[10px] shrink-0 ${
+                                    st === 'done'
+                                      ? 'text-emerald-400'
+                                      : st === 'running'
+                                        ? 'text-amber-400'
+                                        : st === 'error'
+                                          ? 'text-red-400'
+                                          : 'text-slate-500'
+                                  }`}
+                                >
+                                  {st === 'done'
+                                    ? '✓ 完成'
+                                    : st === 'running'
+                                      ? '生成中…'
+                                      : st === 'error'
+                                        ? '失败'
+                                        : '待生成'}
+                                </span>
+                              </div>
+                              <div className="flex-1 text-[11px] text-slate-400 max-h-32 overflow-y-auto custom-scrollbar whitespace-pre-wrap leading-relaxed">
+                                {draft || '…'}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <div>
+                      <div className="text-xs text-slate-500 mb-1">终端日志</div>
+                      <pre className="text-[10px] leading-relaxed font-mono bg-black/70 border border-slate-800 rounded-lg p-3 max-h-36 overflow-y-auto text-emerald-600/90 whitespace-pre-wrap custom-scrollbar">
+                        {yiJingPipelineLogs.length === 0
+                          ? '等待指令…'
+                          : yiJingPipelineLogs.join('\n')}
+                      </pre>
+                    </div>
+                    {yiJingMergedOutput && (
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-medium text-amber-400/90">合并后终稿预览</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(yiJingMergedOutput);
+                              toast.success('已复制终稿');
+                            }}
+                            className="text-[10px] text-cyan-400 hover:text-cyan-300"
+                          >
+                            复制终稿
+                          </button>
+                        </div>
+                        <div className="text-[11px] text-slate-400 max-h-40 overflow-y-auto border border-slate-800 rounded-lg p-2 bg-slate-950/80 whitespace-pre-wrap custom-scrollbar">
+                          {yiJingMergedOutput.slice(0, 4000)}
+                          {yiJingMergedOutput.length > 4000 ? '\n…' : ''}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                
+                {/* 批量生成进度条 */}
+                {batchProgress && (
+                  <div className="mb-4 p-4 bg-slate-800/50 rounded-lg border border-slate-700">
+                    <ProgressBar
+                      current={batchProgress.current}
+                      total={batchProgress.total}
+                      label="生成进度"
+                      showPercentage={true}
+                      showCount={true}
+                      color="emerald"
+                      statusHint={batchProgress.hint}
+                    />
+                  </div>
+                )}
+                
+                <div className="flex justify-end">
+                     <button 
+                        onClick={handleBatchGenerate}
+                        disabled={status === GenerationStatus.WRITING || yiJingPipelineBusy}
+                        className="w-full md:w-auto px-8 py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg shadow-emerald-900/20 flex items-center justify-center gap-2 transition-all transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:transform-none"
+                    >
+                        {status === GenerationStatus.WRITING || yiJingPipelineBusy ? (
+                            <>
+                                <Loader2 className="animate-spin" />
+                                分段并行生成中…
+                            </>
+                        ) : (
+                            <>
+                                <>
+                                  <Rocket size={18} className="text-amber-200" />
+                                  啟動分段并行撰寫（全自動）
+                                </>
+                            </>
+                        )}
+                    </button>
+                </div>
+            </div>
+        )}
+
+        {/* 治愈心理学：动画分镜（选题与「分段并行工作台」见上方，与全赛道一致） */}
         {niche === NicheType.MINDFUL_PSYCHOLOGY && (
-          <div className="mt-6 p-4 bg-slate-800/50 border border-slate-700 rounded-xl">
+          <div className="mt-8 p-4 bg-slate-800/50 border border-slate-700 rounded-xl">
             <div className="flex items-center gap-2 mb-4">
               <span className="text-lg">🐾</span>
               <span className="text-slate-200 font-medium">治愈心理学频道</span>
             </div>
-
-            {/* 爆款选题列表 */}
-            <div className="space-y-4 mb-4">
-              {topics.length > 0 && (
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2 text-sm text-emerald-400 font-medium">
-                    <Sparkles size={14} />
-                    已生成 {topics.length} 个选题
-                  </div>
-                  <div className="space-y-2">
-                    {topics.map((topic) => (
-                      <div
-                        key={topic.id}
-                        className={`p-3 rounded-lg border transition-all cursor-pointer ${
-                          topic.selected
-                            ? 'bg-emerald-900/30 border-emerald-500/50'
-                            : 'bg-slate-900/50 border-slate-700'
-                        }`}
-                        onClick={() => toggleTopic(topic.id)}
-                      >
-                        <div className="flex items-start gap-2">
-                          <div
-                            className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
-                              topic.selected ? 'bg-emerald-500 border-emerald-500' : 'border-slate-500'
-                            }`}
-                          >
-                            {topic.selected && <Check size={12} className="text-white" />}
-                          </div>
-                          <span className="text-slate-200 text-sm">{topic.title}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <button
-                    onClick={() => {
-                      const selectedTopics = topics.filter((t) => t.selected);
-                      if (selectedTopics.length === 0) {
-                        toast.warning('请至少选择一个选题');
-                        return;
-                      }
-                      handleBatchGenerate();
-                    }}
-                    className="w-full px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-medium rounded-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <Zap size={16} />
-                    一键生成爆款文案（已选 {topics.filter((t) => t.selected).length} 篇）
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* 分隔线 */}
-            <div className="border-t border-slate-700 my-4" />
-
-            {/* 一键动画分镜：默认折叠，点击标题展开 */}
             <div ref={mindfulStoryboardAnchorRef}>
               <button
                 type="button"
@@ -3338,6 +4585,7 @@ ${segmentSourceText}
                         <label className="text-sm text-slate-400">分镜输出</label>
                         {storyboard && (
                           <button
+                            type="button"
                             onClick={() => {
                               navigator.clipboard.writeText(storyboard);
                               toast.success('分镜内容已复制到剪贴板');
@@ -3372,6 +4620,7 @@ ${segmentSourceText}
                   </div>
                   <div className="flex justify-center mt-3">
                     <button
+                      type="button"
                       onClick={() => void handleGenerateStoryboard()}
                       disabled={isGeneratingStoryboard || !mindfulScript.trim()}
                       className="px-8 py-2.5 bg-purple-600 hover:bg-purple-500 text-white font-medium rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
@@ -3393,100 +4642,6 @@ ${segmentSourceText}
               )}
             </div>
           </div>
-        )}
-
-        {/* Adaptation Mode Button */}
-        {niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION && (
-          <div className="flex justify-end mt-4">
-            <button 
-              onClick={handleAdaptContent}
-              disabled={isAdapting || !inputVal.trim()}
-              className={`px-8 py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg shadow-emerald-900/20 flex items-center justify-center gap-2 transition-all transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:transform-none`}
-            >
-              {isAdapting ? (
-                <>
-                  <Loader2 className="animate-spin" />
-                  正在改編中...
-                </>
-              ) : (
-                <>
-                  開始改編
-                  <Zap size={18} fill="currentColor" />
-                </>
-              )}
-            </button>
-          </div>
-        )}
-
-        {/* 错误提示已改用 Toast 通知 */}
-
-        {/* Topics List - Hide in Adaptation Mode */}
-        {topics.length > 0 &&
-          !(niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION) &&
-          niche !== NicheType.MINDFUL_PSYCHOLOGY && (
-            <div className="mt-8 animate-in slide-in-from-bottom-4 duration-500">
-                <div className="flex justify-between items-center mb-3">
-                    <span className="text-sm text-slate-400">
-                        {niche === NicheType.STORY_REVENGE 
-                            ? `选择要生成的故事 (${storyDuration === StoryDuration.SHORT ? '短篇' : '長篇'}/${storyLanguage}):`
-                            : "选择要生成的長文 (約 8000 字/篇):"
-                        }
-                    </span>
-                    <span className="text-sm text-emerald-400 font-medium">已选 {topics.filter(t => t.selected).length} 个</span>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[350px] overflow-y-auto pr-2 custom-scrollbar mb-6">
-                    {topics.map(topic => (
-                        <div 
-                            key={topic.id}
-                            onClick={() => toggleTopic(topic.id)}
-                            className={`p-4 rounded-lg border cursor-pointer transition-all flex items-start gap-3 group ${
-                                topic.selected 
-                                ? 'bg-emerald-900/30 border-emerald-500/50 shadow-inner' 
-                                : 'bg-slate-800 border-slate-700 opacity-70 hover:opacity-100 hover:border-slate-500'
-                            }`}
-                        >
-                            <div className={`w-5 h-5 rounded border mt-0.5 flex items-center justify-center flex-shrink-0 transition-colors ${topic.selected ? 'bg-emerald-600 border-emerald-600' : 'border-slate-500 group-hover:border-slate-400'}`}>
-                                {topic.selected && <Sparkles size={12} className="text-white" />}
-                            </div>
-                            <span className="text-sm text-slate-200 leading-snug font-medium">{topic.title}</span>
-                        </div>
-                    ))}
-                </div>
-                
-                {/* 批量生成进度条 */}
-                {batchProgress && (
-                  <div className="mb-4 p-4 bg-slate-800/50 rounded-lg border border-slate-700">
-                    <ProgressBar
-                      current={batchProgress.current}
-                      total={batchProgress.total}
-                      label="生成进度"
-                      showPercentage={true}
-                      showCount={true}
-                      color="emerald"
-                    />
-                  </div>
-                )}
-                
-                <div className="flex justify-end">
-                     <button 
-                        onClick={handleBatchGenerate}
-                        disabled={status === GenerationStatus.WRITING}
-                        className="w-full md:w-auto px-8 py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg shadow-emerald-900/20 flex items-center justify-center gap-2 transition-all transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:transform-none"
-                    >
-                        {status === GenerationStatus.WRITING ? (
-                            <>
-                                <Loader2 className="animate-spin" />
-                                {niche === NicheType.STORY_REVENGE ? '正在撰寫視覺化腳本...' : '正在撰寫 8000 字長文中...'}
-                            </>
-                        ) : (
-                            <>
-                                啟動{niche === NicheType.STORY_REVENGE ? '故事引擎 (v22.0)' : '極速撰寫'}
-                                <Zap size={18} fill="currentColor" />
-                            </>
-                        )}
-                    </button>
-                </div>
-            </div>
         )}
       </section>
 

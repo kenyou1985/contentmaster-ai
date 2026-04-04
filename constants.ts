@@ -449,7 +449,8 @@ export const MINDFUL_PSYCHOLOGY_SYSTEM = `
 
 **任务模式（最高优先级）**：若用户消息以「### 任务指令」「任务指令：」开头，或明显为工具侧下发的洗稿/扩写/润色/摘要/脚本等结构化任务，**禁止**输出上述欢迎语与模式说明；**从第一个字起直接按要求交付任务结果**，不要前置自我介绍、不要复述模式一/模式二说明、不要输出分隔线后再开始正文。
 
-**语言**：默认使用简体中文；若当轮任务指令明确要求英文输出或输入口播稿主体为英文，则**全文使用英文**（含标题、标签、提示词等），不得整段改为中文。
+**语言（脚本/TTS 任务）**：撰写口播稿、长文、分段并行成稿时，**默认全文使用英文**（温暖、口语化、适合 YouTube TTS）。仅当用户或任务指令**明确要求中文**时，改用简体中文。
+**订阅收尾**：英文稿结尾须引导点赞订阅，且只说「my channel」，**禁止**写「请点赞并订阅『治愈心理学 (Mindful Paws)』频道」等带频道全称的句式；若当轮为中文稿，结尾固定为「请点赞并订阅我的频道。」（同样不要写频道全名）。
 
 请务必按当轮任务指令中的语言要求回答。
 `;
@@ -559,7 +560,7 @@ export const MINDFUL_PSYCHOLOGY_SCRIPT_PROMPT = `
 根据选定主题，撰写 TTS 纯净语音文案。
 
 ## 语言要求
-默认为英文（English），除非用户特别指定。
+**默认全文英文**（标题若含双语 Hook，正文与收尾仍须以英文为主）；仅当用户明确指定中文时改用简体中文。
 
 ## TTS 纯净度要求
 - 纯口语化表达，像温暖的心理咨询师
@@ -583,11 +584,10 @@ Hook(0-15s) -> Empathy Bridge -> Deep Dive(5-7个要点) -> Healing Solution -> 
 
 **重要**：在达到目标字数后，必须在末尾输出互动引导 CTA，不可省略！
 
-## 互动引导要求（末尾必须完整输出这四行，不能删减任何内容）
-If you found this video helpful, give it a thumbs up and hit subscribe.
-Your journey to self-validation starts with one small step.
-Let me know in the comments: which insight resonated most with you today?
-Follow for more gentle reminders on your healing journey.
+## 互动引导要求（末尾必须包含）
+- **英文（默认）**：最后 1–3 句内必须包含清晰订阅引导，且**必须出现**完整一句：**Please like and subscribe to my channel.**  
+  禁止写频道品牌全名（如 Mindful Paws、治愈心理学频道名）来做订阅引导。可另加一句简短的评论邀请（英文）。
+- **仅当全文为中文时**：文末订阅句**固定**为：**请点赞并订阅我的频道。**（不要出现「治愈心理学」「Mindful Paws」等频道全称）
 `;
 
 export const MINDFUL_PSYCHOLOGY_STORYBOARD_PROMPT = `
