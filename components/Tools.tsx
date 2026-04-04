@@ -1157,6 +1157,48 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     };
   };
 
+  // 摘要模式 / YouTube 包：清理格式噪音
+  const patchYouTubePackage = (text: string, rawInput: string): string => {
+    let result = text;
+
+    // 1. 预处理：去掉 "生成中"、"---" 等模型噪音
+    result = result
+      .replace(/\n*生成中\n*/g, '\n')
+      .replace(/\n*---+\n*/g, '\n')
+      .replace(/\n*---\n*/g, '\n')
+      .trim();
+
+    // 2. 全局清理所有残留的 [xxx] 占位符
+    result = result.replace(/\[[^\]]{1,50}\]/g, (match) => {
+      // 跳过 emoji 组合行
+      if (/^[📅🍲👕🪦⚡🌟🔥\s]+$/.test(match)) return match;
+      // 跳过有效的标签格式
+      if (match.includes('#')) return match;
+      return '';
+    });
+
+    // 3. 清理多余空行
+    result = result.replace(/\n{3,}/g, '\n\n').trim();
+
+    return result;
+  };
+
+  // 从输入文本中提取关键词用于生成标签
+  const extractYouTubePackageKeywords = (input: string): string[] => {
+    const words: string[] = [];
+    const cnMatches = input.match(/[\u4e00-\u9fff]{2,8}/g) || [];
+    const freq: Record<string, number> = {};
+    for (const w of cnMatches) {
+      if (w.length >= 2) freq[w] = (freq[w] || 0) + 1;
+    }
+    const stopWords = new Set(['的是','是在','有的','是一','这个','那个','可以','因为','所以','就是','不是','也是','还是','已经','开始','没有','什么','怎么','这里','这样','怎样','自己','大家','如果','但是','而且','或者','也是','还有','因为']);
+    const sorted = Object.entries(freq)
+      .filter(([w]) => !stopWords.has(w) && w.length >= 2)
+      .sort((a, b) => b[1] - a[1])
+      .map(([w]) => w);
+    return sorted.slice(0, 15);
+  };
+
   // 检查内容是否完整（是否有明确的结尾）
   const isContentComplete = (text: string, mode: ToolMode, originalLength: number, niche?: NicheType): boolean => {
     if (mode === ToolMode.SUMMARIZE) {
@@ -3648,6 +3690,11 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
             }
             // 清理多余空行
             localOutput = localOutput.replace(/\n\s*\n\s*\n+/g, '\n\n').trim();
+
+            // 摘要模式 YouTube 包后处理
+            if (taskMode === ToolMode.SUMMARIZE) {
+                localOutput = patchYouTubePackage(localOutput, taskInputText);
+            }
 
             // 中医玄学改写：最终字数兜底（限制在原文±10%内），并再次规范9节课框架
             if (taskMode === ToolMode.REWRITE && taskNiche === NicheType.TCM_METAPHYSICS) {
