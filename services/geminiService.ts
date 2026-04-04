@@ -28,6 +28,10 @@ export type StreamContentOptions = {
   idleTimeoutMs?: number;
   /** 超时后使用的备用模型；设为 false 关闭自动切换 */
   fallbackModelOnStall?: string | false;
+  /** data:image/*;base64,... 参考图（Yunwu OpenAI 兼容 vision / Google Gemini 多模态），用于封面 VAR 等需「看图写词」场景 */
+  referenceDataUrls?: string[];
+  /** 有参考图时，多模态首条英文说明；不传则用通用锚定（不预设狗/宠物） */
+  referenceMultimodalPreamble?: string;
 };
 
 type Provider = 'yunwu' | 'google';
@@ -212,12 +216,38 @@ async function callYunwuAPI(
   }
 }
 
+const DEFAULT_REFERENCE_MULTIMODAL_PREAMBLE =
+  'The following reference images are in order: Image 1, Image 2, ... Observe ONLY what is actually visible (people, clothing, props, environment, animals only if clearly shown) and the art style. Reflect these concretely in your answer. Do not invent subjects not present in the images.';
+
+function buildGoogleUserParts(
+  prompt: string,
+  referenceDataUrls?: string[],
+  referenceMultimodalPreamble?: string
+): { text?: string; inlineData?: { mimeType: string; data: string } }[] {
+  const parts: { text?: string; inlineData?: { mimeType: string; data: string } }[] = [];
+  if (referenceDataUrls?.length) {
+    parts.push({
+      text: referenceMultimodalPreamble?.trim() || DEFAULT_REFERENCE_MULTIMODAL_PREAMBLE,
+    });
+    for (const url of referenceDataUrls) {
+      const m = url.match(/^data:([^;]+);base64,(.+)$/);
+      if (m) {
+        parts.push({ inlineData: { mimeType: m[1], data: m[2] } });
+      }
+    }
+  }
+  parts.push({ text: prompt });
+  return parts;
+}
+
 async function callGoogleAPI(
   modelName: string,
   prompt: string,
   systemInstruction: string,
   temperature: number = 0.7,
-  maxTokens: number = 8192
+  maxTokens: number = 8192,
+  referenceDataUrls?: string[],
+  referenceMultimodalPreamble?: string
 ): Promise<any> {
   if (!apiKey) {
     throw new Error("API Key 未設置。請在設置中輸入您的 API Key。");
@@ -227,8 +257,8 @@ async function callGoogleAPI(
     contents: [
       {
         role: "user",
-        parts: [{ text: prompt }]
-      }
+        parts: buildGoogleUserParts(prompt, referenceDataUrls, referenceMultimodalPreamble),
+      },
     ],
     generationConfig: {
       temperature,
@@ -282,15 +312,37 @@ async function callGoogleWithFallback(
   systemInstruction: string,
   temperature: number,
   maxTokens: number,
-  preferredModel?: string
+  preferredModel?: string,
+  referenceDataUrls?: string[],
+  referenceMultimodalPreamble?: string
 ): Promise<any> {
   const primaryModel = preferredModel || model || GOOGLE_PRIMARY_MODEL;
   try {
-    return await retryOperation(() => callGoogleAPI(primaryModel, prompt, systemInstruction, temperature, maxTokens));
+    return await retryOperation(() =>
+      callGoogleAPI(
+        primaryModel,
+        prompt,
+        systemInstruction,
+        temperature,
+        maxTokens,
+        referenceDataUrls,
+        referenceMultimodalPreamble
+      )
+    );
   } catch (error) {
     if (primaryModel !== GOOGLE_FALLBACK_MODEL) {
       console.warn(`[Gemini Service] Google model failed, switching to fallback: ${GOOGLE_FALLBACK_MODEL}`);
-      const fallbackResponse = await retryOperation(() => callGoogleAPI(GOOGLE_FALLBACK_MODEL, prompt, systemInstruction, temperature, maxTokens));
+      const fallbackResponse = await retryOperation(() =>
+        callGoogleAPI(
+          GOOGLE_FALLBACK_MODEL,
+          prompt,
+          systemInstruction,
+          temperature,
+          maxTokens,
+          referenceDataUrls,
+          referenceMultimodalPreamble
+        )
+      );
       model = GOOGLE_FALLBACK_MODEL;
       return fallbackResponse;
     }
@@ -468,7 +520,9 @@ async function streamYunwuOpenAIOnce(
   maxTokens: number,
   onChunk: (chunk: string) => void,
   firstChunkMs: number,
-  idleTimeoutMs?: number
+  idleTimeoutMs?: number,
+  referenceDataUrls?: string[],
+  referenceMultimodalPreamble?: string
 ): Promise<void> {
   if (!apiKey) {
     throw new Error("API Key 未設置。請在設置中輸入您的 API Key。");
@@ -513,11 +567,28 @@ async function streamYunwuOpenAIOnce(
       Authorization: `Bearer ${apiKey}`,
     };
 
-    const messages: Array<{ role: string; content: string }> = [];
+    const messages: Array<{
+      role: string;
+      content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
+    }> = [];
     if (systemInstruction) {
       messages.push({ role: "system", content: systemInstruction });
     }
-    messages.push({ role: "user", content: prompt });
+    if (referenceDataUrls?.length) {
+      const userParts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [
+        {
+          type: "text",
+          text: referenceMultimodalPreamble?.trim() || DEFAULT_REFERENCE_MULTIMODAL_PREAMBLE,
+        },
+      ];
+      for (const url of referenceDataUrls) {
+        userParts.push({ type: "image_url", image_url: { url } });
+      }
+      userParts.push({ type: "text", text: prompt });
+      messages.push({ role: "user", content: userParts });
+    } else {
+      messages.push({ role: "user", content: prompt });
+    }
 
     const payload = {
       model: resolvedModel,
@@ -685,6 +756,9 @@ export const streamContentGeneration = async (
           ? null
           : options?.fallbackModelOnStall ?? STREAM_FALLBACK_MODEL_OPENAI;
 
+      const refUrls = options?.referenceDataUrls;
+      const refPreamble = options?.referenceMultimodalPreamble;
+
       if (provider === "google") {
         const googlePrimary = modelName || model || GOOGLE_PRIMARY_MODEL;
 
@@ -695,7 +769,9 @@ export const streamContentGeneration = async (
               prompt,
               systemInstruction,
               temperature,
-              maxTokens
+              maxTokens,
+              refUrls,
+              refPreamble
             ),
             new Promise<never>((_, rej) =>
               setTimeout(
@@ -791,7 +867,9 @@ export const streamContentGeneration = async (
             maxTokens,
             onChunk,
             timeoutMs,
-            idleTimeoutMs
+            idleTimeoutMs,
+            refUrls,
+            refPreamble
           );
           return; // 成功
         } catch (err: any) {

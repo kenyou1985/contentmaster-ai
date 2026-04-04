@@ -3,12 +3,13 @@ import { Layout } from './components/Layout';
 import { Generator } from './components/Generator';
 import { Tools } from './components/Tools';
 import { MediaGenerator } from './components/MediaGenerator';
+import { CoverDesign } from './components/CoverDesign';
 import { initializeGemini } from './services/geminiService';
 import { ApiProvider } from './types';
 import { ToastContainer, useToast } from './components/Toast';
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'generate' | 'tools' | 'media'>('generate');
+  const [activeTab, setActiveTab] = useState<'generate' | 'tools' | 'media' | 'cover'>('generate');
   const toast = useToast();
   
   // 调试：检查 toast 状态
@@ -175,7 +176,7 @@ const App: React.FC = () => {
           <Generator apiKey={apiKey} provider={provider} toast={toast} />
         ) : activeTab === 'tools' ? (
           <Tools apiKey={apiKey} provider={provider} toast={toast} />
-        ) : (
+        ) : activeTab === 'media' ? (
           <MediaGenerator 
             apiKey={apiKey} 
             provider={provider} 
@@ -183,6 +184,8 @@ const App: React.FC = () => {
             dayuApiKey={dayuApiKey}
             setDayuApiKey={setDayuApiKey}
           />
+        ) : (
+          <CoverDesign apiKey={apiKey} provider={provider} toast={toast} />
         )}
       </Layout>
       <ToastContainer toasts={toast.toasts} onClose={toast.closeToast} />

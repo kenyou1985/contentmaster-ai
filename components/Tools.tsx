@@ -9,6 +9,42 @@ import { HistorySelector } from './HistorySelector';
 import { useToast } from './Toast';
 import { ProgressBar } from './ProgressBar';
 
+/** Mindful Paws 赛道 system 中的欢迎语偶发被模型贴在摘要结果前 */
+function stripMindfulPawsSummarizePreamble(text: string): string {
+  if (!text) return text;
+  const ack = '已接收您的';
+  const i = text.indexOf(ack);
+  if (i > 0) return text.slice(i).trim();
+  // 未带「已接收您的」时：去掉欢迎语至首个 --- 之后
+  if (/欢迎使用\s*Mindful\s*Paws|治愈系频道内容生产系统/.test(text)) {
+    const sep = text.search(/\n-{3,}\s*\n/);
+    if (sep !== -1) {
+      const after = text.slice(sep).replace(/^\n-{3,}\s*\n/, '').trim();
+      if (after.length > 0 && after.length < text.length) return after;
+    }
+  }
+  return text;
+}
+
+/** 与生成 prompt 一致：判断口播稿主体语言（用于摘要 system 指令与模板） */
+function detectToolsInputLanguage(text: string): string {
+  const hasChinese = /[\u4e00-\u9fff]/.test(text);
+  const hasEnglish = /[a-zA-Z]/.test(text);
+  let inputLanguage = '简体中文';
+  if (!hasChinese && hasEnglish) {
+    inputLanguage = 'English';
+  } else if (hasChinese && hasEnglish) {
+    const chineseCount = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+    const englishCount = (text.match(/[a-zA-Z]/g) || []).length;
+    if (englishCount > chineseCount * 2) {
+      inputLanguage = 'English (主要)';
+    } else if (chineseCount > 0) {
+      inputLanguage = '简体中文 (主要)';
+    }
+  }
+  return inputLanguage;
+}
+
 interface ToolsProps {
   apiKey: string;
   provider: ApiProvider;
@@ -125,10 +161,17 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   // 处理历史记录选择
   const handleHistorySelect = (record: HistoryRecord) => {
     if (pendingModeChange) {
+      let restored = record.content;
+      if (
+        pendingModeChange.mode === ToolMode.SUMMARIZE &&
+        pendingModeChange.niche === NicheType.MINDFUL_PSYCHOLOGY
+      ) {
+        restored = stripMindfulPawsSummarizePreamble(restored);
+      }
       updateActiveTask({
         mode: pendingModeChange.mode,
         niche: pendingModeChange.niche,
-        outputText: record.content,
+        outputText: restored,
         inputText: record.metadata?.input || '',
       });
       setPendingModeChange(null);
@@ -424,9 +467,13 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     return (lastPunct > 0 ? slice.slice(0, lastPunct + 1) : slice).trim();
   };
 
-  const normalizeSummarizeOutput = (text: string): string => {
+  const normalizeSummarizeOutput = (text: string, summarizeNiche?: NicheType): string => {
     if (!text) return text;
-    const lines = text.split('\n');
+    let body =
+      summarizeNiche === NicheType.MINDFUL_PSYCHOLOGY
+        ? stripMindfulPawsSummarizePreamble(text)
+        : text;
+    const lines = body.split('\n');
 
     // 1) 热门标签强制带 #
     let inTagBlock = false;
@@ -471,8 +518,9 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   };
 
   // 清理Markdown格式符号，输出纯文本（保留编号格式）
-  const cleanMarkdownFormat = (text: string, mode?: ToolMode): string => {
+  const cleanMarkdownFormat = (text: string, mode?: ToolMode, nicheOverride?: NicheType): string => {
     if (!text) return '';
+    const effectiveNiche = nicheOverride ?? niche;
     let cleaned = text
       // 移除Markdown标题标记
       .replace(/^#{1,6}\s+/gm, '')
@@ -525,12 +573,12 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       .replace(/\n\s*\n\s*\n+/g, '\n\n')
       .trim();
 
-    if (mode === ToolMode.REWRITE && niche === NicheType.TCM_METAPHYSICS) {
+    if (mode === ToolMode.REWRITE && effectiveNiche === NicheType.TCM_METAPHYSICS) {
       finalText = normalizeRewriteFramework(finalText);
     }
 
     if (mode === ToolMode.SUMMARIZE) {
-      finalText = normalizeSummarizeOutput(finalText);
+      finalText = normalizeSummarizeOutput(finalText, effectiveNiche);
     }
 
     return finalText;
@@ -1500,7 +1548,14 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
         setOutputText('错误：找不到赛道配置');
         return;
       }
-      systemInstruction = `${nicheConfig.systemInstruction}\n你也是一位专业的内容编辑。请务必使用简体中文输出。`;
+      const toolsInputLang = detectToolsInputLanguage(taskInputText);
+      const summarizeNeedsEnglish =
+        taskMode === ToolMode.SUMMARIZE && /^English/i.test(toolsInputLang);
+      if (summarizeNeedsEnglish) {
+        systemInstruction = `${nicheConfig.systemInstruction}\nYou are also a professional YouTube packaging editor.\n【Output language · highest priority】This turn is a "summary & optimization" task. The transcript/script is primarily in English. You MUST write the entire response in English (all section headings, titles, description, outline, timestamps, SEO lines, hashtags, cover copy, and image prompts). Do not output body paragraphs in Chinese. Keep proper nouns from the source as needed.`;
+      } else {
+        systemInstruction = `${nicheConfig.systemInstruction}\n你也是一位专业的内容编辑。请务必使用简体中文输出。`;
+      }
     }
     
     // 如果是YouTube链接（且有文本内容），添加特殊说明
@@ -1629,25 +1684,7 @@ ${inputSection}
         }
     }
 
-    // 检测输入语言（简单判断：如果包含中文字符，认为是中文；否则认为是英文）
-    const hasChinese = /[\u4e00-\u9fff]/.test(taskInputText);
-    const hasEnglish = /[a-zA-Z]/.test(taskInputText);
-    let inputLanguage = '简体中文'; // 默认简体中文
-    
-    if (!hasChinese && hasEnglish) {
-      // 纯英文
-      inputLanguage = 'English';
-    } else if (hasChinese && hasEnglish) {
-      // 中英混合，判断哪个占比更多
-      const chineseCount = (inputText.match(/[\u4e00-\u9fff]/g) || []).length;
-      const englishCount = (inputText.match(/[a-zA-Z]/g) || []).length;
-      if (englishCount > chineseCount * 2) {
-        inputLanguage = 'English (主要)';
-      } else if (chineseCount > 0) {
-        inputLanguage = '简体中文 (主要)';
-      }
-    }
-    
+    const inputLanguage = detectToolsInputLanguage(taskInputText);
     console.log(`[Tools] 检测输入语言: ${inputLanguage}, 中文字符数: ${(taskInputText.match(/[\u4e00-\u9fff]/g) || []).length}, 英文字符数: ${(taskInputText.match(/[a-zA-Z]/g) || []).length}`);
 
     switch (taskMode) {
@@ -1771,10 +1808,92 @@ ${inputSection}
 ## Output Format
 直接输出扩写後的完整纯净文章（使用 ${inputLanguage} 输出），保持簡潔連貫流暢，無需分段标记或元信息。严禁使用「## 」「### 」「第一章」「（）」「**」等标记。`;
         case ToolMode.SUMMARIZE: {
+                const sumEn = /^English/i.test(inputLanguage);
                 const sumWpmLow = 200;
                 const sumWpmHigh = 250;
-                const sumMinDur = originalLength / sumWpmHigh;
-                const sumMaxDur = originalLength / sumWpmLow;
+                const sumWordCount = Math.max(1, taskInputText.trim().split(/\s+/).filter(Boolean).length);
+                let sumMinDur: number;
+                let sumMaxDur: number;
+                if (sumEn) {
+                  sumMinDur = sumWordCount / 160;
+                  sumMaxDur = sumWordCount / 130;
+                } else {
+                  sumMinDur = originalLength / sumWpmHigh;
+                  sumMaxDur = originalLength / sumWpmLow;
+                }
+                if (sumEn) {
+                  return `### Task: YouTube summary & channel packaging
+
+${inputSection}
+
+## Spoken script length (strict)
+- The input is approximately **${originalLength}** characters / **${sumWordCount}** words.
+- Assume **130–160 words per minute** for voiceover: total runtime about **${sumMinDur.toFixed(1)}–${sumMaxDur.toFixed(1)}** minutes.
+- Timestamps must stay within that range; do not invent a much longer timeline.
+
+## Language (CRITICAL — highest priority)
+⚠️ **Detected input language: ${inputLanguage}**
+⚠️ **Write the ENTIRE output in English** — headings, titles, description, bullets, tags, prompts, and cover lines. No Chinese paragraphs. Do not translate the packaging into Chinese.
+
+**Zero-preamble rule**
+- ❌ No intros ("Here is…", "Based on your request…", task receipts, etc.)
+- ❌ No horizontal rules (---)
+- ❌ No mode explanations or welcome text
+- ✅ Start the first line with exactly: Core Theme:
+
+Follow this structure. **Everything must be grounded in the source text** — no fabrication:
+
+Core Theme:
+(one sharp, attractive sentence)
+
+Clickworthy YouTube titles (4, different angles, strong hooks):
+1.
+2.
+3.
+4.
+
+Video description:
+(compelling blurb: key points, emotional hook, practical value)
+
+Outline:
+(main sections from the source, one line each)
+
+👇 Chapter timestamps (click to jump):
+(lines as MM:SS Section title)
+
+🔑 Key takeaways & SEO keywords:
+(4–5 keywords with short explanations)
+
+Hashtags:
+(10–15 tags, each starting with #, English only, source-grounded)
+
+Cover design:
+
+AI image prompts (5):
+1.
+2.
+3.
+4.
+5.
+
+Cover title lines (5 sets, each with upper / middle / lower line):
+1. Upper:
+   Middle:
+   Lower:
+2. Upper:
+   Middle:
+   Lower:
+3. Upper:
+   Middle:
+   Lower:
+4. Upper:
+   Middle:
+   Lower:
+5. Upper:
+   Middle:
+   Lower:
+`;
+                }
                 return `### 任务指令：YouTube 内容摘要与优化
 
 ${inputSection}
@@ -1784,7 +1903,17 @@ ${inputSection}
 - 配音语速按 **200–250 字/分钟** 估算：整片时长约 **${sumMinDur.toFixed(1)}–${sumMaxDur.toFixed(1)} 分钟**。
 - 时间轴应落在上述时长范围内，禁止编造超长时间轴。
 
+## 語言一致性（CRITICAL · 最高优先级）
+⚠️ **输入語言：${inputLanguage}**
+⚠️ **输出語言必須與输入語言完全一致** — 标题、简介、大纲、时间轴、标签、封面与提示词均使用中文（原文中的英文专有名词可保留）。
+
 ## 输出要求（必须与原文语言一致）
+
+**【零前言铁律 · 最高优先级】**
+- ❌ 禁止在正文前输出任何开场白、引言、说明文字（如"以下是摘要""根据您的要求…""已收到您的任务"等）
+- ❌ 禁止输出分隔线（---、---- 等）
+- ❌ 禁止输出任何模式说明、欢迎语或自我介绍
+- ✅ 从第一行开始直接以「核心主題：」起笔，不得有任何前置文字
 
 请严格按以下格式输出，**所有内容必须根据原文提取生成**，禁止凭空编造：
 
@@ -2664,7 +2793,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
               .join('\n\n');
 
             localOutput = renderShots();
-            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
             setGenerationProgress({ current: 3, total: 100 });
 
             let success = 0;
@@ -2929,7 +3058,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                 console.log(`[Tools][TwoStage] 镜头${shotNo}提示词完成`);
 
                 localOutput = renderShots();
-                updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
 
                 updateProgressBySuccess();
               } catch (e) {
@@ -2968,7 +3097,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                     sfx: '背景环境音',
                   };
                   localOutput = renderShots();
-                  updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                  updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
                   updateProgressBySuccess();
                 } else {
                   setShotPromptProgress({
@@ -3122,7 +3251,7 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
 
             const normalizedRoleScene = sanitizeRoleScenePromptStyle(roleSceneMerged || roleSceneBlock);
             localOutput = `${renderShots()}\n\n${normalizedRoleScene}`.trim();
-            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
             updateProgressBySuccess();
 
             // 二段式完成后保存历史
@@ -3147,7 +3276,7 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                 return;
             }
             lastProgressUpdateRef.current = now;
-            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
             
             // 实时更新生成进度（基于内容长度）
             const calculateProgress = () => {
@@ -3235,7 +3364,7 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                                 .replace(/\n?\[場景信息\][\s\S]*$/g, '')
                                 .replace(/\n?(?:场景信息|場景信息)\n[\s\S]*$/g, '')
                                 .trim();
-                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
                             hasRoleInfo = false;
                             hasSceneInfo = false;
                         }
@@ -3244,13 +3373,13 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                             roleSceneInjected = true;
                             const separator = '\n\n生成中\n\n';
                             localOutput += separator;
-                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
 
                             const roleScenePrompt = `### 任务指令：补全角色信息与场景信息\n\n你已经完成所有镜头输出（镜头数量已达标），且最后一个镜头文案已覆盖原文末尾。\n\n现在只需要输出角色信息和场景信息。\n\n【必须严格按模板输出，禁止任何额外文字】\n[角色信息]\n[名称]医生\n[别名]倪医生，主播\n[描述]（根据原文合理推断，至少50字）\n\n[名称]助手\n[别名]小李，助理\n[描述]（根据原文合理推断，至少50字）\n\n[场景信息]\n[名称]场景-室内\n[别名]无\n[描述]（根据原文合理推断，至少30字）\n\n[名称]场景-户外\n[别名]无\n[描述]（根据原文合理推断，至少30字）\n\n⚠️ 规则：\n1. 每个字段必须独占一行\n2. 只能输出以上两块信息，不要输出镜头，不要解释，不要加标题或分隔符\n3. 必须简体中文`;
 
                             await streamContentGeneration(roleScenePrompt, systemInstruction, (chunk) => {
                                 localOutput += chunk;
-                                updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                                updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
                             });
 
                             // 生成完成后继续走后面的清洗与保存逻辑
@@ -3313,7 +3442,7 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                         const patchedOutput = patchIncompleteLastShot(localOutput);
                         if (patchedOutput !== localOutput) {
                             localOutput = patchedOutput;
-                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
                             cleanInfo = cleanIncompleteShot(localOutput);
                             if (!cleanInfo.needsRework) {
                                 console.log(`[Tools] Patched incomplete shot ${cleanInfo.lastShotNumber}, continue generation`);
@@ -3342,7 +3471,7 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                             cleanInfo = { cleaned: localOutput, lastShotNumber: cleanInfo.lastShotNumber, needsRework: false };
                         } else {
                             localOutput = cleanInfo.cleaned;
-                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
 
                             const afterCopied = getCopiedTextLength(localOutput);
                             // 若清理没有带来有效进展（反复卡同一镜头），触发防卡死兜底
@@ -3366,7 +3495,7 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                         // 强制将卡住镜头补齐关键字段，避免下一轮继续判定不完整
                         localOutput = patchIncompleteLastShot(localOutput);
                         cleanInfo = { cleaned: localOutput, lastShotNumber: stuckShot, needsRework: false };
-                        updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                        updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
                         stagnantRounds = 0;
                     }
                 }
@@ -3374,7 +3503,7 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                 // 生成续写prompt（使用干净上下文，避免“生成中”干扰模型）
                 const continuePrompt = generateContinuePrompt(localOutput, taskMode, originalLength, cleanInfo, taskInputText);
                 // 取消“生成中”占位符注入，避免污染正文
-                updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
 
                 // 脚本模式：若已达到或超过原文长度，强制进入角色/场景信息（复仇脚本纯文本模式跳过）
                 if (taskMode === ToolMode.SCRIPT && !isRevengeScriptTask) {
@@ -3384,13 +3513,13 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                     if (copiedTextLength >= originalLength && (!hasRoleInfo || !hasSceneInfo)) {
                         const separator = '\n\n生成中\n\n';
                         localOutput += separator;
-                        updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                        updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
 
                         const roleScenePrompt = `### 任务指令：补全角色信息与场景信息\n\n你已经完成所有镜头输出，且镜头文案已覆盖原文末尾。\n\n现在只需要输出角色信息和场景信息。\n\n【必须严格按模板输出，禁止任何额外文字】\n[角色信息]\n[名称]医生\n[别名]倪医生，主播\n[描述]（根据原文合理推断，至少50字）\n\n[名称]助手\n[别名]小李，助理\n[描述]（根据原文合理推断，至少50字）\n\n[场景信息]\n[名称]场景-室内\n[别名]无\n[描述]（根据原文合理推断，至少30字）\n\n[名称]场景-户外\n[别名]无\n[描述]（根据原文合理推断，至少30字）\n\n⚠️ 规则：\n1. 每个字段必须独占一行\n2. 只能输出以上两块信息，不要输出镜头，不要解释，不要加标题或分隔符\n3. 必须简体中文`;
 
                         await streamContentGeneration(roleScenePrompt, systemInstruction, (chunk) => {
                             localOutput += chunk;
-                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
                         });
 
                         break;
@@ -3403,7 +3532,7 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                     ? { firstChunkTimeoutMs: 30_000 } : undefined;
                 await streamContentGeneration(continuePrompt, systemInstruction, (chunk) => {
                     localOutput += chunk;
-                    updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                    updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
                     
                     // 实时更新生成进度（基于内容长度）
                     const calculateProgress = () => {
@@ -3463,17 +3592,17 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                                 .replace(/\n?\[場景信息\][\s\S]*$/g, '')
                                 .replace(/\n?(?:场景信息|場景信息)\n[\s\S]*$/g, '')
                                 .trim();
-                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
 
                             // 防止模型反复提前吐角色/场景导致卡死：连续多次后强制要求只补镜头
                             if (earlyRoleSceneRounds >= 3) {
                                 const forceMirrorPrompt = `请仅继续输出镜头内容，从镜头${Math.min(targetShots, currentShotCount + 1)}开始，严格按模板输出镜头字段。\n禁止输出任何角色信息或场景信息。\n当且仅当镜头达到${targetShots}个且最后镜头文案对齐原文末尾后，才可输出[角色信息]和[场景信息]。`;
                                 const separator = '\n\n生成中\n\n';
                                 localOutput += separator;
-                                updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                                updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
                                 await streamContentGeneration(forceMirrorPrompt, systemInstruction, (chunk) => {
                                     localOutput += chunk;
-                                    updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                                    updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
                                 });
                             }
                             continue;
@@ -3482,7 +3611,7 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                         if (currentShotCount > targetShots) {
                             console.log('[Tools] 续写中检测到镜头数超出目标，裁剪尾部并继续');
                             localOutput = localOutput.replace(/\n?\[角色信息\][\s\S]*$/g, '').replace(/\n?\[场景信息\][\s\S]*$/g, '').replace(/\n?\[場景信息\][\s\S]*$/g, '').trim();
-                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
                             continue;
                         }
                         if (!tailAligned) {
@@ -3494,7 +3623,7 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                               .replace(/\n?\[場景信息\][\s\S]*$/g, '')
                               .replace(/\n?(?:场景信息|場景信息)\n[\s\S]*$/g, '')
                               .trim();
-                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
                             continue;
                         }
                         if (hasSceneInfo && hasRoleInfo && currentShotCount === targetShots) {
@@ -3605,7 +3734,7 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                 }
             }
 
-            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
             
             // 保存历史记录（所有模式，包括摘要模式）
             if (shouldSaveHistory && localOutput.trim()) {
@@ -3689,7 +3818,7 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                         if (localOutput.length < originalLength * 0.9) {
                             const warningMsg = `\n\n⚠️ 注意：已达到最大续写次数（${MAX_CONTINUATIONS}次），当前内容可能仍未完成。\n\n当前进度：\n- 已生成长度：${localOutput.length}/${originalLength} 字（${textProgress}%）\n\n请点击“继续生成”再次补全。`;
                             localOutput += warningMsg;
-                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
                         }
                     } else {
                         // 计算已搬运的原文字数（与完成判定保持同一统计口径）
@@ -3700,7 +3829,7 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                         if (copiedTextLength < originalLength * 0.95) {
                             const warningMsg = `\n\n⚠️ 注意：已达到最大续写次数（${MAX_CONTINUATIONS}次），但原文可能未完全转换完成。\n\n当前进度：\n- 已完成镜头：${shotCount} 个\n- 已搬运原文：${copiedTextLength}/${originalLength} 字（${copyProgress}%）\n\n请点击“继续生成”再次补全。`;
                             localOutput += warningMsg;
-                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode) });
+                            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
                         }
                     }
                 }

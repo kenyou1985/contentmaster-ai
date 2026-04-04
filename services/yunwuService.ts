@@ -9,6 +9,140 @@ export interface ImageGenerationOptions {
   size?: string;
   quality?: string;
   n?: number;
+  /** data:image/*;base64,... 参考图，可多张（经 Yunwu Gemini 原生 generateContent 多模态） */
+  referenceDataUrls?: string[];
+}
+
+/** 封面设计 Tab：主模型失败时自动切换备用 */
+export const COVER_GEMINI_IMAGE_MODEL = 'cover-gemini-flash' as const;
+const COVER_GEMINI_PRIMARY = 'gemini-3.1-flash-image-preview';
+const COVER_GEMINI_FALLBACK = 'gemini-2.5-flash-image-preview';
+
+function buildGeminiNativeImageParts(
+  prompt: string,
+  referenceDataUrls?: string[]
+): { parts: Record<string, unknown>[] } {
+  const parts: Record<string, unknown>[] = [];
+  if (referenceDataUrls?.length) {
+    parts.push({
+      text: `You will generate ONE YouTube thumbnail with the aspect ratio stated in the composition brief below. Below this message come ${referenceDataUrls.length} reference image(s) IN ORDER: Image 1, Image 2, ...
+
+IDENTITY LOCK (highest priority — overrides any generic wording in the brief):
+- Reproduce the SAME human as in the references: hair length/shape, face silhouette, clothing, proportions. Do NOT substitute a random man/woman or "faceless" placeholder if the ref shows a specific character design.
+- If the references show a pet or other animal, reproduce the same species, markings, and silhouette. If the references show NO animal, do NOT add a dog, cat, or pet — keep only what appears in the refs plus the composition brief.
+- Keep the same illustration / photo language as the references (line weight, color blocks, or photographic look).
+
+After the reference image parts, a COMPOSITION BRIEF follows — follow it for layout, text, arrows, and mood, but NEVER break the identity lock above.`,
+    });
+    for (const url of referenceDataUrls) {
+      const m = url.match(/^data:([^;]+);base64,(.+)$/);
+      if (m) {
+        parts.push({ inlineData: { mimeType: m[1], data: m[2] } });
+      }
+    }
+    parts.push({
+      text: `COMPOSITION & TYPOGRAPHY BRIEF:\n${prompt}`,
+    });
+    return { parts };
+  }
+  parts.push({ text: prompt });
+  return { parts };
+}
+
+/** Gemini 原生图模：比例须在 imageConfig.aspectRatio，且需 responseModalities（顶层 aspectRatio 无效） */
+function buildGeminiImageGenerationConfig(
+  options: Pick<ImageGenerationOptions, 'size' | 'quality'>
+): Record<string, unknown> {
+  const generationConfig: Record<string, unknown> = {
+    responseModalities: ['TEXT', 'IMAGE'],
+  };
+  const imageConfig: Record<string, unknown> = {};
+  if (options.size) {
+    const [width, height] = options.size.split('x').map(Number);
+    if (width && height) {
+      const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+      const divisor = gcd(width, height);
+      imageConfig.aspectRatio = `${width / divisor}:${height / divisor}`;
+    }
+  }
+  if (options.quality === 'high') {
+    imageConfig.imageSize = '2K';
+  } else if (options.quality && /^[124]K$/i.test(String(options.quality).replace(/\s/g, ''))) {
+    imageConfig.imageSize = String(options.quality).toUpperCase().replace(/\s/g, '');
+  }
+  if (Object.keys(imageConfig).length > 0) {
+    generationConfig.imageConfig = imageConfig;
+  }
+  return generationConfig;
+}
+
+function extractUrlsFromGeminiImageResponse(data: any): string[] {
+  const imageUrls: string[] = [];
+  if (data.candidates && Array.isArray(data.candidates)) {
+    for (const candidate of data.candidates) {
+      if (candidate.content?.parts) {
+        for (const part of candidate.content.parts) {
+          if (part.inlineData?.data) {
+            const base64Data = part.inlineData.data;
+            const mimeType = part.inlineData.mimeType || 'image/png';
+            imageUrls.push(`data:${mimeType};base64,${base64Data}`);
+          }
+          if (part.url) {
+            imageUrls.push(part.url);
+          }
+        }
+      }
+    }
+  }
+  if (imageUrls.length === 0) {
+    if (data.data && Array.isArray(data.data)) {
+      imageUrls.push(...data.data.map((item: any) => item.url || item).filter(Boolean));
+    } else if (data.url) {
+      imageUrls.push(data.url);
+    }
+  }
+  return imageUrls;
+}
+
+async function yunwuGeminiNativeImageOnce(
+  apiKey: string,
+  baseUrl: string,
+  geminiModelId: string,
+  options: ImageGenerationOptions
+): Promise<GenerationResult> {
+  const { parts } = buildGeminiNativeImageParts(options.prompt, options.referenceDataUrls);
+  const endpoint = `/v1beta/models/${geminiModelId}:generateContent`;
+  const body: Record<string, unknown> = {
+    contents: [{ parts }],
+    generationConfig: buildGeminiImageGenerationConfig(options),
+  };
+  const response = await fetch(`${baseUrl}${endpoint}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
+    const errorMessage = errorData.error?.message || `HTTP ${response.status}: ${response.statusText}`;
+    throw new Error(errorMessage);
+  }
+  const data = await response.json();
+  const imageUrls = extractUrlsFromGeminiImageResponse(data);
+  if (imageUrls.length === 0) {
+    console.error('[YunwuService] Gemini 图片响应无可用图:', geminiModelId, data);
+    throw new Error('无法从响应中提取图片，请检查响应格式');
+  }
+  return {
+    success: true,
+    data: {
+      ...data,
+      data: imageUrls.map((url) => ({ url })),
+    },
+    url: imageUrls[0],
+  };
 }
 
 export interface VideoGenerationOptions {
@@ -202,6 +336,20 @@ export const generateImage = async (
       console.error('[YunwuService] sora_image 响应数据:', data);
       throw new Error('无法从响应中提取图片URL，请检查响应格式');
     }
+
+    // 封面设计：Gemini Flash 图模，主模型失败则兜底备用模型
+    if (options.model === COVER_GEMINI_IMAGE_MODEL) {
+      try {
+        return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, COVER_GEMINI_PRIMARY, options);
+      } catch (primaryErr: any) {
+        console.warn(
+          '[YunwuService] 封面生图主模型失败，切换备用:',
+          COVER_GEMINI_PRIMARY,
+          primaryErr?.message
+        );
+        return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, COVER_GEMINI_FALLBACK, options);
+      }
+    }
     
     // banana 和 banana-2 使用 Gemini 图片生成模型，需要使用 Google Gemini 原生端点
     // banana -> gemini-2.5-flash-image
@@ -227,29 +375,7 @@ export const generateImage = async (
         ]
       };
       
-      // 添加生成配置（支持宽高比和清晰度）
-      const generationConfig: any = {};
-      
-      // 处理宽高比（从 size 中提取）
-      if (options.size) {
-        const [width, height] = options.size.split('x').map(Number);
-        if (width && height) {
-          // Gemini 使用 aspectRatio 字段，格式为 "1:1", "16:9" 等
-          const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
-          const divisor = gcd(width, height);
-          const aspectRatio = `${width / divisor}:${height / divisor}`;
-          generationConfig.aspectRatio = aspectRatio;
-        }
-      }
-      
-      // 处理清晰度（quality）
-      if (options.quality) {
-        generationConfig.quality = options.quality;
-      }
-      
-      if (Object.keys(generationConfig).length > 0) {
-        body.generationConfig = generationConfig;
-      }
+      body.generationConfig = buildGeminiImageGenerationConfig(options);
       
       const response = await fetch(`${baseUrl}${endpoint}`, {
         method: 'POST',

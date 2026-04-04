@@ -1,11 +1,11 @@
 import React from 'react';
-import { Settings, Cpu, PenTool, Layout as LayoutIcon, ExternalLink, Zap, Video } from 'lucide-react';
+import { Settings, Cpu, PenTool, Layout as LayoutIcon, ExternalLink, Zap, Video, ImagePlus } from 'lucide-react';
 import { ApiProvider } from '../types';
 
 interface LayoutProps {
   children: React.ReactNode;
-  activeTab: 'generate' | 'tools' | 'media';
-  setActiveTab: (tab: 'generate' | 'tools' | 'media') => void;
+  activeTab: 'generate' | 'tools' | 'media' | 'cover';
+  setActiveTab: (tab: 'generate' | 'tools' | 'media' | 'cover') => void;
   apiKey: string;
   setApiKey: (key: string) => void;
   provider: ApiProvider;
@@ -46,10 +46,10 @@ export const Layout: React.FC<LayoutProps> = ({
           
           <div className="flex items-center gap-4">
              {/* Tab Navigation */}
-            <nav className="flex bg-slate-900/50 p-1 rounded-lg border border-slate-800">
+            <nav className="flex flex-wrap gap-1 bg-slate-900/50 p-1 rounded-lg border border-slate-800">
               <button
                 onClick={() => setActiveTab('generate')}
-                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200 ${
+                className={`px-3 sm:px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200 ${
                   activeTab === 'generate' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
                 }`}
               >
@@ -60,7 +60,7 @@ export const Layout: React.FC<LayoutProps> = ({
               </button>
               <button
                 onClick={() => setActiveTab('tools')}
-                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200 ${
+                className={`px-3 sm:px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200 ${
                   activeTab === 'tools' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
                 }`}
               >
@@ -71,13 +71,24 @@ export const Layout: React.FC<LayoutProps> = ({
               </button>
               <button
                 onClick={() => setActiveTab('media')}
-                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200 ${
+                className={`px-3 sm:px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200 ${
                   activeTab === 'media' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
                 }`}
               >
                 <div className="flex items-center gap-2">
                     <Video size={14} />
                     媒体生成
+                </div>
+              </button>
+              <button
+                onClick={() => setActiveTab('cover')}
+                className={`px-3 sm:px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200 ${
+                  activeTab === 'cover' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                    <ImagePlus size={14} />
+                    封面设计
                 </div>
               </button>
             </nav>
