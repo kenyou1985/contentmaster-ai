@@ -4,6 +4,7 @@ import { generateImage, ImageGenerationOptions } from '../services/yunwuService'
 import { generateTextToVideo, generateImageToVideo, checkVideoTaskStatus, DayuVideoGenerationOptions } from '../services/dayuVideoService';
 import { cacheVideo, getCachedVideoUrl, downloadVideo } from '../services/videoCacheService';
 import { generateImage as generateRunningHubImage, generateVideo as generateRunningHubVideo, checkTaskStatus as checkRunningHubTaskStatus, type RunningHubImageOptions, type RunningHubVideoOptions } from '../services/runninghubService';
+import { LTX2_WORKFLOW_TEMPLATE } from '../services/ltx2WorkflowTemplate';
 import { generateJimengImages } from '../services/jimengService';
 import { detectCharactersInPrompt } from '../services/characterLibraryService';
 import { CharacterLibrary } from './CharacterLibrary';
@@ -74,6 +75,8 @@ const VIDEO_MODELS = [
   { id: 'sora2-pro-landscape-hd-15s', name: 'Sora 2 Pro 横屏 HD 15秒', duration: 15, supportedDurations: [15], defaultSize: '1080P', supportedSizes: ['1080P'], orientation: 'landscape' },
   // RunningHub 开源模型
   { id: 'runninghub-wan2.2', name: 'RunningHub - Wan2.2', duration: 10, supportedDurations: [5, 10, 15], defaultSize: '720P', supportedSizes: ['720P'], orientation: 'landscape', isRunningHub: true },
+  // LTX-2 模型
+  { id: 'runninghub-ltx2', name: 'RunningHub - LTX-2 (10s)', duration: 10, supportedDurations: [10], defaultSize: '720P', supportedSizes: ['720P'], orientation: 'landscape', isRunningHub: true, isLtx2: true },
 ];
 
 // 图片比例配置
@@ -1574,33 +1577,56 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       
       // RunningHub 模型处理
       if (isRunningHubModel) {
-        if (hasImages) {
-          // 图生视频模式
+        const isLtx2Model = selectedModel?.isLtx2;
+
+        // LTX-2 路径：传入完整 workflow JSON
+        if (isLtx2Model) {
           const selectedImageUrl = shotImages[shot.selectedImageIndex!];
-          
           if (!selectedImageUrl) {
-            toast.error('选中的图片URL无效，请重新选择图片', 6000);
+            toast.error('请先选中一张图片，再生成 LTX-2 视频', 6000);
             updateShot(shot.id, { videoGenerating: false });
             return;
           }
-          
+
           const options: RunningHubVideoOptions = {
+            workflow: LTX2_WORKFLOW_TEMPLATE,
             prompt: shot.videoPrompt,
-            model: 'wan2.2',
+            model: 'ltx2',
             image_url: selectedImageUrl,
             duration: selectedModel.duration || 10,
           };
-          
+
           result = await generateRunningHubVideo(apiKey, options);
         } else {
-          // 文生视频模式
-          const options: RunningHubVideoOptions = {
-            prompt: shot.videoPrompt,
-            model: 'wan2.2',
-            duration: selectedModel.duration || 10,
-          };
-          
-          result = await generateRunningHubVideo(apiKey, options);
+          // Wan2.2 路径（nodeInfoList）
+          if (hasImages) {
+            // 图生视频模式
+            const selectedImageUrl = shotImages[shot.selectedImageIndex!];
+
+            if (!selectedImageUrl) {
+              toast.error('选中的图片URL无效，请重新选择图片', 6000);
+              updateShot(shot.id, { videoGenerating: false });
+              return;
+            }
+
+            const options: RunningHubVideoOptions = {
+              prompt: shot.videoPrompt,
+              model: 'wan2.2',
+              image_url: selectedImageUrl,
+              duration: selectedModel.duration || 10,
+            };
+
+            result = await generateRunningHubVideo(apiKey, options);
+          } else {
+            // 文生视频模式
+            const options: RunningHubVideoOptions = {
+              prompt: shot.videoPrompt,
+              model: 'wan2.2',
+              duration: selectedModel.duration || 10,
+            };
+
+            result = await generateRunningHubVideo(apiKey, options);
+          }
         }
       } else {
         // 大洋芋模型处理
@@ -2101,7 +2127,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           )}
 
           {/* RunningHub 提示（API Key在全局配置中） */}
-          {((selectedImageModel && selectedImageModel.startsWith('runninghub-')) || selectedVideoModel === 'runninghub-wan2.2') && provider !== 'runninghub' && (
+          {((selectedImageModel && selectedImageModel.startsWith('runninghub-')) || (selectedVideoModel === 'runninghub-wan2.2' || selectedVideoModel === 'runninghub-ltx2')) && provider !== 'runninghub' && (
             <div className="flex-shrink-0 px-3 py-1 bg-purple-900/30 border border-purple-700/50 rounded text-[10px] text-purple-300 flex items-center">
               ⚠️ 请在顶部配置 RunningHub API Key
             </div>

@@ -14,10 +14,14 @@ export interface RunningHubImageOptions {
 }
 
 export interface RunningHubVideoOptions {
+  /** 完整 workflow JSON（模板）；不填则用 nodeInfoList 方式 */
+  workflow?: Record<string, any>;
+  /** workflow JSON 模板（JSON 字符串格式，优先级低于 workflow 对象） */
+  workflowTemplate?: string;
   prompt: string;
-  model: 'wan2.2'; // 视频模型固定为wan2.2
-  image_url?: string; // 图生视频时使用
-  duration?: number; // 视频时长（秒）
+  model: 'wan2.2' | 'ltx2';
+  image_url?: string;
+  duration?: number;
 }
 
 export interface RunningHubAudioOptions {
@@ -187,180 +191,170 @@ const uploadImage = async (apiKey: string, imageUrl: string): Promise<string> =>
 
 /**
  * 生成视频
- * 模型：wan2.2
- * API文档: https://www.runninghub.cn/call-api/api-detail/1930910447648571394?apiType=5
+ * LTX-2：传入完整 workflow JSON（模板），自动替换图片路径和提示词节点。
+ * Wan2.2：使用 nodeInfoList 节点参数映射（兼容旧逻辑）。
+ * API文档: https://www.runninghub.cn/call-api/api-detail/2033053099966865410?apiType=5
  */
-// 导出别名
 export const generateVideo = async (
   apiKey: string,
   options: RunningHubVideoOptions
 ): Promise<RunningHubResult> => {
   try {
-    // 使用新的API端点：/run/workflow/{workflowId}
-    // Wan2.2图生视频的工作流ID
-    const workflowId = '1930910447648571394';
+    const workflowId = '2033053099966865410';
     const endpoint = `/run/workflow/${workflowId}`;
-    
-    // 根据新API文档，使用 nodeInfoList 参数（节点参数映射列表）
-    // 而不是完整的 workflow JSON字符串
-    
-    // 如果有图片，先上传图片
+
+    // ── LTX-2 路径：传入完整 workflow JSON ─────────────────────────────────
+    if (options.workflow || options.workflowTemplate) {
+      // 1. 解析/克隆 workflow
+      let wf: Record<string, any>;
+      if (options.workflow) {
+        wf = JSON.parse(JSON.stringify(options.workflow));
+      } else {
+        wf = JSON.parse(options.workflowTemplate!);
+      }
+
+      // 2. 若有图片，先上传得到 RunningHub 路径
+      let uploadedImagePath: string | undefined;
+      if (options.image_url) {
+        try {
+          uploadedImagePath = await uploadImage(apiKey, options.image_url);
+          console.log('[RunningHub] LTX-2 图片上传成功:', uploadedImagePath);
+        } catch (uploadError: any) {
+          throw new Error(`图片上传失败: ${uploadError.message}`);
+        }
+      }
+
+      // 3. 替换关键节点
+      //    LoadImage 节点（269）：替换图片路径
+      if (uploadedImagePath && wf['269']) {
+        wf['269'].inputs.image = uploadedImagePath;
+      }
+      //    PrimitiveStringMultiline 节点（325）：替换提示词
+      if (options.prompt && wf['325']) {
+        wf['325'].inputs.value = options.prompt;
+      }
+      //    PrimitiveInt 节点（301）：视频帧数 ≈ duration × fps（默认 24fps）
+      if (options.duration && wf['301']) {
+        wf['301'].inputs.value = Math.round(options.duration * 24);
+      }
+
+      // 4. 发送请求（workflow JSON 格式）
+      const requestBody: Record<string, any> = {
+        apiKey,
+        workflow: JSON.stringify(wf),
+        instanceType: 'plus',
+        usePersonalQueue: false,
+        retainSeconds: 0,
+      };
+
+      console.log('[RunningHub] LTX-2 视频生成请求:', {
+        endpoint: `${BASE_URL}${endpoint}`,
+        workflowId,
+        prompt: options.prompt?.slice(0, 80),
+        uploadedImagePath,
+      });
+
+      const response = await fetch(`${BASE_URL}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+      });
+
+      const responseText = await response.text();
+      console.log('[RunningHub] LTX-2 响应原始数据:', {
+        status: response.status,
+        responseText: responseText.slice(0, 600),
+      });
+
+      if (!response.ok) {
+        let errorData: any = {};
+        try { errorData = JSON.parse(responseText); } catch { /* ignore */ }
+        const msg =
+          errorData.errorMessage ||
+          errorData.msg ||
+          errorData.error ||
+          responseText ||
+          `HTTP ${response.status}`;
+        throw new Error(msg);
+      }
+
+      const data = JSON.parse(responseText);
+      if (!data.taskId) {
+        throw new Error(data.errorMessage || 'LTX-2 视频生成失败（无 taskId）');
+      }
+
+      return {
+        success: true,
+        data,
+        taskId: data.taskId,
+        status: data.status || 'QUEUED',
+        progress: 0,
+      };
+    }
+
+    // ── Wan2.2 兼容路径（nodeInfoList）───
     let uploadedImagePath: string | undefined;
     if (options.image_url) {
       try {
         uploadedImagePath = await uploadImage(apiKey, options.image_url);
-        console.log('[RunningHub] 图片上传成功:', uploadedImagePath);
+        console.log('[RunningHub] Wan2.2 图片上传成功:', uploadedImagePath);
       } catch (uploadError: any) {
-        console.error('[RunningHub] 图片上传失败，无法继续:', uploadError);
-        throw new Error(`图片上传失败: ${uploadError.message || uploadError}. 图生视频需要先上传图片到RunningHub服务器`);
+        throw new Error(`图片上传失败: ${uploadError.message}. 图生视频需要先上传图片`);
       }
     } else {
       throw new Error('图生视频模式需要提供图片URL');
     }
-    
-    // 构建 nodeInfoList（节点参数映射列表）
-    // 根据工作流节点，设置关键参数：
-    // - 节点52 (LoadImage): 设置图片路径
-    // - 节点88 (PrimitiveStringMultiline): 设置提示词
-    // - 节点50 (WanImageToVideo): 设置 batch_size = 1（确保只生成1个视频）
+
     const nodeInfoList: any[] = [];
-    
-    // 设置图片输入节点（节点52）
     if (uploadedImagePath) {
-      nodeInfoList.push({
-        nodeId: '52',
-        inputs: {
-          image: uploadedImagePath
-        }
-      });
+      nodeInfoList.push({ nodeId: '52', inputs: { image: uploadedImagePath } });
     }
-    
-    // 设置提示词节点（节点88）
     if (options.prompt) {
-      nodeInfoList.push({
-        nodeId: '88',
-        inputs: {
-          value: options.prompt
-        }
-      });
+      nodeInfoList.push({ nodeId: '88', inputs: { value: options.prompt } });
     }
-    
-    // 确保只生成1个视频：设置 batch_size = 1（节点50）
-    nodeInfoList.push({
-      nodeId: '50',
-      inputs: {
-        batch_size: 1
-      }
-    });
-    
-    // 确保 Pick From Batch 节点也只选择1个（节点78）
-    nodeInfoList.push({
-      nodeId: '78',
-      inputs: {
-        count: 1
-      }
-    });
-    
-    console.log('[RunningHub] 节点参数列表:', nodeInfoList);
-    
-    // 构建请求体（使用 nodeInfoList 参数，符合新API文档）
-    // 注意：根据 RunningHub API 文档，apiKey 应该放在请求体中，而不是 header
+    nodeInfoList.push({ nodeId: '50', inputs: { batch_size: 1 } });
+    nodeInfoList.push({ nodeId: '78', inputs: { count: 1 } });
+
     const requestBody: any = {
-      apiKey: apiKey, // API Key 放在请求体中
-      nodeInfoList: nodeInfoList,
-      instanceType: 'plus', // 视频生成需要更高显存，使用plus类型
+      apiKey,
+      nodeInfoList,
+      instanceType: 'plus',
       usePersonalQueue: false,
-      addMetadata: false, // 可选：是否在输出中添加工作流元数据
+      addMetadata: false,
     };
-    
-    console.log('[RunningHub] 视频生成请求:', {
+
+    console.log('[RunningHub] Wan2.2 视频生成请求:', {
       endpoint: `${BASE_URL}${endpoint}`,
       workflowId,
-      prompt: options.prompt.substring(0, 50) + '...',
-      hasImage: !!options.image_url,
+      prompt: options.prompt.slice(0, 50),
       imagePath: uploadedImagePath,
-      nodeInfoListCount: nodeInfoList.length,
-      hasApiKey: !!apiKey,
     });
-    
+
     const response = await fetch(`${BASE_URL}${endpoint}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        // 注意：RunningHub API 可能不需要 Authorization header，apiKey 在请求体中
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(requestBody),
     });
-    
+
     const responseText = await response.text();
-    console.log('[RunningHub] 视频生成响应原始数据:', {
-      status: response.status,
-      statusText: response.statusText,
-      responseText: responseText.substring(0, 500),
-    });
-    
     if (!response.ok) {
       let errorData: any = {};
-      let errorMessage = '';
-      
-      try {
-        errorData = JSON.parse(responseText);
-      } catch {
-        errorMessage = responseText;
-      }
-      
-      errorMessage = errorMessage || 
+      try { errorData = JSON.parse(responseText); } catch { /* ignore */ }
+      const msg =
         errorData.msg ||
-        errorData.error?.message || 
         errorData.errorMessage ||
-        errorData.message || 
-        errorData.error || 
-        `HTTP ${response.status}: ${response.statusText}`;
-      
-      throw new Error(errorMessage);
+        errorData.message ||
+        errorData.error ||
+        responseText ||
+        `HTTP ${response.status}`;
+      throw new Error(msg);
     }
-    
+
     const data = JSON.parse(responseText);
-    
-    console.log('[RunningHub] 视频生成响应:', {
-      taskId: data.taskId,
-      status: data.status,
-      errorCode: data.errorCode,
-      errorMessage: data.errorMessage,
-      hasResults: !!data.results,
-      resultsCount: data.results?.length || 0,
-    });
-    
-    // 检查响应状态（新API格式：直接返回 taskId 和 status，没有 code 字段）
     if (!data.taskId) {
-      // 新API格式：错误信息在 errorMessage 字段
-      let errorMessage = data.errorMessage || data.errorCode || '视频生成请求失败';
-      
-      // 常见错误码的中文提示
-      const errorMessages: Record<string, string> = {
-        'CORPAPIKEY_INSUFFICIENT_FUNDS': '账户余额不足，请前往RunningHub充值',
-        'INSUFFICIENT_FUNDS': '账户余额不足，请前往RunningHub充值',
-        'APIKEY_INVALID': 'API Key无效，请检查配置',
-        'APIKEY_INVALID_NODE_INFO': '节点参数错误，请检查工作流配置',
-        'WORKFLOW_NOT_FOUND': '工作流不存在，请检查工作流ID配置',
-        'WORKFLOW_NOT_EXISTS': '工作流不存在，请检查工作流ID是否正确',
-        'WORKFLOW_NOT_SAVED_OR_NOT_RUNNING': '工作流未保存或未运行过。请在RunningHub网站上打开工作流并保存，然后才能通过API调用',
-        'WORKFLOW_ERROR': '工作流执行错误',
-      };
-      
-      // 如果错误码在映射表中，使用友好的中文提示
-      if (errorMessages[errorMessage]) {
-        errorMessage = errorMessages[errorMessage];
-      } else if (errorMessage.includes('INSUFFICIENT_FUNDS')) {
-        errorMessage = '账户余额不足，请前往RunningHub充值';
-      } else if (errorMessage.includes('APIKEY')) {
-        errorMessage = `API配置错误: ${errorMessage}`;
-      }
-      
-      throw new Error(errorMessage);
+      throw new Error(data.errorMessage || 'Wan2.2 视频生成失败（无 taskId）');
     }
-    
-    // 新API格式：直接返回 taskId 和 status
+
     return {
       success: true,
       data,
