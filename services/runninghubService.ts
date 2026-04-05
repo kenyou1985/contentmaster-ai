@@ -238,23 +238,25 @@ export const generateVideo = async (
         wf['301'].inputs.value = Math.round(options.duration * 24);
       }
 
-      // 4. 发送请求（workflow JSON 格式）
+      // 4. 发送请求
+      //    注意：workflowId + apiKey 都在请求体，URL 固定为 /run/workflow/
       const requestBody: Record<string, any> = {
         apiKey,
         workflow: JSON.stringify(wf),
-        instanceType: 'plus',
-        usePersonalQueue: false,
+        workflowId,
+        randomSeed: true,
         retainSeconds: 0,
+        usePersonalQueue: false,
       };
 
       console.log('[RunningHub] LTX-2 视频生成请求:', {
-        endpoint: `${BASE_URL}${endpoint}`,
+        endpoint: `${BASE_URL}/run/workflow/`,
         workflowId,
         prompt: options.prompt?.slice(0, 80),
         uploadedImagePath,
       });
 
-      const response = await fetch(`${BASE_URL}${endpoint}`, {
+      const response = await fetch(`${BASE_URL}/run/workflow/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),
