@@ -4,7 +4,7 @@ import { NICHES } from '../constants';
 import { streamContentGeneration, initializeGemini } from '../services/geminiService';
 import { fetchYouTubeTranscript, extractYouTubeVideoId, isYouTubeLink } from '../services/youtubeService';
 import { FileText, Maximize2, RefreshCw, Scissors, ArrowRight, Copy, ChevronDown, Video, Download, Plus, X, History } from 'lucide-react';
-import { saveHistory, getHistory, deleteHistory, HistoryRecord } from '../services/historyService';
+import { saveHistory, getHistory, deleteHistory, clearHistory, HistoryRecord } from '../services/historyService';
 import { HistorySelector } from './HistorySelector';
 import { useToast } from './Toast';
 import { ProgressBar } from './ProgressBar';
@@ -4135,7 +4135,7 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                           <span className="text-xs text-slate-600 font-mono">{outputText.length.toLocaleString()} 字</span>
                         )}
                         {outputText && (
-                            <div className="flex items-center gap-2">
+                            <span className="flex items-center gap-2">
                                 <button 
                                     onClick={copyToClipboard} 
                                     className="text-xs flex items-center gap-1 text-emerald-400 hover:text-emerald-300 transition-colors"
@@ -4150,7 +4150,7 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                                 >
                                     <Download size={12} /> 导出 TXT
                                 </button>
-                            </div>
+                            </span>
                         )}
                     </div>
                 </label>
@@ -4201,11 +4201,18 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                    setShowHistorySelector(false);
                    setPendingModeChange(null);
                }}
-               onDelete={(timestamp) => {
+               onDelete={(record) => {
                    if (pendingModeChange) {
                        const historyKey = getToolsHistoryKey(pendingModeChange.mode, pendingModeChange.niche);
-                       deleteHistory('tools', historyKey, timestamp);
+                       deleteHistory('tools', historyKey, record.timestamp);
                        setHistoryRecords(getHistory('tools', historyKey));
+                   }
+               }}
+               onClearAll={() => {
+                   if (pendingModeChange) {
+                       const historyKey = getToolsHistoryKey(pendingModeChange.mode, pendingModeChange.niche);
+                       clearHistory('tools', historyKey);
+                       setHistoryRecords([]);
                    }
                }}
                title="选择历史记录"

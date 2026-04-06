@@ -1,0 +1,13 @@
+{
+  "name": "jianying-export-server",
+  "version": "1.0.0",
+  "description": "剪映草稿导出 HTTP 服务（ContentMaster AI）",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs"
+  },
+  "dependencies": {
+    "cors": "^2.8.5"
+  }
+}

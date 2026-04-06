@@ -1,0 +1,17 @@
+{
+  "project_name": "测试草稿",
+  "project_id": "0F37FEE8-6853-4272-AA0B-1E8FAE33B4E7",
+  "update_time": 1775382628275897,
+  "fps": 30,
+  "video_out_height": 1080,
+  "video_out_width": 1920,
+  "timelines": [
+    {
+      "id": "3CD4A5C1-8C88-4A8C-95FB-4117441745A8",
+      "duration": 3000000,
+      "fps": 30,
+      "width": 1920,
+      "height": 1080
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+{
+  "draft_id": "A62EA2D6-72E3-4256-873C-086801E8245A",
+  "draft_name": "ContentMaster_2026-04-05 17-35",
+  "duration": 5000000,
+  "create_time": 1775382093885462,
+  "update_time": 1775382093885462,
+  "fps": 30,
+  "videos": [],
+  "images": [],
+  "audios": [],
+  "texts": [],
+  "video_op_way": 0,
+  "draft_type": "",
+  "last_modified_app": "ContentMaster AI",
+  "timelines": [
+    {
+      "id": "6C8EBD52-AEA5-487F-8B98-C2F11C90AF13",
+      "duration": 5000000,
+      "fps": 30,
+      "width": 1920,
+      "height": 1080,
+      "type": "template",
+      "track_list": [
+        {
+          "id": "0ACCBD39-4A82-43D6-BD2E-36481F32F278",
+          "type": 0,
+          "name": "视频",
+          "important": 1,
+          "height": 0,
+          "is_locked": false,
+          "is_visible": true
+        },
+        {
+          "id": "44A5C384-B179-4D73-9BFE-22B68111262A",
+          "type": 2,
+          "name": "文字",
+          "important": 0,
+          "height": 0,
+          "is_locked": false,
+          "is_visible": true
+        }
+      ],
+      "entity_list": {
+        "material_list": [],
+        "video_segments": [
+          {
+            "id": "0A403AA3-50ED-4BAC-A12C-32372A355794",
+            "material_id": "8F68C067-4C50-44FB-BF2F-28BA75D5EBAB",
+            "track_id": "0ACCBD39-4A82-43D6-BD2E-36481F32F278",
+            "target_timerange": {
+              "start": 0,
+              "duration": 5000000
+            },
+            "type": "video",
+            "source_timerange": {
+              "start": 0,
+              "duration": 5000000
+            },
+            "speed": 1.0,
+            "audio_fade": {
+              "fade_in": 0,
+              "fade_out": 0
+            },
+            "source_file": "",
+            "barrage_mask_index": -1,
+            "is_default_video": true
+          }
+        ],
+        "audio_segments": [],
+        "text_segments": [
+          {
+            "id": "244CD253-046D-4928-A4E4-874B44E93D18",
+            "material_id": "CD45D0B6-59D3-49FE-A6EB-C6B72E66DC39",
+            "track_id": "44A5C384-B179-4D73-9BFE-22B68111262A",
+            "target_timerange": {
+              "start": 0,
+              "duration": 5000000
+            },
+            "type": "text",
+            "text_content": {
+              "content": "测试文案1",
+              "font_name": "思源黑体",
+              "font_size": 60,
+              "bold": false,
+              "italic": false,
+              "color": "#FFFFFF",
+              "background_color": "#00000080",
+              "stroke_color": "#000000",
+              "stroke_width": 1.0,
+              "shadow_color": "#00000066",
+              "shadow_angle": 45.0,
+              "shadow_distance": 3.0,
+              "shadow_blur": 3.0,
+              "shadow_alpha": 0.5,
+              "alignment": 1,
+              "line_spacing": 1.2,
+              "text_background": false,
+              "text_background_radius": 4,
+              "text_background_padding_x": 10,
+              "text_background_padding_y": 6,
+              "text_background_corner_radius": 4,
+              "text_vertical": false
+            },
+            "style_id": "",
+            "effects": []
+          }
+        ],
+        "barrage_mask_list": []
+      }
+    }
+  ]
+}

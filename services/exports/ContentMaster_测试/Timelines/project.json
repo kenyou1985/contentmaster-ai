@@ -1,0 +1,17 @@
+{
+  "project_name": "ContentMaster_测试",
+  "project_id": "CD60AB76-33A3-4FAF-B9BD-5D203BEAB991",
+  "update_time": 1775381144888990,
+  "fps": 30,
+  "video_out_height": 1080,
+  "video_out_width": 1920,
+  "timelines": [
+    {
+      "id": "2DA90769-4F58-488E-94EE-9D45B2E5E5D6",
+      "duration": 5000000,
+      "fps": 30,
+      "width": 1920,
+      "height": 1080
+    }
+  ]
+}

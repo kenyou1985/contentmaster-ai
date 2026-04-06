@@ -11,6 +11,18 @@ interface VideoCacheMetadata {
   blobUrl: string;
   cachedAt: number;
   size?: number;
+  /** 与当前页面加载绑定；刷新后 blob 失效，旧缓存需丢弃 */
+  pageBootId?: string;
+}
+
+/** 每次完整加载页面生成新 ID，用于使 localStorage 里记录的 blob: URL 在刷新后失效 */
+function getPageBootId(): string {
+  if (typeof window === 'undefined') return '';
+  const w = window as Window & { __CM_PAGE_BOOT_ID__?: string };
+  if (!w.__CM_PAGE_BOOT_ID__) {
+    w.__CM_PAGE_BOOT_ID__ = `${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+  }
+  return w.__CM_PAGE_BOOT_ID__;
 }
 
 /**
@@ -41,6 +53,12 @@ export function getCachedVideoUrl(videoUrl: string): string | null {
   
   try {
     const metadata: VideoCacheMetadata = JSON.parse(cachedData);
+    // 刷新后 blob: 已无效，但 localStorage 仍指向旧 blob —— 用 pageBootId 丢弃
+    const boot = getPageBootId();
+    if (!metadata.pageBootId || metadata.pageBootId !== boot) {
+      clearVideoCache(videoUrl);
+      return null;
+    }
     // 检查缓存是否过期（30天）
     const thirtyDays = 30 * 24 * 60 * 60 * 1000;
     if (Date.now() - metadata.cachedAt > thirtyDays) {
@@ -68,47 +86,56 @@ export async function cacheVideo(videoUrl: string): Promise<string> {
     console.log('[VideoCache] 使用已缓存的视频:', videoUrl);
     return cachedUrl;
   }
-  
+
   console.log('[VideoCache] 开始下载并缓存视频:', videoUrl);
-  
+
+  let blob: Blob;
   try {
-    // 下载视频
-    const response = await fetch(videoUrl);
-    if (!response.ok) {
-      throw new Error(`下载视频失败: ${response.status} ${response.statusText}`);
+    try {
+      const resp = await fetch(videoUrl);
+      if (!resp.ok) throw new Error(`fetch ${resp.status}`);
+      blob = await resp.blob();
+    } catch {
+      try {
+        blob = await new Promise<Blob>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('GET', videoUrl);
+          xhr.responseType = 'blob';
+          xhr.onload = () => resolve(xhr.response);
+          xhr.onerror = () => reject(new Error('XMLHttpRequest failed'));
+          xhr.send();
+        });
+      } catch {
+        console.warn('[VideoCache] fetch 和 XMLHttpRequest 均失败，缓存放弃，回退到原 URL:', videoUrl);
+        return videoUrl;
+      }
     }
-    
-    const blob = await response.blob();
+
     const blobUrl = URL.createObjectURL(blob);
-    
-    // 将 Blob URL 存储到 IndexedDB 或使用其他方式
-    // 由于 localStorage 有大小限制，我们使用 IndexedDB 存储大文件
-    // 但为了简单，这里先使用 sessionStorage 存储元数据，实际 blob 通过 URL.createObjectURL 管理
-    
-    // 存储元数据到 localStorage
+
     const metadata: VideoCacheMetadata = {
       url: videoUrl,
       blobUrl: blobUrl,
       cachedAt: Date.now(),
       size: blob.size,
+      pageBootId: getPageBootId(),
     };
-    
+
     const cacheKey = getCacheKey(videoUrl);
     localStorage.setItem(cacheKey, JSON.stringify(metadata));
-    
-    // 更新缓存元数据列表
+
     updateCacheMetadata(videoUrl, metadata);
-    
+
     console.log('[VideoCache] 视频缓存成功:', {
       url: videoUrl,
       size: blob.size,
-      blobUrl: blobUrl.substring(0, 50) + '...'
+      blobUrl: blobUrl.substring(0, 50) + '...',
     });
-    
+
     return blobUrl;
   } catch (error: any) {
     console.error('[VideoCache] 缓存视频失败:', error);
-    throw new Error(`缓存视频失败: ${error.message || '未知错误'}`);
+    return videoUrl;
   }
 }
 

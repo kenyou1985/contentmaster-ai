@@ -1,7 +1,13 @@
 /**
- * 即梦API服务
- * 用于通过即梦逆向API生成图片
+ * 即梦 API 服务（调用线上代理服务生成图片）
  */
+
+/** 生产环境即梦代理（Railway），勿带末尾斜杠 */
+export const JIMENG_API_BASE_URL = 'https://jimeng-api-production-4fbf.up.railway.app';
+
+function normalizeJimengBaseUrl(url: string): string {
+  return url.replace(/\/$/, '');
+}
 
 export interface JimengImageGenerationOptions {
   prompt: string;
@@ -70,16 +76,13 @@ function convertToJimengParams(width: number, height: number): { ratio: string; 
 }
 
 /**
- * 生成图片
- * @param apiBaseUrl API基础地址（默认：http://localhost:3000）
- * @param sessionId 即梦Web端sessionid（从浏览器Cookie获取）
+ * 生成图片（默认请求 {@link JIMENG_API_BASE_URL}）
  * @param options 生成选项
- * @returns 生成结果
+ * @param overrides 可选：自定义 baseUrl / Bearer（线上服务一般无需 session）
  */
 export async function generateJimengImages(
-  apiBaseUrl: string,
-  sessionId: string,
-  options: JimengImageGenerationOptions
+  options: JimengImageGenerationOptions,
+  overrides?: { apiBaseUrl?: string; sessionId?: string }
 ): Promise<JimengGenerationResult> {
   const { 
     prompt, 
@@ -92,12 +95,24 @@ export async function generateJimengImages(
     sample_strength = 0.7
   } = options;
 
-  if (!sessionId || sessionId.trim() === '') {
-    return {
-      success: false,
-      error: '即梦 SESSION_ID 未设置，请先配置'
-    };
-  }
+  const apiBaseUrl = normalizeJimengBaseUrl(overrides?.apiBaseUrl ?? JIMENG_API_BASE_URL);
+  const sessionId = (overrides?.sessionId ?? '').trim();
+
+  // Railway/Fly 部署的服务不支持 Authorization header，会导致 "Params headers.authorization invalid" 错误
+  // 检测是否为第三方部署的服务（非本地服务）
+  const isHostedService = apiBaseUrl.includes('railway.app') || 
+                          apiBaseUrl.includes('render.com') || 
+                          apiBaseUrl.includes('fly.dev') ||
+                          apiBaseUrl.includes('vercel.app');
+  
+  // 基础 headers
+  const jsonHeadersBase: Record<string, string> = { 'Content-Type': 'application/json' };
+  
+  // 本地服务（localhost）且有 sessionId 时才添加 Authorization
+  // 第三方托管服务（如 Railway）不需要 Authorization 头
+  const jsonHeaders: Record<string, string> = (!isHostedService && sessionId && sessionId.length > 10)
+    ? { ...jsonHeadersBase, Authorization: `Bearer ${sessionId}` }
+    : jsonHeadersBase;
 
   // 判断是文生图还是图生图
   const isImageToImage = images && images.length > 0;
@@ -115,82 +130,50 @@ export async function generateJimengImages(
     finalResolution = finalResolution || converted.resolution;
   }
 
-  // 图生图模式：使用 multipart/form-data
+  // 图生图：jimeng-api 要求 HTTP(S) URL 用 JSON；本地/base64 必须用 multipart（data URL 放 JSON 不会生效）
   if (isImageToImage) {
-    const formData = new FormData();
-    formData.append('prompt', prompt);
-    if (finalRatio) formData.append('ratio', finalRatio);
-    if (finalResolution) formData.append('resolution', finalResolution);
-    formData.append('sample_strength', sample_strength.toString());
-    
-    // 添加图片（支持URL或File）
-    for (const image of images) {
-      // 如果是data URL，需要转换为Blob
-      if (image.startsWith('data:')) {
-        const response = await fetch(image);
-        const blob = await response.blob();
-        formData.append('images', blob);
-      } else if (image.startsWith('blob:')) {
-        // blob URL需要先fetch
-        const response = await fetch(image);
-        const blob = await response.blob();
-        formData.append('images', blob);
-      } else {
-        // 普通URL，直接添加到images数组（JSON格式）或作为文件上传
-        // 即梦API支持URL数组，但multipart模式下需要上传文件
-        // 这里我们尝试将URL转换为文件
-        try {
-          const response = await fetch(image);
-          const blob = await response.blob();
-          formData.append('images', blob);
-        } catch (error) {
-          console.error('[JimengService] 无法加载图片URL:', error);
-          return {
-            success: false,
-            error: `无法加载图片: ${image}`
-          };
+    const compositionsUrl = `${apiBaseUrl}/v1/images/compositions`;
+
+    const multipartHeaders: Record<string, string> = {};
+    if (!isHostedService && sessionId && sessionId.length > 10) {
+      multipartHeaders.Authorization = `Bearer ${sessionId}`;
+    }
+
+    const needsMultipart = images!.some(
+      (img) => img.startsWith('data:') || img.startsWith('blob:')
+    );
+
+    const buildFormData = async (): Promise<FormData> => {
+      const formData = new FormData();
+      formData.append('prompt', prompt);
+      if (finalRatio) formData.append('ratio', finalRatio);
+      if (finalResolution) formData.append('resolution', finalResolution);
+      formData.append('sample_strength', String(sample_strength));
+
+      for (const image of images!) {
+        if (image.startsWith('data:') || image.startsWith('blob:')) {
+          const res = await fetch(image);
+          const blob = await res.blob();
+          const ext = blob.type.includes('png') ? 'png' : blob.type.includes('webp') ? 'webp' : 'jpg';
+          formData.append('images', blob, `reference.${ext}`);
+        } else {
+          const res = await fetch(image);
+          if (!res.ok) throw new Error(`无法加载参考图: ${image.slice(0, 80)}`);
+          const blob = await res.blob();
+          const ext = blob.type.includes('png') ? 'png' : 'jpg';
+          formData.append('images', blob, `reference.${ext}`);
         }
       }
-    }
-
-    const headers = {
-      'Authorization': `Bearer ${sessionId}`
-      // 不设置Content-Type，让浏览器自动设置multipart/form-data边界
+      return formData;
     };
 
-    // 即梦API需要的参数格式（图生图）
-    const data: any = {
+    const jsonData: Record<string, unknown> = {
       prompt,
+      images: images!,
+      sample_strength,
     };
-    
-    if (finalRatio) {
-      data.ratio = finalRatio;
-    }
-    if (finalResolution) {
-      data.resolution = finalResolution;
-    }
-    data.sample_strength = sample_strength;
-    
-    // 图生图：使用compositions端点，需要发送multipart/form-data
-    // 但由于前端限制，我们使用JSON格式发送图片URL数组
-    const jsonUrl = `${apiBaseUrl}/v1/images/compositions`;
-    const jsonHeaders = {
-      'Authorization': `Bearer ${sessionId}`,
-      'Content-Type': 'application/json'
-    };
-    
-    const jsonData: any = {
-      prompt,
-      images: images, // 直接传递URL数组
-    };
-    
-    if (finalRatio) {
-      jsonData.ratio = finalRatio;
-    }
-    if (finalResolution) {
-      jsonData.resolution = finalResolution;
-    }
-    jsonData.sample_strength = sample_strength;
+    if (finalRatio) jsonData.ratio = finalRatio;
+    if (finalResolution) jsonData.resolution = finalResolution;
 
     // 即梦API每次调用只生成一张图片，如果需要多张，需要多次调用
     const targetCount = num_images || 1;
@@ -199,11 +182,21 @@ export async function generateJimengImages(
 
     for (let i = 0; i < targetCount; i++) {
       try {
-        const response = await fetch(jsonUrl, {
-          method: 'POST',
-          headers: jsonHeaders,
-          body: JSON.stringify(jsonData)
-        });
+        let response: Response;
+        if (needsMultipart) {
+          const formData = await buildFormData();
+          response = await fetch(compositionsUrl, {
+            method: 'POST',
+            headers: multipartHeaders,
+            body: formData,
+          });
+        } else {
+          response = await fetch(compositionsUrl, {
+            method: 'POST',
+            headers: jsonHeaders,
+            body: JSON.stringify(jsonData),
+          });
+        }
 
         if (!response.ok) {
           const errorText = await response.text();
@@ -228,7 +221,7 @@ export async function generateJimengImages(
               errorMessage = '无法连接到即梦API服务，请确保服务正在运行';
             }
           } else if (response.status === 401) {
-            errorMessage = 'SESSION_ID 无效，请检查配置';
+            errorMessage = '鉴权失败，请检查线上服务或 Token 配置';
           }
 
           errors.push(`第 ${i + 1} 张图片生成失败: ${errorMessage}`);
@@ -271,13 +264,8 @@ export async function generateJimengImages(
     }
   }
 
-  // 文生图模式：使用原有的逻辑
+  // 文生图模式
   const url = `${apiBaseUrl}/v1/images/generations`;
-  
-  const headers = {
-    'Authorization': `Bearer ${sessionId}`,
-    'Content-Type': 'application/json'
-  };
 
   // 即梦API需要的参数格式
   const data: any = {
@@ -301,7 +289,7 @@ export async function generateJimengImages(
     try {
       const response = await fetch(url, {
         method: 'POST',
-        headers,
+        headers: jsonHeaders,
         body: JSON.stringify(data)
       });
 
@@ -329,7 +317,7 @@ export async function generateJimengImages(
             errorMessage = '无法连接到即梦API服务，请确保服务正在运行';
           }
         } else if (response.status === 401) {
-          errorMessage = 'SESSION_ID 无效，请检查配置';
+          errorMessage = '鉴权失败，请检查线上服务或 Token 配置';
         }
 
         errors.push(`第 ${i + 1} 张图片生成失败: ${errorMessage}`);
@@ -380,9 +368,11 @@ export async function generateJimengImages(
  * @param apiBaseUrl API基础地址
  * @returns 是否可用
  */
-export async function checkJimengApiHealth(apiBaseUrl: string): Promise<boolean> {
+export async function checkJimengApiHealth(
+  apiBaseUrl: string = JIMENG_API_BASE_URL
+): Promise<boolean> {
   try {
-    const healthUrl = `${apiBaseUrl}/health`;
+    const healthUrl = `${normalizeJimengBaseUrl(apiBaseUrl)}/health`;
     const response = await fetch(healthUrl, {
       method: 'GET',
       timeout: 5000

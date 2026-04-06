@@ -21,15 +21,11 @@ import { useToast } from './Toast';
 interface CharacterLibraryProps {
   onClose: () => void;
   onCharacterSelect?: (character: CharacterType) => void;
-  jimengApiBaseUrl?: string; // 即梦API地址
-  jimengSessionId?: string; // 即梦SESSION_ID
 }
 
 export const CharacterLibrary: React.FC<CharacterLibraryProps> = ({ 
   onClose, 
   onCharacterSelect,
-  jimengApiBaseUrl,
-  jimengSessionId
 }) => {
   const [characters, setCharacters] = useState<Character[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -47,10 +43,6 @@ export const CharacterLibrary: React.FC<CharacterLibraryProps> = ({
   const [generatingForEdit, setGeneratingForEdit] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toast = useToast();
-
-  // 从localStorage获取即梦配置（如果props未提供）
-  const apiBaseUrl = jimengApiBaseUrl || localStorage.getItem('JIMENG_API_BASE_URL') || 'http://localhost:3030';
-  const sessionId = jimengSessionId || localStorage.getItem('JIMENG_SESSION_ID') || '';
 
   // 加载角色列表
   useEffect(() => {
@@ -95,11 +87,6 @@ export const CharacterLibrary: React.FC<CharacterLibraryProps> = ({
       return;
     }
 
-    if (!sessionId) {
-      toast.error('请先配置即梦 SESSION_ID');
-      return;
-    }
-
     if (isEdit) {
       setGeneratingForEdit(true);
     } else {
@@ -109,18 +96,14 @@ export const CharacterLibrary: React.FC<CharacterLibraryProps> = ({
     try {
       toast.info('正在生成图片，请稍候...', 3000);
       
-      const result = await generateJimengImages(
-        apiBaseUrl,
-        sessionId,
-        {
-          prompt: prompt.trim(),
-          num_images: 1,
-          width: 1080,
-          height: 1080, // 使用1:1比例生成角色图片
-          ratio: '1:1',
-          resolution: '2k'
-        }
-      );
+      const result = await generateJimengImages({
+        prompt: prompt.trim(),
+        num_images: 1,
+        width: 1080,
+        height: 1080,
+        ratio: '1:1',
+        resolution: '2k',
+      });
 
       if (result.success && result.data && result.data.length > 0) {
         const imageUrl = result.data[0].url;
@@ -343,9 +326,9 @@ export const CharacterLibrary: React.FC<CharacterLibraryProps> = ({
                     <button
                       type="button"
                       onClick={() => handleGenerateImage(false)}
-                      disabled={generatingImage || !sessionId}
+                      disabled={generatingImage}
                       className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:cursor-not-allowed text-white rounded-lg flex items-center gap-2 text-sm font-medium transition-all"
-                      title={!sessionId ? '请先配置即梦 SESSION_ID' : '使用即梦API生成图片'}
+                      title="使用即梦线上服务生成图片"
                     >
                       {generatingImage ? (
                         <>
@@ -501,9 +484,9 @@ export const CharacterLibrary: React.FC<CharacterLibraryProps> = ({
                         <button
                           type="button"
                           onClick={() => handleGenerateImage(true)}
-                          disabled={generatingForEdit || !sessionId}
+                          disabled={generatingForEdit}
                           className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:cursor-not-allowed text-white rounded text-sm font-medium transition-all flex items-center gap-1"
-                          title={!sessionId ? '请先配置即梦 SESSION_ID' : '使用即梦API生成图片'}
+                          title="使用即梦线上服务生成图片"
                         >
                           {generatingForEdit ? (
                             <Loader2 size={14} className="animate-spin" />

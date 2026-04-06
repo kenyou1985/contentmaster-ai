@@ -9,8 +9,143 @@ export interface ImageGenerationOptions {
   size?: string;
   quality?: string;
   n?: number;
-  /** data:image/*;base64,... 参考图，可多张（经 Yunwu Gemini 原生 generateContent 多模态） */
+  /** 参考图：支持 data URL、blob:、http(s):（发请求前会规范为 data URL，供 Gemini inline / OpenAI vision） */
   referenceDataUrls?: string[];
+  /** 有参考图时，多模态首条说明（Gemini generateContent）；不传则用封面缩略图专用英文锚定文案 */
+  referenceMultimodalPreamble?: string;
+  /** 有参考图时，角色名称（用于增强 chat/vision 端 IDENTITY LOCK 提示词） */
+  characterName?: string;
+}
+
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result as string);
+    r.onerror = () => reject(new Error('读取图片数据失败'));
+    r.readAsDataURL(blob);
+  });
+}
+
+/** 将各类图片地址转为 data URL，供 Gemini inlineData / chat vision 使用 */
+/** Grok vision 参考图过大易超时/失败：限制长边像素（仅浏览器环境生效） */
+async function downscaleDataUrlMaxSide(dataUrl: string, maxSide: number): Promise<string> {
+  if (!/^data:image\//i.test(dataUrl) || typeof Image === 'undefined') return dataUrl;
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const w = img.naturalWidth || img.width;
+        const h = img.naturalHeight || img.height;
+        if (!w || !h || (w <= maxSide && h <= maxSide)) {
+          resolve(dataUrl);
+          return;
+        }
+        const scale = maxSide / Math.max(w, h);
+        const nw = Math.max(1, Math.round(w * scale));
+        const nh = Math.max(1, Math.round(h * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = nw;
+        canvas.height = nh;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(dataUrl);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, nw, nh);
+        const mime = /^data:image\/png/i.test(dataUrl) ? 'image/png' : 'image/jpeg';
+        resolve(
+          mime === 'image/png' ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.88)
+        );
+      } catch {
+        resolve(dataUrl);
+      }
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+async function downscaleReferenceDataUrlsForVision(urls: string[], maxSide: number): Promise<string[]> {
+  return Promise.all(urls.map((u) => downscaleDataUrlMaxSide(u, maxSide)));
+}
+
+function parseGrokChatImageResults(data: any): string[] {
+  const imageUrls: string[] = [];
+  if (Array.isArray(data.data)) {
+    for (const item of data.data) {
+      if (typeof item === 'string') {
+        imageUrls.push(item);
+        continue;
+      }
+      if (item?.url) imageUrls.push(String(item.url));
+      else if (item?.b64_json) {
+        const b = String(item.b64_json);
+        imageUrls.push(b.startsWith('data:') ? b : `data:image/png;base64,${b}`);
+      }
+    }
+  }
+  for (const choice of data.choices ?? []) {
+    const content = choice?.message?.content;
+    if (Array.isArray(content)) {
+      for (const part of content) {
+        const u = part?.image_url?.url || part?.url;
+        if (typeof u === 'string' && (u.startsWith('http') || u.startsWith('data:image'))) {
+          imageUrls.push(u);
+        }
+      }
+      continue;
+    }
+    const str = typeof content === 'string' ? content : '';
+    for (const m of str.matchAll(/!\[.*?\]\((https?:\/\/[^\s\)]+)\)/g)) {
+      imageUrls.push(m[1]);
+    }
+    for (const m of str.matchAll(/data:image\/[a-z+]+;base64,[A-Za-z0-9+/=]+/gi)) {
+      imageUrls.push(m[0]);
+    }
+    if (!imageUrls.length) {
+      for (const u of str.match(/https?:\/\/[^\s\)"'<>]+/g) ?? []) {
+        const t = u.replace(/[),;<>]+$/, '');
+        if (
+          /\.(jpg|jpeg|png|gif|webp)(\?|$)/i.test(t) ||
+          /\/grok\/|\.r2\.dev\/|\/cdn\./i.test(t) ||
+          /i\.imgur\.com/i.test(t)
+        ) {
+          imageUrls.push(t);
+        }
+      }
+    }
+  }
+  const rp = data.revised_prompt;
+  if (typeof rp === 'string') {
+    imageUrls.push(...(rp.match(/https?:\/\/[^\s\)"'<>]+/g) ?? []));
+  }
+  const flat = imageUrls
+    .map((u) => String(u).trim().replace(/[),;<>]+$/, ''))
+    .filter((u) => u.startsWith('http') || u.startsWith('data:image'));
+  return [...new Set(flat)];
+}
+
+export async function normalizeReferenceDataUrls(urls: string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const u of urls) {
+    const raw = u?.trim();
+    if (!raw) continue;
+    if (raw.startsWith('data:')) {
+      out.push(raw);
+      continue;
+    }
+    try {
+      const res = await fetch(raw);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      out.push(await blobToDataUrl(blob));
+    } catch (e) {
+      console.error('[YunwuService] 参考图加载失败:', raw.slice(0, 96), e);
+      throw new Error('无法加载参考图，请使用本地上传或确保图片链接可访问（含 blob / 跨域）');
+    }
+  }
+  return out;
 }
 
 /** 封面设计 Tab：主模型失败时自动切换备用 */
@@ -18,21 +153,28 @@ export const COVER_GEMINI_IMAGE_MODEL = 'cover-gemini-flash' as const;
 const COVER_GEMINI_PRIMARY = 'gemini-3.1-flash-image-preview';
 const COVER_GEMINI_FALLBACK = 'gemini-2.5-flash-image-preview';
 
-function buildGeminiNativeImageParts(
-  prompt: string,
-  referenceDataUrls?: string[]
-): { parts: Record<string, unknown>[] } {
-  const parts: Record<string, unknown>[] = [];
-  if (referenceDataUrls?.length) {
-    parts.push({
-      text: `You will generate ONE YouTube thumbnail with the aspect ratio stated in the composition brief below. Below this message come ${referenceDataUrls.length} reference image(s) IN ORDER: Image 1, Image 2, ...
+const DEFAULT_GEMINI_REF_PREAMBLE_THUMBNAIL = `You will generate ONE YouTube thumbnail with the aspect ratio stated in the composition brief below. Below this message come REF_COUNT_PLACEHOLDER reference image(s) IN ORDER: Image 1, Image 2, ...
 
 IDENTITY LOCK (highest priority — overrides any generic wording in the brief):
 - Reproduce the SAME human as in the references: hair length/shape, face silhouette, clothing, proportions. Do NOT substitute a random man/woman or "faceless" placeholder if the ref shows a specific character design.
 - If the references show a pet or other animal, reproduce the same species, markings, and silhouette. If the references show NO animal, do NOT add a dog, cat, or pet — keep only what appears in the refs plus the composition brief.
 - Keep the same illustration / photo language as the references (line weight, color blocks, or photographic look).
 
-After the reference image parts, a COMPOSITION BRIEF follows — follow it for layout, text, arrows, and mood, but NEVER break the identity lock above.`,
+After the reference image parts, a COMPOSITION BRIEF follows — follow it for layout, text, arrows, and mood, but NEVER break the identity lock above.`;
+
+function buildGeminiNativeImageParts(
+  prompt: string,
+  referenceDataUrls?: string[],
+  multimodalPreamble?: string
+): { parts: Record<string, unknown>[] } {
+  const parts: Record<string, unknown>[] = [];
+  if (referenceDataUrls?.length) {
+    const n = referenceDataUrls.length;
+    const preambleText =
+      multimodalPreamble?.trim() ||
+      DEFAULT_GEMINI_REF_PREAMBLE_THUMBNAIL.replace(/REF_COUNT_PLACEHOLDER/g, String(n));
+    parts.push({
+      text: preambleText,
     });
     for (const url of referenceDataUrls) {
       const m = url.match(/^data:([^;]+);base64,(.+)$/);
@@ -41,12 +183,33 @@ After the reference image parts, a COMPOSITION BRIEF follows — follow it for l
       }
     }
     parts.push({
-      text: `COMPOSITION & TYPOGRAPHY BRIEF:\n${prompt}`,
+      text: `GENERATION BRIEF:\n${prompt}`,
     });
     return { parts };
   }
   parts.push({ text: prompt });
   return { parts };
+}
+
+/** OpenAI 兼容 chat：有参考图时用 vision 多段 content */
+function buildOpenAiVisionUserContent(
+  text: string,
+  referenceDataUrls?: string[],
+  characterName?: string
+): string | Array<{ type: string; text?: string; image_url?: { url: string } }> {
+  if (!referenceDataUrls?.length) return text;
+
+  const preamble = characterName
+    ? `CRITICAL: The character "${characterName}" appears in the attached reference image(s). You MUST reproduce this character's exact appearance — face shape, skin tone, hair style/color, clothing, accessories, and body proportions — in the generated image. Do NOT substitute a generic or different person/breed. Keep the same medium (photo, illustration, or 3D) as shown in the references unless the instructions explicitly demand otherwise.\n\nImage generation instructions:\n${text}`
+    : `Reference image(s) are attached in order. Preserve identity: for people match face shape, hair, and clothing; for animals match species, coat pattern, and body proportions; keep the same art medium (photo vs illustration) unless the instructions clearly require otherwise.\n\nImage generation instructions:\n${text}`;
+
+  const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [
+    { type: 'text', text: preamble },
+  ];
+  for (const url of referenceDataUrls) {
+    parts.push({ type: 'image_url', image_url: { url } });
+  }
+  return parts;
 }
 
 /** Gemini 原生图模：比例须在 imageConfig.aspectRatio，且需 responseModalities（顶层 aspectRatio 无效） */
@@ -110,10 +273,14 @@ async function yunwuGeminiNativeImageOnce(
   geminiModelId: string,
   options: ImageGenerationOptions
 ): Promise<GenerationResult> {
-  const { parts } = buildGeminiNativeImageParts(options.prompt, options.referenceDataUrls);
+  const { parts } = buildGeminiNativeImageParts(
+    options.prompt,
+    options.referenceDataUrls,
+    options.referenceMultimodalPreamble
+  );
   const endpoint = `/v1beta/models/${geminiModelId}:generateContent`;
   const body: Record<string, unknown> = {
-    contents: [{ parts }],
+    contents: [{ role: 'user', parts }],
     generationConfig: buildGeminiImageGenerationConfig(options),
   };
   const response = await fetch(`${baseUrl}${endpoint}`, {
@@ -192,18 +359,33 @@ export const generateImage = async (
 ): Promise<GenerationResult> => {
   try {
     const baseUrl = 'https://yunwu.ai';
-    
+
+    const opts: ImageGenerationOptions = {
+      ...options,
+      referenceDataUrls:
+        options.referenceDataUrls?.length && options.referenceDataUrls.length > 0
+          ? await normalizeReferenceDataUrls(options.referenceDataUrls)
+          : options.referenceDataUrls,
+    };
+
+    if (
+      (opts.model === 'grok-3-image' || opts.model === 'grok-4-image') &&
+      opts.referenceDataUrls?.length
+    ) {
+      opts.referenceDataUrls = await downscaleReferenceDataUrlsForVision(opts.referenceDataUrls, 1024);
+    }
+
     // sora_image 使用 chat/completions 端点
     // 注意：模型名称是 sora_image（下划线），不是 sora-image
-    if (options.model === 'sora-image' || options.model === 'sora_image') {
+    if (opts.model === 'sora-image' || opts.model === 'sora_image') {
       // 构建提示词：原提示词 + 【比例】
       // sora_image 只支持三种比例：1:1, 2:3, 3:2
-      let finalPrompt = options.prompt;
-      
+      let finalPrompt = opts.prompt;
+
       // 从 size 中提取比例（格式：widthxheight）
       let ratio = '1:1'; // 默认比例
-      if (options.size) {
-        const [width, height] = options.size.split('x').map(Number);
+      if (opts.size) {
+        const [width, height] = opts.size.split('x').map(Number);
         if (width && height) {
           // 计算最简比例
           const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
@@ -237,8 +419,8 @@ export const generateImage = async (
         messages: [
           {
             role: 'user',
-            content: finalPrompt
-          }
+            content: buildOpenAiVisionUserContent(finalPrompt, opts.referenceDataUrls),
+          },
         ],
         temperature: 0.7,
       };
@@ -258,23 +440,23 @@ export const generateImage = async (
         
         // 检查是否是"模型不可用"的错误
         if (errorMessage.includes('No available channels') || errorMessage.includes('not available')) {
-          throw new Error(`模型 "${options.model}" 在当前账户中不可用。\n\n可能原因：\n1. 该模型需要特殊权限或白名单\n2. 该模型暂未在您的账户中启用\n3. 当前账户余额不足或配额已用完\n\n建议：\n- 联系 yunwu.ai 客服确认模型可用性和账户权限\n- 或尝试使用其他视频生成模型`);
+          throw new Error(`模型 "${opts.model}" 在当前账户中不可用。\n\n可能原因：\n1. 该模型需要特殊权限或白名单\n2. 该模型暂未在您的账户中启用\n3. 当前账户余额不足或配额已用完\n\n建议：\n- 联系 yunwu.ai 客服确认模型可用性和账户权限\n- 或尝试使用其他视频生成模型`);
         }
-        
+
         throw new Error(errorMessage);
       }
-      
+
       const data = await response.json();
-      
+
       // 解析 chat/completions 响应格式
       // sora_image 返回的是 Markdown 格式的图片链接：![图片](url)
       let imageUrls: string[] = [];
-      
+
       if (data.choices && Array.isArray(data.choices)) {
         for (const choice of data.choices) {
           if (choice.message?.content) {
             const content = choice.message.content;
-            
+
             // 提取 Markdown 格式的图片链接：![图片](url) 或 ![alt](url)
             const markdownImagePattern = /!\[.*?\]\((https?:\/\/[^\s\)]+)\)/g;
             let match;
@@ -338,279 +520,104 @@ export const generateImage = async (
     }
 
     // 封面设计：Gemini Flash 图模，主模型失败则兜底备用模型
-    if (options.model === COVER_GEMINI_IMAGE_MODEL) {
+    if (opts.model === COVER_GEMINI_IMAGE_MODEL) {
       try {
-        return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, COVER_GEMINI_PRIMARY, options);
+        return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, COVER_GEMINI_PRIMARY, opts);
       } catch (primaryErr: any) {
         console.warn(
           '[YunwuService] 封面生图主模型失败，切换备用:',
           COVER_GEMINI_PRIMARY,
           primaryErr?.message
         );
-        return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, COVER_GEMINI_FALLBACK, options);
+        return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, COVER_GEMINI_FALLBACK, opts);
       }
     }
-    
-    // banana 和 banana-2 使用 Gemini 图片生成模型，需要使用 Google Gemini 原生端点
-    // banana -> gemini-2.5-flash-image
-    // banana-2 -> gemini-3-pro-image-preview
-    if (options.model === 'banana' || options.model === 'banana-2') {
-      const modelName = options.model === 'banana' 
-        ? 'gemini-2.5-flash-image' 
-        : 'gemini-3-pro-image-preview';
-      
-      // 使用 Google Gemini 原生格式端点
-      const endpoint = `/v1beta/models/${modelName}:generateContent`;
-      
-      // 构建 Gemini 格式的请求体
-      let body: any = {
-        contents: [
-          {
-            parts: [
-              {
-                text: options.prompt
-              }
-            ]
-          }
-        ]
-      };
-      
-      body.generationConfig = buildGeminiImageGenerationConfig(options);
-      
-      const response = await fetch(`${baseUrl}${endpoint}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(body),
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
-        const errorMessage = errorData.error?.message || `HTTP ${response.status}: ${response.statusText}`;
-        throw new Error(errorMessage);
-      }
-      
-      const data = await response.json();
-      
-      // 解析 Gemini 格式的响应
-      // Gemini 返回格式：{ candidates: [{ content: { parts: [{ inlineData: { data, mimeType } }] } }] }
-      let imageUrls: string[] = [];
-      
-      if (data.candidates && Array.isArray(data.candidates)) {
-        for (const candidate of data.candidates) {
-          if (candidate.content?.parts) {
-            for (const part of candidate.content.parts) {
-              // 检查是否有 inlineData（base64 图片）
-              if (part.inlineData?.data) {
-                // 如果是 base64，需要转换为 data URL 或上传到图床
-                // 这里先尝试查找 URL
-                const base64Data = part.inlineData.data;
-                const mimeType = part.inlineData.mimeType || 'image/png';
-                // 创建 data URL（注意：可能很大，建议上传到图床）
-                imageUrls.push(`data:${mimeType};base64,${base64Data}`);
-              }
-              // 检查是否有 URL
-              if (part.url) {
-                imageUrls.push(part.url);
-              }
-            }
-          }
-        }
-      }
-      
-      // 如果没找到，尝试从其他字段提取
-      if (imageUrls.length === 0) {
-        if (data.data && Array.isArray(data.data)) {
-          imageUrls = data.data.map((item: any) => item.url || item).filter(Boolean);
-        } else if (data.url) {
-          imageUrls = [data.url];
-        }
-      }
-      
-      if (imageUrls.length > 0) {
-        return {
-          success: true,
-          data: {
-            ...data,
-            data: imageUrls.map(url => ({ url }))
-          },
-          url: imageUrls[0],
-        };
-      }
-      
-      console.error('[YunwuService] Gemini 图片生成响应数据:', data);
-      throw new Error('无法从响应中提取图片URL，请检查响应格式');
+
+    // banana / banana-2：云雾 Gemini 原生 generateContent，支持 inlineData 参考图（文档示例：图生图 / 多图）
+    if (opts.model === 'banana' || opts.model === 'banana-2') {
+      const modelName =
+        opts.model === 'banana' ? 'gemini-2.5-flash-image' : 'gemini-3-pro-image-preview';
+      return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, modelName, opts);
     }
-    
-    // grok-3-image 和 grok-4-image 使用 chat/completions 端点（类似 sora-image）
-    if (options.model === 'grok-3-image' || options.model === 'grok-4-image') {
-      const modelName = options.model === 'grok-3-image' ? 'grok-3-image' : 'grok-4-image';
-      
-      // 使用 chat/completions 端点
+
+    // grok-3-image / grok-4-image：均走 chat/completions + vision 多段 content（云雾 images/generations 无参考图参数）
+    if (opts.model === 'grok-3-image' || opts.model === 'grok-4-image') {
+      const modelName = opts.model;
+      let finalPrompt = opts.prompt;
+      if (opts.size) {
+        const [w, h] = opts.size.split('x').map(Number);
+        if (w && h) {
+          const g = (a: number, b: number) => (b === 0 ? a : g(b, a % b));
+          const d = g(w, h);
+          finalPrompt = `${finalPrompt}【${w / d}:${h / d}】`;
+        }
+      }
       const endpoint = '/v1/chat/completions';
       const body = {
         model: modelName,
         messages: [
           {
             role: 'user',
-            content: options.prompt
-          }
+            content: buildOpenAiVisionUserContent(finalPrompt, opts.referenceDataUrls, opts.characterName),
+          },
         ],
         temperature: 0.7,
+        max_tokens: 4096,
       };
-      
-      const response = await fetch(`${baseUrl}${endpoint}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(body),
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
-        const errorMessage = errorData.error?.message || `HTTP ${response.status}: ${response.statusText}`;
-        throw new Error(errorMessage);
-      }
-      
-      const data = await response.json();
-      
-      // 解析 chat/completions 响应格式
-      // grok 系列返回的可能是 Markdown 格式的图片链接或 JSON
-      let imageUrls: string[] = [];
-      
-      if (data.choices && Array.isArray(data.choices)) {
-        for (const choice of data.choices) {
-          if (choice.message?.content) {
-            const content = choice.message.content;
-            
-            // 提取 Markdown 格式的图片链接：![图片](url)
-            const markdownImagePattern = /!\[.*?\]\((https?:\/\/[^\s\)]+)\)/g;
-            let match;
-            while ((match = markdownImagePattern.exec(content)) !== null) {
-              if (match[1]) {
-                imageUrls.push(match[1]);
-              }
-            }
-            
-            // 如果没有找到 Markdown 格式，尝试解析 JSON
-            if (imageUrls.length === 0) {
-              try {
-                const parsed = typeof content === 'string' ? JSON.parse(content) : content;
-                if (parsed.url) {
-                  imageUrls.push(parsed.url);
-                } else if (parsed.urls && Array.isArray(parsed.urls)) {
-                  imageUrls.push(...parsed.urls.filter(Boolean));
-                } else if (parsed.images && Array.isArray(parsed.images)) {
-                  imageUrls.push(...parsed.images.map((img: any) => img.url || img).filter(Boolean));
-                }
-              } catch {
-                // 如果不是 JSON，尝试直接提取 URL
-                const urlPattern = /https?:\/\/[^\s\)"']+\.(jpg|jpeg|png|gif|webp)/gi;
-                const matches = content.match(urlPattern);
-                if (matches) {
-                  imageUrls.push(...matches);
-                }
-              }
-            }
+      const grokAttempts = 3;
+      const grokRetryDelayMs = 2800;
+      let lastGrokErr: Error | null = null;
+      for (let attempt = 0; attempt < grokAttempts; attempt++) {
+        if (attempt > 0) {
+          await new Promise((r) => setTimeout(r, grokRetryDelayMs));
+        }
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 120_000);
+          const response = await fetch(`${baseUrl}${endpoint}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+          if (!response.ok) {
+            const err = await response.json().catch(() => ({ error: { message: response.statusText } }));
+            throw new Error(err.error?.message || err.message || `HTTP ${response.status}`);
           }
+          const data = await response.json();
+          console.log(`[YunwuService] ${opts.model} 响应:`, JSON.stringify(data).slice(0, 2000));
+          const clean = parseGrokChatImageResults(data);
+          if (clean.length > 0) {
+            const first = clean[0];
+            return {
+              success: true,
+              data: clean.map((url) => ({ url })),
+              url: first.startsWith('data:') ? first : first,
+            };
+          }
+          lastGrokErr = new Error('无法从响应中提取图片URL');
+          console.warn(`[YunwuService] ${opts.model} 第 ${attempt + 1} 次未解析到图片`);
+        } catch (e: any) {
+          lastGrokErr = e instanceof Error ? e : new Error(String(e?.message || e));
+          console.warn(`[YunwuService] ${opts.model} 第 ${attempt + 1} 次请求失败:`, lastGrokErr.message);
         }
       }
-      
-      // 如果从 choices 中提取到了图片，返回
-      if (imageUrls.length > 0) {
-        imageUrls = [...new Set(imageUrls)];
-        return {
-          success: true,
-          data: {
-            ...data,
-            data: imageUrls.map(url => ({ url }))
-          },
-          url: imageUrls[0],
-        };
-      }
-      
-      // 如果没找到，尝试从 data 的其他字段提取
-      if (data.data && Array.isArray(data.data)) {
-        imageUrls = data.data.map((item: any) => item.url || item).filter(Boolean);
-      } else if (data.url) {
-        imageUrls = [data.url];
-      } else if (data.image_url) {
-        imageUrls = [data.image_url];
-      } else if (data.images && Array.isArray(data.images)) {
-        imageUrls = data.images.map((img: any) => img.url || img).filter(Boolean);
-      }
-      
-      if (imageUrls.length > 0) {
-        return {
-          success: true,
-          data: {
-            ...data,
-            data: imageUrls.map(url => ({ url }))
-          },
-          url: imageUrls[0],
-        };
-      }
-      
-      console.error('[YunwuService] grok 图片生成响应数据:', data);
-      throw new Error('无法从响应中提取图片URL，请检查响应格式');
+      console.error(`[YunwuService] ${opts.model} 多次尝试后仍失败`, lastGrokErr);
+      throw lastGrokErr || new Error('Grok 生图失败');
     }
-    
-    // flux-1-kontext-dev 使用正确的模型名称 flux.1-kontext-dev
-    if (options.model === 'flux-1-kontext-dev') {
-      // 使用正确的模型名称（点号格式）
-      const modelName = 'flux.1-kontext-dev';
-      
-      // 使用 images/generations 端点
-      const endpoint = '/v1/images/generations';
-      let body: any = {
-        model: modelName,
-        prompt: options.prompt,
-      };
-      
-      // 添加可选参数
-      if (options.size) body.size = options.size;
-      if (options.quality) body.quality = options.quality;
-      if (options.n) body.n = options.n;
-      
-      const response = await fetch(`${baseUrl}${endpoint}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(body),
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
-        const errorMessage = errorData.error?.message || `HTTP ${response.status}: ${response.statusText}`;
-        throw new Error(errorMessage);
-      }
-      
-      const data = await response.json();
-      
-      return {
-        success: true,
-        data,
-        url: data.data?.[0]?.url || data.url,
-      };
-    }
-    
-    // 其他模型使用 images/generations 端点
+
+    // 其他模型使用 images/generations 端点（含 z-image-turbo 等 OpenAI 兼容图模）
     let endpoint = '/v1/images/generations';
     let body: any = {
-      model: options.model,
-      prompt: options.prompt,
+      model: opts.model,
+      prompt: opts.prompt,
     };
-    
+
     // 添加可选参数
-    if (options.size) body.size = options.size;
-    if (options.quality) body.quality = options.quality;
-    if (options.n) body.n = options.n;
+    if (opts.size) body.size = opts.size;
+    if (opts.quality) body.quality = opts.quality;
+    if (opts.n) body.n = opts.n;
     
     const response = await fetch(`${baseUrl}${endpoint}`, {
       method: 'POST',

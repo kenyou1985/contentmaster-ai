@@ -1,0 +1,17 @@
+{
+  "project_name": "ContentMaster_2026-04-05 1727_1",
+  "project_id": "C9243D0D-B6D3-4389-8EE2-0174D8EFE67E",
+  "update_time": 1775381332751404,
+  "fps": 30,
+  "video_out_height": 1024,
+  "video_out_width": 1536,
+  "timelines": [
+    {
+      "id": "4865E999-0092-444F-AC07-7E7769BFF278",
+      "duration": 5000000,
+      "fps": 30,
+      "width": 1536,
+      "height": 1024
+    }
+  ]
+}

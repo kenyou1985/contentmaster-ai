@@ -3,7 +3,7 @@
  * 用于显示和选择历史记录
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { HistoryRecord } from '../services/historyService';
 import { Clock, X, FileText, Trash2, Check } from 'lucide-react';
 
@@ -11,7 +11,10 @@ interface HistorySelectorProps {
   records: HistoryRecord[];
   onSelect: (record: HistoryRecord) => void;
   onClose: () => void;
-  onDelete?: (timestamp: number) => void;
+  /** 删除单条（需由父组件写入 localStorage 等持久层） */
+  onDelete?: (record: HistoryRecord) => void;
+  /** 一键清空当前列表对应的持久化数据 */
+  onClearAll?: () => void;
   title?: string;
 }
 
@@ -20,12 +23,16 @@ export const HistorySelector: React.FC<HistorySelectorProps> = ({
   onSelect,
   onClose,
   onDelete,
+  onClearAll,
   title = '历史记录',
 }) => {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
 
-  const formatTime = (timestamp: number): string => {
-    const date = new Date(timestamp);
+  const formatTime = (timestamp: number | undefined): string => {
+    const t =
+      typeof timestamp === 'number' && !Number.isNaN(timestamp) ? timestamp : Date.now();
+    const date = new Date(t);
+    if (Number.isNaN(date.getTime())) return '—';
     return date.toLocaleString('zh-CN', {
       year: 'numeric',
       month: '2-digit',
@@ -35,11 +42,10 @@ export const HistorySelector: React.FC<HistorySelectorProps> = ({
     });
   };
 
-  const getPreview = (content: string, maxLength: number = 100): string => {
-    if (content.length <= maxLength) {
-      return content;
-    }
-    return content.substring(0, maxLength) + '...';
+  const getPreview = (content: string | undefined | null, maxLength: number = 100): string => {
+    const s = content == null ? '' : String(content);
+    if (s.length <= maxLength) return s;
+    return s.substring(0, maxLength) + '...';
   };
 
   return (
@@ -49,17 +55,34 @@ export const HistorySelector: React.FC<HistorySelectorProps> = ({
         onClick={(e) => e.stopPropagation()}
       >
         {/* 头部 */}
-        <div className="flex items-center justify-between p-4 border-b border-slate-700">
-          <h3 className="text-lg font-semibold text-slate-200 flex items-center gap-2">
-            <Clock size={20} />
-            {title} ({records.length})
+        <div className="flex items-center justify-between p-4 border-b border-slate-700 gap-2">
+          <h3 className="text-lg font-semibold text-slate-200 flex items-center gap-2 min-w-0">
+            <Clock size={20} className="shrink-0" />
+            <span className="truncate">{title} ({records.length})</span>
           </h3>
-          <button
-            onClick={onClose}
-            className="text-slate-400 hover:text-slate-200 transition-colors"
-          >
-            <X size={20} />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {onClearAll && records.length > 0 && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (confirm(`确定清空全部 ${records.length} 条记录吗？此操作不可恢复。`)) {
+                    onClearAll();
+                  }
+                }}
+                className="text-xs px-2 py-1.5 rounded bg-red-900/50 text-red-200 hover:bg-red-800/60 border border-red-700/50"
+              >
+                清空全部
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-slate-400 hover:text-slate-200 transition-colors p-1"
+            >
+              <X size={20} />
+            </button>
+          </div>
         </div>
 
         {/* 历史记录列表 */}
@@ -82,13 +105,23 @@ export const HistorySelector: React.FC<HistorySelectorProps> = ({
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
                       <span className="text-xs text-slate-500">
                         {formatTime(record.timestamp)}
                       </span>
                       {record.metadata?.topic && (
-                        <span className="text-xs text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded">
-                          {record.metadata.topic}
+                        <span className="text-xs text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded inline-flex items-center gap-1.5 max-w-full">
+                          {record.metadata?.thumbUrl && (
+                            <img
+                              src={record.metadata.thumbUrl as string}
+                              alt=""
+                              className="h-6 w-6 rounded object-cover shrink-0 border border-emerald-500/30"
+                              onError={(e) => {
+                                (e.target as HTMLImageElement).style.display = 'none';
+                              }}
+                            />
+                          )}
+                          <span className="truncate">{record.metadata.topic}</span>
                         </span>
                       )}
                     </div>
@@ -106,8 +139,8 @@ export const HistorySelector: React.FC<HistorySelectorProps> = ({
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          if (confirm('确定要删除这条历史记录嗎？')) {
-                            onDelete(record.timestamp);
+                          if (confirm('确定要删除这条历史记录吗？')) {
+                            onDelete(record);
                           }
                         }}
                         className="text-red-400 hover:text-red-300 p-1"

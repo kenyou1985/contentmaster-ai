@@ -1,0 +1,87 @@
+{
+  "draft_id": "C9243D0D-B6D3-4389-8EE2-0174D8EFE67E",
+  "draft_name": "ContentMaster_2026-04-05 1727_1",
+  "duration": 5000000,
+  "create_time": 1775381332751404,
+  "update_time": 1775381332751404,
+  "fps": 30,
+  "videos": [],
+  "images": [],
+  "audios": [],
+  "texts": [],
+  "video_op_way": 0,
+  "draft_type": "",
+  "last_modified_app": "ContentMaster AI",
+  "timelines": [
+    {
+      "id": "4865E999-0092-444F-AC07-7E7769BFF278",
+      "duration": 5000000,
+      "fps": 30,
+      "width": 1536,
+      "height": 1024,
+      "type": "template",
+      "track_list": [
+        {
+          "id": "7F4AD5C9-1F30-40AC-B003-57FF11C9C5F1",
+          "type": 0,
+          "name": "视频",
+          "important": 1,
+          "height": 0,
+          "is_locked": false,
+          "is_visible": true
+        },
+        {
+          "id": "393DF7DB-FFB0-4F69-996B-1E1D6D08EDB1",
+          "type": 2,
+          "name": "文字",
+          "important": 0,
+          "height": 0,
+          "is_locked": false,
+          "is_visible": true
+        }
+      ],
+      "entity_list": {
+        "material_list": [],
+        "text_segments": [
+          {
+            "id": "E7E55770-1D6D-430B-A092-10E09D8E01E5",
+            "material_id": "53AB9065-7AFD-4A8E-9871-30B1A4BE00B4",
+            "track_id": "393DF7DB-FFB0-4F69-996B-1E1D6D08EDB1",
+            "target_timerange": {
+              "start": 0,
+              "duration": 5000000
+            },
+            "type": "text",
+            "text_content": {
+              "content": "test",
+              "font_name": "思源黑体",
+              "font_size": 60,
+              "bold": false,
+              "italic": false,
+              "color": "#FFFFFF",
+              "background_color": "#00000080",
+              "stroke_color": "#000000",
+              "stroke_width": 1.0,
+              "shadow_color": "#00000066",
+              "shadow_angle": 45.0,
+              "shadow_distance": 3.0,
+              "shadow_blur": 3.0,
+              "shadow_alpha": 0.5,
+              "alignment": 1,
+              "line_spacing": 1.2,
+              "text_background": false,
+              "text_background_radius": 4,
+              "text_background_padding_x": 10,
+              "text_background_padding_y": 6,
+              "text_background_corner_radius": 4,
+              "text_vertical": false
+            },
+            "style_id": "",
+            "effects": []
+          }
+        ],
+        "barrage_mask_list": []
+      }
+    }
+  ]
+}

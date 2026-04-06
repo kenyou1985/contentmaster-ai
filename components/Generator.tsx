@@ -38,7 +38,7 @@ import {
   type YiJingChapterPlan,
 } from '../services/yiJingParallelLongForm';
 import JSZip from 'jszip';
-import { saveHistory, getHistory, getHistoryKey, deleteHistory, HistoryRecord } from '../services/historyService';
+import { saveHistory, getHistory, getHistoryKey, deleteHistory, clearHistory, HistoryRecord } from '../services/historyService';
 import { HistorySelector } from './HistorySelector';
 import { useToast } from './Toast';
 import { ProgressBar } from './ProgressBar';
@@ -4776,11 +4776,18 @@ ${segmentSourceText}
             setShowHistorySelector(false);
             setPendingSubModeChange(null);
           }}
-          onDelete={(timestamp) => {
+          onDelete={(record) => {
             if (pendingSubModeChange) {
               const historyKey = getHistoryKeyForSubMode(pendingSubModeChange.niche, pendingSubModeChange.submode);
-              deleteHistory('generator', historyKey, timestamp);
+              deleteHistory('generator', historyKey, record.timestamp);
               setHistoryRecords(getHistory('generator', historyKey));
+            }
+          }}
+          onClearAll={() => {
+            if (pendingSubModeChange) {
+              const historyKey = getHistoryKeyForSubMode(pendingSubModeChange.niche, pendingSubModeChange.submode);
+              clearHistory('generator', historyKey);
+              setHistoryRecords([]);
             }
           }}
           title="脚本历史记录"

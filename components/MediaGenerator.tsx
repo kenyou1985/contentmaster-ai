@@ -1,26 +1,62 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { flushSync } from 'react-dom';
 import { ApiProvider, ToolMode, NicheType } from '../types';
 import { generateImage, ImageGenerationOptions } from '../services/yunwuService';
-import { generateTextToVideo, generateImageToVideo, checkVideoTaskStatus, DayuVideoGenerationOptions } from '../services/dayuVideoService';
 import { cacheVideo, getCachedVideoUrl, downloadVideo } from '../services/videoCacheService';
-import { generateImage as generateRunningHubImage, generateVideo as generateRunningHubVideo, checkTaskStatus as checkRunningHubTaskStatus, type RunningHubImageOptions, type RunningHubVideoOptions } from '../services/runninghubService';
+import {
+  generateImage as generateRunningHubImage,
+  generateVideo as generateRunningHubVideo,
+  checkTaskStatus as checkRunningHubTaskStatus,
+  generateAudio,
+  uploadAudioToRunningHub,
+  resolveRunningHubOutputUrl,
+  type RunningHubImageOptions,
+  type RunningHubVideoOptions,
+} from '../services/runninghubService';
+import { getSelectedVoice, updateVoice } from '../services/voiceLibraryService';
 import { LTX2_WORKFLOW_TEMPLATE } from '../services/ltx2WorkflowTemplate';
 import { generateJimengImages } from '../services/jimengService';
-import { detectCharactersInPrompt } from '../services/characterLibraryService';
+import { detectCharactersInPrompt, pickPrimaryCharacterForPrompt } from '../services/characterLibraryService';
 import { CharacterLibrary } from './CharacterLibrary';
-import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, FolderOpen, Rocket, Copy, Check, CheckSquare, Square, Users, HardDrive } from 'lucide-react';
+import { VoiceLibrary } from './VoiceLibrary';
+import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, FolderOpen, Rocket, Copy, Check, CheckSquare, Square, Users, HardDrive, ListOrdered, ArrowUp, Terminal } from 'lucide-react';
 import JSZip from 'jszip';
 import { HistorySelector } from './HistorySelector';
-import { getHistory, HistoryRecord } from '../services/historyService';
+import {
+  getHistory,
+  HistoryRecord,
+  deleteHistory,
+  clearHistory,
+  deleteScriptHistoryLegacyItem,
+  clearScriptHistoryLegacy,
+  removeLastGeneratedScriptIfContentEquals,
+  clearLastGeneratedScript,
+  LAST_GENERATED_SCRIPT_TIMELINE_TS,
+} from '../services/historyService';
 import { useToast } from './Toast';
 import { ProgressBar } from './ProgressBar';
+import { exportJianyingDraft, JianyingShot } from '../services/jianyingExportService';
+import { loadOneClickQueue, saveOneClickQueue, newQueueTaskId, newOneshotTaskId, OneClickQueueTask, OneClickTaskSnapshot } from '../services/oneClickTaskQueue';
+import { COVER_STYLE_PRESETS } from '../services/coverStylePresets';
+import {
+  generateMediaSnapshotId,
+  listMediaProjects,
+  deleteMediaProject,
+  clearAllMediaProjects,
+  saveMediaProjectSnapshot,
+  getMediaProject,
+  shotsHaveGeneratedMedia,
+  mediaFingerprint,
+  persistedShotToShot,
+  type MediaProjectRecord,
+} from '../services/mediaProjectHistoryService';
 
 interface MediaGeneratorProps {
-  apiKey: string; // 全局API Key（当provider是runninghub时，这就是RunningHub API Key）
+  apiKey: string;
   provider: ApiProvider;
   toast?: ReturnType<typeof useToast>;
-  dayuApiKey?: string; // 大洋芋 API Key（用于视频生成）
-  setDayuApiKey?: (key: string) => void; // 设置大洋芋 API Key
+  runningHubApiKey?: string;
+  setRunningHubApiKey?: (key: string) => void;
 }
 
 // 镜头数据接口
@@ -33,6 +69,9 @@ interface Shot {
   shotType: string;
   voiceOver: string;
   soundEffect: string;
+  /** RunningHub TTS 生成的配音试听地址 */
+  voiceAudioUrl?: string;
+  voiceGenerating?: boolean;
   imageUrls?: string[]; // 支持多张图片
   videoUrl?: string; // 保留向后兼容（显示第一个视频）
   videoUrls?: string[]; // 支持多个视频（追加模式）
@@ -45,37 +84,106 @@ interface Shot {
   selectedImageIndex?: number; // 选中的图片索引（-1 表示未选中）
 }
 
-// 图片模型配置（根据yunwu.ai文档）
+function shotsToPersistPayloadFromShots(list: Shot[]) {
+  return list.map((s) => ({
+    id: s.id,
+    number: s.number,
+    caption: s.caption,
+    imagePrompt: s.imagePrompt,
+    videoPrompt: s.videoPrompt,
+    shotType: s.shotType,
+    voiceOver: s.voiceOver,
+    soundEffect: s.soundEffect,
+    imageUrls: s.imageUrls,
+    videoUrl: s.videoUrl,
+    videoUrls: s.videoUrls,
+    voiceoverAudioUrl: s.voiceAudioUrl,
+    selected: s.selected,
+    selectedImageIndex: s.selectedImageIndex,
+  }));
+}
+
+function normalizePersistedMediaUrl(u: string | undefined): string | undefined {
+  if (!u || typeof u !== 'string') return undefined;
+  const t = u.trim();
+  if (!t) return undefined;
+  if (/^(https?:|data:|blob:)/i.test(t)) return t;
+  return resolveRunningHubOutputUrl(t);
+}
+
+function normalizeRestoredShotsMediaUrls(list: Shot[]): Shot[] {
+  return list.map((shot) => {
+    const imgs = shot.imageUrls
+      ?.map((x) => normalizePersistedMediaUrl(x))
+      .filter((x): x is string => !!x);
+    const vids = shot.videoUrls
+      ?.map((x) => normalizePersistedMediaUrl(x))
+      .filter((x): x is string => !!x);
+    return {
+      ...shot,
+      imageUrls: imgs?.length ? imgs : undefined,
+      videoUrl: normalizePersistedMediaUrl(shot.videoUrl),
+      videoUrls: vids?.length ? vids : undefined,
+      voiceAudioUrl: normalizePersistedMediaUrl(shot.voiceAudioUrl),
+    };
+  });
+}
+
+function restoredShotsFromProject(shots: MediaProjectRecord['shots']): Shot[] {
+  const raw = shots.map((row) => {
+    const p = persistedShotToShot(row);
+    return {
+      id: p.id,
+      number: p.number,
+      caption: p.caption,
+      imagePrompt: p.imagePrompt,
+      videoPrompt: p.videoPrompt,
+      shotType: p.shotType,
+      voiceOver: p.voiceOver,
+      soundEffect: p.soundEffect,
+      voiceAudioUrl: p.voiceoverAudioUrl,
+      imageUrls: p.imageUrls,
+      videoUrl: p.videoUrl,
+      videoUrls: p.videoUrls,
+      cachedVideoUrl: p.cachedVideoUrl,
+      cachedVideoUrls: p.cachedVideoUrls,
+      selected: p.selected,
+      selectedImageIndex: p.selectedImageIndex,
+      imageGenerating: false,
+      videoGenerating: false,
+      voiceGenerating: false,
+      editing: false,
+    };
+  });
+  return normalizeRestoredShotsMediaUrls(raw);
+}
+
+function firstPersistedShotPreviewImageUrl(project: MediaProjectRecord): string | undefined {
+  const sh0 = project.shots?.[0];
+  if (!sh0?.imageUrls?.length) return undefined;
+  const idx =
+    sh0.selectedImageIndex != null &&
+    sh0.selectedImageIndex >= 0 &&
+    sh0.selectedImageIndex < sh0.imageUrls.length
+      ? sh0.selectedImageIndex
+      : 0;
+  const u = sh0.imageUrls[idx] ?? sh0.imageUrls[0];
+  return normalizePersistedMediaUrl(u);
+}
+
+// 图片模型配置（仅保留指定模型）
 const IMAGE_MODELS = [
-  { id: 'dall-e-3', name: 'DALL·E 3', endpoint: '/v1/images/generations', supportsImageToImage: false },
-  { id: 'sora-image', name: 'Sora Image', endpoint: '/v1/chat/completions', supportsImageToImage: false }, // 使用 chat/completions
+  { id: 'sora-image', name: 'Sora Image', endpoint: '/v1/chat/completions', supportsImageToImage: false },
   { id: 'banana', name: 'Banana (Gemini 2.5 Flash)', endpoint: '/v1/images/generations', apiModelName: 'gemini-2.5-flash-image', supportsImageToImage: false },
   { id: 'banana-2', name: 'Banana 2 (Gemini 3 Pro)', endpoint: '/v1/images/generations', apiModelName: 'gemini-3-pro-image-preview', supportsImageToImage: false },
-  { id: 'flux-1-kontext-dev', name: 'Flux 1 Kontext Dev', endpoint: '/v1/images/generations', apiModelName: 'flux.1-kontext-dev', supportsImageToImage: false }, // 注意：API 名称使用点号
-  { id: 'grok-3-image', name: 'Grok 3 Image', endpoint: '/v1/chat/completions', supportsImageToImage: false }, // 使用 chat/completions
-  { id: 'grok-4-image', name: 'Grok 4 Image', endpoint: '/v1/chat/completions', supportsImageToImage: false }, // 使用 chat/completions
-  { id: 'jimeng', name: '即梦 (Jimeng)', endpoint: 'jimeng', isJimeng: true, supportsImageToImage: true }, // 即梦模型，支持图生图
-  // RunningHub 开源模型
-  { id: 'runninghub-flux', name: 'RunningHub - Flux', endpoint: 'runninghub', isRunningHub: true, runningHubModel: 'flux', supportsImageToImage: true },
-  { id: 'runninghub-z-image', name: 'RunningHub - Z-Image', endpoint: 'runninghub', isRunningHub: true, runningHubModel: 'z-image', supportsImageToImage: true },
-  { id: 'runninghub-qwen-image', name: 'RunningHub - Qwen-Image', endpoint: 'runninghub', isRunningHub: true, runningHubModel: 'qwen-image', supportsImageToImage: true },
+  { id: 'grok-3-image', name: 'Grok 3 Image', endpoint: '/v1/chat/completions', supportsImageToImage: false },
+  { id: 'grok-4-image', name: 'Grok 4 Image', endpoint: '/v1/chat/completions', supportsImageToImage: false },
+  { id: 'jimeng', name: '即梦 (Jimeng)', endpoint: 'jimeng', isJimeng: true, supportsImageToImage: true },
 ];
 
-// 视频模型配置（根据大洋芋 API 文档：https://6ibmqmipvf.apifox.cn/）
+// 视频模型配置（仅 RunningHub）
 const VIDEO_MODELS = [
-  // 普通模式（3-5分钟，生产力）
-  { id: 'sora2-landscape', name: 'Sora 2 横屏 10秒', duration: 10, supportedDurations: [10], defaultSize: '1080P', supportedSizes: ['720P', '1080P'], orientation: 'landscape' },
-  { id: 'sora2-portrait', name: 'Sora 2 竖屏 10秒', duration: 10, supportedDurations: [10], defaultSize: '1080P', supportedSizes: ['720P', '1080P'], orientation: 'portrait' },
-  { id: 'sora2-landscape-15s', name: 'Sora 2 横屏 15秒', duration: 15, supportedDurations: [15], defaultSize: '1080P', supportedSizes: ['720P', '1080P'], orientation: 'landscape' },
-  { id: 'sora2-portrait-15s', name: 'Sora 2 竖屏 15秒', duration: 15, supportedDurations: [15], defaultSize: '1080P', supportedSizes: ['720P', '1080P'], orientation: 'portrait' },
-  // Pro 模式（15-30分钟，创作）
-  { id: 'sora2-pro-landscape-25s', name: 'Sora 2 Pro 横屏 25秒', duration: 25, supportedDurations: [25], defaultSize: '1080P', supportedSizes: ['1080P'], orientation: 'landscape' },
-  { id: 'sora2-pro-portrait-25s', name: 'Sora 2 Pro 竖屏 25秒', duration: 25, supportedDurations: [25], defaultSize: '1080P', supportedSizes: ['1080P'], orientation: 'portrait' },
-  { id: 'sora2-pro-portrait-hd-15s', name: 'Sora 2 Pro 竖屏 HD 15秒', duration: 15, supportedDurations: [15], defaultSize: '1080P', supportedSizes: ['1080P'], orientation: 'portrait' },
-  { id: 'sora2-pro-landscape-hd-15s', name: 'Sora 2 Pro 横屏 HD 15秒', duration: 15, supportedDurations: [15], defaultSize: '1080P', supportedSizes: ['1080P'], orientation: 'landscape' },
-  // RunningHub 开源模型
-  { id: 'runninghub-wan2.2', name: 'RunningHub - Wan2.2', duration: 10, supportedDurations: [5, 10, 15], defaultSize: '720P', supportedSizes: ['720P'], orientation: 'landscape', isRunningHub: true },
-  // LTX-2 模型
+  { id: 'runninghub-wan2.2', name: 'RunningHub - Wan2.2', duration: 5, supportedDurations: [5, 10, 15], defaultSize: '720P', supportedSizes: ['720P'], orientation: 'landscape', isRunningHub: true },
   { id: 'runninghub-ltx2', name: 'RunningHub - LTX-2 (10s)', duration: 10, supportedDurations: [10], defaultSize: '720P', supportedSizes: ['720P'], orientation: 'landscape', isRunningHub: true, isLtx2: true },
 ];
 
@@ -95,48 +203,41 @@ const IMAGE_RATIOS = [
   { id: 'dall-e-3-landscape', name: 'DALL-E 3 横屏 (1792x1024)', width: 1792, height: 1024, dallE3Supported: true, soraImageSupported: false },
 ];
 
-// 风格库配置
+// 风格设置：与封面设计「画面风格」共用 COVER_STYLE_PRESETS（英文 prompt 追加到生图提示词）
 const STYLE_LIBRARY = [
   { id: 'none', name: '无风格（使用原提示词）', prompt: '' },
-  { id: 'anime', name: '二次元风格', prompt: 'anime style, 2D animation, Japanese animation' },
-  { id: 'cg-animation', name: 'CG动画', prompt: 'CG animation, 3D rendered, computer graphics' },
-  { id: 'photographic', name: '摄影风格', prompt: 'photographic style, professional photography, realistic' },
-  { id: 'real-photography', name: '真实摄影', prompt: 'real photography, high quality, professional camera shot' },
-  { id: 'cinematic', name: '电影风格', prompt: 'cinematic style, movie quality, dramatic lighting' },
-  { id: 'illustration', name: '插画风格', prompt: 'illustration style, artistic, hand-drawn' },
+  ...COVER_STYLE_PRESETS.map((s) => ({ id: s.id, name: s.label, prompt: s.promptEn })),
 ];
+
+// 辅助函数：时间戳字符串
+const tsStr = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+};
+
+// 一键成片草稿名称
+const buildPipelineDraftName = () => `OC_${tsStr()}`;
+// 队列任务草稿名称
+const buildQueueDraftName = () => `Q_${tsStr()}`;
 
 export const MediaGenerator: React.FC<MediaGeneratorProps> = ({ 
   apiKey, 
   provider, 
   toast: externalToast,
-  dayuApiKey: externalDayuApiKey,
-  setDayuApiKey: externalSetDayuApiKey,
+  runningHubApiKey: externalRunningHubKey,
+  setRunningHubApiKey: externalSetRunningHubKey,
 }) => {
   const internalToast = useToast();
   const toast = externalToast || internalToast;
-  
-  // 大洋芋 API Key 状态（用于视频生成）
-  const [dayuApiKey, setDayuApiKey] = useState(() => {
-    return localStorage.getItem('DAYU_API_KEY') || externalDayuApiKey || '';
+
+  // RunningHub API Key（独立持久化，配音/视频随时可用）
+  const [runningHubApiKey, setRunningHubApiKey] = useState(() => {
+    return localStorage.getItem('RUNNINGHUB_API_KEY') || externalRunningHubKey || '';
   });
-  
-  // 同步外部 API Key（如果提供）
   useEffect(() => {
-    if (externalDayuApiKey !== undefined) {
-      setDayuApiKey(externalDayuApiKey);
-    }
-  }, [externalDayuApiKey]);
-  
-  // 保存到 localStorage
-  useEffect(() => {
-    if (dayuApiKey) {
-      localStorage.setItem('DAYU_API_KEY', dayuApiKey);
-      if (externalSetDayuApiKey) {
-        externalSetDayuApiKey(dayuApiKey);
-      }
-    }
-  }, [dayuApiKey, externalSetDayuApiKey]);
+    if (runningHubApiKey) localStorage.setItem('RUNNINGHUB_API_KEY', runningHubApiKey);
+    if (externalSetRunningHubKey) externalSetRunningHubKey(runningHubApiKey);
+  }, [runningHubApiKey, externalSetRunningHubKey]);
 
   // 即梦 API 配置状态
   // 默认使用3030端口（简化方案，直接调用Node.js即梦API服务）
@@ -147,11 +248,12 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     return localStorage.getItem('JIMENG_SESSION_ID') || '';
   });
   
-  // RunningHub API Key：从全局apiKey获取（当provider是runninghub时）
-  const runningHubApiKey = provider === 'runninghub' ? apiKey : '';
-  
   // 角色库管理
   const [showCharacterLibrary, setShowCharacterLibrary] = useState(false);
+  const [showVoiceLibrary, setShowVoiceLibrary] = useState(false);
+  /** 语音库选中项变化时递增，驱动主界面显示当前音色名 */
+  const [voiceLibraryEpoch, setVoiceLibraryEpoch] = useState(0);
+  const selectedVoiceForUi = useMemo(() => getSelectedVoice(), [voiceLibraryEpoch]);
   
   // 保存即梦配置到 localStorage
   useEffect(() => {
@@ -168,9 +270,12 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   
   const [scriptText, setScriptText] = useState('');
   const [shots, setShots] = useState<Shot[]>([]);
-  const [selectedImageModel, setSelectedImageModel] = useState(IMAGE_MODELS[0].id);
+  /** 避免一键成片/队列 pipeline 内 await 后仍读到旧的 shots 闭包（误判「未生成出图片」） */
+  const shotsRef = useRef<Shot[]>(shots);
+  shotsRef.current = shots;
+  const [selectedImageModel, setSelectedImageModel] = useState('banana');
   const [selectedVideoModel, setSelectedVideoModel] = useState(VIDEO_MODELS[0].id);
-  const [selectedImageRatio, setSelectedImageRatio] = useState(IMAGE_RATIOS[2].id); // 默认9:16
+  const [selectedImageRatio, setSelectedImageRatio] = useState('16:9'); // 默认横屏 16:9
   const [selectedStyle, setSelectedStyle] = useState(STYLE_LIBRARY[0].id);
   // 视频参数设置
   const [selectedVideoSize, setSelectedVideoSize] = useState<string>(VIDEO_MODELS[0]?.defaultSize || '1080P');
@@ -190,9 +295,509 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const [generateImageCount, setGenerateImageCount] = useState(1); // 每次生成的图片数量
   const [showScriptHistorySelector, setShowScriptHistorySelector] = useState(false);
   const [scriptHistoryRecords, setScriptHistoryRecords] = useState<HistoryRecord[]>([]);
+  /** 当前弹窗来源：脚本聚合列表 vs 媒体快照列表（删除/清空逻辑不同） */
+  const [historySelectorKind, setHistorySelectorKind] = useState<'script' | 'media' | null>(null);
   
   // 批量操作进度
-  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; type: 'image' | 'video' } | null>(null);
+  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; type: 'image' | 'video' | 'voice' } | null>(null);
+
+  // ==================== 一键成片 & 队列相关 State ====================
+  // 一键成片执行状态
+  const [oneClickRunning, setOneClickRunning] = useState(false);
+  const [oneClickPipelineProgress, setOneClickPipelineProgress] = useState<string>('');
+  /** 一键成片：是否生成视频（导出剪映仍会执行，仅无视频轨道） */
+  const [oneClickPipelineMode, setOneClickPipelineMode] = useState<'image_audio_video' | 'image_audio_only'>('image_audio_video');
+
+  // Workspace Tab 系统
+  // 'main' = 当前编辑器，'oc_<id>' = 一键成片任务，'q_<id>' = 队列任务
+  const [activeWorkspaceTabId, setActiveWorkspaceTabId] = useState<string>('main');
+  const [queueWorkspaceTabIds, setQueueWorkspaceTabIds] = useState<string[]>([]);
+  // 队列任务预览用的本地 shots 快照（只读模式）
+  const [queuePreviewLocalShots, setQueuePreviewLocalShots] = useState<Shot[] | null>(null);
+  // tableShots: 根据当前 tab 决定使用 live shots 还是 queue preview shots
+  const tableShots = activeWorkspaceTabId === 'main' ? shots : (queuePreviewLocalShots || []);
+
+  // Workspace Tab 元数据
+  const [queueTabMeta, setQueueTabMeta] = useState<Record<string, { name: string; taskType: 'oneshot' | 'queue' }>>({});
+  const [queueTabIsLiveRun, setQueueTabIsLiveRun] = useState<Record<string, boolean>>({});
+
+  // 终端日志
+  const TERMINAL_LOG_STORAGE_KEY = 'ContentMaster_TerminalLogs';
+  const [terminalLogs, setTerminalLogs] = useState<Array<{ id: string; time: string; tag: string; message: string }>>(() => {
+    try {
+      const stored = localStorage.getItem(TERMINAL_LOG_STORAGE_KEY);
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+  const terminalScrollRef = useRef<HTMLDivElement>(null);
+  const appendTerminalLog = (tag: string, message: string) => {
+    const entry = { id: `${Date.now()}_${Math.random().toString(36).slice(2)}`, time: tsStr(), tag, message };
+    setTerminalLogs(prev => {
+      const next = [...prev, entry];
+      try { localStorage.setItem(TERMINAL_LOG_STORAGE_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+    setTimeout(() => {
+      terminalScrollRef.current?.scrollTo({ top: terminalScrollRef.current.scrollHeight, behavior: 'smooth' });
+    }, 50);
+  };
+
+  const scriptTextRef = useRef(scriptText);
+  useEffect(() => {
+    scriptTextRef.current = scriptText;
+  }, [scriptText]);
+
+  /** 仅在有图/音/视频生成时写入历史；指纹相同则跳过（防抖合并短时间多次写入） */
+  const lastMediaHistorySignatureRef = useRef('');
+  const mediaHistoryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushMediaHistoryCommit = () => {
+    const payload = shotsToPersistPayloadFromShots(shotsRef.current);
+    if (!shotsHaveGeneratedMedia(payload)) return;
+    const sig = mediaFingerprint(payload);
+    if (sig === lastMediaHistorySignatureRef.current) return;
+    const id = generateMediaSnapshotId();
+    saveMediaProjectSnapshot({
+      id,
+      scriptText: scriptTextRef.current,
+      shots: payload,
+    });
+    lastMediaHistorySignatureRef.current = sig;
+    appendTerminalLog('History', `已记录媒体快照 ${id}`);
+  };
+  const scheduleMediaHistorySave = () => {
+    if (mediaHistoryTimerRef.current) clearTimeout(mediaHistoryTimerRef.current);
+    mediaHistoryTimerRef.current = setTimeout(() => {
+      mediaHistoryTimerRef.current = null;
+      flushMediaHistoryCommit();
+    }, 2000);
+  };
+
+  // Workspace Tab 操作
+  const openQueueTaskWorkspaceTab = (taskId: string, name: string, taskType: 'oneshot' | 'queue', isLiveRun = false) => {
+    setQueueTabMeta(prev => ({ ...prev, [taskId]: { name, taskType } }));
+    setQueueTabIsLiveRun(prev => ({ ...prev, [taskId]: isLiveRun }));
+    setQueueWorkspaceTabIds(prev => {
+      if (!prev.includes(taskId)) return [...prev, taskId];
+      return prev;
+    });
+    setActiveWorkspaceTabId(taskId);
+  };
+  const closeQueueTaskWorkspaceTab = (taskId: string) => {
+    setQueueWorkspaceTabIds(prev => prev.filter(id => id !== taskId));
+    setQueueTabMeta(prev => { const n = { ...prev }; delete n[taskId]; return n; });
+    setQueueTabIsLiveRun(prev => { const n = { ...prev }; delete n[taskId]; return n; });
+    setQueuePreviewLocalShots(null);
+    if (activeWorkspaceTabId === taskId) {
+      setActiveWorkspaceTabId('main');
+    }
+  };
+
+  // 队列任务状态（持久化）
+  const [oneClickQueueTasks, setOneClickQueueTasks] = useState<OneClickQueueTask[]>(() => loadOneClickQueue());
+  /** 主工作区标签：与队列历史中最新一键成片 oc_ 任务 ID 一致（无则显示「分镜编辑」） */
+  const mainWorkspaceTabTitle = useMemo(() => {
+    for (let i = oneClickQueueTasks.length - 1; i >= 0; i--) {
+      const t = oneClickQueueTasks[i];
+      if (t.type === 'oneshot') return t.id;
+    }
+    return '分镜编辑';
+  }, [oneClickQueueTasks]);
+  const [queueGloballyPaused, setQueueGloballyPaused] = useState(false);
+  const [queueProcessorRunning, setQueueProcessorRunning] = useState(false);
+  const queueGloballyPausedRef = useRef(false);
+  const queueRunnerBusyRef = useRef(false);
+  const activeQueueTaskIdRef = useRef<string | null>(null);
+
+  // 持久化队列
+  const persistQueue = (tasks: OneClickQueueTask[]) => {
+    setOneClickQueueTasks(tasks);
+    saveOneClickQueue(tasks);
+  };
+
+  // Queue Preview Sync: 当 active tab 是 queue task 时，实时同步 resultSnapshot
+  useEffect(() => {
+    if (activeWorkspaceTabId === 'main') { setQueuePreviewLocalShots(null); return; }
+    const taskId = activeWorkspaceTabId;
+    const task = oneClickQueueTasks.find(t => t.id === taskId);
+    if (task?.resultSnapshot) {
+      setQueuePreviewLocalShots(task.resultSnapshot.shots);
+    } else if (task?.snapshot) {
+      setQueuePreviewLocalShots(task.snapshot.shots);
+    }
+  }, [activeWorkspaceTabId, oneClickQueueTasks]);
+
+  // ==================== 剪映导出相关 State ====================
+  const [jianyingOutputDir, setJianyingOutputDir] = useState(() => localStorage.getItem('JIANYING_OUTPUT_DIR') || '');
+  const [jyRandomEffectBundle, setJyRandomEffectBundle] = useState(false);
+  const [jyRandomTransitions, setJyRandomTransitions] = useState(false);
+  const [jyRandomFilters, setJyRandomFilters] = useState(false);
+  const [isExportingToJianying, setIsExportingToJianying] = useState(false);
+
+  // shots 转 JianyingShot[]
+  const shotsToJianying = (sList: Shot[]): JianyingShot[] =>
+    sList.map((s) => {
+      const rawAudio = s.voiceAudioUrl?.trim();
+      const audioUrl =
+        rawAudio && !/^https?:|^data:|^blob:/i.test(rawAudio)
+          ? resolveRunningHubOutputUrl(rawAudio)
+          : rawAudio;
+      return {
+        caption: s.caption,
+        imagePrompt: s.imagePrompt,
+        imageUrl: s.imageUrls?.[s.selectedImageIndex ?? 0] || s.imageUrls?.[0],
+        videoPrompt: s.videoPrompt,
+        videoUrl: s.videoUrls?.[0] || s.videoUrl,
+        audioUrl,
+        voiceoverAudioUrl: audioUrl,
+      };
+    });
+
+  const performExportToJianying = async (exportShots: Shot[], exportDraftName: string, settings?: { randomEffectBundle?: boolean; randomTransitions?: boolean; randomFilters?: boolean }) => {
+    setIsExportingToJianying(true);
+    try {
+      const result = await exportJianyingDraft({
+        draftName: exportDraftName,
+        shots: shotsToJianying(exportShots),
+        outputPath: jianyingOutputDir || undefined,
+        randomTransitions: settings?.randomTransitions ?? jyRandomTransitions,
+        randomVideoEffects:
+          (settings?.randomEffectBundle ?? jyRandomEffectBundle) ||
+          (settings?.randomFilters ?? jyRandomFilters),
+      });
+      if (result.success) {
+        appendTerminalLog('Jianying', `导出成功: ${exportDraftName} → ${result.outputPath || jianyingOutputDir}`);
+        toast.success(`剪映草稿导出成功: ${result.outputPath || exportDraftName}`);
+      } else {
+        appendTerminalLog('Jianying', `导出失败: ${result.error}`);
+        toast.error(`导出失败: ${result.error}`);
+      }
+    } catch (err: any) {
+      appendTerminalLog('Jianying', `导出异常: ${err.message}`);
+      toast.error(`导出异常: ${err.message}`);
+    } finally {
+      setIsExportingToJianying(false);
+    }
+  };
+
+  const handleExportToJianying = async () => {
+    if (tableShots.length === 0) { toast.error('没有可导出的镜头'); return; }
+    await performExportToJianying(tableShots, buildPipelineDraftName());
+  };
+
+  // 补导出：针对已完成队列任务重新导出
+  const handleReexportJianyingForTask = async (taskId: string) => {
+    const task = oneClickQueueTasks.find(t => t.id === taskId);
+    if (!task) return;
+    const targetShots = task.resultSnapshot?.shots || task.snapshot?.shots || [];
+    if (targetShots.length === 0) { toast.error('没有可导出的数据'); return; }
+    const reexportName = task.type === 'oneshot'
+      ? `OC_${task.completedAt || tsStr()}`
+      : `Q_${task.completedAt || tsStr()}`;
+    await performExportToJianying(targetShots, reexportName);
+  };
+
+  // ==================== 一键成片 Pipeline 函数 ====================
+  const shotHasExportableVisual = (shot: Shot): boolean => {
+    return !!(shot.imageUrls?.length || shot.videoUrl || shot.videoUrls?.length);
+  };
+
+  const getLiveShot = (shotId: string): Shot | undefined => shotsRef.current.find(s => s.id === shotId);
+
+  // 核心 Pipeline：图片 → 配音 → 图生视频 → 导出剪映
+  const executeOneClickPipelineForTargets = async (
+    targetShotIds: string[],
+    exportDraftName: string,
+    taskId: string,
+    taskType: 'oneshot' | 'queue'
+  ) => {
+    const targetShots = targetShotIds.map(id => getLiveShot(id)).filter(Boolean) as Shot[];
+    if (targetShots.length === 0) {
+      appendTerminalLog('Pipeline', '没有可处理的镜头（请确认已加载队列快照或镜头 ID 一致）');
+      setOneClickQueueTasks((prev) => {
+        const tasks = prev.map((t) =>
+          t.id === taskId
+            ? { ...t, status: 'failed' as const, completedAt: tsStr(), progressNote: '无可处理镜头' }
+            : t
+        );
+        saveOneClickQueue(tasks);
+        return tasks;
+      });
+      toast.error('没有可处理的镜头');
+      return;
+    }
+
+    appendTerminalLog(
+      'Pipeline',
+      `[${taskType === 'oneshot' ? '一键成片' : '队列任务'}] 开始执行（每镜：图片与配音并行）…`
+    );
+
+    // Step 1+2 合并：每个镜头内「图片生成」与「配音」Promise.all 并行，镜与镜仍顺序执行（控并发）
+    let idx = 0;
+    for (const shot of targetShots) {
+      idx++;
+      const snap = getLiveShot(shot.id);
+      if (!snap) continue;
+
+      const needImage = !shotHasExportableVisual(snap) && !!snap.imagePrompt?.trim();
+      const voiceText = (snap.caption || snap.voiceOver || '').trim();
+      const needVoice = !!voiceText && !snap.voiceAudioUrl;
+
+      if (shotHasExportableVisual(snap)) {
+        appendTerminalLog('Pipeline', `镜头${snap.number}: 已有图片/视频，跳过图片生成`);
+      } else if (!snap.imagePrompt?.trim()) {
+        appendTerminalLog('ImageGen', `镜头${snap.number}: 无图片提示词，跳过`);
+      }
+      if (!voiceText) {
+        appendTerminalLog('Voice', `镜头${snap.number}: 无文案可配音，跳过`);
+      } else if (snap.voiceAudioUrl) {
+        appendTerminalLog('Voice', `镜头${snap.number}: 已有配音音频，跳过`);
+      }
+
+      if (!needImage && !needVoice) continue;
+
+      appendTerminalLog(
+        'Pipeline',
+        `镜头${snap.number}: 并行 — ${needImage ? '生成图' : '图跳过'} · ${needVoice ? '生成音' : '音跳过'}`
+      );
+
+      const runImage = async () => {
+        if (!needImage) return;
+        const num = snap.number;
+        setOneClickPipelineProgress(`并行图片 ${idx}/${targetShots.length} (镜头${num})`);
+        appendTerminalLog('ImageGen', `镜头${num}: 开始生成图片`);
+        let retries = 3;
+        while (retries > 0) {
+          try {
+            const live = getLiveShot(shot.id);
+            if (!live) break;
+            if (shotHasExportableVisual(live)) {
+              appendTerminalLog('ImageGen', `镜头${live.number}: 已有图片，跳过`);
+              break;
+            }
+            await handleGenerateImage(live, false);
+            const afterImg = getLiveShot(shot.id);
+            if (!afterImg?.imageUrls?.length) throw new Error('未生成出图片');
+            appendTerminalLog('ImageGen', `镜头${num}: 图片生成完成`);
+            break;
+          } catch (err: any) {
+            retries--;
+            appendTerminalLog('ImageGen', `镜头${num}: 生成失败 (${err.message}), 剩余${retries}次`);
+            if (retries === 0) {
+              updateShot(shot.id, { imageGenerating: false });
+              toast.error(`镜头${num}图片生成失败`);
+            } else {
+              await new Promise(r => setTimeout(r, 3000));
+            }
+          }
+        }
+      };
+
+      const runVoice = async () => {
+        if (!needVoice) return;
+        const live = getLiveShot(shot.id);
+        if (!live) return;
+        const num = live.number;
+        setOneClickPipelineProgress(`并行配音 ${idx}/${targetShots.length} (镜头${num})`);
+        appendTerminalLog('Voice', `镜头${num}: 生成配音中`);
+        try {
+          await synthesizeVoiceForShot(live, { playAfter: false });
+          appendTerminalLog('Voice', `镜头${num}: 配音生成完成`);
+        } catch (e: any) {
+          appendTerminalLog('Voice', `镜头${num}: 配音失败 ${e.message || e}`);
+        }
+      };
+
+      await Promise.all([runImage(), runVoice()]);
+    }
+
+    // Step 3: 视频（与单镜头相同逻辑 + RunningHub 轮询）
+    if (oneClickPipelineMode === 'image_audio_only') {
+      appendTerminalLog('Pipeline', '一键成片设置：仅图片+音频，已跳过视频生成');
+    } else {
+      for (const shot of targetShots) {
+        const current = getLiveShot(shot.id);
+        if (!current) continue;
+        if (current.videoUrl || current.videoUrls?.length) {
+          appendTerminalLog('VideoGen', `镜头${current.number}: 已有视频，跳过`);
+          continue;
+        }
+        if (!current.videoPrompt?.trim()) {
+          appendTerminalLog('VideoGen', `镜头${current.number}: 无视频提示词，跳过`);
+          continue;
+        }
+        setOneClickPipelineProgress(`生成视频 ${targetShots.indexOf(shot) + 1}/${targetShots.length} (镜头${shot.number})`);
+        appendTerminalLog('VideoGen', `镜头${current.number}: 开始生成视频`);
+        let retries = 3;
+        while (retries > 0) {
+          try {
+            const c2 = getLiveShot(current.id);
+            if (!c2) break;
+            if (c2.videoUrl || c2.videoUrls?.length) {
+              appendTerminalLog('VideoGen', `镜头${c2.number}: 已有视频，跳过`);
+              break;
+            }
+            await handleGenerateVideo(c2, false);
+            appendTerminalLog('VideoGen', `镜头${current.number}: 视频生成完成`);
+            break;
+          } catch (err: any) {
+            retries--;
+            appendTerminalLog('VideoGen', `镜头${current.number}: 视频生成失败 (${err.message}), 剩余${retries}次`);
+            if (retries === 0) {
+              updateShot(current.id, { videoGenerating: false });
+            } else {
+              await new Promise(r => setTimeout(r, 5000));
+            }
+          }
+        }
+      }
+    }
+
+    // Step 4: 导出剪映
+    setOneClickPipelineProgress('导出剪映草稿...');
+    const finalShots = targetShotIds.map(id => getLiveShot(id)).filter(Boolean) as Shot[];
+    appendTerminalLog('Pipeline', `开始导出剪映草稿: ${exportDraftName}`);
+    await performExportToJianying(finalShots, exportDraftName);
+    appendTerminalLog('Pipeline', `[${taskType === 'oneshot' ? '一键成片' : '队列任务'}] 执行完成`);
+
+    // Step 5: 记录完成状态
+    const snapshot = captureEditorSnapshot();
+    const sanitized = buildSanitizedTaskSnapshot(snapshot);
+    setOneClickQueueTasks(prev => {
+      const tasks = prev.map(t => t.id === taskId ? { ...t, status: 'completed' as const, completedAt: tsStr(), resultSnapshot: sanitized } : t);
+      saveOneClickQueue(tasks);
+      return tasks;
+    });
+
+    setOneClickPipelineProgress('');
+    toast.success(
+      oneClickPipelineMode === 'image_audio_only'
+        ? '一键成片执行完成（未生成视频）'
+        : '一键成片执行完成！'
+    );
+  };
+
+  // 任务快照清理（移除生成中状态）
+  const buildSanitizedTaskSnapshot = (snap: OneClickTaskSnapshot): OneClickTaskSnapshot => ({
+    ...snap,
+    shots: snap.shots.map(s => ({ ...s, imageGenerating: false, videoGenerating: false })),
+  });
+
+  // 捕获当前编辑器快照
+  const captureEditorSnapshot = (): OneClickTaskSnapshot => ({
+    shots: shots.map(s => ({ ...s })),
+    capturedAt: tsStr(),
+  });
+
+  // 一键成片 UI 触发
+  const handleOneClickPipeline = async (skipExport = false) => {
+    if (oneClickRunning) { toast.warning('正在执行中，请稍候'); return; }
+    const selected = shots.filter(s => s.selected);
+    if (selected.length === 0) { toast.error('请先选择要处理的镜头'); return; }
+    const taskId = newOneshotTaskId();
+    const draftName = buildPipelineDraftName();
+    setOneClickRunning(true);
+    setOneClickPipelineProgress('准备执行...');
+    appendTerminalLog('Pipeline', `一键成片任务 ${taskId} 开始`);
+    try {
+      // 始终记录
+      setOneClickQueueTasks(prev => {
+        const task: OneClickQueueTask = { id: taskId, type: 'oneshot', status: 'running', snapshot: captureEditorSnapshot(), createdAt: tsStr(), progressPercent: 0, progressNote: '准备执行...' };
+        const tasks = [...prev, task];
+        saveOneClickQueue(tasks);
+        return tasks;
+      });
+      await executeOneClickPipelineForTargets(selected.map(s => s.id), draftName, taskId, 'oneshot');
+    } catch (err: any) {
+      appendTerminalLog('Pipeline', `执行异常: ${err.message}`);
+      toast.error(`执行异常: ${err.message}`);
+    } finally {
+      setOneClickRunning(false);
+      // 一键成片结束后自动尝试处理挂机队列（无需再手动点「处理队列」）
+      queueMicrotask(() => {
+        if (!queueRunnerBusyRef.current) {
+          void processOneClickQueue();
+        }
+      });
+    }
+  };
+
+  // 记录已完成的一键成片任务（用于UI直接触发）
+  const recordCompletedOneClickPipeline = (taskId: string, resultSnap: OneClickTaskSnapshot) => {
+    setOneClickQueueTasks(prev => {
+      const tasks = prev.map(t => t.id === taskId ? { ...t, status: 'completed' as const, completedAt: tsStr(), resultSnapshot: resultSnap } : t);
+      saveOneClickQueue(tasks);
+      return tasks;
+    });
+  };
+
+  // 加入挂机队列
+  const handleEnqueueOneClickTask = () => {
+    if (queueProcessorRunning) { toast.warning('队列正在执行中，请先停止'); return; }
+    const taskId = newQueueTaskId();
+    const task: OneClickQueueTask = { id: taskId, type: 'queue', status: 'queued', snapshot: captureEditorSnapshot(), createdAt: tsStr(), progressPercent: 0, progressNote: '等待执行' };
+    const tasks = [...oneClickQueueTasks, task];
+    persistQueue(tasks);
+    appendTerminalLog('Queue', `任务 ${taskId} 已加入队列`);
+    toast.success('已加入挂机队列');
+  };
+
+  // 处理挂机队列（执行前将快照写入当前分镜，避免用错「当前编辑器」里的镜头 ID）
+  const processOneClickQueue = async () => {
+    if (queueRunnerBusyRef.current) return;
+    queueRunnerBusyRef.current = true;
+    setQueueProcessorRunning(true);
+    appendTerminalLog('Queue', '队列处理器启动');
+    let shotsBackup: Shot[] | null = null;
+    while (true) {
+      if (queueGloballyPausedRef.current) {
+        appendTerminalLog('Queue', '队列已暂停');
+        await new Promise(r => setTimeout(r, 5000));
+        continue;
+      }
+      const tasks = loadOneClickQueue();
+      const next = tasks.find(t => t.type === 'queue' && t.status === 'queued');
+      if (!next) { appendTerminalLog('Queue', '队列已空，停止'); break; }
+      const snapShots = ((next.snapshot?.shots || []) as Shot[]).map(s => ({ ...s }));
+      if (snapShots.length === 0) {
+        appendTerminalLog('Queue', `任务 ${next.id} 快照无镜头，已跳过`);
+        const skipTasks = tasks.map(t =>
+          t.id === next.id ? { ...t, status: 'failed' as const, completedAt: tsStr(), progressNote: '快照无镜头' } : t
+        );
+        persistQueue(skipTasks);
+        continue;
+      }
+
+      activeQueueTaskIdRef.current = next.id;
+      shotsBackup = shots.map(s => ({ ...s }));
+      flushSync(() => {
+        setShots(snapShots);
+      });
+      shotsRef.current = snapShots;
+
+      const updatedTasks = tasks.map(t => t.id === next.id ? { ...t, status: 'running' as const, progressNote: '执行中...', progressPercent: 0 } : t);
+      persistQueue(updatedTasks);
+      appendTerminalLog('Queue', `开始执行任务 ${next.id}（已加载快照 ${snapShots.length} 镜）`);
+      try {
+        await executeOneClickPipelineForTargets(snapShots.map(s => s.id), buildQueueDraftName(), next.id, 'queue');
+      } catch (err: any) {
+        appendTerminalLog('Queue', `任务 ${next.id} 执行异常: ${err.message}`);
+        const failedTasks = loadOneClickQueue().map(t => t.id === next.id ? { ...t, status: 'failed' as const, completedAt: tsStr(), progressNote: `失败: ${err.message}` } : t);
+        persistQueue(failedTasks);
+      } finally {
+        if (shotsBackup) {
+          const restore = shotsBackup;
+          shotsBackup = null;
+          flushSync(() => setShots(restore));
+          shotsRef.current = restore;
+        }
+      }
+      activeQueueTaskIdRef.current = null;
+    }
+    queueRunnerBusyRef.current = false;
+    setQueueProcessorRunning(false);
+  };
 
   // 组件加载时不自动读取，避免读取旧数据
   // 用户需要手动点击"从改写工具读取"按钮来加载最新脚本
@@ -465,11 +1070,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   // 处理脚本输入
   const handleScriptInput = (text: string) => {
     setScriptText(text);
+    lastMediaHistorySignatureRef.current = '';
     if (text.trim()) {
       const parsed = parseScript(text);
       setShots(parsed);
+      shotsRef.current = parsed;
     } else {
       setShots([]);
+      shotsRef.current = [];
     }
   };
 
@@ -481,6 +1089,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     const reader = new FileReader();
     reader.onload = (e) => {
       const content = e.target?.result as string;
+      appendTerminalLog('Script', `已上传脚本文件: ${file.name}`);
       handleScriptInput(content);
     };
     reader.readAsText(file);
@@ -495,11 +1104,21 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     
     // 1. 从 Tools 模块的新历史记录系统读取（SCRIPT 模式）
     const niches = [NicheType.YI_JING_METAPHYSICS, NicheType.TCM_METAPHYSICS, NicheType.FINANCE_CRYPTO, NicheType.STORY_REVENGE, NicheType.GENERAL_VIRAL];
-    niches.forEach(niche => {
+    niches.forEach((niche) => {
       const historyKey = `${ToolMode.SCRIPT}_${niche}`;
       const records = getHistory('tools', historyKey);
       console.log(`[MediaGenerator] 从 ${historyKey} 读取到 ${records.length} 条记录`);
-      allRecords.push(...records);
+      allRecords.push(
+        ...records
+          .filter((r) => typeof r.content === 'string' && r.content.trim())
+          .map((r) => ({
+            ...r,
+            metadata: {
+              ...r.metadata,
+              historyDelete: { module: 'tools' as const, key: historyKey },
+            },
+          }))
+      );
     });
     
     // 2. 从旧的 scriptHistory 读取（保持向后兼容）
@@ -516,6 +1135,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                 timestamp: item.timestamp || Date.now(),
                 metadata: {
                   topic: '脚本历史记录',
+                  historyDelete: { kind: 'legacyScriptHistory' as const },
                 },
               });
             }
@@ -535,9 +1155,10 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         if (hasShots) {
           allRecords.unshift({
             content: savedScript,
-            timestamp: Date.now(),
+            timestamp: LAST_GENERATED_SCRIPT_TIMELINE_TS,
             metadata: {
               topic: '最新生成的脚本',
+              historyDelete: { kind: 'lastGeneratedScript' as const },
             },
           });
           console.log('[MediaGenerator] 从 lastGeneratedScript 读取到最新脚本');
@@ -554,7 +1175,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     const uniqueRecords: HistoryRecord[] = [];
     const seenContents = new Set<string>();
     allRecords.forEach(record => {
-      const contentHash = record.content.trim().substring(0, 200); // 使用前200字符作为哈希
+      const raw = typeof record.content === 'string' ? record.content.trim() : '';
+      if (!raw) return;
+      const contentHash = raw.substring(0, 200);
       if (!seenContents.has(contentHash)) {
         seenContents.add(contentHash);
         uniqueRecords.push(record);
@@ -564,59 +1187,149 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     console.log(`[MediaGenerator] 总共找到 ${uniqueRecords.length} 条唯一脚本记录`);
     
     if (uniqueRecords.length > 0) {
+      appendTerminalLog('Script', `打开脚本历史选择器，共 ${uniqueRecords.length} 条候选`);
       // 显示历史记录选择器
+      setHistorySelectorKind('script');
       setScriptHistoryRecords(uniqueRecords);
       setShowScriptHistorySelector(true);
     } else {
+      appendTerminalLog('Script', '未找到可加载的脚本历史');
       // 没有历史记录，提示用户
       toast.warning('未找到脚本历史记录。请先在改写工具中生成脚本。');
     }
   };
   
-  // 处理脚本历史记录选择
-  const handleScriptHistorySelect = (record: HistoryRecord) => {
-    console.log('[MediaGenerator] 选择脚本历史记录:', {
-      timestamp: new Date(record.timestamp).toLocaleString(),
-      contentLength: record.content.length,
+  /** 媒体生成历史（仅含已生成图/音/视频的快照） */
+  const handleMediaHistorySelect = (record: HistoryRecord) => {
+    const pid = record.metadata?.mediaProjectId as string | undefined;
+    if (!pid) {
+      toast.error('无效的历史记录');
+      return;
+    }
+    const project = getMediaProject(pid);
+    if (!project) {
+      toast.error('记录不存在或已删除');
+      return;
+    }
+    const rows = Array.isArray(project.shots) ? project.shots : [];
+    const restored = restoredShotsFromProject(rows);
+    const st = typeof project.scriptText === 'string' ? project.scriptText : '';
+    setScriptText(st);
+    scriptTextRef.current = st;
+    setShots(restored);
+    shotsRef.current = restored;
+    lastMediaHistorySignatureRef.current = mediaFingerprint(shotsToPersistPayloadFromShots(restored));
+    setShowScriptInput(false);
+    setShowScriptHistorySelector(false);
+    setHistorySelectorKind(null);
+    appendTerminalLog('History', `已载入媒体历史 ${pid}（${restored.length} 镜）`);
+    toast.success(`已载入 ${pid}`, 3000);
+  };
+
+  /** 脚本历史与媒体历史共用弹窗：有 mediaProjectId 则恢复快照，否则按脚本正文解析分镜 */
+  const handleHistorySelectorSelect = (record: HistoryRecord) => {
+    const pid = record.metadata?.mediaProjectId as string | undefined;
+    if (pid) {
+      handleMediaHistorySelect(record);
+      return;
+    }
+    const text = typeof record.content === 'string' ? record.content : '';
+    if (!text.trim()) {
+      toast.error('该条记录没有可载入的脚本内容');
+      return;
+    }
+    lastMediaHistorySignatureRef.current = '';
+    handleScriptInput(text);
+    setShowScriptInput(false);
+    setShowScriptHistorySelector(false);
+    setHistorySelectorKind(null);
+    appendTerminalLog('Script', '已从选择器载入改写工具脚本');
+    toast.success('已载入脚本', 3000);
+  };
+
+  const openMediaHistorySelector = () => {
+    const projects = listMediaProjects();
+    const records: HistoryRecord[] = projects.map((p) => {
+      const preview = p.preview != null && String(p.preview).trim() !== '' ? String(p.preview) : '';
+      const scriptExcerpt = String(p.scriptText ?? '').slice(0, 160);
+      const thumbUrl = firstPersistedShotPreviewImageUrl(p);
+      return {
+        timestamp: typeof p.updatedAt === 'number' ? p.updatedAt : p.createdAt ?? Date.now(),
+        content: preview || scriptExcerpt || '（无摘要）',
+        metadata: { topic: p.id, mediaProjectId: p.id, thumbUrl },
+      };
     });
-    
-    if (record.content && record.content.trim()) {
-      // 验证脚本是否包含镜头信息
-      const hasShots = /(?:镜头|镜头)\s*\d+/.test(record.content);
-      const shotCount = (record.content.match(/(?:镜头|镜头)\s*\d+/g) || []).length;
-      
-      if (hasShots && shotCount > 0) {
-        // 解析脚本
-        const parsed = parseScript(record.content);
-        console.log('[MediaGenerator] 解析后的镜头数量:', parsed.length);
-        
-        if (parsed.length > 0) {
-          // 清除当前数据
-          setShots([]);
-          setScriptText('');
-          
-          // 加载选中的脚本
-          setScriptText(record.content);
-          setShots(parsed);
-          setShowScriptInput(false);
-          setShowScriptHistorySelector(false);
-          console.log('[MediaGenerator] ✅ 脚本加载成功，镜头数量:', parsed.length);
-        } else {
-          toast.error('脚本解析失败，无法提取镜头信息。');
-        }
-      } else {
-        toast.warning('选中的记录不包含有效的镜头信息。');
-      }
-    } else {
-      toast.warning('选中的记录内容为空。');
+    setHistorySelectorKind('media');
+    setScriptHistoryRecords(records);
+    setShowScriptHistorySelector(true);
+    if (records.length === 0) {
+      toast.info('暂无记录。生成图片、配音或视频后会自动记入历史。', 4500);
     }
   };
 
+  const historyRecordRowMatch = (a: HistoryRecord, b: HistoryRecord) =>
+    a.timestamp === b.timestamp && a.content === b.content;
+
+  const persistDeleteHistoryRecord = (record: HistoryRecord) => {
+    const pid = record.metadata?.mediaProjectId as string | undefined;
+    if (pid) {
+      deleteMediaProject(pid.trim());
+      return;
+    }
+    const hd = record.metadata?.historyDelete as
+      | { module: 'tools'; key: string }
+      | { kind: 'legacyScriptHistory' }
+      | { kind: 'lastGeneratedScript' }
+      | undefined;
+    if (hd && 'module' in hd && hd.module === 'tools' && hd.key) {
+      deleteHistory('tools', hd.key, record.timestamp);
+      return;
+    }
+    if (hd && 'kind' in hd && hd.kind === 'legacyScriptHistory') {
+      deleteScriptHistoryLegacyItem(record.timestamp);
+      return;
+    }
+    if (hd && 'kind' in hd && hd.kind === 'lastGeneratedScript') {
+      removeLastGeneratedScriptIfContentEquals(record.content);
+    }
+  };
+
+  const persistClearAllHistoryRecords = () => {
+    if (historySelectorKind === 'media') {
+      clearAllMediaProjects();
+      return;
+    }
+    const niches = [
+      NicheType.YI_JING_METAPHYSICS,
+      NicheType.TCM_METAPHYSICS,
+      NicheType.FINANCE_CRYPTO,
+      NicheType.STORY_REVENGE,
+      NicheType.GENERAL_VIRAL,
+    ];
+    niches.forEach((niche) => clearHistory('tools', `${ToolMode.SCRIPT}_${niche}`));
+    clearScriptHistoryLegacy();
+    clearLastGeneratedScript();
+  };
+
+  const MEDIA_HISTORY_TRIGGER_KEYS: (keyof Shot)[] = [
+    'imageUrls',
+    'videoUrl',
+    'videoUrls',
+    'voiceAudioUrl',
+    'cachedVideoUrl',
+    'cachedVideoUrls',
+  ];
+
   // 更新镜头数据
   const updateShot = (shotId: string, updates: Partial<Shot>) => {
-    setShots(prev => prev.map(shot => 
-      shot.id === shotId ? { ...shot, ...updates } : shot
-    ));
+    setShots((prev) => {
+      const next = prev.map((shot) => (shot.id === shotId ? { ...shot, ...updates } : shot));
+      shotsRef.current = next;
+      return next;
+    });
+    if (MEDIA_HISTORY_TRIGGER_KEYS.some((k) => k in updates)) {
+      scheduleMediaHistorySave();
+    }
   };
 
   // 添加新镜头
@@ -633,8 +1346,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       selected: false,
       editing: true,
     };
-    setShots([...shots, newShot]);
+    const next = [...shots, newShot];
+    setShots(next);
+    shotsRef.current = next;
     setEditingShotId(newShot.id);
+    appendTerminalLog('Shot', `添加镜头，当前共 ${next.length} 镜`);
   };
 
   // 删除选中镜头
@@ -645,21 +1361,39 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       return;
     }
     if (confirm(`确定要删除 ${selectedShots.length} 个镜头吗？`)) {
-      setShots(shots.filter(s => !s.selected));
+      const next = shots.filter(s => !s.selected);
+      setShots(next);
+      shotsRef.current = next;
+      appendTerminalLog('Shot', `已删除 ${selectedShots.length} 个镜头，剩余 ${next.length} 镜`);
     }
   };
 
   // 批量选择功能
   const handleSelectAll = () => {
-    setShots(prev => prev.map(shot => ({ ...shot, selected: true })));
+    setShots(prev => {
+      const next = prev.map(shot => ({ ...shot, selected: true }));
+      shotsRef.current = next;
+      return next;
+    });
+    appendTerminalLog('UI', '全选镜头');
   };
 
   const handleDeselectAll = () => {
-    setShots(prev => prev.map(shot => ({ ...shot, selected: false })));
+    setShots(prev => {
+      const next = prev.map(shot => ({ ...shot, selected: false }));
+      shotsRef.current = next;
+      return next;
+    });
+    appendTerminalLog('UI', '取消全选');
   };
 
   const handleToggleSelect = () => {
-    setShots(prev => prev.map(shot => ({ ...shot, selected: !shot.selected })));
+    setShots(prev => {
+      const next = prev.map(shot => ({ ...shot, selected: !shot.selected }));
+      shotsRef.current = next;
+      return next;
+    });
+    appendTerminalLog('UI', '反选镜头');
   };
 
   // 批量导出图片为 ZIP
@@ -803,26 +1537,34 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     // 检查 API Key 配置
     if (selectedModel?.isJimeng) {
       if (!jimengSessionId || jimengSessionId.trim() === '') {
+        appendTerminalLog('ImageGen', `镜头${shot.number}: 已中止 — 未配置即梦 SESSION_ID`);
         alert('请先配置即梦 SESSION_ID');
         return;
       }
     } else if (selectedModel?.isRunningHub) {
       if (provider !== 'runninghub' || !apiKey || apiKey.trim() === '') {
+        appendTerminalLog('ImageGen', `镜头${shot.number}: 已中止 — 未配置 RunningHub（顶部需选 RunningHub 并填 Key）`);
         alert('请先在顶部配置 RunningHub API Key（选择 RunningHub 服务）');
         return;
       }
     } else {
       if (!apiKey) {
+        appendTerminalLog('ImageGen', `镜头${shot.number}: 已中止 — 未配置 API Key`);
         alert('请先配置 API Key');
         return;
       }
     }
     
     if (!shot.imagePrompt) {
+      appendTerminalLog('ImageGen', `镜头${shot.number}: 已跳过 — 无图片提示词`);
       toast.warning('该镜头没有图片提示词');
       return;
     }
     
+    appendTerminalLog(
+      'ImageGen',
+      `镜头${shot.number}: ${regenerate ? '重新绘图' : '生成图片'} · 模型=${selectedImageModel} · 张数=${generateImageCount}`
+    );
     updateShot(shot.id, { imageGenerating: true });
     
     const selectedRatio = IMAGE_RATIOS.find(r => r.id === selectedImageRatio);
@@ -834,12 +1576,18 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       finalPrompt = `${finalPrompt}, ${selectedStyleObj.prompt}`;
     }
     
-    // 检测提示词中是否包含角色库中的角色
-    const matchedCharacters = detectCharactersInPrompt(finalPrompt);
-    const useImageToImage = matchedCharacters.length > 0 && (selectedModel?.isJimeng || selectedModel?.isRunningHub);
-    
-    if (useImageToImage) {
-      toast.info(`检测到角色 "${matchedCharacters.map(c => c.name).join(', ')}"，将使用图生图模式`, 5000);
+    // 以「图片提示词」匹配角色名/别名；参考图随所有生图模型传递
+    const matchedCharacters = detectCharactersInPrompt(shot.imagePrompt || '');
+    const primaryChar =
+      matchedCharacters.length > 0
+        ? pickPrimaryCharacterForPrompt(finalPrompt, matchedCharacters)
+        : null;
+    const charRefYunwu: Partial<ImageGenerationOptions> = primaryChar
+      ? { referenceDataUrls: [primaryChar.imageUrl], characterName: primaryChar.name }
+      : {};
+
+    if (primaryChar) {
+      toast.info(`角色参考：${primaryChar.name}（已随当前模型参与生图）`, 5000);
     }
     
     // 获取适合模型的尺寸
@@ -863,10 +1611,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           num_images: generateImageCount,
         };
         
-        // 如果检测到角色，使用图生图模式
-        if (useImageToImage && matchedCharacters.length > 0) {
-          const characterImage = matchedCharacters[0].imageUrl;
-          generationOptions.image_url = characterImage;
+        if (primaryChar) {
+          generationOptions.image_url = primaryChar.imageUrl;
         }
         
         // 生成多张图片
@@ -901,6 +1647,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             } else if (result.urls && result.urls.length > 0) {
               newImageUrls = result.urls;
             } else {
+              appendTerminalLog('ImageGen', `镜头${shot.number}: RunningHub 返回成功但未解析到图片 URL`);
               toast.error('图片生成成功但未获取到图片URL');
               updateShot(shot.id, { imageGenerating: false });
               return;
@@ -908,6 +1655,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             toast.success(`成功生成 ${newImageUrls.length} 张图片！`, 8000);
           } else {
             const errorMsg = result.error || 'RunningHub 图片生成失败';
+            appendTerminalLog('ImageGen', `镜头${shot.number}: RunningHub 失败 — ${errorMsg}`);
             updateShot(shot.id, { imageGenerating: false });
             throw new Error(errorMsg);
           }
@@ -928,12 +1676,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           height
         };
         
-        // 如果检测到角色，使用图生图模式
-        if (useImageToImage && matchedCharacters.length > 0) {
-          // 使用第一个匹配角色的图片
-          const characterImage = matchedCharacters[0].imageUrl;
-          generationOptions.images = [characterImage];
-          generationOptions.sample_strength = 0.7; // 默认采样强度
+        if (primaryChar) {
+          generationOptions.images = [primaryChar.imageUrl];
+          generationOptions.sample_strength = 0.7;
         }
         
         const result = await generateJimengImages(
@@ -944,9 +1689,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         
         if (result.success && result.data) {
           newImageUrls = result.data.map(item => item.url);
+          appendTerminalLog('ImageGen', `镜头${shot.number}: 即梦完成，${newImageUrls.length} 张`);
           toast.success(`成功生成 ${newImageUrls.length} 张图片！`, 8000);
         } else {
           const errorMsg = result.error || '即梦图片生成失败';
+          appendTerminalLog('ImageGen', `镜头${shot.number}: 即梦失败 — ${errorMsg}`);
           updateShot(shot.id, { imageGenerating: false });
           throw new Error(errorMsg);
         }
@@ -962,6 +1709,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       prompt: finalPrompt,
             size: imageSize,
       quality: 'standard',
+            ...charRefYunwu,
             // 注意：这些模型不支持 n 参数，所以不传
     };
     
@@ -989,6 +1737,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           prompt: finalPrompt,
           size: imageSize,
           quality: 'standard',
+          ...charRefYunwu,
           // 注意：这些模型不支持 n 参数
         };
         
@@ -1016,6 +1765,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               size: imageSize,
               quality: 'standard',
               n: 1, // 每次只生成1张，通过多次调用来生成多张
+              ...charRefYunwu,
             };
             
             const result = await generateImage(apiKey, options);
@@ -1050,6 +1800,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             size: imageSize,
             quality: 'standard',
             n: 1,
+            ...charRefYunwu,
           };
           
           const result = await generateImage(apiKey, options);
@@ -1094,14 +1845,17 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           selectedImageIndex: selectedIndex,
           imageGenerating: false 
         });
+        appendTerminalLog('ImageGen', `镜头${shot.number}: 完成，当前共 ${updatedUrls.length} 张图`);
       } else {
         const errorMsg = '图片生成成功但未获取到图片URL';
+        appendTerminalLog('ImageGen', `镜头${shot.number}: 失败 — ${errorMsg}`);
         updateShot(shot.id, { imageGenerating: false });
         throw new Error(errorMsg);
       }
     } catch (error: any) {
       // 确保 imageGenerating 状态被清除
       updateShot(shot.id, { imageGenerating: false });
+      appendTerminalLog('ImageGen', `镜头${shot.number}: 异常 — ${error?.message || error}`);
       // 重新抛出错误，让调用者处理（批量生成会统一统计，单个生成会显示错误）
       throw error;
     }
@@ -1109,7 +1863,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
   // 辅助函数：追加视频URL到镜头（支持追加模式）
   const appendVideoToShot = (shotId: string, videoUrl: string, cachedUrl?: string) => {
-    const shot = shots.find(s => s.id === shotId);
+    const shot = shotsRef.current.find(s => s.id === shotId);
     if (!shot) return;
     
     // 追加模式：保留原有视频，添加新视频
@@ -1125,7 +1879,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       cachedVideoUrls: updatedCachedUrls, // 追加到数组
       videoGenerating: false
     });
-    
+    appendTerminalLog('VideoGen', `镜头${shot.number}: 已写入视频（共 ${updatedVideoUrls.length} 段）`);
     return updatedVideoUrls.length;
   };
 
@@ -1136,6 +1890,12 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     let lastStatus = '';
     let consecutiveErrors = 0;
     const maxConsecutiveErrors = 5;
+    const shotLabel = () => {
+      const n = shotsRef.current.find(s => s.id === shotId)?.number;
+      return n != null ? `镜头${n}` : `shotId=${shotId.slice(0, 8)}…`;
+    };
+
+    appendTerminalLog('VideoGen', `${shotLabel()}: 轮询任务 ${taskId}（最多 ${maxAttempts} 次）`);
     
     const poll = async () => {
       attempts++;
@@ -1144,7 +1904,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         // 超时后最后一次查询
         console.log(`[MediaGenerator] RunningHub 轮询超时，进行最后一次查询: taskId=${taskId}`);
         try {
-          const finalResult = await checkRunningHubTaskStatus(apiKey, taskId);
+          const finalResult = await checkRunningHubTaskStatus(runningHubApiKey, taskId);
           if (finalResult.success && finalResult.url) {
             try {
               toast.info('视频生成成功，正在缓存视频...', 3000);
@@ -1156,12 +1916,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               const totalCount = appendVideoToShot(shotId, finalResult.url);
               toast.success(`视频生成成功！（共 ${totalCount} 个视频）`, 8000);
             }
+            appendTerminalLog('VideoGen', `${shotLabel()}: 超时前最后一次查询成功，已落盘`);
             return;
           }
         } catch (error) {
           console.error('[MediaGenerator] 最后一次查询失败:', error);
         }
         
+        appendTerminalLog('VideoGen', `${shotLabel()}: 轮询超时（${maxAttempts} 次）taskId=${taskId} 状态=${lastStatus || '未知'}`);
         toast.warning(
           `视频生成超时（已轮询 ${maxAttempts} 次），但任务可能仍在后台处理中。\n\n` +
           `任务ID: ${taskId}\n` +
@@ -1175,12 +1937,15 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       }
       
       try {
-        const result = await checkRunningHubTaskStatus(apiKey, taskId);
+        const result = await checkRunningHubTaskStatus(runningHubApiKey, taskId);
         consecutiveErrors = 0;
         
         if (result.success) {
           lastStatus = result.status || '';
           lastProgress = result.progress || 0;
+          if (attempts === 1 || attempts % 12 === 0) {
+            appendTerminalLog('VideoGen', `${shotLabel()}: 查询 #${attempts} · ${lastStatus || '进行中'} · 进度 ${lastProgress}%`);
+          }
           
           console.log(`[MediaGenerator] RunningHub 任务 ${taskId} 状态: ${result.status}, 进度: ${result.progress}%`);
           
@@ -1279,6 +2044,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             console.log('[MediaGenerator] 任务状态为SUCCESS但无URL，继续轮询获取URL');
             setTimeout(poll, 5000);
           } else if (result.status === 'FAILED' || result.status === 'failed' || result.status === 'error') {
+            appendTerminalLog('VideoGen', `${shotLabel()}: 任务失败 — ${result.error || '未知错误'}`);
             toast.error(`视频生成失败: ${result.error || '未知错误'}`, 6000);
             updateShot(shotId, { videoGenerating: false });
             return;
@@ -1298,6 +2064,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         } else {
           consecutiveErrors++;
           if (consecutiveErrors >= maxConsecutiveErrors) {
+            appendTerminalLog('VideoGen', `${shotLabel()}: 连续 ${maxConsecutiveErrors} 次查询失败 — ${result.error || ''}`);
             toast.error(`连续 ${maxConsecutiveErrors} 次查询失败，请检查网络连接或API配置`, 8000);
             updateShot(shotId, { videoGenerating: false });
             return;
@@ -1310,6 +2077,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         console.error(`[MediaGenerator] RunningHub 轮询任务状态异常 (${consecutiveErrors}/${maxConsecutiveErrors}):`, error);
         
         if (consecutiveErrors >= maxConsecutiveErrors) {
+          appendTerminalLog('VideoGen', `${shotLabel()}: 轮询异常终止 — ${error?.message || error}`);
           toast.error(`连续 ${maxConsecutiveErrors} 次查询异常，请检查网络连接`, 8000);
           updateShot(shotId, { videoGenerating: false });
           return;
@@ -1322,221 +2090,109 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     setTimeout(poll, 3000);
   };
 
-  // 轮询任务状态（大洋芋）
-  // 根据API文档：普通模式3-5分钟，pro模式15-30分钟
-  // 增加轮询次数和超时时间，确保能获取到已完成的视频
-  const pollTaskStatus = async (taskId: string, shotId: string, maxAttempts: number = 360) => {
-    let attempts = 0;
-    let lastProgress = 0;
-    let lastStatus = '';
-    let consecutiveErrors = 0;
-    const maxConsecutiveErrors = 5; // 连续错误次数限制
-    
-    const poll = async () => {
-      attempts++;
-      
-      // 根据模型类型调整超时时间
-      // 普通模式：最多30分钟（360次 * 5秒 = 1800秒 = 30分钟）
-      // Pro模式可能需要更长时间，但先设置30分钟作为基础超时
-      if (attempts > maxAttempts) {
-        // 即使超时，也尝试最后一次查询，可能视频已经生成完成（这是关键修复）
-        console.log(`[MediaGenerator] 轮询超时（${maxAttempts}次），进行最后一次查询: taskId=${taskId}`);
+  /** 轮询 RunningHub 任务直至拿到产出 URL（视频/音频） */
+  const pollRunningHubForMediaUrl = async (taskId: string, maxAttempts = 120): Promise<string> => {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 2500));
+      const result = await checkRunningHubTaskStatus(runningHubApiKey, taskId);
+      if (result.success === false && String(result.status).toUpperCase() === 'FAILED') {
+        throw new Error(result.error || '任务失败');
+      }
+      if (result.url) return result.url;
+    }
+    throw new Error('轮询超时，未获取到媒体 URL');
+  };
+
+  /**
+   * 输入/输出：镜头文案/语音分镜 → 写入 voiceAudioUrl；仅 opts.playAfter===true 时自动播放（默认不播）
+   */
+  const synthesizeVoiceForShot = async (
+    shot: Shot,
+    opts?: { playAfter?: boolean }
+  ): Promise<string> => {
+    const playAfter = opts?.playAfter === true;
+    const text = (shot.caption || shot.voiceOver || '').trim();
+    if (!text) throw new Error('没有可朗读的文案');
+    if (!runningHubApiKey?.trim()) {
+      appendTerminalLog('Voice', `镜头${shot.number}: 已中止 — 未配置 RunningHub API Key`);
+      throw new Error('请先配置 RunningHub API Key（上方输入框）');
+    }
+    appendTerminalLog('Voice', `镜头${shot.number}: 开始生成配音（${text.slice(0, 40)}${text.length > 40 ? '…' : ''}）`);
+    updateShot(shot.id, { voiceGenerating: true });
+    try {
+      const selected = getSelectedVoice();
+      if (!selected) {
+        throw new Error('请先在语音库中选择参考音色（RunningHub TTS 模板需参考音频）');
+      }
+      let refPath = selected.runningHubAudioPath?.trim();
+      if (!refPath && selected.audioDataUrl?.trim()) {
+        appendTerminalLog('Voice', `镜头${shot.number}: 正在上传参考音频到 RunningHub…`);
+        refPath = await uploadAudioToRunningHub(runningHubApiKey, selected.audioDataUrl);
+        updateVoice(selected.id, { runningHubAudioPath: refPath });
+      }
+      if (!refPath) {
+        throw new Error('语音库音色缺少参考音频，请重新导入音频');
+      }
+      appendTerminalLog('Voice', `镜头${shot.number}: TTS ai-app（参考音 ${refPath.slice(0, 28)}…）`);
+      const r = await generateAudio(runningHubApiKey, {
+        text,
+        referenceAudioPath: refPath,
+      });
+      if (!r.success) throw new Error(r.error || 'TTS 请求失败');
+      const audioUrl = r.url;
+
+      if (!audioUrl) throw new Error('未获取到音频地址');
+      const playableUrl = resolveRunningHubOutputUrl(audioUrl);
+      updateShot(shot.id, { voiceAudioUrl: playableUrl, voiceGenerating: false });
+      appendTerminalLog('Voice', `镜头${shot.number}: 配音完成`);
+      if (playAfter) {
         try {
-          const finalResult = await checkVideoTaskStatus(dayuApiKey, taskId);
-          console.log(`[MediaGenerator] 最后一次查询结果:`, {
-            success: finalResult.success,
-            status: finalResult.status,
-            progress: finalResult.progress,
-            hasVideoUrl: !!finalResult.videoUrl,
-            dataKeys: finalResult.data ? Object.keys(finalResult.data) : []
-          });
-          
-          if (finalResult.success) {
-            // 尝试从多个可能的字段提取视频URL
-            const data = finalResult.data || {};
-            const possibleUrl = finalResult.videoUrl ||
-                               data.video_url ||
-                               data.url ||
-                               data.videoUrl ||
-                               data.video ||
-                               data.output?.url ||
-                               data.output?.video_url ||
-                               data.result?.url ||
-                               data.result?.video_url ||
-                               data.files?.[0]?.url;
-            
-            if (possibleUrl) {
-              // 最后一次查询成功获取到视频URL，自动缓存，追加模式
-              try {
-                const cachedUrl = await cacheVideo(possibleUrl);
-                const totalCount = appendVideoToShot(shotId, possibleUrl, cachedUrl);
-                toast.success(`视频生成成功并已缓存！（已超时但成功获取到视频，共 ${totalCount} 个视频）`, 8000);
-              } catch (cacheError: any) {
-                console.warn('[MediaGenerator] 视频缓存失败:', cacheError);
-                const totalCount = appendVideoToShot(shotId, possibleUrl);
-                toast.success(`视频生成成功！（已超时但成功获取到视频，共 ${totalCount} 个视频）`, 8000);
-              }
-              return;
-            } else if (finalResult.status === 'completed' || finalResult.status === 'success') {
-              // 状态为完成但无URL，可能是URL字段名不对，记录完整数据用于调试
-              console.error(`[MediaGenerator] 任务状态为完成但无视频URL，完整响应数据:`, JSON.stringify(data, null, 2));
-              toast.warning(
-                `视频生成已完成，但无法获取视频URL。\n\n` +
-                `任务ID: ${taskId}\n` +
-                `状态: ${finalResult.status}\n` +
-                `请检查API响应格式或联系技术支持。`,
-                10000
-              );
-              updateShot(shotId, { videoGenerating: false });
-              return;
-            }
-          }
-        } catch (error: any) {
-          console.error('[MediaGenerator] 最后一次查询失败:', error);
+          await new Audio(playableUrl).play();
+        } catch {
+          toast.info('配音已生成，若未自动播放请检查浏览器静音策略', 4000);
         }
-        
-        // 超时且最后一次查询也未获取到视频
-        toast.warning(
-          `视频生成超时（已轮询 ${maxAttempts} 次，约 ${Math.floor(maxAttempts * 5 / 60)} 分钟），但任务可能仍在后台处理中。\n\n` +
-          `任务ID: ${taskId}\n` +
-          `最后状态: ${lastStatus || '未知'}\n` +
-          `最后进度: ${lastProgress}%\n\n` +
-          `提示：即使显示超时，如果后台已生成成功，您可以：\n` +
-          `1. 等待几分钟后刷新页面\n` +
-          `2. 或使用任务ID手动查询任务状态\n` +
-          `3. 或重新生成视频`,
-          15000
-        );
-        updateShot(shotId, { videoGenerating: false });
-        return;
       }
-      
-      try {
-        const result = await checkVideoTaskStatus(dayuApiKey, taskId);
-        consecutiveErrors = 0; // 重置连续错误计数
-        
-        if (result.success) {
-          lastStatus = result.status || '';
-          lastProgress = result.progress || 0;
-          
-          console.log(`[MediaGenerator] 任务 ${taskId} 状态: ${result.status}, 进度: ${result.progress}%, 视频URL: ${result.videoUrl ? '已获取' : '未获取'}`);
-          
-          // 检查任务是否完成（状态为 completed 或已获取到视频URL）
-          // 注意：即使状态不是 completed，如果有 videoUrl 也认为已完成
-          if (result.videoUrl) {
-            // 已获取到视频URL，任务完成，自动缓存
-              try {
-                toast.info('视频生成成功，正在缓存视频以提升播放性能...', 3000);
-                const cachedUrl = await cacheVideo(result.videoUrl);
-                const totalCount = appendVideoToShot(shotId, result.videoUrl, cachedUrl);
-                toast.success(`视频生成成功并已缓存！（共 ${totalCount} 个视频）`, 8000);
-              } catch (cacheError: any) {
-                console.warn('[MediaGenerator] 视频缓存失败，使用原始URL:', cacheError);
-                const totalCount = appendVideoToShot(shotId, result.videoUrl);
-                toast.success(`视频生成成功！（共 ${totalCount} 个视频）`, 8000);
-              }
-              return;
-          } else if (result.status === 'completed' || result.status === 'success') {
-            // 状态为完成，但还没有视频URL，可能是URL字段名不对，再查询一次
-            console.log(`[MediaGenerator] 任务状态为完成但无视频URL，检查响应数据:`, result.data);
-            // 尝试从data中提取URL
-            const data = result.data || {};
-            const possibleUrl = data.video_url || data.url || data.videoUrl || data.result?.url || data.result?.video_url;
-            if (possibleUrl) {
-              // 自动缓存视频，追加模式
-              try {
-                toast.info('视频生成成功，正在缓存视频...', 3000);
-                const cachedUrl = await cacheVideo(possibleUrl);
-                const totalCount = appendVideoToShot(shotId, possibleUrl, cachedUrl);
-                toast.success(`视频生成成功并已缓存！（共 ${totalCount} 个视频）`, 8000);
-              } catch (cacheError: any) {
-                console.warn('[MediaGenerator] 视频缓存失败，使用原始URL:', cacheError);
-                const totalCount = appendVideoToShot(shotId, possibleUrl);
-                toast.success(`视频生成成功！（共 ${totalCount} 个视频）`, 8000);
-              }
-              return;
-            } else {
-              // 状态完成但无URL，继续轮询等待URL出现
-              console.warn(`[MediaGenerator] 任务状态为完成但无视频URL，继续轮询...`);
-              setTimeout(poll, 5000);
-            }
-          } else if (result.status === 'failed' || result.status === 'error' || result.status === 'failure') {
-            // 任务失败
-            toast.error(`视频生成失败: ${result.error || '未知错误'}`, 6000);
-            updateShot(shotId, { videoGenerating: false });
-            return;
-          } else {
-            // 任务进行中（pending, in_progress, processing 等），继续轮询
-            // 根据进度调整轮询间隔：进度越高，轮询越频繁
-            const progress = result.progress || 0;
-            let pollInterval = 5000; // 默认5秒
-            
-            if (progress >= 90) {
-              pollInterval = 3000; // 接近完成时，3秒轮询一次
-            } else if (progress >= 50) {
-              pollInterval = 4000; // 进度过半时，4秒轮询一次
-            }
-            
-            setTimeout(poll, pollInterval);
-          }
-        } else {
-          // 查询失败，但继续重试（可能是临时网络问题）
-          consecutiveErrors++;
-          if (consecutiveErrors >= maxConsecutiveErrors) {
-            toast.error(`连续 ${maxConsecutiveErrors} 次查询失败，请检查网络连接或API配置`, 8000);
-            updateShot(shotId, { videoGenerating: false });
-            return;
-          }
-          console.warn(`[MediaGenerator] 查询任务状态失败 (${consecutiveErrors}/${maxConsecutiveErrors}):`, result.error);
-          setTimeout(poll, 5000);
-        }
-      } catch (error: any) {
-        consecutiveErrors++;
-        console.error(`[MediaGenerator] 轮询任务状态异常 (${consecutiveErrors}/${maxConsecutiveErrors}):`, error);
-        
-        if (consecutiveErrors >= maxConsecutiveErrors) {
-          toast.error(`连续 ${maxConsecutiveErrors} 次查询异常，请检查网络连接`, 8000);
-          updateShot(shotId, { videoGenerating: false });
-          return;
-        }
-        
-        setTimeout(poll, 5000);
-      }
-    };
-    
-    // 延迟 3 秒后开始第一次轮询
-    setTimeout(poll, 3000);
+      return playableUrl;
+    } catch (e: any) {
+      updateShot(shot.id, { voiceGenerating: false });
+      appendTerminalLog('Voice', `镜头${shot.number}: 配音失败 — ${e?.message || e}`);
+      throw e;
+    }
   };
 
-  // 生成单个视频
+  // 生成单个视频（仅 RunningHub Wan2.2 / LTX-2）
   const handleGenerateVideo = async (shot: Shot, regenerate: boolean = false) => {
     const selectedModel = VIDEO_MODELS.find(m => m.id === selectedVideoModel);
     const isRunningHubModel = selectedModel?.isRunningHub;
-    
-    // 检查 API Key
-    if (isRunningHubModel) {
-      if (provider !== 'runninghub' || !apiKey || !apiKey.trim()) {
-        toast.error('请先在顶部配置 RunningHub API Key（选择 RunningHub 服务）');
-        return;
-      }
-    } else {
-      if (!dayuApiKey || !dayuApiKey.trim()) {
-        toast.error('请先配置大洋芋 API Key（用于视频生成）');
-        return;
-      }
+
+    if (!isRunningHubModel) {
+      appendTerminalLog('VideoGen', `镜头${shot.number}: 已中止 — 仅支持 RunningHub 视频模型`);
+      toast.error('当前仅支持 RunningHub 视频模型');
+      throw new Error('不支持的视频模型');
+    }
+    if (!runningHubApiKey?.trim()) {
+      appendTerminalLog('VideoGen', `镜头${shot.number}: 已中止 — 未配置 RunningHub API Key`);
+      toast.error('请先配置 RunningHub API Key（上方输入框）');
+      throw new Error('缺少 RunningHub API Key');
     }
     
     if (!shot.videoPrompt) {
+      appendTerminalLog('VideoGen', `镜头${shot.number}: 已跳过 — 无视频提示词`);
       toast.error('该镜头没有视频提示词');
-      return;
+      throw new Error('无视频提示词');
     }
     
+    appendTerminalLog(
+      'VideoGen',
+      `镜头${shot.number}: ${regenerate ? '重新' : ''}生成视频 · 模型=${selectedVideoModel} · 时长=${selectedVideoDuration}s`
+    );
     updateShot(shot.id, { videoGenerating: true });
     
     if (!selectedModel) {
+      appendTerminalLog('VideoGen', `镜头${shot.number}: 已中止 — 未选择视频模型`);
       toast.error('请选择视频模型');
       updateShot(shot.id, { videoGenerating: false });
-      return;
+      throw new Error('未选择视频模型');
     }
     
     // 获取当前镜头的图片 URL（如果有）
@@ -1549,16 +2205,18 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     if (hasImages) {
       // 检查是否有选中的图片
       if (shot.selectedImageIndex === undefined || shot.selectedImageIndex < 0) {
+        appendTerminalLog('VideoGen', `镜头${shot.number}: 已中止 — 有图但未选中用于视频的图`);
         toast.error('请先选择要用于生成视频的图片（点击图片即可选择）', 6000);
         updateShot(shot.id, { videoGenerating: false });
-        return;
+        throw new Error('未选择图片');
       }
       
       // 验证选中的图片索引是否有效
       if (shot.selectedImageIndex >= shotImages.length) {
+        appendTerminalLog('VideoGen', `镜头${shot.number}: 已中止 — 图片索引无效`);
         toast.error('选中的图片索引无效，请重新选择图片', 6000);
         updateShot(shot.id, { videoGenerating: false });
-        return;
+        throw new Error('图片索引无效');
       }
     }
     
@@ -1573,93 +2231,46 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     }
     
     try {
-      let result;
-      
-      // RunningHub 模型处理
-      if (isRunningHubModel) {
-        const isLtx2Model = selectedModel?.isLtx2;
+      let result: Awaited<ReturnType<typeof generateRunningHubVideo>>;
+      const isLtx2Model = selectedModel?.isLtx2;
 
-        // LTX-2 路径：传入完整 workflow JSON
-        if (isLtx2Model) {
-          const selectedImageUrl = shotImages[shot.selectedImageIndex!];
-          if (!selectedImageUrl) {
-            toast.error('请先选中一张图片，再生成 LTX-2 视频', 6000);
-            updateShot(shot.id, { videoGenerating: false });
-            return;
-          }
-
-          const options: RunningHubVideoOptions = {
-            workflow: LTX2_WORKFLOW_TEMPLATE,
-            prompt: shot.videoPrompt,
-            model: 'ltx2',
-            image_url: selectedImageUrl,
-            duration: selectedModel.duration || 10,
-          };
-
-          result = await generateRunningHubVideo(apiKey, options);
-        } else {
-          // Wan2.2 路径（nodeInfoList）
-          if (hasImages) {
-            // 图生视频模式
-            const selectedImageUrl = shotImages[shot.selectedImageIndex!];
-
-            if (!selectedImageUrl) {
-              toast.error('选中的图片URL无效，请重新选择图片', 6000);
-              updateShot(shot.id, { videoGenerating: false });
-              return;
-            }
-
-            const options: RunningHubVideoOptions = {
-              prompt: shot.videoPrompt,
-              model: 'wan2.2',
-              image_url: selectedImageUrl,
-              duration: selectedModel.duration || 10,
-            };
-
-            result = await generateRunningHubVideo(apiKey, options);
-          } else {
-            // 文生视频模式
-            const options: RunningHubVideoOptions = {
-              prompt: shot.videoPrompt,
-              model: 'wan2.2',
-              duration: selectedModel.duration || 10,
-            };
-
-            result = await generateRunningHubVideo(apiKey, options);
-          }
+      if (isLtx2Model) {
+        const selectedImageUrl = shotImages[shot.selectedImageIndex!];
+        if (!selectedImageUrl) {
+          appendTerminalLog('VideoGen', `镜头${shot.number}: LTX-2 需要选中图片`);
+          toast.error('请先选中一张图片，再生成 LTX-2 视频', 6000);
+          updateShot(shot.id, { videoGenerating: false });
+          throw new Error('LTX-2 需要选中图片');
         }
+        result = await generateRunningHubVideo(runningHubApiKey, {
+          workflow: LTX2_WORKFLOW_TEMPLATE,
+          prompt: shot.videoPrompt,
+          model: 'ltx2',
+          image_url: selectedImageUrl,
+          duration: selectedVideoDuration || selectedModel.duration || 10,
+        });
+      } else if (hasImages) {
+        const selectedImageUrl = shotImages[shot.selectedImageIndex!];
+        if (!selectedImageUrl) {
+          appendTerminalLog('VideoGen', `镜头${shot.number}: 选中图片 URL 无效`);
+          toast.error('选中的图片URL无效，请重新选择图片', 6000);
+          updateShot(shot.id, { videoGenerating: false });
+          throw new Error('图片 URL 无效');
+        }
+        result = await generateRunningHubVideo(runningHubApiKey, {
+          prompt: shot.videoPrompt,
+          model: 'wan2.2',
+          image_url: selectedImageUrl,
+          duration: selectedVideoDuration || selectedModel.duration || 5,
+        });
       } else {
-        // 大洋芋模型处理
-        if (hasImages) {
-          // 图生视频模式：必须使用选中的图片
-          const selectedImageUrl = shotImages[shot.selectedImageIndex!];
-          
-          if (!selectedImageUrl) {
-            toast.error('选中的图片URL无效，请重新选择图片', 6000);
-            updateShot(shot.id, { videoGenerating: false });
-            return;
-          }
-          
-          console.log(`[MediaGenerator] 使用选中的图片生成视频: 索引 ${shot.selectedImageIndex}, URL: ${selectedImageUrl.substring(0, 50)}...`);
-          
-          const options: DayuVideoGenerationOptions = {
-            prompt: shot.videoPrompt,
-            model: selectedVideoModel,
-            input_reference: selectedImageUrl, // 使用选中的图片
-          };
-          
-          result = await generateImageToVideo(dayuApiKey, options);
-        } else {
-          // 文生视频模式
-          const options: DayuVideoGenerationOptions = {
-            prompt: shot.videoPrompt,
-            model: selectedVideoModel,
-          };
-          
-          result = await generateTextToVideo(dayuApiKey, options);
-        }
+        result = await generateRunningHubVideo(runningHubApiKey, {
+          prompt: shot.videoPrompt,
+          model: 'wan2.2',
+          duration: selectedVideoDuration || selectedModel.duration || 5,
+        });
       }
-      
+
       if (result.success) {
         // 记录完整的响应数据用于调试
         console.log('[MediaGenerator] 视频生成响应:', {
@@ -1703,6 +2314,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               videoGenerating: false 
             });
             toast.success(`视频生成成功并已缓存！（共 ${updatedVideoUrls.length} 个视频）`, 8000);
+            appendTerminalLog('VideoGen', `镜头${shot.number}: 同步返回视频 URL，已缓存并写入`);
           } catch (cacheError: any) {
             console.warn('[MediaGenerator] 视频缓存失败，使用原始URL:', cacheError);
             
@@ -1716,14 +2328,13 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               videoGenerating: false 
             });
             toast.success(`视频生成成功！（共 ${updatedVideoUrls.length} 个视频）`, 8000);
+            appendTerminalLog('VideoGen', `镜头${shot.number}: 同步返回视频 URL（未缓存）`);
           }
         } else if (result.taskId) {
           // 异步任务，开始轮询
+          appendTerminalLog('VideoGen', `镜头${shot.number}: 任务已提交 taskId=${result.taskId}`);
           console.log(`[MediaGenerator] 视频生成任务已提交: taskId=${result.taskId}, status=${result.status}, progress=${result.progress}`);
-          const modelInfo = selectedModel?.name || selectedVideoModel;
-          const isProModel = modelInfo?.includes('Pro') || modelInfo?.includes('pro');
-          const isRunningHub = isRunningHubModel;
-          const estimatedTime = isRunningHub ? '3-10分钟' : (isProModel ? '15-30分钟' : '3-5分钟');
+          const estimatedTime = '3-10分钟';
           
           toast.info(
             `视频生成任务已提交\n` +
@@ -1733,36 +2344,30 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             8000
           );
           
-          // 使用对应的轮询函数
-          if (isRunningHub) {
-            await pollRunningHubTaskStatus(result.taskId, shot.id);
-          } else {
-            await pollTaskStatus(result.taskId, shot.id);
-          }
+          await pollRunningHubTaskStatus(result.taskId, shot.id);
         } else {
           // 成功但没有taskId和videoUrl，可能是响应格式问题
+          appendTerminalLog('VideoGen', `镜头${shot.number}: 响应异常 — 无 taskId 与 videoUrl`);
           console.warn('[MediaGenerator] 视频生成响应异常:', result);
           toast.warning('视频生成任务已提交，但未获取到任务ID，请稍后手动检查', 8000);
           updateShot(shot.id, { videoGenerating: false });
+          throw new Error('未获取到任务 ID');
         }
       } else {
-        // 生成失败
-        const errorMsg = result.error || '未知错误';
-        if (errorMsg.includes('负载已饱和') || errorMsg.includes('saturated') || errorMsg.includes('负载')) {
-          toast.error('服务器暂时繁忙，请稍后重试', 8000);
-        } else {
-          toast.error(`视频生成失败: ${errorMsg}`, 6000);
-        }
+        appendTerminalLog('VideoGen', `镜头${shot.number}: API 返回失败 — ${result.error || '未知'}`);
         updateShot(shot.id, { videoGenerating: false });
+        throw new Error(result.error || '视频生成失败');
       }
     } catch (error: any) {
       const errorMsg = error.message || '未知错误';
+      appendTerminalLog('VideoGen', `镜头${shot.number}: 异常 — ${errorMsg}`);
       if (errorMsg.includes('负载已饱和') || errorMsg.includes('saturated') || errorMsg.includes('负载')) {
         toast.error('服务器暂时繁忙，请稍后重试', 8000);
       } else {
         toast.error(`视频生成失败: ${errorMsg}`, 6000);
       }
       updateShot(shot.id, { videoGenerating: false });
+      throw error;
     }
   };
 
@@ -2004,24 +2609,43 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     }
   };
 
-  // 批量生成语音（占位函数，待实现）
+  // 批量生成语音（RunningHub TTS / 语音库 IndexTTS2）
   const handleBatchGenerateVoice = async () => {
-    const selectedShots = shots.filter(s => s.selected && s.caption);
+    const selectedShots = shots.filter(s => s.selected && (s.caption?.trim() || s.voiceOver?.trim()));
     if (selectedShots.length === 0) {
-      toast.warning('请先选择需要生成语音的镜头');
+      toast.warning('请先选择有文案或语音分镜内容的镜头');
       return;
     }
-    
-    if (!confirm(`确定要为 ${selectedShots.length} 个镜头批量生成语音吗？`)) {
+    if (!runningHubApiKey?.trim()) {
+      toast.error('请先配置 RunningHub API Key（上方输入框）');
       return;
     }
-    
-    toast.info('批量生成语音功能开发中...', 3000);
-    // TODO: 实现批量语音生成逻辑
+    if (!confirm(`确定要为 ${selectedShots.length} 个镜头批量生成配音吗？（可走语音库参考音色）`)) {
+      return;
+    }
+    setBatchProgress({ current: 0, total: selectedShots.length, type: 'voice' });
+    try {
+      const tasks = selectedShots.map((shot) => async () => {
+        await synthesizeVoiceForShot(shot, { playAfter: false });
+        return { shot };
+      });
+      const concurrency = 2;
+      const results = await runConcurrentTasks(tasks, concurrency, (done, total) => {
+        setBatchProgress(prev => (prev ? { ...prev, current: done } : null));
+      });
+      const ok = results.success.length;
+      const bad = results.failed.length;
+      if (bad === 0) toast.success(`批量配音完成：${ok} 个镜头`, 6000);
+      else toast.warning(`配音结束：成功 ${ok}，失败 ${bad}`, 8000);
+    } catch (e: any) {
+      toast.error(`批量配音异常: ${e.message || e}`, 6000);
+    } finally {
+      setBatchProgress(null);
+    }
   };
 
   const selectedCount = shots.filter(s => s.selected).length;
-  const generatingCount = shots.filter(s => s.imageGenerating || s.videoGenerating).length;
+  const generatingCount = shots.filter(s => s.imageGenerating || s.videoGenerating || s.voiceGenerating).length;
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
@@ -2039,7 +2663,16 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             >
               <FolderOpen size={16} />
               从改写工具读取
-          </button>
+            </button>
+            <button
+              type="button"
+              onClick={openMediaHistorySelector}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium rounded-lg transition-all"
+              title="仅列出已生成图片/配音/视频的快照（YYYYMMDD + 三位随机数）"
+            >
+              <HardDrive size={16} />
+              历史记录
+            </button>
             <button
               onClick={() => fileInputRef.current?.click()}
               className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium rounded-lg transition-all"
@@ -2066,21 +2699,58 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
         {/* 设置选项 - 一排显示 */}
         <div className="flex flex-nowrap items-end gap-2 pt-3 border-t border-slate-700 overflow-x-auto">
-          {/* 大洋芋 API Key 输入 */}
-          <div className="flex-shrink-0 w-[160px]">
+          {/* RunningHub API Key（始终显示，配音/视频共用） */}
+          <div className="flex-shrink-0 w-[220px]">
             <label className="text-[10px] text-slate-500 mb-0.5 block flex items-center gap-1">
-              大洋芋 API Key
-              <span className="text-amber-400 text-[9px]">(视频)</span>
+              <Rocket size={10} className="text-orange-400" />
+              RunningHub API Key
+              <span className="text-amber-400 text-[9px]">(视频+配音)</span>
             </label>
             <input
               type="password"
-              value={dayuApiKey}
-              onChange={(e) => setDayuApiKey(e.target.value)}
-              placeholder="输入 API Key"
+              value={runningHubApiKey}
+              onChange={(e) => setRunningHubApiKey(e.target.value)}
+              placeholder="填写后生成视频/配音"
               className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
             />
-      </div>
-          
+          </div>
+
+          {/* 角色库 / 语音库：始终显示（不依赖图片模型） */}
+          <div className="flex-shrink-0 flex items-end gap-1.5 border-l border-slate-700 pl-2 ml-0.5">
+            <div>
+              <label className="text-[10px] text-slate-500 mb-0.5 block whitespace-nowrap">角色库</label>
+              <button
+                type="button"
+                onClick={() => setShowCharacterLibrary(true)}
+                className="px-2.5 py-1 bg-indigo-600/80 hover:bg-indigo-500 text-white text-[11px] font-medium rounded flex items-center gap-1 shadow-sm"
+                title="管理角色（图生图锚定）"
+              >
+                <Users size={14} />
+                打开
+              </button>
+            </div>
+            <div className="min-w-0 max-w-[140px]">
+              <label className="text-[10px] text-slate-500 mb-0.5 block whitespace-nowrap">语音库</label>
+              {selectedVoiceForUi?.name && (
+                <div
+                  className="text-[10px] text-amber-400/90 font-medium truncate mb-0.5"
+                  title={`当前参考音色（RunningHub 配音）: ${selectedVoiceForUi.name}`}
+                >
+                  {selectedVoiceForUi.name}
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => setShowVoiceLibrary(true)}
+                className="px-2.5 py-1 bg-teal-600/80 hover:bg-teal-500 text-white text-[11px] font-medium rounded flex items-center gap-1 shadow-sm"
+                title="管理参考音色：上传的音频会作为 RunningHub IndexTTS2 / TTS 应用的参考音路径，与媒体生成页 RunningHub API Key 绑定"
+              >
+                <HardDrive size={14} />
+                打开
+              </button>
+            </div>
+          </div>
+
           {/* 即梦 API 配置（仅在选择即梦模型时显示） */}
           {selectedImageModel === 'jimeng' && (
             <>
@@ -2110,27 +2780,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                   className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
                 />
               </div>
-              <div className="flex-shrink-0">
-                <label className="text-[10px] text-slate-500 mb-0.5 block">
-                  角色库
-                </label>
-                <button
-                  onClick={() => setShowCharacterLibrary(true)}
-                  className="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-slate-200 text-[11px] rounded flex items-center gap-1"
-                  title="管理角色库（支持图生图）"
-                >
-                  <Users size={14} />
-                  管理
-                </button>
-              </div>
             </>
-          )}
-
-          {/* RunningHub 提示（API Key在全局配置中） */}
-          {((selectedImageModel && selectedImageModel.startsWith('runninghub-')) || (selectedVideoModel === 'runninghub-wan2.2' || selectedVideoModel === 'runninghub-ltx2')) && provider !== 'runninghub' && (
-            <div className="flex-shrink-0 px-3 py-1 bg-purple-900/30 border border-purple-700/50 rounded text-[10px] text-purple-300 flex items-center">
-              ⚠️ 请在顶部配置 RunningHub API Key
-            </div>
           )}
 
           <div className="flex-shrink-0 w-[120px]">
@@ -2228,6 +2878,20 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               })()}
             </select>
           </div>
+
+          {/* 一键成片：生成范围（默认含视频） */}
+          <div className="flex-shrink-0 w-[148px]">
+            <label className="text-[10px] text-slate-500 mb-0.5 block whitespace-nowrap">一键成片设置</label>
+            <select
+              value={oneClickPipelineMode}
+              onChange={(e) => setOneClickPipelineMode(e.target.value as 'image_audio_video' | 'image_audio_only')}
+              className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
+              title="一键成片 / 挂机队列处理时均按此项决定是否生成视频"
+            >
+              <option value="image_audio_video">图片+音频+视频</option>
+              <option value="image_audio_only">仅图片+音频</option>
+            </select>
+          </div>
           
           {/* 视频方向选择 */}
           <div className="flex-shrink-0 w-[90px]">
@@ -2296,14 +2960,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             </select>
           </div>
 
-          <div className="flex-shrink-0 w-[100px]">
+          <div className="flex-shrink-0 min-w-[168px] max-w-[220px] w-[min(100%,200px)]">
             <label className="text-[10px] text-slate-500 mb-0.5 block">风格设置</label>
             <select
-              value={selectedStyle}
+              value={STYLE_LIBRARY.some((s) => s.id === selectedStyle) ? selectedStyle : 'none'}
               onChange={(e) => setSelectedStyle(e.target.value)}
               className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
             >
-              {STYLE_LIBRARY.map(style => (
+              {STYLE_LIBRARY.map((style) => (
                 <option key={style.id} value={style.id}>{style.name}</option>
               ))}
             </select>
@@ -2339,19 +3003,78 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
       {/* 主内容区域 */}
       <div className="flex flex-col gap-4">
+        {/* 工作区标签栏 */}
+        <div className="flex items-center gap-1 bg-slate-800/70 border border-slate-700 rounded-lg p-1.5 overflow-x-auto">
+          {/* 当前编辑标签 */}
+          <button
+            onClick={() => { setActiveWorkspaceTabId('main'); setQueuePreviewLocalShots(null); }}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all ${
+              activeWorkspaceTabId === 'main'
+                ? 'bg-emerald-600 text-white shadow-lg'
+                : 'bg-slate-700/50 text-slate-300 hover:bg-slate-600'
+            }`}
+          >
+            <Rocket size={13} />
+            <span className="font-mono text-[11px] max-w-[200px] truncate" title={mainWorkspaceTabTitle}>
+              {mainWorkspaceTabTitle}
+            </span>
+            {oneClickRunning && (
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+              </span>
+            )}
+          </button>
+          {/* 队列任务标签 */}
+          {queueWorkspaceTabIds.map(tabId => {
+            const task = oneClickQueueTasks.find(t => t.id === tabId);
+            const meta = queueTabMeta[tabId];
+            const isRunning = task?.status === 'running';
+            return (
+              <button
+                key={tabId}
+                onClick={() => setActiveWorkspaceTabId(tabId)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all group ${
+                  activeWorkspaceTabId === tabId
+                    ? 'bg-indigo-600 text-white shadow-lg'
+                    : 'bg-slate-700/50 text-slate-300 hover:bg-slate-600'
+                }`}
+              >
+                <ListOrdered size={13} />
+                {meta?.name || tabId}
+                {isRunning && (
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                  </span>
+                )}
+                <span
+                  onClick={(e) => { e.stopPropagation(); closeQueueTaskWorkspaceTab(tabId); }}
+                  className="ml-0.5 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                >
+                  <X size={11} />
+                </span>
+              </button>
+            );
+          })}
+          {/* 一键成片状态指示 */}
+          {oneClickRunning && oneClickPipelineProgress && (
+            <span className="text-[11px] text-amber-400 ml-2 animate-pulse">{oneClickPipelineProgress}</span>
+          )}
+        </div>
+
         {/* 操作栏 */}
-        <div className="flex items-center justify-between bg-slate-800/50 border border-slate-700 rounded-xl p-4">
-          <h3 className="text-sm font-semibold text-slate-300">镜头列表 ({shots.length})</h3>
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between bg-slate-800/50 border border-slate-700 rounded-xl p-3">
+          <div className="flex items-center gap-2 flex-wrap">
             {/* 批量选择按钮 */}
-            <div className="flex items-center gap-1 border-r border-slate-700 pr-2 mr-2">
-            <button
+            <div className="flex items-center gap-1 border-r border-slate-700 pr-2 mr-1">
+              <button
                 onClick={handleSelectAll}
                 className="flex items-center gap-1 px-2 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-medium rounded transition-all"
                 title="全选"
-            >
+              >
                 <CheckSquare size={14} />
-            </button>
+              </button>
               <button
                 onClick={handleDeselectAll}
                 className="flex items-center gap-1 px-2 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-medium rounded transition-all"
@@ -2367,11 +3090,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                 <RefreshCw size={14} />
               </button>
             </div>
-            
-            <button
-              onClick={handleAddShot}
-              className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition-all"
-            >
+
+            <button onClick={handleAddShot} className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition-all">
               <Plus size={14} />
               添加镜头
             </button>
@@ -2381,54 +3101,189 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               className="flex items-center gap-1 px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
             >
               <Trash2 size={14} />
-              刪除選中 ({selectedCount})
+              刪除 ({selectedCount})
             </button>
             <button
               onClick={handleExportImagesAsZip}
-              disabled={selectedCount === 0 || shots.filter(s => s.selected && s.imageUrls && s.imageUrls.length > 0).length === 0}
+              disabled={selectedCount === 0 || shots.filter(s => s.selected && s.imageUrls?.length).length === 0}
               className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
               title="导出选中镜头的所有图片为 ZIP 文件"
             >
               <Download size={14} />
-              导出图片 ZIP ({selectedCount})
+              图片ZIP
             </button>
-            
-            {/* 批量操作按钮 */}
-            <div className="flex items-center gap-1 border-l border-slate-700 pl-2 ml-2">
+
+            {/* 批量操作 */}
+            <div className="flex items-center gap-1 border-l border-slate-700 pl-2 ml-1">
               <button
                 onClick={handleBatchGenerateImages}
                 disabled={generatingCount > 0}
-                className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
+                className="flex items-center gap-1 px-2 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
                 title="批量生成图片"
               >
-                <Rocket size={14} />
-                批量生成圖片
+                <Rocket size={13} />
+                批量圖片
               </button>
               <button
                 onClick={handleBatchGenerateVideos}
                 disabled={generatingCount > 0}
-                className="flex items-center gap-1 px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
+                className="flex items-center gap-1 px-2 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
                 title="批量生成视频"
               >
-                <Rocket size={14} />
-                批量生成视频
+                <Rocket size={13} />
+                批量视频
               </button>
               <button
                 onClick={handleBatchGenerateVoice}
                 disabled={generatingCount > 0}
-                className="flex items-center gap-1 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
+                className="flex items-center gap-1 px-2 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
                 title="批量生成语音"
               >
-                <Rocket size={14} />
-                批量生成語音
+                <Rocket size={13} />
+                批量語音
               </button>
             </div>
-            
-            <span className="text-xs text-slate-500 ml-2">
+
+            <span className="text-xs text-slate-500 ml-1">
               {generatingCount > 0 ? `生成中: ${generatingCount} 個任務...` : '就緒'}
             </span>
           </div>
+
+          {/* 一键成片 & 队列按钮 */}
+          <div className="flex items-center gap-2 ml-4 flex-shrink-0">
+            <button
+              onClick={() => handleOneClickPipeline()}
+              disabled={oneClickRunning || generatingCount > 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs font-semibold rounded-lg shadow-lg transition-all disabled:opacity-50"
+            >
+              {oneClickRunning ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />}
+              {oneClickRunning ? '成片中...' : '一键成片'}
+            </button>
+            <button
+              onClick={handleEnqueueOneClickTask}
+              disabled={queueProcessorRunning}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white text-xs font-medium rounded-lg transition-all disabled:opacity-50"
+            >
+              <ArrowUp size={14} />
+              加入挂机队列
+            </button>
+            <button
+              onClick={() => { if (!queueProcessorRunning) processOneClickQueue(); }}
+              disabled={queueProcessorRunning}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold rounded-lg shadow transition-all disabled:opacity-50"
+            >
+              {queueProcessorRunning ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />}
+              {queueProcessorRunning ? '队列执行中...' : '处理队列'}
+            </button>
+            <button
+              onClick={handleExportToJianying}
+              disabled={isExportingToJianying || tableShots.length === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium rounded-lg transition-all disabled:opacity-50"
+            >
+              {isExportingToJianying ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+              导出剪映
+            </button>
           </div>
+        </div>
+
+        {/* 队列任务历史 */}
+        {oneClickQueueTasks.length > 0 && (
+          <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-3">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                <ListOrdered size={14} />
+                队列任务历史
+                <span className="text-[10px] text-slate-500 font-normal">({oneClickQueueTasks.length})</span>
+              </h3>
+            </div>
+            <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto">
+              {oneClickQueueTasks.map(t => {
+                const statusColors: Record<string, string> = {
+                  queued: 'bg-slate-600',
+                  running: 'bg-amber-600 animate-pulse',
+                  completed: 'bg-emerald-600',
+                  failed: 'bg-red-600',
+                };
+                const statusLabels: Record<string, string> = {
+                  queued: '等待',
+                  running: '执行中',
+                  completed: '已完成',
+                  failed: '失败',
+                };
+                return (
+                  <div key={t.id} className="flex items-center gap-2 bg-slate-700/50 rounded-lg px-3 py-2">
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium text-white ${statusColors[t.status] || 'bg-slate-600'}`}>
+                      {statusLabels[t.status] || t.status}
+                    </span>
+                    <span className={`text-[10px] font-mono ${t.type === 'oneshot' ? 'text-indigo-400' : 'text-orange-400'}`}>
+                      [{t.type === 'oneshot' ? 'OC' : 'Q'}]
+                    </span>
+                    <span className="text-[11px] text-slate-300 truncate flex-1">{t.id}</span>
+                    <span className="text-[10px] text-slate-500">{t.completedAt || t.createdAt}</span>
+                    {t.status === 'completed' && (
+                      <button
+                        onClick={() => handleReexportJianyingForTask(t.id)}
+                        className="text-[10px] px-2 py-0.5 bg-purple-600 hover:bg-purple-500 text-white rounded transition-all"
+                      >
+                        补导出
+                      </button>
+                    )}
+                    <button
+                      onClick={() => openQueueTaskWorkspaceTab(t.id, t.id, t.type as 'oneshot' | 'queue', t.status === 'running')}
+                      className="text-[10px] px-2 py-0.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded transition-all"
+                    >
+                      查看任务
+                    </button>
+                    <button
+                      onClick={() => {
+                        const tasks = oneClickQueueTasks.filter(x => x.id !== t.id);
+                        persistQueue(tasks);
+                        appendTerminalLog('Queue', `删除任务 ${t.id}`);
+                      }}
+                      className="text-[10px] px-1.5 py-0.5 bg-red-600/50 hover:bg-red-600 text-white rounded transition-all"
+                    >
+                      <X size={10} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* 终端日志 */}
+        <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-3">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+              <Terminal size={14} />
+              终端日志
+              <span className="text-[10px] text-slate-500 font-normal">({terminalLogs.length})</span>
+            </h3>
+            <button
+              type="button"
+              onClick={() => { setTerminalLogs([]); try { localStorage.removeItem(TERMINAL_LOG_STORAGE_KEY); } catch {} }}
+              className="text-[10px] text-slate-500 hover:text-slate-300 px-2 py-0.5 rounded border border-slate-600"
+            >
+              清空
+            </button>
+          </div>
+          <div
+            ref={terminalScrollRef}
+            className="h-32 overflow-y-auto rounded-lg border border-slate-600 bg-black px-3 py-2 font-mono text-[11px] leading-relaxed shadow-inner"
+          >
+            {terminalLogs.length === 0 ? (
+              <span className="text-slate-600">等待操作…</span>
+            ) : (
+              terminalLogs.map(row => (
+                <div key={row.id} className="whitespace-pre-wrap break-all">
+                  <span className="text-emerald-400">[{row.time}]</span>
+                  <span className="text-slate-400 ml-1">[{row.tag}]</span>
+                  <span className="text-slate-200 ml-1">{row.message}</span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
 
         {/* 镜头列表 - 表格式布局 */}
         <div className="flex-1 overflow-x-auto custom-scrollbar">
@@ -2598,6 +3453,24 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                         }`}>
                           {shot.imagePrompt || '無'}
                         </div>
+                        {(() => {
+                          const m = detectCharactersInPrompt(shot.imagePrompt || '');
+                          if (!m.length) return null;
+                          return (
+                            <div className="mt-1 flex flex-wrap gap-1.5 items-center">
+                              {m.map((c) => (
+                                <div
+                                  key={c.id}
+                                  className="flex items-center gap-1 rounded border border-amber-500/40 bg-slate-800/90 px-1 py-0.5"
+                                  title={`角色：${c.name}`}
+                                >
+                                  <img src={c.imageUrl} alt="" className="h-8 w-8 shrink-0 rounded object-cover" />
+                                  <span className="max-w-[64px] truncate text-[9px] text-amber-200/95">{c.name}</span>
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        })()}
                         {shot.imagePrompt && shot.imagePrompt.length > 60 && (
                           <button
                             onClick={() => {
@@ -2851,16 +3724,43 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                       重新繪圖
                     </button>
                     <button
-                      className="text-[10px] px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded whitespace-nowrap"
-                      title="配音试听"
+                      type="button"
+                      disabled={shot.voiceGenerating}
+                      onClick={async () => {
+                        if (shot.voiceAudioUrl) {
+                          // 已有音频 → 直接试听（兼容历史相对路径 api/xxx.wav）
+                          const u = shot.voiceAudioUrl.trim();
+                          const src =
+                            /^https?:|^data:|^blob:/i.test(u) ? u : resolveRunningHubOutputUrl(u);
+                          try {
+                            await new Audio(src).play();
+                            toast.success('试听播放中', 2500);
+                          } catch {
+                            toast.error('音频播放失败，可能是浏览器静音或 URL 无效', 4000);
+                          }
+                          return;
+                        }
+                        // 无音频 → 先生成再试听
+                        try {
+                          await synthesizeVoiceForShot(shot, { playAfter: true });
+                          toast.success('试听播放中', 2500);
+                        } catch (e: any) {
+                          toast.error(e?.message || '配音生成失败', 6000);
+                        }
+                      }}
+                      className="text-[10px] px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded whitespace-nowrap disabled:opacity-50"
+                      title={shot.voiceAudioUrl ? '点击试听已有配音' : '使用 RunningHub 生成配音（可在语音库选参考音色）'}
                     >
-                      配音試聽
+                      {shot.voiceGenerating ? '生成中…' : shot.voiceAudioUrl ? '音频试听' : '生成音频'}
                     </button>
                     <button
-                      onClick={() => handleGenerateVideo(shot)}
+                      type="button"
+                      onClick={() => {
+                        void handleGenerateVideo(shot).catch(() => {});
+                      }}
                       disabled={shot.videoGenerating || !shot.videoPrompt}
                       className="text-[10px] px-2 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded disabled:opacity-50 whitespace-nowrap"
-                      title="制作动画"
+                      title="制作动画（RunningHub Wan2.2 / LTX-2）"
                     >
                       製作動畫
                     </button>
@@ -2916,8 +3816,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               下載圖片
               </a>
           </div>
-            </div>
-          )}
+        </div>
+      )}
 
       {/* 视频播放模态框 */}
       {enlargedVideoUrl && (
@@ -2956,19 +3856,33 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       {showScriptHistorySelector && (
         <HistorySelector
           records={scriptHistoryRecords}
-          onSelect={handleScriptHistorySelect}
-          onClose={() => setShowScriptHistorySelector(false)}
-          onDelete={(timestamp) => {
-            // 删除历史记录
-            const updatedRecords = scriptHistoryRecords.filter(r => r.timestamp !== timestamp);
-            setScriptHistoryRecords(updatedRecords);
-            
-            // 如果删除后没有记录了，关闭选择器
-            if (updatedRecords.length === 0) {
-              setShowScriptHistorySelector(false);
-            }
+          onSelect={handleHistorySelectorSelect}
+          onClose={() => {
+            setShowScriptHistorySelector(false);
+            setHistorySelectorKind(null);
           }}
-          title="选择脚本历史记录"
+          onDelete={(record) => {
+            persistDeleteHistoryRecord(record);
+            setScriptHistoryRecords((prev) => {
+              const next = prev.filter((r) => !historyRecordRowMatch(r, record));
+              if (next.length === 0) {
+                setShowScriptHistorySelector(false);
+                setHistorySelectorKind(null);
+              }
+              return next;
+            });
+            toast.success('已删除该条记录', 2500);
+          }}
+          onClearAll={() => {
+            persistClearAllHistoryRecords();
+            setScriptHistoryRecords([]);
+            setShowScriptHistorySelector(false);
+            setHistorySelectorKind(null);
+            toast.success('已清空全部历史记录', 3000);
+          }}
+          title={
+            historySelectorKind === 'media' ? '媒体生成历史记录' : '选择脚本历史记录'
+          }
         />
       )}
 
@@ -2978,6 +3892,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           onClose={() => setShowCharacterLibrary(false)}
           jimengApiBaseUrl={jimengApiBaseUrl}
           jimengSessionId={jimengSessionId}
+        />
+      )}
+
+      {/* 语音库管理 */}
+      {showVoiceLibrary && (
+        <VoiceLibrary
+          onClose={() => setShowVoiceLibrary(false)}
+          onVoicesChange={() => setVoiceLibraryEpoch((e) => e + 1)}
         />
       )}
     </div>

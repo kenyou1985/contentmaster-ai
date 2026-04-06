@@ -1,0 +1,123 @@
+{
+  "draft_id": "72ABBCC1-A628-4F88-A2AF-7557FD798001",
+  "draft_name": "ContentMaster_2026-04-05 1730",
+  "duration": 10000000,
+  "create_time": 1775381432989696,
+  "update_time": 1775381432989696,
+  "fps": 30,
+  "videos": [],
+  "images": [],
+  "audios": [],
+  "texts": [],
+  "video_op_way": 0,
+  "draft_type": "",
+  "last_modified_app": "ContentMaster AI",
+  "timelines": [
+    {
+      "id": "9377C694-50CA-487A-A33C-B7A625BBB740",
+      "duration": 10000000,
+      "fps": 30,
+      "width": 1920,
+      "height": 1080,
+      "type": "template",
+      "track_list": [
+        {
+          "id": "739E26F3-5655-43CD-B689-971443DEDB8D",
+          "type": 0,
+          "name": "视频",
+          "important": 1,
+          "height": 0,
+          "is_locked": false,
+          "is_visible": true
+        },
+        {
+          "id": "9E7ADF9B-19C7-4369-A34D-FD72CBDD5D36",
+          "type": 2,
+          "name": "文字",
+          "important": 0,
+          "height": 0,
+          "is_locked": false,
+          "is_visible": true
+        }
+      ],
+      "entity_list": {
+        "material_list": [],
+        "text_segments": [
+          {
+            "id": "B2202E3A-F359-4DBE-AB0E-29A8A639A6E6",
+            "material_id": "8CCB05E3-4372-4987-B493-2823945698A3",
+            "track_id": "9E7ADF9B-19C7-4369-A34D-FD72CBDD5D36",
+            "target_timerange": {
+              "start": 0,
+              "duration": 5000000
+            },
+            "type": "text",
+            "text_content": {
+              "content": "If you’ve ever felt like your mind is carrying too much, I want you to stay with me for a moment. Because sometimes healing does not begin with a perfect plan. Sometimes it begins with a pair of soft eyes, a wagging tail, and a presence that asks nothing from you except to be near.",
+              "font_name": "思源黑体",
+              "font_size": 60,
+              "bold": false,
+              "italic": false,
+              "color": "#FFFFFF",
+              "background_color": "#00000080",
+              "stroke_color": "#000000",
+              "stroke_width": 1.0,
+              "shadow_color": "#00000066",
+              "shadow_angle": 45.0,
+              "shadow_distance": 3.0,
+              "shadow_blur": 3.0,
+              "shadow_alpha": 0.5,
+              "alignment": 1,
+              "line_spacing": 1.2,
+              "text_background": false,
+              "text_background_radius": 4,
+              "text_background_padding_x": 10,
+              "text_background_padding_y": 6,
+              "text_background_corner_radius": 4,
+              "text_vertical": false
+            },
+            "style_id": "",
+            "effects": []
+          },
+          {
+            "id": "34538B6F-0DE6-437C-A87C-1465C4E4C569",
+            "material_id": "F968F4B4-3EBF-4CE4-93F4-A955080B707C",
+            "track_id": "9E7ADF9B-19C7-4369-A34D-FD72CBDD5D36",
+            "target_timerange": {
+              "start": 5000000,
+              "duration": 5000000
+            },
+            "type": "text",
+            "text_content": {
+              "content": "A dog cannot erase pain. But a dog can change the way pain feels inside your body. And for many people living with depression, loneliness, anxiety, or emotional exhaustion, that small difference can be life-changing.",
+              "font_name": "思源黑体",
+              "font_size": 60,
+              "bold": false,
+              "italic": false,
+              "color": "#FFFFFF",
+              "background_color": "#00000080",
+              "stroke_color": "#000000",
+              "stroke_width": 1.0,
+              "shadow_color": "#00000066",
+              "shadow_angle": 45.0,
+              "shadow_distance": 3.0,
+              "shadow_blur": 3.0,
+              "shadow_alpha": 0.5,
+              "alignment": 1,
+              "line_spacing": 1.2,
+              "text_background": false,
+              "text_background_radius": 4,
+              "text_background_padding_x": 10,
+              "text_background_padding_y": 6,
+              "text_background_corner_radius": 4,
+              "text_vertical": false
+            },
+            "style_id": "",
+            "effects": []
+          }
+        ],
+        "barrage_mask_list": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "project_name": "测试3",
+  "project_id": "2C5EBD05-28FF-4840-95EF-16A2014D5B75",
+  "update_time": 1775382884285365,
+  "fps": 30,
+  "video_out_height": 1080,
+  "video_out_width": 1920,
+  "timelines": [
+    {
+      "id": "7E07EE7E-E9DF-484E-834B-E9FBB087981F",
+      "duration": 5000000,
+      "fps": 30,
+      "width": 1920,
+      "height": 1080
+    }
+  ]
+}

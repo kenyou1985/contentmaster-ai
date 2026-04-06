@@ -10,6 +10,8 @@ interface LayoutProps {
   setApiKey: (key: string) => void;
   provider: ApiProvider;
   setProvider: (provider: ApiProvider) => void;
+  runningHubApiKey: string;
+  setRunningHubApiKey: (key: string) => void;
 }
 
 export const Layout: React.FC<LayoutProps> = ({ 
@@ -19,7 +21,9 @@ export const Layout: React.FC<LayoutProps> = ({
   apiKey, 
   setApiKey,
   provider,
-  setProvider
+  setProvider,
+  runningHubApiKey,
+  setRunningHubApiKey,
 }) => {
   const [showKeyInput, setShowKeyInput] = React.useState(!apiKey);
   const isYunwuKey = apiKey?.trim().startsWith('sk-');
@@ -77,7 +81,7 @@ export const Layout: React.FC<LayoutProps> = ({
               >
                 <div className="flex items-center gap-2">
                     <Video size={14} />
-                    媒体生成
+                    一键成片
                 </div>
               </button>
               <button
@@ -107,7 +111,8 @@ export const Layout: React.FC<LayoutProps> = ({
       {/* API Key Modal */}
       {showKeyInput && (
         <div className="bg-gradient-to-r from-amber-950/40 to-slate-950 border-b border-amber-500/20 px-4 py-4 backdrop-blur-md relative z-40 animate-in fade-in slide-in-from-top-2">
-          <div className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
+          <div className="max-w-7xl mx-auto space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
             
             {/* Provider + API Key */}
             <div className="flex-1 space-y-3">
@@ -195,6 +200,21 @@ export const Layout: React.FC<LayoutProps> = ({
                 </button>
             </div>
 
+          </div>
+
+            <div className="space-y-1">
+                <label className="text-xs text-blue-400/90 font-semibold uppercase tracking-wider flex items-center gap-1 flex-wrap">
+                    <Settings size={12} /> RunningHub API Key
+                    <span className="text-slate-500 font-normal normal-case text-[11px]">（一键成片 / 开源图视频，独立保存）</span>
+                </label>
+                <input
+                    type="password"
+                    value={runningHubApiKey}
+                    onChange={(e) => setRunningHubApiKey(e.target.value)}
+                    placeholder="与上方「API 服务」无关，填一次即可用于 RunningHub 图/视频"
+                    className="w-full bg-slate-900/50 border border-blue-700/40 rounded-md px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500/60 focus:ring-1 focus:ring-blue-500/20"
+                />
+            </div>
           </div>
         </div>
       )}

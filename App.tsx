@@ -4,6 +4,7 @@ import { Generator } from './components/Generator';
 import { Tools } from './components/Tools';
 import { MediaGenerator } from './components/MediaGenerator';
 import { CoverDesign } from './components/CoverDesign';
+import { QueueTaskViewer } from './components/QueueTaskViewer';
 import { initializeGemini } from './services/geminiService';
 import { ApiProvider } from './types';
 import { ToastContainer, useToast } from './components/Toast';
@@ -72,18 +73,21 @@ const App: React.FC = () => {
   const [apiKey, setApiKey] = useState(() => {
     return loadApiKeyForProvider(provider);
   });
-  
-  // 大洋芋 API Key State（用于视频生成）
-  const [dayuApiKey, setDayuApiKey] = useState(() => {
-    return localStorage.getItem('DAYU_API_KEY') || '';
-  });
-  
-  // 保存大洋芋 API Key 到 localStorage
+
+  /** RunningHub Key 独立持久化：媒体页/轮询不依赖当前「API 服务」是否为 runninghub */
+  const [runningHubApiKey, setRunningHubApiKey] = useState(() => loadApiKeyForProvider('runninghub'));
+
   useEffect(() => {
-    if (dayuApiKey) {
-      localStorage.setItem('DAYU_API_KEY', dayuApiKey);
+    if (runningHubApiKey) {
+      localStorage.setItem(getApiKeyStorageKey('runninghub'), runningHubApiKey);
     }
-  }, [dayuApiKey]);
+  }, [runningHubApiKey]);
+
+  useEffect(() => {
+    if (provider === 'runninghub' && apiKey.trim()) {
+      setRunningHubApiKey(apiKey);
+    }
+  }, [provider, apiKey]);
 
   // 当 provider 切换时，自动加载对应的 API Key
   useEffect(() => {
@@ -126,6 +130,9 @@ const App: React.FC = () => {
 
   const baseUrl = 'https://yunwu.ai';
 
+  // 检查是否为独立任务查看窗口
+  const isTaskViewer = new URLSearchParams(window.location.search).has('queueTaskView');
+
   useEffect(() => {
     if (!apiKey || !apiKey.trim()) {
       console.warn('[App] API Key is empty, skipping initialization');
@@ -162,27 +169,34 @@ const App: React.FC = () => {
     localStorage.setItem('GEMINI_PROVIDER', provider);
   }, [provider]);
 
+  // 独立任务查看窗口模式
+  if (isTaskViewer) {
+    return <QueueTaskViewer />;
+  }
+
   return (
     <>
-      <Layout 
-        activeTab={activeTab} 
+      <Layout
+        activeTab={activeTab}
         setActiveTab={setActiveTab}
         apiKey={apiKey}
         setApiKey={setApiKey}
         provider={provider}
         setProvider={setProvider}
+        runningHubApiKey={runningHubApiKey}
+        setRunningHubApiKey={setRunningHubApiKey}
       >
         {activeTab === 'generate' ? (
           <Generator apiKey={apiKey} provider={provider} toast={toast} />
         ) : activeTab === 'tools' ? (
           <Tools apiKey={apiKey} provider={provider} toast={toast} />
         ) : activeTab === 'media' ? (
-          <MediaGenerator 
-            apiKey={apiKey} 
-            provider={provider} 
+          <MediaGenerator
+            apiKey={apiKey}
+            provider={provider}
             toast={toast}
-            dayuApiKey={dayuApiKey}
-            setDayuApiKey={setDayuApiKey}
+            runningHubApiKey={runningHubApiKey}
+            setRunningHubApiKey={setRunningHubApiKey}
           />
         ) : (
           <CoverDesign apiKey={apiKey} provider={provider} toast={toast} />

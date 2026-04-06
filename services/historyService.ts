@@ -104,8 +104,13 @@ export const getHistory = (
       return [];
     }
 
-    // 按时间戳排序（最新的在前）
-    return history.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    const valid = history.filter(
+      (item: any): item is HistoryRecord =>
+        item != null &&
+        typeof item.content === 'string' &&
+        item.content.trim().length > 0
+    );
+    return valid.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
   } catch (error) {
     console.error('[HistoryService] 获取历史记录失败:', error);
     return [];
@@ -160,3 +165,55 @@ export const clearHistory = (
     console.error('[HistoryService] 清空历史记录失败:', error);
   }
 };
+
+/** 旧版 scriptHistory（非 history_tools_* 键） */
+export const SCRIPT_HISTORY_LEGACY_KEY = 'scriptHistory';
+
+export const LAST_GENERATED_SCRIPT_STORAGE_KEY = 'lastGeneratedScript';
+
+/**
+ * 列表中「最新生成的脚本」占位时间戳（该条目无独立存储时间，删除时按内容匹配 lastGeneratedScript）
+ */
+export const LAST_GENERATED_SCRIPT_TIMELINE_TS = 9_001_000_000_000;
+
+export function deleteScriptHistoryLegacyItem(timestamp: number): void {
+  try {
+    const historyStr = localStorage.getItem(SCRIPT_HISTORY_LEGACY_KEY);
+    if (!historyStr) return;
+    const history = JSON.parse(historyStr);
+    if (!Array.isArray(history)) return;
+    const ts = Number(timestamp);
+    const filtered = history.filter((item: any) => Number(item?.timestamp) !== ts);
+    if (filtered.length === 0) localStorage.removeItem(SCRIPT_HISTORY_LEGACY_KEY);
+    else localStorage.setItem(SCRIPT_HISTORY_LEGACY_KEY, JSON.stringify(filtered));
+  } catch (error) {
+    console.error('[HistoryService] 删除 scriptHistory 项失败:', error);
+  }
+}
+
+export function clearScriptHistoryLegacy(): void {
+  try {
+    localStorage.removeItem(SCRIPT_HISTORY_LEGACY_KEY);
+  } catch (error) {
+    console.error('[HistoryService] 清空 scriptHistory 失败:', error);
+  }
+}
+
+export function removeLastGeneratedScriptIfContentEquals(content: string): void {
+  try {
+    const saved = localStorage.getItem(LAST_GENERATED_SCRIPT_STORAGE_KEY);
+    if (saved != null && saved.trim() === String(content).trim()) {
+      localStorage.removeItem(LAST_GENERATED_SCRIPT_STORAGE_KEY);
+    }
+  } catch (error) {
+    console.error('[HistoryService] 删除 lastGeneratedScript 失败:', error);
+  }
+}
+
+export function clearLastGeneratedScript(): void {
+  try {
+    localStorage.removeItem(LAST_GENERATED_SCRIPT_STORAGE_KEY);
+  } catch (error) {
+    console.error('[HistoryService] 清空 lastGeneratedScript 失败:', error);
+  }
+}

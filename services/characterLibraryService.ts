@@ -189,6 +189,45 @@ export function detectCharactersInPrompt(prompt: string): Character[] {
 }
 
 /**
+ * 多个角色同时命中时，优先选「匹配词更长」的角色（如同时命中「狗」与「伴侣犬」时选伴侣犬），避免短词抢参考图。
+ */
+export function pickPrimaryCharacterForPrompt(prompt: string, matched: Character[]): Character | null {
+  if (matched.length === 0) return null;
+  if (matched.length === 1) return matched[0];
+  const lower = prompt.toLowerCase();
+
+  const bestTermLength = (char: Character): number => {
+    const terms = [char.name, ...(char.aliases || [])]
+      .map((t) => String(t).toLowerCase().trim())
+      .filter(Boolean);
+    let max = 0;
+    for (const t of terms) {
+      if (lower.includes(t)) max = Math.max(max, t.length);
+    }
+    return max;
+  };
+
+  const firstIndex = (char: Character): number => {
+    const terms = [char.name, ...(char.aliases || [])]
+      .map((t) => String(t).toLowerCase().trim())
+      .filter(Boolean);
+    let min = Infinity;
+    for (const t of terms) {
+      const i = lower.indexOf(t);
+      if (i !== -1) min = Math.min(min, i);
+    }
+    return min === Infinity ? 999999 : min;
+  };
+
+  const sorted = [...matched].sort((a, b) => {
+    const lenDiff = bestTermLength(b) - bestTermLength(a);
+    if (lenDiff !== 0) return lenDiff;
+    return firstIndex(a) - firstIndex(b);
+  });
+  return sorted[0];
+}
+
+/**
  * 将图片文件转换为base64 URL
  */
 export function fileToDataURL(file: File): Promise<string> {
