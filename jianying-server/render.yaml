@@ -1,0 +1,17 @@
+# Render.com Blueprint
+# One-click deploy: https://render.com/deploy?repo=https://github.com/YOUR_USERNAME/contentmaster-ai
+
+services:
+  - type: web
+    name: jianying-export
+    env: node
+    region: oregon
+    plan: free
+    branch: main
+    rootDir: jianying-server
+    buildCommand: npm install
+    startCommand: node server.mjs
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
