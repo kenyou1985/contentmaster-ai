@@ -2,7 +2,7 @@
  * 剪映草稿导出服务（前端调用层）
  * 通过 Vite proxy → HTTP 服务 → Python 脚本
  */
-const BASE = '/api/jianying';
+const BASE = (import.meta.env.VITE_JIANYING_API_BASE || '/api/jianying').replace(/\/$/, '');
 
 export interface JianyingShot {
   /** 镜头字幕文案 */
