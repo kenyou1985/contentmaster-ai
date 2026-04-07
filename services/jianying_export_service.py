@@ -136,14 +136,15 @@ def _download_file(url: str, dest_path: str, timeout: int = 30) -> bool:
                 f.write(binary_data)
             return True
 
-        # HTTP/HTTPS 下载
+        # HTTP/HTTPS 下载（RunningHub 等站点常校验 Referer，无则 403）
         import urllib.request
-        req = urllib.request.Request(
-            url,
-            headers={
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-            }
-        )
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        }
+        if 'runninghub.cn' in url.lower():
+            headers['Referer'] = 'https://www.runninghub.cn/'
+            timeout = max(timeout, 90)
+        req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as response:
             content_type = response.headers.get('Content-Type', '')
             # 根据 Content-Type 自动推断扩展名
@@ -1431,20 +1432,32 @@ def create_draft_on_mac(
         if audio_url and str(audio_url).strip():
             audio_filename = _safe_filename(str(audio_url))
             lap = os.path.join(draft_folder, "Resources", "audio", audio_filename)
-            if _download_file(str(audio_url), lap):
+            ok = _download_file(str(audio_url), lap)
+            print(f"[jianying_export] 镜头{i} 音频: url={'有' if audio_url else '无'} → 文件={audio_filename} → 下载={'成功' if ok else '失败'} {'(' + str(audio_url)[:80] + ')' if audio_url else ''}", file=sys.stderr, flush=True)
+            if ok:
                 row["audio_abs"] = os.path.abspath(lap)
                 probe_us = _ffprobe_duration_us(row["audio_abs"])
-                if probe_us and client_audio_us:
-                    row["audio_duration_us"] = max(int(probe_us), int(client_audio_us))
+                # 以文件实测为准；客户端 audioDurationSec 多为文案估算，取 max 会把时间线拉长得远超真实波形（见 pyJianYingDraft：片段时长应对齐素材）。
+                if probe_us:
+                    row["audio_duration_us"] = int(probe_us)
                 else:
-                    row["audio_duration_us"] = probe_us or client_audio_us
+                    row["audio_duration_us"] = client_audio_us
                 # 有配音时：时间线镜头时长以音频为准（静态图 / 视频片段不再固定 5s）
                 ad = row.get("audio_duration_us")
                 if ad and int(ad) > 0:
                     row["duration_us"] = int(ad)
+            else:
+                # 下载失败但客户端提供了时长估算（如前端 TTS），以此作时长兜底
+                if client_audio_us and int(client_audio_us) > 0:
+                    row["audio_duration_us"] = int(client_audio_us)
+                    row["duration_us"] = int(client_audio_us)
 
         prepared_shots.append(row)
         timeline_cursor += row["duration_us"]
+
+    # 调试：汇总每个镜头的音频信息
+    for i, r in enumerate(prepared_shots):
+        print(f"[jianying_export] 镜头{i} 汇总: audio_abs={r.get('audio_abs','无')} audio_dur_us={r.get('audio_duration_us','无')} timeline_dur_us={r.get('duration_us','无')}", file=sys.stderr, flush=True)
 
     total_duration = timeline_cursor
 

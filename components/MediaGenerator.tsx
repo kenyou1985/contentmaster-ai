@@ -1,7 +1,12 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { flushSync } from 'react-dom';
 import { ApiProvider, ToolMode, NicheType } from '../types';
-import { generateImage, ImageGenerationOptions } from '../services/yunwuService';
+import {
+  generateImage,
+  ImageGenerationOptions,
+  openAiImageDataItemToUrl,
+  polishTextForTtsSpeech,
+} from '../services/yunwuService';
 import { cacheVideo, getCachedVideoUrl, downloadVideo } from '../services/videoCacheService';
 import {
   generateImage as generateRunningHubImage,
@@ -37,17 +42,18 @@ import { useToast } from './Toast';
 import { ProgressBar } from './ProgressBar';
 import { exportJianyingDraft, JianyingShot } from '../services/jianyingExportService';
 import { loadOneClickQueue, saveOneClickQueue, newQueueTaskId, newOneshotTaskId, OneClickQueueTask, OneClickTaskSnapshot } from '../services/oneClickTaskQueue';
-import { COVER_STYLE_PRESETS } from '../services/coverStylePresets';
+import { COVER_STYLE_PRESETS, MEDIA_IMAGE_STYLE_STORAGE_KEY } from '../services/coverStylePresets';
 import {
   generateMediaSnapshotId,
   listMediaProjects,
   deleteMediaProject,
   clearAllMediaProjects,
+  saveOrUpdateMediaProject,
   saveMediaProjectSnapshot,
   getMediaProject,
   shotsHaveGeneratedMedia,
-  mediaFingerprint,
   persistedShotToShot,
+  MEDIA_HISTORY_MAX_DATA_URL_CHARS,
   type MediaProjectRecord,
 } from '../services/mediaProjectHistoryService';
 
@@ -71,6 +77,8 @@ interface Shot {
   soundEffect: string;
   /** RunningHub TTS 生成的配音试听地址 */
   voiceAudioUrl?: string;
+  /** TTS 音频时长（秒），导出剪映时用于音频下载失败的兜底时长 */
+  audioDurationSec?: number;
   voiceGenerating?: boolean;
   imageUrls?: string[]; // 支持多张图片
   videoUrl?: string; // 保留向后兼容（显示第一个视频）
@@ -82,6 +90,132 @@ interface Shot {
   selected?: boolean;
   editing?: boolean;
   selectedImageIndex?: number; // 选中的图片索引（-1 表示未选中）
+}
+
+/** 镜头文案里「角色-语气：」或「角色：」后的口播正文（无前缀则整段即正文） */
+function getCaptionSpeakBody(caption: string): string {
+  const c = (caption || '').trim();
+  if (!c) return '';
+  const m = c.match(/^[^-:：]+-[^:：]+[:：]\s*([\s\S]*)$/);
+  if (m) return stripOuterQuotes(m[1].trim());
+  const m2 = c.match(/^[^:：]+[:：]\s*([\s\S]*)$/);
+  if (m2) return stripOuterQuotes(m2[1].trim());
+  return stripOuterQuotes(c);
+}
+
+function stripOuterQuotes(s: string): string {
+  const t = s.trim();
+  if (t.length < 2) return t;
+  const a = t[0];
+  const b = t[t.length - 1];
+  if ((a === '"' && b === '"') || (a === '\u201c' && b === '\u201d') || (a === '「' && b === '」') || (a === '『' && b === '』')) {
+    return t.slice(1, -1).trim();
+  }
+  return t;
+}
+
+/** 从镜头文案前缀解析角色名 */
+function getCaptionRolePrefix(caption: string): string {
+  const c = (caption || '').trim();
+  const m = c.match(/^([^-:：]+)-[^:：]+[:：]/);
+  if (m) return m[1].trim();
+  const m2 = c.match(/^([^:：]+)[:：]/);
+  if (m2) return m2[1].trim();
+  return '';
+}
+
+function looksLikeSpokenParagraph(s: string): boolean {
+  const t = s.trim();
+  if (t.length > 72) return true;
+  if (/[.!?。！？]["」'']?\s/.test(t)) return true;
+  if (t.includes('\n')) return true;
+  return false;
+}
+
+/** 简单语言检测：超过 30% 非 ASCII 拉丁字符视为非英文（含中文、日文等） */
+function isTextPrimarilyEnglish(text: string): boolean {
+  if (!text || !text.trim()) return false;
+  const latinChars = (text.match(/[A-Za-z]/g) || []).length;
+  const totalChars = text.replace(/\s/g, '').length;
+  return totalChars > 0 && latinChars / totalChars > 0.3;
+}
+
+/**
+ * 语音分镜应为短「角色名」；若误写入整段口播或与镜头文案重复，纠正为角色前缀或「讲述者」
+ */
+function normalizeShotVoiceOver(shot: Shot): Shot {
+  const cap = (shot.caption || '').trim();
+  const body = getCaptionSpeakBody(cap);
+  const roleFromCaption = getCaptionRolePrefix(cap);
+  let vo = (shot.voiceOver || '').trim();
+  if (!vo) {
+    return { ...shot, voiceOver: roleFromCaption || '讲述者' };
+  }
+  const norm = (x: string) => x.replace(/\s+/g, ' ').trim();
+  const voN = norm(vo);
+  const capN = norm(cap);
+  const bodyN = norm(body);
+  if (voN === capN || (bodyN.length > 24 && voN === bodyN)) {
+    return { ...shot, voiceOver: roleFromCaption || '讲述者' };
+  }
+  if (bodyN.length > 36 && voN.includes(bodyN.slice(0, Math.min(72, bodyN.length)))) {
+    return { ...shot, voiceOver: roleFromCaption || '讲述者' };
+  }
+  if (looksLikeSpokenParagraph(vo)) {
+    // 导入脚本常把整段口播误放在「语音分镜」而 caption 为空；合并到 caption 避免数据丢失
+    if (!cap) {
+      return { ...shot, caption: vo, voiceOver: '讲述者' };
+    }
+    return { ...shot, voiceOver: roleFromCaption || '讲述者' };
+  }
+  return { ...shot, voiceOver: vo };
+}
+
+/** TTS 朗读用：优先口播正文，不含「讲述者-平静：」等前缀 */
+function getTtsSpeakText(shot: Shot): string {
+  const cap = (shot.caption || '').trim();
+  const body = getCaptionSpeakBody(cap);
+  if (body) return body;
+  const vo = (shot.voiceOver || '').trim();
+  if (vo && looksLikeSpokenParagraph(vo)) return vo;
+  if (vo && !looksLikeSpokenParagraph(vo)) return cap || vo;
+  return vo || cap;
+}
+
+/** 队列任务快照中的 shots → 可预览的 Shot[]（URL 规范化 + 语音分镜字段纠正） */
+function queueSnapshotRowsToShots(raw: unknown[] | undefined | null): Shot[] {
+  if (!raw || !Array.isArray(raw)) return [];
+  const mapped: Shot[] = raw.map((row) => {
+    const p = persistedShotToShot(row as any);
+    const rowAny = row as Record<string, unknown>;
+    const rawVoice =
+      p.voiceoverAudioUrl ||
+      (typeof rowAny.voiceAudioUrl === 'string' ? rowAny.voiceAudioUrl : undefined);
+    return normalizeShotVoiceOver({
+      id: String(p.id ?? ''),
+      number: Number(p.number) || 0,
+      caption: String(p.caption ?? ''),
+      imagePrompt: String(p.imagePrompt ?? ''),
+      videoPrompt: String(p.videoPrompt ?? ''),
+      shotType: String(p.shotType ?? ''),
+      voiceOver: String(p.voiceOver ?? ''),
+      soundEffect: String(p.soundEffect ?? ''),
+      voiceAudioUrl: rawVoice,
+      audioDurationSec: p.audioDurationSec,
+      imageUrls: p.imageUrls,
+      videoUrl: p.videoUrl,
+      videoUrls: p.videoUrls,
+      cachedVideoUrl: p.cachedVideoUrl,
+      cachedVideoUrls: p.cachedVideoUrls,
+      selected: !!p.selected,
+      selectedImageIndex: p.selectedImageIndex,
+      imageGenerating: false,
+      videoGenerating: false,
+      voiceGenerating: false,
+      editing: false,
+    });
+  });
+  return normalizeRestoredShotsMediaUrls(mapped);
 }
 
 function shotsToPersistPayloadFromShots(list: Shot[]) {
@@ -98,9 +232,73 @@ function shotsToPersistPayloadFromShots(list: Shot[]) {
     videoUrl: s.videoUrl,
     videoUrls: s.videoUrls,
     voiceoverAudioUrl: s.voiceAudioUrl,
+    audioDurationSec: s.audioDurationSec,
     selected: s.selected,
     selectedImageIndex: s.selectedImageIndex,
   }));
+}
+
+/** 历史持久化前压缩超大 data:image，避免超过 MEDIA_HISTORY_MAX_DATA_URL_CHARS 被整段丢弃 */
+async function compressOversizedImageDataUrlsForHistory(
+  shots: Shot[],
+  maxDataUrlChars: number
+): Promise<Shot[]> {
+  if (typeof document === 'undefined') return shots;
+  const needShrink = (u: string) => u.startsWith('data:image') && u.length > maxDataUrlChars * 0.92;
+  const shrinkOne = (dataUrl: string) =>
+    new Promise<string>((resolve) => {
+      if (!needShrink(dataUrl)) {
+        resolve(dataUrl);
+        return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        try {
+          let maxW = 960;
+          const nw = img.naturalWidth || img.width || 1;
+          const nh = img.naturalHeight || img.height || 1;
+          let out = dataUrl;
+          for (let attempt = 0; attempt < 5; attempt++) {
+            const w = Math.min(maxW, nw);
+            const h = Math.round((nh / nw) * w);
+            const c = document.createElement('canvas');
+            c.width = Math.max(1, w);
+            c.height = Math.max(1, h);
+            const ctx = c.getContext('2d');
+            if (!ctx) break;
+            ctx.drawImage(img, 0, 0, c.width, c.height);
+            let q = 0.82;
+            out = c.toDataURL('image/jpeg', q);
+            for (let i = 0; i < 10 && out.length > maxDataUrlChars && q > 0.36; i++) {
+              q -= 0.07;
+              out = c.toDataURL('image/jpeg', q);
+            }
+            if (out.length <= maxDataUrlChars) break;
+            maxW = Math.max(320, Math.floor(maxW * 0.72));
+          }
+          resolve(out.length < dataUrl.length ? out : dataUrl);
+        } catch {
+          resolve(dataUrl);
+        }
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    });
+
+  const out: Shot[] = [];
+  for (const s of shots) {
+    const urls = s.imageUrls;
+    if (!urls?.length) {
+      out.push(s);
+      continue;
+    }
+    const nextUrls: string[] = [];
+    for (const u of urls) {
+      nextUrls.push(await shrinkOne(u));
+    }
+    out.push({ ...s, imageUrls: nextUrls });
+  }
+  return out;
 }
 
 function normalizePersistedMediaUrl(u: string | undefined): string | undefined {
@@ -142,6 +340,7 @@ function restoredShotsFromProject(shots: MediaProjectRecord['shots']): Shot[] {
       voiceOver: p.voiceOver,
       soundEffect: p.soundEffect,
       voiceAudioUrl: p.voiceoverAudioUrl,
+      audioDurationSec: p.audioDurationSec,
       imageUrls: p.imageUrls,
       videoUrl: p.videoUrl,
       videoUrls: p.videoUrls,
@@ -155,7 +354,7 @@ function restoredShotsFromProject(shots: MediaProjectRecord['shots']): Shot[] {
       editing: false,
     };
   });
-  return normalizeRestoredShotsMediaUrls(raw);
+  return normalizeRestoredShotsMediaUrls(raw).map(normalizeShotVoiceOver);
 }
 
 function firstPersistedShotPreviewImageUrl(project: MediaProjectRecord): string | undefined {
@@ -169,6 +368,26 @@ function firstPersistedShotPreviewImageUrl(project: MediaProjectRecord): string 
       : 0;
   const u = sh0.imageUrls[idx] ?? sh0.imageUrls[0];
   return normalizePersistedMediaUrl(u);
+}
+
+/** 从队列/一键成片任务快照中取第一镜预览图（大于 60×60 缩略图的展示尺寸，供右侧预览用） */
+function taskPreviewImageUrl(task: OneClickQueueTask): string | undefined {
+  const rows = (task.resultSnapshot?.shots || task.snapshot?.shots || []) as unknown[];
+  if (!rows?.length) return undefined;
+  const first = rows[0] as Record<string, unknown>;
+  const imageUrls = first?.imageUrls as string[] | undefined;
+  if (!imageUrls?.length) return undefined;
+  const idx =
+    first.selectedImageIndex != null &&
+    Number(first.selectedImageIndex) >= 0 &&
+    Number(first.selectedImageIndex) < imageUrls.length
+      ? Number(first.selectedImageIndex)
+      : 0;
+  const u = imageUrls[idx] ?? imageUrls[0];
+  if (!u) return undefined;
+  if (/^(https?:|data:|blob:)/i.test(u)) return u;
+  const resolved = resolveRunningHubOutputUrl(String(u)).trim();
+  return /^https?:\/\//i.test(resolved) ? resolved : undefined;
 }
 
 // 图片模型配置（仅保留指定模型）
@@ -276,7 +495,22 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const [selectedImageModel, setSelectedImageModel] = useState('banana');
   const [selectedVideoModel, setSelectedVideoModel] = useState(VIDEO_MODELS[0].id);
   const [selectedImageRatio, setSelectedImageRatio] = useState('16:9'); // 默认横屏 16:9
-  const [selectedStyle, setSelectedStyle] = useState(STYLE_LIBRARY[0].id);
+  const [selectedStyle, setSelectedStyle] = useState(() => {
+    try {
+      const stored = localStorage.getItem(MEDIA_IMAGE_STYLE_STORAGE_KEY);
+      if (stored && STYLE_LIBRARY.some((s) => s.id === stored)) return stored;
+    } catch {
+      /* ignore */
+    }
+    return STYLE_LIBRARY[0].id;
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(MEDIA_IMAGE_STYLE_STORAGE_KEY, selectedStyle);
+    } catch {
+      /* ignore */
+    }
+  }, [selectedStyle]);
   // 视频参数设置
   const [selectedVideoSize, setSelectedVideoSize] = useState<string>(VIDEO_MODELS[0]?.defaultSize || '1080P');
   const [selectedVideoDuration, setSelectedVideoDuration] = useState<number>(VIDEO_MODELS[0]?.duration || 10);
@@ -285,8 +519,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const [expandedCaptions, setExpandedCaptions] = useState<Set<string>>(new Set()); // 展开的文案ID集合
   const [expandedImagePrompts, setExpandedImagePrompts] = useState<Set<string>>(new Set()); // 展开的图片提示词ID集合
   const [expandedVideoPrompts, setExpandedVideoPrompts] = useState<Set<string>>(new Set()); // 展开的视频提示词ID集合
-  const [editingRole, setEditingRole] = useState<{ shotId: string; role: string } | null>(null); // 编辑角色
-  const [editingTone, setEditingTone] = useState<{ shotId: string; tone: string } | null>(null); // 编辑语气
+  /** 文案列：编辑完整镜头字段（可含「角色-语气：」前缀 + 口播正文） */
+  const [editingCaptionShotId, setEditingCaptionShotId] = useState<string | null>(null);
   const [editingShotType, setEditingShotType] = useState<{ shotId: string; shotType: string } | null>(null); // 编辑景别
   const [enlargedImageUrl, setEnlargedImageUrl] = useState<string | null>(null);
   const [enlargedVideoUrl, setEnlargedVideoUrl] = useState<string | null>(null);
@@ -318,7 +552,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const tableShots = activeWorkspaceTabId === 'main' ? shots : (queuePreviewLocalShots || []);
 
   // Workspace Tab 元数据
-  const [queueTabMeta, setQueueTabMeta] = useState<Record<string, { name: string; taskType: 'oneshot' | 'queue' }>>({});
+  const [queueTabMeta, setQueueTabMeta] = useState<
+    Record<string, { name: string; taskType: 'oneshot' | 'queue' | 'media' }>
+  >({});
+  /** 媒体项目 localStorage 变更后刷新「media:」标签下的预览 */
+  const [mediaProjectListVersion, setMediaProjectListVersion] = useState(0);
   const [queueTabIsLiveRun, setQueueTabIsLiveRun] = useState<Record<string, boolean>>({});
 
   // 终端日志
@@ -349,53 +587,121 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     scriptTextRef.current = scriptText;
   }, [scriptText]);
 
+  const activeWorkspaceTabIdRef = useRef(activeWorkspaceTabId);
+  useEffect(() => {
+    activeWorkspaceTabIdRef.current = activeWorkspaceTabId;
+  }, [activeWorkspaceTabId]);
+
   /** 仅在有图/音/视频生成时写入历史；指纹相同则跳过（防抖合并短时间多次写入） */
   const lastMediaHistorySignatureRef = useRef('');
   const mediaHistoryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const flushMediaHistoryCommit = () => {
-    const payload = shotsToPersistPayloadFromShots(shotsRef.current);
+  /** 最近一次写入的 record ID（用于区分「新建」与「更新已有」） */
+  const lastMediaHistoryIdRef = useRef<string | null>(null);
+
+  /** 计算持久化媒体指纹（与 buildMediaProjectFingerprint 保持一致：shot ID + 媒体数量） */
+  const computeMediaHistoryFingerprint = (payload: ReturnType<typeof shotsToPersistPayloadFromShots>) => {
+    return payload
+      .map((s) => {
+        const ni = s.imageUrls?.length ?? 0;
+        const nv = (s.videoUrls?.length ?? 0) + (s.videoUrl ? 1 : 0);
+        const na = s.voiceoverAudioUrl ? 1 : 0;
+        return `${s.id}:${ni}:${nv}:${na}`;
+      })
+      .join('|');
+  };
+
+  const flushMediaHistoryCommitWithShots = (shotList: Shot[]) => {
+    const payload = shotsToPersistPayloadFromShots(shotList);
     if (!shotsHaveGeneratedMedia(payload)) return;
-    const sig = mediaFingerprint(payload);
+    const sig = computeMediaHistoryFingerprint(payload);
     if (sig === lastMediaHistorySignatureRef.current) return;
-    const id = generateMediaSnapshotId();
-    saveMediaProjectSnapshot({
-      id,
+    const { id, isUpdate } = saveOrUpdateMediaProject({
       scriptText: scriptTextRef.current,
       shots: payload,
+      preferUpdateId: lastMediaHistoryIdRef.current,
     });
     lastMediaHistorySignatureRef.current = sig;
-    appendTerminalLog('History', `已记录媒体快照 ${id}`);
+    lastMediaHistoryIdRef.current = id;
+    setMediaProjectListVersion((v) => v + 1);
+    appendTerminalLog('History', `已${isUpdate ? '更新' : '记录'}媒体快照 ${id}`);
+  };
+  const flushMediaHistoryCommit = () => {
+    flushMediaHistoryCommitWithShots(shotsRef.current);
   };
   const scheduleMediaHistorySave = () => {
     if (mediaHistoryTimerRef.current) clearTimeout(mediaHistoryTimerRef.current);
+    // pipeline 执行期间跳过自动保存：镜头的图/音/视频会在 pipeline 完成时统一写入完整快照
+    if (activeQueueTaskIdRef.current != null) return;
     mediaHistoryTimerRef.current = setTimeout(() => {
       mediaHistoryTimerRef.current = null;
       flushMediaHistoryCommit();
     }, 2000);
   };
 
+  /** 切换顶部工作区标签并立即载入该任务 / 媒体历史快照 */
+  const activateQueueWorkspaceTab = (tabId: string) => {
+    setActiveWorkspaceTabId(tabId);
+    if (tabId === 'main') {
+      setQueuePreviewLocalShots(null);
+      return;
+    }
+    if (tabId.startsWith('media:')) {
+      const pid = tabId.slice(6);
+      const p = getMediaProject(pid);
+      setQueuePreviewLocalShots(p ? restoredShotsFromProject(p.shots) : null);
+      return;
+    }
+    const task = oneClickQueueTasksRef.current.find((t) => t.id === tabId);
+    const rows = task?.resultSnapshot?.shots ?? task?.snapshot?.shots;
+    setQueuePreviewLocalShots(queueSnapshotRowsToShots(rows as unknown[]));
+  };
+
+  /** 与队列「查看任务」相同：新标签预览媒体历史，不覆盖主编辑区 */
+  const openMediaProjectWorkspaceTab = (projectId: string) => {
+    const tabId = `media:${projectId.trim()}`;
+    const labelShort = projectId.trim();
+    setQueueTabMeta((prev) => ({
+      ...prev,
+      [tabId]: { name: `历史 ${labelShort}`, taskType: 'media' },
+    }));
+    setQueueWorkspaceTabIds((prev) => (prev.includes(tabId) ? prev : [...prev, tabId]));
+    activateQueueWorkspaceTab(tabId);
+  };
+
   // Workspace Tab 操作
   const openQueueTaskWorkspaceTab = (taskId: string, name: string, taskType: 'oneshot' | 'queue', isLiveRun = false) => {
-    setQueueTabMeta(prev => ({ ...prev, [taskId]: { name, taskType } }));
-    setQueueTabIsLiveRun(prev => ({ ...prev, [taskId]: isLiveRun }));
-    setQueueWorkspaceTabIds(prev => {
+    setQueueTabMeta((prev) => ({ ...prev, [taskId]: { name, taskType } }));
+    setQueueTabIsLiveRun((prev) => ({ ...prev, [taskId]: isLiveRun }));
+    setQueueWorkspaceTabIds((prev) => {
       if (!prev.includes(taskId)) return [...prev, taskId];
       return prev;
     });
-    setActiveWorkspaceTabId(taskId);
+    activateQueueWorkspaceTab(taskId);
   };
   const closeQueueTaskWorkspaceTab = (taskId: string) => {
-    setQueueWorkspaceTabIds(prev => prev.filter(id => id !== taskId));
-    setQueueTabMeta(prev => { const n = { ...prev }; delete n[taskId]; return n; });
-    setQueueTabIsLiveRun(prev => { const n = { ...prev }; delete n[taskId]; return n; });
-    setQueuePreviewLocalShots(null);
+    setQueueWorkspaceTabIds((prev) => prev.filter((id) => id !== taskId));
+    setQueueTabMeta((prev) => {
+      const n = { ...prev };
+      delete n[taskId];
+      return n;
+    });
+    setQueueTabIsLiveRun((prev) => {
+      const n = { ...prev };
+      delete n[taskId];
+      return n;
+    });
     if (activeWorkspaceTabId === taskId) {
-      setActiveWorkspaceTabId('main');
+      activateQueueWorkspaceTab('main');
     }
   };
 
   // 队列任务状态（持久化）
   const [oneClickQueueTasks, setOneClickQueueTasks] = useState<OneClickQueueTask[]>(() => loadOneClickQueue());
+  const oneClickQueueTasksRef = useRef<OneClickQueueTask[]>(oneClickQueueTasks);
+  useEffect(() => {
+    oneClickQueueTasksRef.current = oneClickQueueTasks;
+  }, [oneClickQueueTasks]);
+  const queueStorageWarnedRef = useRef(false);
   /** 主工作区标签：与队列历史中最新一键成片 oc_ 任务 ID 一致（无则显示「分镜编辑」） */
   const mainWorkspaceTabTitle = useMemo(() => {
     for (let i = oneClickQueueTasks.length - 1; i >= 0; i--) {
@@ -410,23 +716,40 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const queueRunnerBusyRef = useRef(false);
   const activeQueueTaskIdRef = useRef<string | null>(null);
 
-  // 持久化队列
-  const persistQueue = (tasks: OneClickQueueTask[]) => {
-    setOneClickQueueTasks(tasks);
-    saveOneClickQueue(tasks);
+  const saveQueueStateAfterMutation = (tasks: OneClickQueueTask[]) => {
+    oneClickQueueTasksRef.current = tasks;
+    const ok = saveOneClickQueue(tasks);
+    if (!ok && !queueStorageWarnedRef.current) {
+      queueStorageWarnedRef.current = true;
+      toast.error(
+        '一键成片队列无法写入浏览器本地存储（空间可能已满），列表进度可能与日志不一致，请清理站点数据或缩短分镜内容后重试。'
+      );
+    }
+    if (ok) queueStorageWarnedRef.current = false;
   };
 
-  // Queue Preview Sync: 当 active tab 是 queue task 时，实时同步 resultSnapshot
+  // 持久化队列（必须用内存中的任务列表合并；flushSync 避免与 pipeline 完成更新的批处理竞态导致界面回退到旧进度）
+  const persistQueue = (tasks: OneClickQueueTask[]) => {
+    saveQueueStateAfterMutation(tasks);
+    flushSync(() => setOneClickQueueTasks(tasks));
+  };
+
+  // 非主标签：队列任务 oc_/Q_ 或媒体历史 media:xxx 的预览与存储同步
   useEffect(() => {
-    if (activeWorkspaceTabId === 'main') { setQueuePreviewLocalShots(null); return; }
-    const taskId = activeWorkspaceTabId;
-    const task = oneClickQueueTasks.find(t => t.id === taskId);
-    if (task?.resultSnapshot) {
-      setQueuePreviewLocalShots(task.resultSnapshot.shots);
-    } else if (task?.snapshot) {
-      setQueuePreviewLocalShots(task.snapshot.shots);
+    if (activeWorkspaceTabId === 'main') {
+      setQueuePreviewLocalShots(null);
+      return;
     }
-  }, [activeWorkspaceTabId, oneClickQueueTasks]);
+    if (activeWorkspaceTabId.startsWith('media:')) {
+      const pid = activeWorkspaceTabId.slice(6);
+      const p = getMediaProject(pid);
+      setQueuePreviewLocalShots(p ? restoredShotsFromProject(p.shots) : null);
+      return;
+    }
+    const task = oneClickQueueTasks.find((t) => t.id === activeWorkspaceTabId);
+    const rows = task?.resultSnapshot?.shots ?? task?.snapshot?.shots;
+    setQueuePreviewLocalShots(queueSnapshotRowsToShots(rows as unknown[]));
+  }, [activeWorkspaceTabId, oneClickQueueTasks, mediaProjectListVersion]);
 
   // ==================== 剪映导出相关 State ====================
   const [jianyingOutputDir, setJianyingOutputDir] = useState(() => localStorage.getItem('JIANYING_OUTPUT_DIR') || '');
@@ -451,10 +774,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         videoUrl: s.videoUrls?.[0] || s.videoUrl,
         audioUrl,
         voiceoverAudioUrl: audioUrl,
+        audioDurationSec: s.audioDurationSec,
       };
     });
 
-  const performExportToJianying = async (exportShots: Shot[], exportDraftName: string, settings?: { randomEffectBundle?: boolean; randomTransitions?: boolean; randomFilters?: boolean }) => {
+  const performExportToJianying = async (exportShots: Shot[], exportDraftName: string, settings?: { randomEffectBundle?: boolean; randomTransitions?: boolean; randomFilters?: boolean }): Promise<boolean> => {
     setIsExportingToJianying(true);
     try {
       const result = await exportJianyingDraft({
@@ -467,15 +791,18 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           (settings?.randomFilters ?? jyRandomFilters),
       });
       if (result.success) {
-        appendTerminalLog('Jianying', `导出成功: ${exportDraftName} → ${result.outputPath || jianyingOutputDir}`);
-        toast.success(`剪映草稿导出成功: ${result.outputPath || exportDraftName}`);
+        appendTerminalLog('Jianying', `导出成功: ${exportDraftName} → ${result.draft_folder || jianyingOutputDir}`);
+        toast.success(`剪映草稿导出成功: ${result.draft_folder || exportDraftName}`);
+        return true;
       } else {
         appendTerminalLog('Jianying', `导出失败: ${result.error}`);
         toast.error(`导出失败: ${result.error}`);
+        return false;
       }
     } catch (err: any) {
       appendTerminalLog('Jianying', `导出异常: ${err.message}`);
       toast.error(`导出异常: ${err.message}`);
+      return false;
     } finally {
       setIsExportingToJianying(false);
     }
@@ -500,7 +827,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
   // ==================== 一键成片 Pipeline 函数 ====================
   const shotHasExportableVisual = (shot: Shot): boolean => {
-    return !!(shot.imageUrls?.length || shot.videoUrl || shot.videoUrls?.length);
+    return !!(shot.videoUrl || shot.videoUrls?.length);
   };
 
   const getLiveShot = (shotId: string): Shot | undefined => shotsRef.current.find(s => s.id === shotId);
@@ -521,17 +848,49 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             ? { ...t, status: 'failed' as const, completedAt: tsStr(), progressNote: '无可处理镜头' }
             : t
         );
-        saveOneClickQueue(tasks);
+        saveQueueStateAfterMutation(tasks);
         return tasks;
       });
       toast.error('没有可处理的镜头');
       return;
     }
 
+    const prevActivePipelineTaskId = activeQueueTaskIdRef.current;
+    activeQueueTaskIdRef.current = taskId;
+    try {
     appendTerminalLog(
       'Pipeline',
       `[${taskType === 'oneshot' ? '一键成片' : '队列任务'}] 开始执行（每镜：图片与配音并行）…`
     );
+
+    const N = Math.max(1, targetShots.length);
+    const includeVideo = oneClickPipelineMode !== 'image_audio_only';
+    let videoSlots = 0;
+    if (includeVideo) {
+      for (const sh of targetShots) {
+        const c = getLiveShot(sh.id);
+        if (c && !c.videoUrl && !c.videoUrls?.length && c.videoPrompt?.trim()) videoSlots++;
+      }
+    }
+
+    const patchTaskProgress = (percent: number, note?: string) => {
+      const p = Math.max(0, Math.min(100, Math.round(percent)));
+      setOneClickQueueTasks((prev) => {
+        const next = prev.map((t) =>
+          t.id === taskId
+            ? {
+                ...t,
+                progressPercent: p,
+                ...(note !== undefined ? { progressNote: note } : {}),
+              }
+            : t
+        );
+        saveQueueStateAfterMutation(next);
+        return next;
+      });
+    };
+
+    patchTaskProgress(1, '启动…');
 
     // Step 1+2 合并：每个镜头内「图片生成」与「配音」Promise.all 并行，镜与镜仍顺序执行（控并发）
     let idx = 0;
@@ -541,11 +900,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       if (!snap) continue;
 
       const needImage = !shotHasExportableVisual(snap) && !!snap.imagePrompt?.trim();
-      const voiceText = (snap.caption || snap.voiceOver || '').trim();
+      const voiceText = getTtsSpeakText(snap).trim();
       const needVoice = !!voiceText && !snap.voiceAudioUrl;
 
       if (shotHasExportableVisual(snap)) {
-        appendTerminalLog('Pipeline', `镜头${snap.number}: 已有图片/视频，跳过图片生成`);
+        appendTerminalLog('Pipeline', `镜头${snap.number}: 已有视频，跳过图片生成（强制重新生图）`);
       } else if (!snap.imagePrompt?.trim()) {
         appendTerminalLog('ImageGen', `镜头${snap.number}: 无图片提示词，跳过`);
       }
@@ -570,17 +929,13 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         let retries = 3;
         while (retries > 0) {
           try {
-            const live = getLiveShot(shot.id);
-            if (!live) break;
-            if (shotHasExportableVisual(live)) {
-              appendTerminalLog('ImageGen', `镜头${live.number}: 已有图片，跳过`);
+            // 使用返回布尔值判定成功，避免 React setState 闭包延迟导致误判
+            const ok = await handleGenerateImage(snap, false);
+            if (ok) {
+              appendTerminalLog('ImageGen', `镜头${num}: 图片生成完成`);
               break;
             }
-            await handleGenerateImage(live, false);
-            const afterImg = getLiveShot(shot.id);
-            if (!afterImg?.imageUrls?.length) throw new Error('未生成出图片');
-            appendTerminalLog('ImageGen', `镜头${num}: 图片生成完成`);
-            break;
+            throw new Error('图片生成失败');
           } catch (err: any) {
             retries--;
             appendTerminalLog('ImageGen', `镜头${num}: 生成失败 (${err.message}), 剩余${retries}次`);
@@ -610,12 +965,16 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       };
 
       await Promise.all([runImage(), runVoice()]);
+      patchTaskProgress(2 + (idx / N) * 38, `图/音 ${idx}/${N}`);
     }
 
     // Step 3: 视频（与单镜头相同逻辑 + RunningHub 轮询）
     if (oneClickPipelineMode === 'image_audio_only') {
       appendTerminalLog('Pipeline', '一键成片设置：仅图片+音频，已跳过视频生成');
+      patchTaskProgress(88, '跳过视频…');
     } else {
+      let vDone = 0;
+      const vTotal = Math.max(1, videoSlots);
       for (const shot of targetShots) {
         const current = getLiveShot(shot.id);
         if (!current) continue;
@@ -627,6 +986,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           appendTerminalLog('VideoGen', `镜头${current.number}: 无视频提示词，跳过`);
           continue;
         }
+        const slotIndex = vDone;
         setOneClickPipelineProgress(`生成视频 ${targetShots.indexOf(shot) + 1}/${targetShots.length} (镜头${shot.number})`);
         appendTerminalLog('VideoGen', `镜头${current.number}: 开始生成视频`);
         let retries = 3;
@@ -638,8 +998,17 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               appendTerminalLog('VideoGen', `镜头${c2.number}: 已有视频，跳过`);
               break;
             }
-            await handleGenerateVideo(c2, false);
+            await handleGenerateVideo(c2, false, {
+              onVideoHubProgress: (hub) => {
+                const base = 40;
+                const span = 48;
+                const overall = base + ((slotIndex + hub / 100) / vTotal) * span;
+                patchTaskProgress(Math.min(87, overall), `视频 ${slotIndex + 1}/${videoSlots || 1} · ${Math.round(hub)}%`);
+              },
+            });
             appendTerminalLog('VideoGen', `镜头${current.number}: 视频生成完成`);
+            vDone++;
+            patchTaskProgress(40 + (vDone / vTotal) * 48, `视频完成 ${vDone}/${videoSlots}`);
             break;
           } catch (err: any) {
             retries--;
@@ -652,30 +1021,63 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           }
         }
       }
+      if (videoSlots === 0) {
+        patchTaskProgress(88, '无待生成视频');
+      }
     }
 
-    // Step 4: 导出剪映
+    // Step 4: 导出剪映（等视频真正生成完毕后才执行，不会提前）
     setOneClickPipelineProgress('导出剪映草稿...');
+    patchTaskProgress(90, '导出剪映…');
+    // 取当前最新镜头数据（含音频 URL）
     const finalShots = targetShotIds.map(id => getLiveShot(id)).filter(Boolean) as Shot[];
-    appendTerminalLog('Pipeline', `开始导出剪映草稿: ${exportDraftName}`);
-    await performExportToJianying(finalShots, exportDraftName);
+    appendTerminalLog('Pipeline', `开始导出剪映草稿: ${exportDraftName}（${finalShots.length} 镜）`);
+    const jianyingResult = await performExportToJianying(finalShots, exportDraftName);
     appendTerminalLog('Pipeline', `[${taskType === 'oneshot' ? '一键成片' : '队列任务'}] 执行完成`);
 
-    // Step 5: 记录完成状态
-    const snapshot = captureEditorSnapshot();
-    const sanitized = buildSanitizedTaskSnapshot(snapshot);
-    setOneClickQueueTasks(prev => {
-      const tasks = prev.map(t => t.id === taskId ? { ...t, status: 'completed' as const, completedAt: tsStr(), resultSnapshot: sanitized } : t);
-      saveOneClickQueue(tasks);
-      return tasks;
+    // 仅在剪映导出成功时才显示完成 toast（pipeline 可能中途失败，catch 会显示错误 toast）
+    if (jianyingResult !== false) {
+      setOneClickPipelineProgress('');
+      toast.success(
+        oneClickPipelineMode === 'image_audio_only'
+          ? '一键成片执行完成（未生成视频）'
+          : '一键成片执行完成！'
+      );
+    }
+    const sanitized = buildSanitizedTaskSnapshot(captureEditorSnapshot());
+    // 必须同步提交：否则 handleOneClickPipeline 里 queueMicrotask(processOneClickQueue) 会用 ref 里仍为「导出中」的快照调用 persistQueue，直接 setState 覆盖掉本次完成更新（OC 永远卡在 90% / 查看任务无 resultSnapshot）
+    flushSync(() => {
+      setOneClickQueueTasks((prev) => {
+        const tasks = prev.map((t) =>
+          t.id === taskId
+            ? {
+                ...t,
+                status: 'completed' as const,
+                completedAt: tsStr(),
+                resultSnapshot: sanitized,
+                progressPercent: 100,
+                progressNote: '完成',
+              }
+            : t
+        );
+        saveQueueStateAfterMutation(tasks);
+        return tasks;
+      });
     });
 
-    setOneClickPipelineProgress('');
-    toast.success(
-      oneClickPipelineMode === 'image_audio_only'
-        ? '一键成片执行完成（未生成视频）'
-        : '一键成片执行完成！'
-    );
+    } finally {
+      const pipelineShotsForHistory = shotsRef.current.map((s) => ({ ...s }));
+      activeQueueTaskIdRef.current = prevActivePipelineTaskId;
+      queueMicrotask(() => {
+        void (async () => {
+          const prepared = await compressOversizedImageDataUrlsForHistory(
+            pipelineShotsForHistory,
+            MEDIA_HISTORY_MAX_DATA_URL_CHARS
+          );
+          flushMediaHistoryCommitWithShots(prepared);
+        })();
+      });
+    }
   };
 
   // 任务快照清理（移除生成中状态）
@@ -684,10 +1086,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     shots: snap.shots.map(s => ({ ...s, imageGenerating: false, videoGenerating: false })),
   });
 
-  // 捕获当前编辑器快照
+  // 捕获当前编辑器快照（必须用 shotsRef：异步 pipeline 完成后 React state `shots` 闭包仍可能是执行前的旧数据）
   const captureEditorSnapshot = (): OneClickTaskSnapshot => ({
-    shots: shots.map(s => ({ ...s })),
-    capturedAt: tsStr(),
+    shots: shotsRef.current.map((s) => ({ ...s })) as unknown[],
   });
 
   // 一键成片 UI 触发
@@ -701,12 +1102,33 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     setOneClickPipelineProgress('准备执行...');
     appendTerminalLog('Pipeline', `一键成片任务 ${taskId} 开始`);
     try {
-      // 始终记录
-      setOneClickQueueTasks(prev => {
-        const task: OneClickQueueTask = { id: taskId, type: 'oneshot', status: 'running', snapshot: captureEditorSnapshot(), createdAt: tsStr(), progressPercent: 0, progressNote: '准备执行...' };
-        const tasks = [...prev, task];
-        saveOneClickQueue(tasks);
-        return tasks;
+      // 必须先 flushSync：否则 pipeline 内首个同步阶段的 patchTaskProgress/完成更新会读到「尚未包含本任务」的 prev，导致永远匹配不到 taskId（界面一直执行中、无进度）
+      flushSync(() => {
+        setOneClickQueueTasks((prev) => {
+          const stomped = prev.map((t) =>
+            t.type === 'oneshot' && t.status === 'running'
+              ? {
+                  ...t,
+                  status: 'cancelled' as const,
+                  completedAt: tsStr(),
+                  progressNote: '已由新的一键成片取代',
+                  progressPercent: 100,
+                }
+              : t
+          );
+          const task: OneClickQueueTask = {
+            id: taskId,
+            type: 'oneshot',
+            status: 'running',
+            snapshot: captureEditorSnapshot(),
+            createdAt: tsStr(),
+            progressPercent: 0,
+            progressNote: '准备执行...',
+          };
+          const tasks = [...stomped, task];
+          saveQueueStateAfterMutation(tasks);
+          return tasks;
+        });
       });
       await executeOneClickPipelineForTargets(selected.map(s => s.id), draftName, taskId, 'oneshot');
     } catch (err: any) {
@@ -727,7 +1149,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const recordCompletedOneClickPipeline = (taskId: string, resultSnap: OneClickTaskSnapshot) => {
     setOneClickQueueTasks(prev => {
       const tasks = prev.map(t => t.id === taskId ? { ...t, status: 'completed' as const, completedAt: tsStr(), resultSnapshot: resultSnap } : t);
-      saveOneClickQueue(tasks);
+      saveQueueStateAfterMutation(tasks);
       return tasks;
     });
   };
@@ -737,7 +1159,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     if (queueProcessorRunning) { toast.warning('队列正在执行中，请先停止'); return; }
     const taskId = newQueueTaskId();
     const task: OneClickQueueTask = { id: taskId, type: 'queue', status: 'queued', snapshot: captureEditorSnapshot(), createdAt: tsStr(), progressPercent: 0, progressNote: '等待执行' };
-    const tasks = [...oneClickQueueTasks, task];
+    const tasks = [...oneClickQueueTasksRef.current, task];
     persistQueue(tasks);
     appendTerminalLog('Queue', `任务 ${taskId} 已加入队列`);
     toast.success('已加入挂机队列');
@@ -756,7 +1178,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         await new Promise(r => setTimeout(r, 5000));
         continue;
       }
-      const tasks = loadOneClickQueue();
+      const tasks = oneClickQueueTasksRef.current;
       const next = tasks.find(t => t.type === 'queue' && t.status === 'queued');
       if (!next) { appendTerminalLog('Queue', '队列已空，停止'); break; }
       const snapShots = ((next.snapshot?.shots || []) as Shot[]).map(s => ({ ...s }));
@@ -783,7 +1205,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         await executeOneClickPipelineForTargets(snapShots.map(s => s.id), buildQueueDraftName(), next.id, 'queue');
       } catch (err: any) {
         appendTerminalLog('Queue', `任务 ${next.id} 执行异常: ${err.message}`);
-        const failedTasks = loadOneClickQueue().map(t => t.id === next.id ? { ...t, status: 'failed' as const, completedAt: tsStr(), progressNote: `失败: ${err.message}` } : t);
+        const failedTasks = oneClickQueueTasksRef.current.map(t => t.id === next.id ? { ...t, status: 'failed' as const, completedAt: tsStr(), progressNote: `失败: ${err.message}` } : t);
         persistQueue(failedTasks);
       } finally {
         if (shotsBackup) {
@@ -1064,13 +1486,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       parsedShots.push(currentShot as Shot);
     }
     
-    return parsedShots;
+    return parsedShots.map(normalizeShotVoiceOver);
   };
 
   // 处理脚本输入
   const handleScriptInput = (text: string) => {
     setScriptText(text);
     lastMediaHistorySignatureRef.current = '';
+    lastMediaHistoryIdRef.current = null;
     if (text.trim()) {
       const parsed = parseScript(text);
       setShots(parsed);
@@ -1218,7 +1641,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     scriptTextRef.current = st;
     setShots(restored);
     shotsRef.current = restored;
-    lastMediaHistorySignatureRef.current = mediaFingerprint(shotsToPersistPayloadFromShots(restored));
+    lastMediaHistorySignatureRef.current = computeMediaHistoryFingerprint(shotsToPersistPayloadFromShots(restored));
+    lastMediaHistoryIdRef.current = pid;
     setShowScriptInput(false);
     setShowScriptHistorySelector(false);
     setHistorySelectorKind(null);
@@ -1253,10 +1677,17 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       const preview = p.preview != null && String(p.preview).trim() !== '' ? String(p.preview) : '';
       const scriptExcerpt = String(p.scriptText ?? '').slice(0, 160);
       const thumbUrl = firstPersistedShotPreviewImageUrl(p);
+      const isUpdated = p.updatedAt !== p.createdAt;
+      const dateStr = new Date(p.updatedAt).toLocaleDateString('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      });
+      const topicLabel = isUpdated ? `${p.id} · ${dateStr}` : p.id;
       return {
         timestamp: typeof p.updatedAt === 'number' ? p.updatedAt : p.createdAt ?? Date.now(),
         content: preview || scriptExcerpt || '（无摘要）',
-        metadata: { topic: p.id, mediaProjectId: p.id, thumbUrl },
+        metadata: { topic: topicLabel, mediaProjectId: p.id, thumbUrl, isUpdated },
       };
     });
     setHistorySelectorKind('media');
@@ -1316,17 +1747,25 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     'videoUrl',
     'videoUrls',
     'voiceAudioUrl',
+    'audioDurationSec',
     'cachedVideoUrl',
     'cachedVideoUrls',
   ];
 
-  // 更新镜头数据
+  // 更新镜头数据：主工作区可改；一键成片/队列执行中（activeQueueTaskIdRef 已置位）也必须写入，否则闭包外 pipeline 无法落盘 resultSnapshot
   const updateShot = (shotId: string, updates: Partial<Shot>) => {
-    setShots((prev) => {
-      const next = prev.map((shot) => (shot.id === shotId ? { ...shot, ...updates } : shot));
-      shotsRef.current = next;
-      return next;
-    });
+    // 仅在以下情况写入：主工作区，或一键成片/队列执行中（activeQueueTaskIdRef 非 null）
+    const isOnMain = activeWorkspaceTabIdRef.current === 'main';
+    const isPipelineActive = activeQueueTaskIdRef.current != null;
+    if (isOnMain === false && isPipelineActive === false) return;
+    // 必须先同步更新 shotsRef：每轮 render 会把 shotsRef.current = shots，若 setState 尚未提交，中间若发生重绘会回滚 ref（导出读到无配音）。
+    const next = shotsRef.current.map((shot) => (shot.id === shotId ? { ...shot, ...updates } : shot));
+    shotsRef.current = next;
+    if (isPipelineActive) {
+      flushSync(() => setShots(next));
+    } else {
+      setShots(next);
+    }
     if (MEDIA_HISTORY_TRIGGER_KEYS.some((k) => k in updates)) {
       scheduleMediaHistorySave();
     }
@@ -1529,8 +1968,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     return `${selectedRatio.width}x${selectedRatio.height}`;
   };
 
-  // 生成单个图片（支持生成多张）
-  const handleGenerateImage = async (shot: Shot, regenerate: boolean = false) => {
+  // 生成单个图片（支持生成多张）；返回是否成功（避免依赖 React setState 延迟闭包误判）
+  const handleGenerateImage = async (shot: Shot, regenerate: boolean = false): Promise<boolean> => {
     // 检查选中的模型
     const selectedModel = IMAGE_MODELS.find(m => m.id === selectedImageModel);
     
@@ -1682,9 +2121,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         }
         
         const result = await generateJimengImages(
-          jimengApiBaseUrl,
-          jimengSessionId,
-          generationOptions
+          generationOptions,
+          { apiBaseUrl: jimengApiBaseUrl, sessionId: jimengSessionId }
         );
         
         if (result.success && result.data) {
@@ -1747,7 +2185,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           if (result.url) {
             newImageUrls = [result.url];
           } else if (result.data?.data && Array.isArray(result.data.data)) {
-            newImageUrls = result.data.data.map((item: any) => item.url || item).filter(Boolean);
+            newImageUrls = result.data.data.map((item: any) => openAiImageDataItemToUrl(item)).filter(Boolean) as string[];
           }
         } else {
           const errorMsg = `图片生成失败: ${result.error || '未知错误'}`;
@@ -1776,7 +2214,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                 newImageUrls.push(result.url);
               } else if (result.data?.data && Array.isArray(result.data.data) && result.data.data.length > 0) {
                 // OpenAI 格式：data.data 是数组
-                const urls = result.data.data.map((item: any) => item.url || item.b64_json).filter(Boolean);
+                const urls = result.data.data.map((item: any) => openAiImageDataItemToUrl(item)).filter(Boolean) as string[];
                 newImageUrls.push(...urls);
               } else if (result.data?.images && Array.isArray(result.data.images) && result.data.images.length > 0) {
                 // 其他格式：images 数组
@@ -1811,7 +2249,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               newImageUrls = [result.url];
             } else if (result.data?.data && Array.isArray(result.data.data) && result.data.data.length > 0) {
               // OpenAI 格式：data.data 是数组
-              newImageUrls = result.data.data.map((item: any) => item.url || item.b64_json).filter(Boolean);
+              newImageUrls = result.data.data.map((item: any) => openAiImageDataItemToUrl(item)).filter(Boolean) as string[];
             } else if (result.data?.images && Array.isArray(result.data.images) && result.data.images.length > 0) {
               // 其他格式：images 数组
               newImageUrls = result.data.images.map((item: any) => item.url || item).filter(Boolean);
@@ -1829,7 +2267,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         // 重新绘图时也追加图片，不覆盖原有图片
         const currentUrls = shot.imageUrls || [];
         const updatedUrls = [...currentUrls, ...newImageUrls]; // 始终追加，不替换
-        
+
         // 自动选中新生成的第一张图片
         let selectedIndex: number;
         if (currentUrls.length === 0) {
@@ -1839,25 +2277,25 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           // 之前有图片，选中新生成的第一张（即 currentUrls.length，因为新图片是追加的）
           selectedIndex = currentUrls.length;
         }
-        
-        updateShot(shot.id, { 
-          imageUrls: updatedUrls, 
+
+        updateShot(shot.id, {
+          imageUrls: updatedUrls,
           selectedImageIndex: selectedIndex,
-          imageGenerating: false 
+          imageGenerating: false
         });
         appendTerminalLog('ImageGen', `镜头${shot.number}: 完成，当前共 ${updatedUrls.length} 张图`);
+        return true;
       } else {
         const errorMsg = '图片生成成功但未获取到图片URL';
         appendTerminalLog('ImageGen', `镜头${shot.number}: 失败 — ${errorMsg}`);
         updateShot(shot.id, { imageGenerating: false });
-        throw new Error(errorMsg);
+        return false;
       }
     } catch (error: any) {
       // 确保 imageGenerating 状态被清除
       updateShot(shot.id, { imageGenerating: false });
       appendTerminalLog('ImageGen', `镜头${shot.number}: 异常 — ${error?.message || error}`);
-      // 重新抛出错误，让调用者处理（批量生成会统一统计，单个生成会显示错误）
-      throw error;
+      return false;
     }
   };
 
@@ -1883,8 +2321,13 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     return updatedVideoUrls.length;
   };
 
-  // RunningHub 任务状态轮询
-  const pollRunningHubTaskStatus = async (taskId: string, shotId: string, maxAttempts: number = 180) => {
+  // RunningHub 任务状态轮询（返回 Promise，await 可等待视频真正生成完毕）
+  const pollRunningHubTaskStatus = async (
+    taskId: string,
+    shotId: string,
+    maxAttempts: number = 180,
+    onHubProgress?: (percent: number) => void
+  ): Promise<void> => {
     let attempts = 0;
     let lastProgress = 0;
     let lastStatus = '';
@@ -1896,12 +2339,12 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     };
 
     appendTerminalLog('VideoGen', `${shotLabel()}: 轮询任务 ${taskId}（最多 ${maxAttempts} 次）`);
-    
-    const poll = async () => {
+
+    while (attempts < maxAttempts) {
       attempts++;
-      
+
       if (attempts > maxAttempts) {
-        // 超时后最后一次查询
+        // 超时前最后一次查询
         console.log(`[MediaGenerator] RunningHub 轮询超时，进行最后一次查询: taskId=${taskId}`);
         try {
           const finalResult = await checkRunningHubTaskStatus(runningHubApiKey, taskId);
@@ -1917,12 +2360,13 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               toast.success(`视频生成成功！（共 ${totalCount} 个视频）`, 8000);
             }
             appendTerminalLog('VideoGen', `${shotLabel()}: 超时前最后一次查询成功，已落盘`);
+            onHubProgress?.(100);
             return;
           }
         } catch (error) {
           console.error('[MediaGenerator] 最后一次查询失败:', error);
         }
-        
+
         appendTerminalLog('VideoGen', `${shotLabel()}: 轮询超时（${maxAttempts} 次）taskId=${taskId} 状态=${lastStatus || '未知'}`);
         toast.warning(
           `视频生成超时（已轮询 ${maxAttempts} 次），但任务可能仍在后台处理中。\n\n` +
@@ -1935,57 +2379,50 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         updateShot(shotId, { videoGenerating: false });
         return;
       }
-      
+
       try {
         const result = await checkRunningHubTaskStatus(runningHubApiKey, taskId);
         consecutiveErrors = 0;
-        
+
         if (result.success) {
           lastStatus = result.status || '';
           lastProgress = result.progress || 0;
+          onHubProgress?.(lastProgress);
           if (attempts === 1 || attempts % 12 === 0) {
             appendTerminalLog('VideoGen', `${shotLabel()}: 查询 #${attempts} · ${lastStatus || '进行中'} · 进度 ${lastProgress}%`);
           }
-          
+
           console.log(`[MediaGenerator] RunningHub 任务 ${taskId} 状态: ${result.status}, 进度: ${result.progress}%`);
-          
-          // 检查是否有视频URL（支持多种字段名）
-          // RunningHubResult 有 url 字段，DayuVideoResult 有 videoUrl 字段
-          // 注意：即使设置了 batch_size=1，API 可能仍返回多个视频，这里只取第一个
+
+          // 检查是否有视频URL
           let videoUrl = result.url || (result as any).videoUrl;
-          
-          // 如果还没有找到URL，从data中提取（只取第一个视频）
+
           if (!videoUrl && result.data) {
             const data = result.data;
             const files = data.files || data.outputs || [];
-            
-            // 先找出所有视频文件
-            const videoFiles = files.filter((f: any) => 
-              f.url?.includes('.mp4') || 
+
+            const videoFiles = files.filter((f: any) =>
+              f.url?.includes('.mp4') ||
               f.fileName?.includes('.mp4') ||
               f.outputType === 'mp4' ||
               f.type === 'video/mp4'
             );
-            
+
             if (videoFiles.length > 0) {
-              // 只取第一个视频文件
               videoUrl = videoFiles[0].url || videoFiles[0].fileUrl || videoFiles[0].fileName;
               if (videoFiles.length > 1) {
                 console.warn(`[MediaGenerator] RunningHub 返回了 ${videoFiles.length} 个视频，但只使用第一个:`, videoUrl);
               }
             } else if (files.length > 0) {
-              // 如果没有找到mp4，使用第一个文件
               videoUrl = files[0].url || files[0].fileUrl || files[0].fileName;
             }
-            
-            // 也尝试从data的顶层字段查找
+
             if (!videoUrl) {
               videoUrl = data.videoUrl || data.video_url || data.url || data.outputUrl;
             }
           }
-          
+
           if (videoUrl) {
-            // 已获取到视频URL，追加模式
             try {
               toast.info('视频生成成功，正在缓存视频...', 3000);
               const cachedUrl = await cacheVideo(videoUrl);
@@ -1996,20 +2433,20 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               const totalCount = appendVideoToShot(shotId, videoUrl);
               toast.success(`视频生成成功！（共 ${totalCount} 个视频）`, 8000);
             }
+            onHubProgress?.(100);
             return;
           } else if (result.status === 'SUCCESS' || result.status === 'completed' || result.status === 'success') {
-            // 状态完成但无URL，可能是URL字段名不对，尝试从data中提取（只取第一个视频）
+            // 状态完成但无URL，尝试从data中提取
             if (result.data) {
               const data = result.data;
               const files = data.files || data.outputs || [];
-              
-              // 先找出所有视频文件，只取第一个
-              const videoFiles = files.filter((f: any) => 
-                f.url?.includes('.mp4') || 
+
+              const videoFiles = files.filter((f: any) =>
+                f.url?.includes('.mp4') ||
                 f.fileName?.includes('.mp4') ||
                 f.outputType === 'mp4'
               );
-              
+
               let extractedUrl: string | undefined;
               if (videoFiles.length > 0) {
                 extractedUrl = videoFiles[0].url || videoFiles[0].fileUrl || videoFiles[0].fileName;
@@ -2019,12 +2456,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               } else if (files.length > 0) {
                 extractedUrl = files[0].url || files[0].fileUrl || files[0].fileName;
               }
-              
-              // 也尝试从data的顶层字段查找
+
               if (!extractedUrl) {
                 extractedUrl = data.videoUrl || data.video_url || data.url;
               }
-              
+
               if (extractedUrl) {
                 console.log('[MediaGenerator] 从data中提取到视频URL:', extractedUrl);
                 try {
@@ -2037,29 +2473,29 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                   const totalCount = appendVideoToShot(shotId, extractedUrl);
                   toast.success(`视频生成成功！（共 ${totalCount} 个视频）`, 8000);
                 }
+                onHubProgress?.(100);
                 return;
               }
             }
-            // 如果仍然没有URL，继续轮询（可能URL还在生成中）
+            // 状态完成但无URL，继续轮询（可能URL还在生成中）
             console.log('[MediaGenerator] 任务状态为SUCCESS但无URL，继续轮询获取URL');
-            setTimeout(poll, 5000);
+            await new Promise(r => setTimeout(r, 5000));
           } else if (result.status === 'FAILED' || result.status === 'failed' || result.status === 'error') {
             appendTerminalLog('VideoGen', `${shotLabel()}: 任务失败 — ${result.error || '未知错误'}`);
             toast.error(`视频生成失败: ${result.error || '未知错误'}`, 6000);
             updateShot(shotId, { videoGenerating: false });
             return;
           } else {
-            // 任务进行中，继续轮询
             const progress = result.progress || 0;
             let pollInterval = 5000;
-            
+
             if (progress >= 90) {
               pollInterval = 3000;
             } else if (progress >= 50) {
               pollInterval = 4000;
             }
-            
-            setTimeout(poll, pollInterval);
+
+            await new Promise(r => setTimeout(r, pollInterval));
           }
         } else {
           consecutiveErrors++;
@@ -2070,24 +2506,22 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             return;
           }
           console.warn(`[MediaGenerator] RunningHub 查询任务状态失败 (${consecutiveErrors}/${maxConsecutiveErrors}):`, result.error);
-          setTimeout(poll, 5000);
+          await new Promise(r => setTimeout(r, 5000));
         }
       } catch (error: any) {
         consecutiveErrors++;
         console.error(`[MediaGenerator] RunningHub 轮询任务状态异常 (${consecutiveErrors}/${maxConsecutiveErrors}):`, error);
-        
+
         if (consecutiveErrors >= maxConsecutiveErrors) {
           appendTerminalLog('VideoGen', `${shotLabel()}: 轮询异常终止 — ${error?.message || error}`);
-          toast.error(`连续 ${maxConsecutiveErrors} 次查询异常，请检查网络连接`, 8000);
+          toast.error(`连续 ${maxConsecutiveErrors} 次异常，请检查网络连接`, 8000);
           updateShot(shotId, { videoGenerating: false });
           return;
         }
-        
-        setTimeout(poll, 5000);
+
+        await new Promise(r => setTimeout(r, 5000));
       }
-    };
-    
-    setTimeout(poll, 3000);
+    }
   };
 
   /** 轮询 RunningHub 任务直至拿到产出 URL（视频/音频） */
@@ -2103,6 +2537,32 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     throw new Error('轮询超时，未获取到媒体 URL');
   };
 
+  /** 浏览器侧读取音频真实时长（秒）；跨域无 CORS 时常失败，此时由 Python ffprobe 兜底 */
+  const probeAudioDurationSec = (url: string): Promise<number | undefined> =>
+    new Promise((resolve) => {
+      try {
+        if (typeof Audio === 'undefined') {
+          resolve(undefined);
+          return;
+        }
+        const a = new Audio();
+        a.preload = 'metadata';
+        const done = (sec: number | undefined) => {
+          a.removeAttribute('src');
+          a.load();
+          resolve(sec);
+        };
+        a.addEventListener('loadedmetadata', () => {
+          const t = a.duration;
+          done(Number.isFinite(t) && t > 0 ? t : undefined);
+        });
+        a.addEventListener('error', () => done(undefined));
+        a.src = url;
+      } catch {
+        resolve(undefined);
+      }
+    });
+
   /**
    * 输入/输出：镜头文案/语音分镜 → 写入 voiceAudioUrl；仅 opts.playAfter===true 时自动播放（默认不播）
    */
@@ -2111,29 +2571,49 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     opts?: { playAfter?: boolean }
   ): Promise<string> => {
     const playAfter = opts?.playAfter === true;
-    const text = (shot.caption || shot.voiceOver || '').trim();
+    let text = getTtsSpeakText(shot).trim();
     if (!text) throw new Error('没有可朗读的文案');
     if (!runningHubApiKey?.trim()) {
       appendTerminalLog('Voice', `镜头${shot.number}: 已中止 — 未配置 RunningHub API Key`);
       throw new Error('请先配置 RunningHub API Key（上方输入框）');
     }
+
+    const selected = getSelectedVoice();
+    const usingDefaultRef = !selected?.runningHubAudioPath?.trim() && !selected?.audioDataUrl?.trim();
+    const textIsEnglish = isTextPrimarilyEnglish(text);
+    if (usingDefaultRef && textIsEnglish) {
+      appendTerminalLog(
+        'Voice',
+        `镜头${shot.number}: ⚠️ 文案为英文，系统默认参考音为中文音色，生成的配音会是中文！请先在语音库里上传英文参考音频，或切换到中文文案。`
+      );
+      toast.warning(
+        '文案为英文但未配置英文参考音，生成的配音会是中文。请先在语音库上传英文参考音。',
+        5000
+      );
+    }
+    if (apiKey?.trim()) {
+      appendTerminalLog('Voice', `镜头${shot.number}: 大模型优化口播（TTS 前）…`);
+      const polished = await polishTextForTtsSpeech(apiKey.trim(), text);
+      if (polished.trim()) text = polished.trim();
+    } else {
+      appendTerminalLog('Voice', `镜头${shot.number}: 未配置云雾 API Key，跳过口播优化`);
+    }
     appendTerminalLog('Voice', `镜头${shot.number}: 开始生成配音（${text.slice(0, 40)}${text.length > 40 ? '…' : ''}）`);
     updateShot(shot.id, { voiceGenerating: true });
+    // 保存原始文案用于时长估算（polishTextForTtsSpeech 会改短文案，导致估算偏小）
+    const originalText = text;
     try {
-      const selected = getSelectedVoice();
-      if (!selected) {
-        throw new Error('请先在语音库中选择参考音色（RunningHub TTS 模板需参考音频）');
-      }
-      let refPath = selected.runningHubAudioPath?.trim();
-      if (!refPath && selected.audioDataUrl?.trim()) {
+      let refPath: string | undefined = selected?.runningHubAudioPath?.trim();
+      if (selected && !refPath && selected.audioDataUrl?.trim()) {
         appendTerminalLog('Voice', `镜头${shot.number}: 正在上传参考音频到 RunningHub…`);
         refPath = await uploadAudioToRunningHub(runningHubApiKey, selected.audioDataUrl);
         updateVoice(selected.id, { runningHubAudioPath: refPath });
       }
       if (!refPath) {
-        throw new Error('语音库音色缺少参考音频，请重新导入音频');
+        appendTerminalLog('Voice', `镜头${shot.number}: 未使用语音库参考音，使用系统默认参考音色`);
+      } else {
+        appendTerminalLog('Voice', `镜头${shot.number}: TTS ai-app（参考音 ${refPath.slice(0, 28)}…）`);
       }
-      appendTerminalLog('Voice', `镜头${shot.number}: TTS ai-app（参考音 ${refPath.slice(0, 28)}…）`);
       const r = await generateAudio(runningHubApiKey, {
         text,
         referenceAudioPath: refPath,
@@ -2143,8 +2623,21 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
       if (!audioUrl) throw new Error('未获取到音频地址');
       const playableUrl = resolveRunningHubOutputUrl(audioUrl);
-      updateShot(shot.id, { voiceAudioUrl: playableUrl, voiceGenerating: false });
-      appendTerminalLog('Voice', `镜头${shot.number}: 配音完成`);
+      const probedSec = await probeAudioDurationSec(playableUrl);
+      // 估算仅作兜底：文案节奏与 TTS 实测差很多时，勿让大估算再与 ffprobe 取 max（已在 Python 侧改为以文件为准）
+      const estimatedSec = Math.max(
+        3,
+        Math.round(originalText.length / 5 + (originalText.split(/\s+/).length - 1) / 2.5)
+      );
+      const audioDurationSec =
+        probedSec != null && Number.isFinite(probedSec) && probedSec > 0
+          ? Math.max(1, Math.round(probedSec))
+          : estimatedSec;
+      updateShot(shot.id, { voiceAudioUrl: playableUrl, audioDurationSec, voiceGenerating: false });
+      appendTerminalLog(
+        'Voice',
+        `镜头${shot.number}: 配音完成（${probedSec != null ? `实测约 ${audioDurationSec}s` : `估算 ${audioDurationSec}s`}）`
+      );
       if (playAfter) {
         try {
           await new Audio(playableUrl).play();
@@ -2161,7 +2654,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   };
 
   // 生成单个视频（仅 RunningHub Wan2.2 / LTX-2）
-  const handleGenerateVideo = async (shot: Shot, regenerate: boolean = false) => {
+  const handleGenerateVideo = async (
+    shot: Shot,
+    regenerate: boolean = false,
+    opts?: { onVideoHubProgress?: (percent: number) => void }
+  ) => {
     const selectedModel = VIDEO_MODELS.find(m => m.id === selectedVideoModel);
     const isRunningHubModel = selectedModel?.isRunningHub;
 
@@ -2315,6 +2812,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             });
             toast.success(`视频生成成功并已缓存！（共 ${updatedVideoUrls.length} 个视频）`, 8000);
             appendTerminalLog('VideoGen', `镜头${shot.number}: 同步返回视频 URL，已缓存并写入`);
+            opts?.onVideoHubProgress?.(100);
           } catch (cacheError: any) {
             console.warn('[MediaGenerator] 视频缓存失败，使用原始URL:', cacheError);
             
@@ -2329,6 +2827,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             });
             toast.success(`视频生成成功！（共 ${updatedVideoUrls.length} 个视频）`, 8000);
             appendTerminalLog('VideoGen', `镜头${shot.number}: 同步返回视频 URL（未缓存）`);
+            opts?.onVideoHubProgress?.(100);
           }
         } else if (result.taskId) {
           // 异步任务，开始轮询
@@ -2344,7 +2843,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             8000
           );
           
-          await pollRunningHubTaskStatus(result.taskId, shot.id);
+          await pollRunningHubTaskStatus(result.taskId, shot.id, 180, opts?.onVideoHubProgress);
         } else {
           // 成功但没有taskId和videoUrl，可能是响应格式问题
           appendTerminalLog('VideoGen', `镜头${shot.number}: 响应异常 — 无 taskId 与 videoUrl`);
@@ -2611,7 +3110,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
   // 批量生成语音（RunningHub TTS / 语音库 IndexTTS2）
   const handleBatchGenerateVoice = async () => {
-    const selectedShots = shots.filter(s => s.selected && (s.caption?.trim() || s.voiceOver?.trim()));
+    const selectedShots = shots.filter(s => s.selected && getTtsSpeakText(s).trim());
     if (selectedShots.length === 0) {
       toast.warning('请先选择有文案或语音分镜内容的镜头');
       return;
@@ -2620,7 +3119,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       toast.error('请先配置 RunningHub API Key（上方输入框）');
       return;
     }
-    if (!confirm(`确定要为 ${selectedShots.length} 个镜头批量生成配音吗？（可走语音库参考音色）`)) {
+    if (!confirm(`确定要为 ${selectedShots.length} 个镜头批量生成配音吗？（语音库有参考音则用之，否则系统默认）`)) {
       return;
     }
     setBatchProgress({ current: 0, total: selectedShots.length, type: 'voice' });
@@ -2644,8 +3143,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     }
   };
 
-  const selectedCount = shots.filter(s => s.selected).length;
-  const generatingCount = shots.filter(s => s.imageGenerating || s.videoGenerating || s.voiceGenerating).length;
+  const isMainWorkspace = activeWorkspaceTabId === 'main';
+  const selectedCount = tableShots.filter((s) => s.selected).length;
+  const generatingCount = tableShots.filter((s) => s.imageGenerating || s.videoGenerating || s.voiceGenerating).length;
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
@@ -2743,7 +3243,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                 type="button"
                 onClick={() => setShowVoiceLibrary(true)}
                 className="px-2.5 py-1 bg-teal-600/80 hover:bg-teal-500 text-white text-[11px] font-medium rounded flex items-center gap-1 shadow-sm"
-                title="管理参考音色：上传的音频会作为 RunningHub IndexTTS2 / TTS 应用的参考音路径，与媒体生成页 RunningHub API Key 绑定"
+                title="管理参考音色：可选。上传后作为 RunningHub 配音参考音；未上传或未选条目时使用系统默认参考音（与 IndexTTS2 模板一致）。需配置 RunningHub API Key。"
               >
                 <HardDrive size={14} />
                 打开
@@ -2839,6 +3339,19 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             >
               {VIDEO_MODELS.map(model => (
                 <option key={model.id} value={model.id}>{model.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex-shrink-0 min-w-[168px] max-w-[220px] w-[min(100%,200px)]">
+            <label className="text-[10px] text-slate-500 mb-0.5 block">风格设置</label>
+            <select
+              value={STYLE_LIBRARY.some((s) => s.id === selectedStyle) ? selectedStyle : 'none'}
+              onChange={(e) => setSelectedStyle(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
+            >
+              {STYLE_LIBRARY.map((style) => (
+                <option key={style.id} value={style.id}>{style.name}</option>
               ))}
             </select>
           </div>
@@ -2960,19 +3473,6 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             </select>
           </div>
 
-          <div className="flex-shrink-0 min-w-[168px] max-w-[220px] w-[min(100%,200px)]">
-            <label className="text-[10px] text-slate-500 mb-0.5 block">风格设置</label>
-            <select
-              value={STYLE_LIBRARY.some((s) => s.id === selectedStyle) ? selectedStyle : 'none'}
-              onChange={(e) => setSelectedStyle(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
-            >
-              {STYLE_LIBRARY.map((style) => (
-                <option key={style.id} value={style.id}>{style.name}</option>
-              ))}
-            </select>
-          </div>
-
           <div className="flex-1 min-w-[100px]">
             <label className="text-xs text-slate-500 mb-1 block">生成數量</label>
             <select
@@ -3007,7 +3507,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         <div className="flex items-center gap-1 bg-slate-800/70 border border-slate-700 rounded-lg p-1.5 overflow-x-auto">
           {/* 当前编辑标签 */}
           <button
-            onClick={() => { setActiveWorkspaceTabId('main'); setQueuePreviewLocalShots(null); }}
+            type="button"
+            onClick={() => activateQueueWorkspaceTab('main')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all ${
               activeWorkspaceTabId === 'main'
                 ? 'bg-emerald-600 text-white shadow-lg'
@@ -3030,17 +3531,19 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             const task = oneClickQueueTasks.find(t => t.id === tabId);
             const meta = queueTabMeta[tabId];
             const isRunning = task?.status === 'running';
+            const isMediaTab = tabId.startsWith('media:');
             return (
               <button
+                type="button"
                 key={tabId}
-                onClick={() => setActiveWorkspaceTabId(tabId)}
+                onClick={() => activateQueueWorkspaceTab(tabId)}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all group ${
                   activeWorkspaceTabId === tabId
                     ? 'bg-indigo-600 text-white shadow-lg'
                     : 'bg-slate-700/50 text-slate-300 hover:bg-slate-600'
                 }`}
               >
-                <ListOrdered size={13} />
+                {isMediaTab || meta?.taskType === 'media' ? <HardDrive size={13} /> : <ListOrdered size={13} />}
                 {meta?.name || tabId}
                 {isRunning && (
                   <span className="relative flex h-2 w-2">
@@ -3196,54 +3699,100 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                 <span className="text-[10px] text-slate-500 font-normal">({oneClickQueueTasks.length})</span>
               </h3>
             </div>
-            <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto">
+            <div className="flex flex-col gap-1.5 max-h-52 overflow-y-auto">
               {oneClickQueueTasks.map(t => {
                 const statusColors: Record<string, string> = {
+                  pending: 'bg-slate-600',
                   queued: 'bg-slate-600',
                   running: 'bg-amber-600 animate-pulse',
                   completed: 'bg-emerald-600',
                   failed: 'bg-red-600',
+                  cancelled: 'bg-slate-500',
                 };
                 const statusLabels: Record<string, string> = {
+                  pending: '待处理',
                   queued: '等待',
                   running: '执行中',
                   completed: '已完成',
                   failed: '失败',
+                  cancelled: '已取消',
                 };
+                const pctRaw = t.progressPercent;
+                const pct = Math.max(
+                  0,
+                  Math.min(100, typeof pctRaw === 'number' ? Math.round(pctRaw) : Number(pctRaw) || 0)
+                );
                 return (
-                  <div key={t.id} className="flex items-center gap-2 bg-slate-700/50 rounded-lg px-3 py-2">
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium text-white ${statusColors[t.status] || 'bg-slate-600'}`}>
-                      {statusLabels[t.status] || t.status}
-                    </span>
-                    <span className={`text-[10px] font-mono ${t.type === 'oneshot' ? 'text-indigo-400' : 'text-orange-400'}`}>
-                      [{t.type === 'oneshot' ? 'OC' : 'Q'}]
-                    </span>
-                    <span className="text-[11px] text-slate-300 truncate flex-1">{t.id}</span>
-                    <span className="text-[10px] text-slate-500">{t.completedAt || t.createdAt}</span>
-                    {t.status === 'completed' && (
-                      <button
-                        onClick={() => handleReexportJianyingForTask(t.id)}
-                        className="text-[10px] px-2 py-0.5 bg-purple-600 hover:bg-purple-500 text-white rounded transition-all"
-                      >
-                        补导出
-                      </button>
-                    )}
-                    <button
-                      onClick={() => openQueueTaskWorkspaceTab(t.id, t.id, t.type as 'oneshot' | 'queue', t.status === 'running')}
-                      className="text-[10px] px-2 py-0.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded transition-all"
-                    >
-                      查看任务
-                    </button>
-                    <button
-                      onClick={() => {
-                        const tasks = oneClickQueueTasks.filter(x => x.id !== t.id);
-                        persistQueue(tasks);
-                        appendTerminalLog('Queue', `删除任务 ${t.id}`);
-                      }}
-                      className="text-[10px] px-1.5 py-0.5 bg-red-600/50 hover:bg-red-600 text-white rounded transition-all"
-                    >
-                      <X size={10} />
-                    </button>
+                  <div key={t.id} className="flex items-start gap-3 bg-slate-700/50 rounded-lg px-3 py-2 group">
+                    <div className="flex-1 flex flex-col gap-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium text-white shrink-0 ${statusColors[t.status] || 'bg-slate-600'}`}>
+                          {statusLabels[t.status] || t.status}
+                        </span>
+                        <span className={`text-[10px] font-mono shrink-0 ${t.type === 'oneshot' ? 'text-indigo-400' : 'text-orange-400'}`}>
+                          [{t.type === 'oneshot' ? 'OC' : 'Q'}]
+                        </span>
+                        <span className="text-[11px] text-slate-300 truncate flex-1 min-w-0">{t.id}</span>
+                        <span className="text-[10px] text-slate-500 shrink-0">{t.completedAt || t.createdAt}</span>
+                        {t.status === 'completed' && (
+                          <button
+                            type="button"
+                            onClick={() => handleReexportJianyingForTask(t.id)}
+                            className="text-[10px] px-2 py-0.5 bg-purple-600 hover:bg-purple-500 text-white rounded transition-all shrink-0"
+                          >
+                            补导出
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => openQueueTaskWorkspaceTab(t.id, t.id, t.type as 'oneshot' | 'queue', t.status === 'running')}
+                          className="text-[10px] px-2 py-0.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded transition-all shrink-0"
+                        >
+                          查看任务
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const tasks = oneClickQueueTasks.filter(x => x.id !== t.id);
+                            persistQueue(tasks);
+                            appendTerminalLog('Queue', `删除任务 ${t.id}`);
+                          }}
+                          className="text-[10px] px-1.5 py-0.5 bg-red-600/50 hover:bg-red-600 text-white rounded transition-all shrink-0"
+                        >
+                          <X size={10} />
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 min-w-0 h-1.5 bg-slate-900 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-[width] duration-300 ${
+                              t.status === 'failed' ? 'bg-red-500' : t.status === 'completed' ? 'bg-emerald-500' : 'bg-amber-500/90'
+                            }`}
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                        <span className="text-[9px] text-slate-400 w-9 text-right tabular-nums shrink-0">{pct}</span>
+                      </div>
+                      {t.status === 'running' && t.progressNote && (
+                        <div className="text-[9px] text-slate-500 truncate">{t.progressNote}</div>
+                      )}
+                    </div>
+                    {/* 右侧预览图（大尺寸） */}
+                    {(() => {
+                      const previewUrl = taskPreviewImageUrl(t);
+                      return previewUrl ? (
+                        <img
+                          src={previewUrl}
+                          alt="预览"
+                          className="w-20 h-20 rounded object-cover flex-shrink-0 border border-slate-600 group-hover:border-indigo-500 transition-all"
+                          title={`预览图 · ${t.id}`}
+                        />
+                      ) : (
+                        <div className="w-20 h-20 rounded border border-slate-600 flex-shrink-0 flex items-center justify-center bg-slate-800">
+                          <ImageIcon size={20} className="text-slate-600" />
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })}
@@ -3285,9 +3834,27 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           </div>
         </div>
 
-        {/* 镜头列表 - 表格式布局 */}
+        {/* 镜头列表 - 表格式布局（主工作区用 shots；历史任务标签用 queuePreviewLocalShots） */}
+        {!isMainWorkspace && (
+          <div className="text-xs text-amber-200/90 bg-amber-950/25 border border-amber-700/40 rounded-lg px-3 py-2">
+            {activeWorkspaceTabId.startsWith('media:') ? (
+              <>
+                正在预览<strong className="text-amber-100"> 媒体历史 </strong>快照{' '}
+                <span className="font-mono text-amber-100">{activeWorkspaceTabId.slice(6)}</span>
+                （与队列「查看任务」相同，只读预览）。请点顶部左侧主标签（
+                <span className="font-mono">{mainWorkspaceTabTitle}</span>）返回当前编辑分镜后再生成/导出。
+              </>
+            ) : (
+              <>
+                正在预览队列任务 <span className="font-mono text-amber-100">{activeWorkspaceTabId}</span>
+                的快照。请点顶部左侧主标签（<span className="font-mono">{mainWorkspaceTabTitle}</span>
+                ）返回当前编辑分镜后再生成/导出。
+              </>
+            )}
+          </div>
+        )}
         <div className="flex-1 overflow-x-auto custom-scrollbar">
-          {shots.length === 0 ? (
+          {tableShots.length === 0 ? (
             <div className="text-center py-12 text-slate-500">
               <FileText size={48} className="mx-auto mb-4 opacity-50" />
               <p>暂无镜头數據</p>
@@ -3307,7 +3874,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               </div>
               
               {/* 表格内容 */}
-              {shots.map((shot) => (
+              {tableShots.map((shot) => (
                 <div
                   key={shot.id}
                   className={`grid grid-cols-[60px_200px_160px_220px_160px_220px_140px] gap-1.5 border-b border-slate-700/50 p-2 hover:bg-slate-800/30 transition-colors ${
@@ -3318,123 +3885,71 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                   <div className="flex items-center justify-center">
                     <input
                       type="checkbox"
+                      disabled={!isMainWorkspace}
                       checked={shot.selected || false}
                       onChange={(e) => updateShot(shot.id, { selected: e.target.checked })}
-                      className="rounded mr-2"
+                      className="rounded mr-2 disabled:opacity-40"
                     />
                     <span className="text-xs font-semibold text-emerald-400">{shot.number}</span>
                   </div>
 
-                  {/* 文案列 */}
+                  {/* 文案列：仅展示与 TTS 一致的配音正文；编辑时改完整 caption（可含「角色-语气：」前缀） */}
                   <div className="flex flex-col gap-1">
-                    <div className={`text-[11px] text-slate-300 leading-relaxed ${
-                      expandedCaptions.has(shot.id) ? '' : 'line-clamp-4'
-                    }`}>
-                      {shot.caption || '無文案'}
-                    </div>
-                    {shot.caption && shot.caption.length > 100 && (
+                    {editingCaptionShotId === shot.id && isMainWorkspace ? (
+                      <textarea
+                        value={shot.caption}
+                        onChange={(e) => updateShot(shot.id, { caption: e.target.value })}
+                        className="w-full bg-slate-800 border border-slate-600 rounded px-1.5 py-1 text-[10px] text-slate-200 resize-y min-h-[72px] max-h-48"
+                        placeholder="完整镜头文案。需要角色前缀时可写：讲述者-平静：口播正文…"
+                      />
+                    ) : (
+                      <>
+                        {(() => {
+                          const dub = getTtsSpeakText(shot).trim() || '無文案';
+                          const longForClamp = dub.length;
+                          return (
+                            <>
+                              <div
+                                className={`text-[11px] text-slate-300 leading-relaxed ${
+                                  expandedCaptions.has(shot.id) ? '' : 'line-clamp-4'
+                                }`}
+                              >
+                                {dub}
+                              </div>
+                              {longForClamp > 100 && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setExpandedCaptions((prev) => {
+                                      const next = new Set(prev);
+                                      if (next.has(shot.id)) next.delete(shot.id);
+                                      else next.add(shot.id);
+                                      return next;
+                                    });
+                                  }}
+                                  className="text-[9px] text-slate-400 hover:text-slate-300 self-start"
+                                >
+                                  {expandedCaptions.has(shot.id) ? '收起' : '展开'}
+                                </button>
+                              )}
+                            </>
+                          );
+                        })()}
+                      </>
+                    )}
+                    {isMainWorkspace && (
                       <button
-                        onClick={() => {
-                          setExpandedCaptions(prev => {
-                            const newSet = new Set(prev);
-                            if (newSet.has(shot.id)) {
-                              newSet.delete(shot.id);
-                            } else {
-                              newSet.add(shot.id);
-                            }
-                            return newSet;
-                          });
-                        }}
-                        className="text-[9px] text-blue-400 hover:text-blue-300 self-start"
+                        type="button"
+                        onClick={() =>
+                          setEditingCaptionShotId((id) => (id === shot.id ? null : shot.id))
+                        }
+                        className="text-[10px] px-1.5 py-0.5 bg-slate-700/90 hover:bg-slate-600 text-slate-200 rounded self-start flex items-center gap-1"
+                        title="编辑完整镜头文案（含可选的角色-语气前缀）"
                       >
-                        {expandedCaptions.has(shot.id) ? '收起' : '展开'}
+                        <Edit2 size={10} />
+                        {editingCaptionShotId === shot.id ? '完成编辑' : '编辑全文'}
                       </button>
                     )}
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => {
-                          // 提取文案中的角色（格式：角色名-语气: 或 角色名:）
-                          const roleMatch = shot.caption?.match(/^([^-:：]+)[-:：]/);
-                          const extractedRole = roleMatch ? roleMatch[1].trim() : '角色';
-                          setEditingRole({ shotId: shot.id, role: extractedRole });
-                        }}
-                        className="text-[10px] px-1.5 py-0.5 bg-blue-600 hover:bg-blue-500 text-white rounded"
-                        title="角色（可编辑）"
-                      >
-                        {editingRole?.shotId === shot.id ? (
-                          <input
-                            type="text"
-                            value={editingRole.role}
-                            onChange={(e) => setEditingRole({ ...editingRole, role: e.target.value })}
-                            onBlur={() => {
-                              // 更新文案，替换开头的角色
-                              if (shot.caption) {
-                                const toneMatch = shot.caption.match(/^[^-:：]+-([^:：]+)[:：]/);
-                                const tone = toneMatch ? toneMatch[1].trim() : '';
-                                if (tone) {
-                                  const newCaption = shot.caption.replace(/^[^-:：]+[-:：]/, `${editingRole.role}-`);
-                                  updateShot(shot.id, { caption: newCaption });
-                                } else {
-                                  const newCaption = shot.caption.replace(/^[^-:：]+[-:：]/, `${editingRole.role}:`);
-                                  updateShot(shot.id, { caption: newCaption });
-                                }
-                              } else {
-                                updateShot(shot.id, { caption: `${editingRole.role}-` });
-                              }
-                              setEditingRole(null);
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                e.currentTarget.blur();
-                              }
-                            }}
-                            className="w-16 bg-slate-800 border border-slate-600 rounded px-1 text-[10px] text-slate-200"
-                            autoFocus
-                          />
-                        ) : (
-                          shot.caption?.match(/^([^-:：]+)[-:：]/)?.[1]?.trim() || '添加'
-                        )}
-                      </button>
-                      <button
-                        onClick={() => {
-                          // 提取文案中的语气（格式：角色名-语气:）
-                          const toneMatch = shot.caption?.match(/^[^-:：]+-([^:：]+)[:：]/);
-                          const extractedTone = toneMatch ? toneMatch[1].trim() : '语气';
-                          setEditingTone({ shotId: shot.id, tone: extractedTone });
-                        }}
-                        className="text-[10px] px-1.5 py-0.5 bg-slate-700 hover:bg-slate-600 text-white rounded"
-                        title="语气（可编辑）"
-                      >
-                        {editingTone?.shotId === shot.id ? (
-                          <input
-                            type="text"
-                            value={editingTone.tone}
-                            onChange={(e) => setEditingTone({ ...editingTone, tone: e.target.value })}
-                            onBlur={() => {
-                              // 更新文案，替换语气部分
-                              if (shot.caption) {
-                                const roleMatch = shot.caption.match(/^([^-:：]+)[-:：]/);
-                                const role = roleMatch ? roleMatch[1].trim() : '角色';
-                                const newCaption = shot.caption.replace(/^[^-:：]+-[^:：]+[:：]/, `${role}-${editingTone.tone}:`);
-                                updateShot(shot.id, { caption: newCaption });
-                              } else {
-                                updateShot(shot.id, { caption: `角色-${editingTone.tone}:` });
-                              }
-                              setEditingTone(null);
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                e.currentTarget.blur();
-                              }
-                            }}
-                            className="w-16 bg-slate-800 border border-slate-600 rounded px-1 text-[10px] text-slate-200"
-                            autoFocus
-                          />
-                        ) : (
-                          shot.caption?.match(/^[^-:：]+-([^:：]+)[:：]/)?.[1]?.trim() || '讲述者'
-                        )}
-                      </button>
-                    </div>
                   </div>
 
                   {/* 提示词列（图片提示词） */}
@@ -3749,7 +4264,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                         }
                       }}
                       className="text-[10px] px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded whitespace-nowrap disabled:opacity-50"
-                      title={shot.voiceAudioUrl ? '点击试听已有配音' : '使用 RunningHub 生成配音（可在语音库选参考音色）'}
+                      title={shot.voiceAudioUrl ? '点击试听已有配音' : '使用 RunningHub 生成配音（语音库可选；未配置则用系统默认参考音）'}
                     >
                       {shot.voiceGenerating ? '生成中…' : shot.voiceAudioUrl ? '音频试听' : '生成音频'}
                     </button>
@@ -3857,6 +4372,18 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         <HistorySelector
           records={scriptHistoryRecords}
           onSelect={handleHistorySelectorSelect}
+          primarySelectLabel={historySelectorKind === 'media' ? '载入主工作区' : undefined}
+          onViewSnapshot={
+            historySelectorKind === 'media'
+              ? (record) => {
+                  const pid = record.metadata?.mediaProjectId as string | undefined;
+                  if (!pid?.trim()) return;
+                  openMediaProjectWorkspaceTab(pid.trim());
+                  setShowScriptHistorySelector(false);
+                  setHistorySelectorKind(null);
+                }
+              : undefined
+          }
           onClose={() => {
             setShowScriptHistorySelector(false);
             setHistorySelectorKind(null);

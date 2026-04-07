@@ -1,5 +1,5 @@
 /**
- * 语音库：管理多条参考音色，供「制作配音」时 IndexTTS2 LoadAudio 使用
+ * 语音库：管理多条参考音色；未上传或未选中时使用 RunningHub 侧与 IndexTTS2 一致的系统默认参考音
  */
 
 import React, { useState, useEffect, useRef } from 'react';
@@ -100,9 +100,9 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({ onClose, onVoicesCha
         </div>
 
         <div className="px-4 py-2 text-[11px] text-slate-500 border-b border-slate-800 leading-relaxed">
-          选中音色作为 <span className="text-slate-400">RunningHub</span> 的参考音频：有路径时走 IndexTTS2
-          工作流；否则走 TTS 快捷应用并在 node 13/15 填入同一参考文件。均使用媒体生成页填写的 RunningHub API
-          Key。首次成功配音会把上传后的路径缓存在该音色上。
+          选中音色作为 <span className="text-slate-400">RunningHub</span> 的参考音频。未添加或未选中音色时，一键/单镜配音会使用<strong className="text-slate-400">系统默认参考音</strong>（与
+          IndexTTS2 模板内置文件一致），无需强制上传。有自选参考音时走 TTS 并在 node 13/15
+          填入；均使用媒体生成页的 RunningHub API Key。首次成功上传会把路径缓存在该音色上。
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-2">

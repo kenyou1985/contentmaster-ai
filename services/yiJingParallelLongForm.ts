@@ -148,6 +148,8 @@ export type ParallelOutlinePromptOpts = {
   contentKind: string;
   /** 第 2 条「逻辑线」全文 */
   logicBlueprint: string;
+  /** 大纲里 T 与各章 min/max 按英文口播字符（含空格标点）计，非汉字字数 */
+  englishCharOutline?: boolean;
 };
 
 export function buildParallelOutlineUserPrompt(
@@ -166,10 +168,13 @@ export function buildParallelOutlineUserPrompt(
   const head = leadContext?.trim()
     ? `${leadContext.trim()}\n\n---\n\n`
     : '';
+  const unitNote = opts.englishCharOutline
+    ? '\n【计量说明】全文总目标与各章 min_chars / max_chars 均为 **英文口播字符**（字母、空格、标点；与常见编辑器「字符数」一致），**不是**中文汉字字数。\n'
+    : '';
   return `${head}【选题】${topic}
 
 【任务】为以上选题生成${opts.channelLabel}的**章节大纲**（${opts.contentKind}），用于后续分段并发生成（每段单独请求，最后合并）。
-
+${unitNote}
 【硬性要求】
 1. 共 **${segmentCount}** 章；全片合并后有效字数目标约 **${T} 字**（允许成稿落在约 ${low}–${high} 字区间），每章 min_chars / max_chars 需合理分摊总目标，单章 min_chars 约 ${perLo}–${perHi}（在 JSON 里逐章给出，且 max_chars - min_chars ≤ 450）。
 2. ${opts.logicBlueprint}
@@ -227,6 +232,10 @@ export type ParallelSegmentPromptOpts = {
   /** 来自赛道 systemInstruction 压缩后的写作铁律 */
   voiceRules: string;
   outputLanguage: 'zh' | 'en';
+  /**
+   * 治愈心理学英文口播：本章按「字符」计（含空格标点），严守 min/max，禁止「宁多勿少」式膨胀
+   */
+  englishChapterCharStrict?: boolean;
 };
 
 export function buildParallelSegmentUserPrompt(
@@ -248,12 +257,16 @@ export function buildParallelSegmentUserPrompt(
       ? '全文使用**英文**输出（与频道要求一致），不要中文正文。'
       : '全文使用**简体中文**输出。';
 
+  const charRule = opts.englishChapterCharStrict
+    ? `【本章字数】英文正文有效字符（含空格与标点）**必须**落在 ${chapter.min_chars}–${chapter.max_chars} 之间；禁止低于 ${chapter.min_chars}，禁止高于 ${chapter.max_chars}；宁简勿灌。`
+    : `【本章字数】有效字符约 ${chapter.min_chars}–${chapter.max_chars} 字（宁多勿少，但不要超过 ${chapter.max_chars + 150}）`;
+
   return `【总选题】${topic}
 【全文主题】${coreTheme}
 【逻辑主线】${logicLine}
 
 【当前章节】${chapterIndex + 1} / ${totalChapters} — ${chapter.title}
-【本章字数】有效字符约 ${chapter.min_chars}–${chapter.max_chars} 字（宁多勿少，但不要超过 ${chapter.max_chars + 150}）
+${charRule}
 
 【本章核心】${chapter.core_brief}
 
@@ -290,6 +303,8 @@ export type ParallelMergePromptOpts = {
   outputLanguage: 'zh' | 'en';
   /** 口播/解说/脚本 */
   contentKind?: string;
+  /** 治愈心理学英文：合并后全文字符（含空格）必须落在此闭区间内 */
+  englishMergedCharClamp?: { min: number; max: number };
 };
 
 export function buildParallelMergeUserPrompt(
@@ -311,6 +326,11 @@ export function buildParallelMergeUserPrompt(
       ? '合并后全文使用**英文**，与各段语言一致。'
       : '合并后全文使用**简体中文**。';
 
+  const clamp = opts.englishMergedCharClamp;
+  const lengthRule = clamp
+    ? `6. 合并后英文全文有效字符（含空格与标点）**必须**落在 **${clamp.min}–${clamp.max}** 之间；若初稿总长超出上限，须删繁就简、去重合并，**禁止**为凑字数灌水；若不足下限，仅允许少量补过渡，仍不得超 ${clamp.max}。`
+    : `6. 保留足够字数（目标总有效字数约 ${T} 字，合并后尽量落在约 ${low}–${high} 字），不要随意大删。`;
+
   return `【任务】以下是由「${topic}」分段生成的${opts.channelTag}${kind}初稿拼接而成。请执行「合并初稿 + 统一全文语气」：
 
 1. 删除段与段之间的重复开头/重复金句（若有）。
@@ -318,7 +338,7 @@ export function buildParallelMergeUserPrompt(
 3. ${opts.toneInstruction}
 4. ${lang}
 5. 禁止新增与主题无关的大段；禁止改变核心事实与论点。
-6. 保留足够字数（目标总有效字数约 ${T} 字，合并后尽量落在约 ${low}–${high} 字），不要随意大删。
+${lengthRule}
 7. 全文仅允许**一处**自然的尾声（最后 200 字内）：可感谢与引导互动，不要在中途写收场语。
 
 【初稿】

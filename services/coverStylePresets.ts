@@ -7,6 +7,8 @@ export interface CoverStylePreset {
   promptEn: string;
 }
 
+export const MEDIA_IMAGE_STYLE_STORAGE_KEY = 'MEDIA_IMAGE_STYLE_ID';
+
 export const COVER_STYLE_PRESETS: CoverStylePreset[] = [
   {
     id: 'realistic',
@@ -81,6 +83,12 @@ export const COVER_STYLE_PRESETS: CoverStylePreset[] = [
       'Ultra minimal flat design: simple geometric shapes, solid color blocks, no gradients, modern clean Swiss-style layout.',
   },
   {
+    id: 'mindful_paws',
+    label: '治愈心理学(MindfulPaws)',
+    promptEn:
+      'Minimalist flat illustration, clean simple design, tidy composition, generous negative space, low detail, soft low-saturation palette, Morandi tones, unified color scheme, black outlines, simplified geometric shapes, smooth lines, refined premium look, modern internet-style illustration.',
+  },
+  {
     id: 'surreal',
     label: '超现实主义（Surrealism）',
     promptEn:
@@ -93,3 +101,16 @@ export const COVER_STYLE_PRESETS: CoverStylePreset[] = [
       'Analog film / retro photo: visible grain, faded colors, light leaks, vintage filter, nostalgic mood.',
   },
 ];
+
+/** 媒体生成 / 一键动画分镜 下拉共用（id 与 localStorage 一致） */
+export const MEDIA_IMAGE_STYLE_SELECT_OPTIONS: { id: string; label: string }[] = [
+  { id: 'none', label: '无风格（使用原提示词）' },
+  ...COVER_STYLE_PRESETS.map((s) => ({ id: s.id, label: s.label })),
+];
+
+/** 媒体页「风格设置」与一键动画分镜共用：按 id 取英文写入提示词 */
+export function getMediaImageStylePromptEn(styleId: string | null | undefined): string {
+  if (!styleId || styleId === 'none') return '';
+  const preset = COVER_STYLE_PRESETS.find((s) => s.id === styleId);
+  return preset?.promptEn?.trim() ?? '';
+}

@@ -16,6 +16,13 @@ interface HistorySelectorProps {
   /** 一键清空当前列表对应的持久化数据 */
   onClearAll?: () => void;
   title?: string;
+  /** 主按钮文案，默认「加载选中记录」 */
+  primarySelectLabel?: string;
+  /**
+   * 媒体历史等：仅打开只读预览标签（与队列「查看任务」一致），不覆盖主编辑区
+   */
+  onViewSnapshot?: (record: HistoryRecord) => void;
+  viewSnapshotLabel?: string;
 }
 
 export const HistorySelector: React.FC<HistorySelectorProps> = ({
@@ -25,6 +32,9 @@ export const HistorySelector: React.FC<HistorySelectorProps> = ({
   onDelete,
   onClearAll,
   title = '历史记录',
+  primarySelectLabel = '加载选中记录',
+  onViewSnapshot,
+  viewSnapshotLabel = '查看快照',
 }) => {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
 
@@ -158,26 +168,43 @@ export const HistorySelector: React.FC<HistorySelectorProps> = ({
 
         {/* 底部操作 */}
         {records.length > 0 && (
-          <div className="flex items-center justify-between p-4 border-t border-slate-700">
+          <div className="flex items-center justify-between gap-2 flex-wrap p-4 border-t border-slate-700">
             <button
+              type="button"
               onClick={onClose}
               className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium rounded transition-all"
             >
               取消
             </button>
-            <button
-              onClick={() => {
-                if (selectedIndex !== null && records[selectedIndex]) {
-                  onSelect(records[selectedIndex]);
-                  onClose();
-                }
-              }}
-              disabled={selectedIndex === null}
-              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-            >
-              <Check size={16} />
-              加载选中记录
-            </button>
+            <div className="flex items-center gap-2 flex-wrap justify-end flex-1 min-w-0">
+              {onViewSnapshot && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selectedIndex === null || !records[selectedIndex]) return;
+                    onViewSnapshot(records[selectedIndex]);
+                  }}
+                  disabled={selectedIndex === null}
+                  className="px-4 py-2 bg-slate-600 hover:bg-slate-500 text-white text-sm font-medium rounded transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                  {viewSnapshotLabel}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectedIndex !== null && records[selectedIndex]) {
+                    onSelect(records[selectedIndex]);
+                    onClose();
+                  }
+                }}
+                disabled={selectedIndex === null}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                <Check size={16} />
+                {primarySelectLabel}
+              </button>
+            </div>
           </div>
         )}
       </div>

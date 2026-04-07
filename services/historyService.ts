@@ -16,6 +16,20 @@ export interface HistoryRecord {
 const MAX_HISTORY_COUNT = 15;
 
 /**
+ * 历史列表展示名：本地日期时间 + 三位随机数（例 202604071253-482），与媒体快照命名风格一致
+ */
+export function generateDatedRandomHistoryLabel(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const n = Math.floor(Math.random() * 1000);
+  return `${y}${mo}${day}${hh}${mm}-${String(n).padStart(3, '0')}`;
+}
+
+/**
  * 生成历史记录的存储键
  */
 export const getHistoryKey = (module: 'generator' | 'tools', ...parts: string[]): string => {

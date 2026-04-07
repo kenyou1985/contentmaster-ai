@@ -126,6 +126,99 @@ function parseGrokChatImageResults(data: any): string[] {
   return [...new Set(flat)];
 }
 
+/**
+ * OpenAI images/generations（及兼容）单条结果：url 或 b64_json → 可展示、可写入本地历史的地址。
+ * 纯 base64 无 data: 前缀时补全为 PNG data URL，否则会被历史持久化层丢弃。
+ */
+export function openAiImageDataItemToUrl(item: unknown): string | undefined {
+  if (item == null) return undefined;
+  if (typeof item === 'string') {
+    const s = item.trim();
+    if (!s) return undefined;
+    if (/^(https?:|data:|blob:)/i.test(s)) return s;
+    const compact = s.replace(/\s/g, '');
+    if (/^[A-Za-z0-9+/=_-]+$/.test(compact) && compact.length >= 80) {
+      return `data:image/png;base64,${compact}`;
+    }
+    return undefined;
+  }
+  if (typeof item === 'object') {
+    const o = item as { url?: string; b64_json?: string };
+    if (typeof o.url === 'string' && o.url.trim()) return o.url.trim();
+    if (o.b64_json != null && String(o.b64_json).trim()) {
+      const b = String(o.b64_json).trim().replace(/\s/g, '');
+      if (b.startsWith('data:')) return b;
+      return `data:image/png;base64,${b}`;
+    }
+  }
+  return undefined;
+}
+
+/** 提交 TTS 前口播润色（与项目内其它 Yunwu 轻量任务一致） */
+export const YUNWU_TTS_POLISH_MODEL = 'gpt-5.4-mini';
+
+function stripLeadingTrailingCodeFence(s: string): string {
+  let t = s.trim();
+  const m = t.match(/^```(?:\w+)?\s*\n?([\s\S]*?)```\s*$/);
+  if (m) t = m[1].trim();
+  return t;
+}
+
+/**
+ * 调用大模型将口播稿优化为更适合 TTS 的断句与节奏（自然停顿、去时间戳/赘词，保持原意与语种）。
+ * 失败或未配置 key 时返回原文，不抛错。
+ */
+export async function polishTextForTtsSpeech(apiKey: string, rawText: string): Promise<string> {
+  const text = rawText.trim();
+  if (!text || !apiKey?.trim()) return text;
+  if (text.length < 8) return text;
+
+  const system = `You are a professional dubbing script editor for neural TTS.
+Optimize the user's lines for natural, fluent speech: improve punctuation and phrase breaks for breathing, remove timestamps/meta noise, keep emotional tone and facts intact.
+Rules:
+- Output ONLY the final text to be spoken. Same language as input (do not translate).
+- Do NOT add role names, shot labels, markdown, or quotes wrapping the entire output.
+- Keep the content complete; do not summarize away substantive lines.`;
+
+  const user = `以下是一段需要配音朗读的口播正文，请只做「导演级切行与朗读友好化」优化后输出：\n\n${text}`;
+
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 55_000);
+  try {
+    const res = await fetch('https://yunwu.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey.trim()}`,
+      },
+      body: JSON.stringify({
+        model: YUNWU_TTS_POLISH_MODEL,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        temperature: 0.35,
+        max_tokens: 4096,
+      }),
+      signal: ac.signal,
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      throw new Error(errText.slice(0, 200) || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    const content = data?.choices?.[0]?.message?.content;
+    if (typeof content !== 'string' || !content.trim()) return text;
+    const out = stripLeadingTrailingCodeFence(content).trim();
+    return out.length >= 2 ? out : text;
+  } catch (e) {
+    console.warn('[YunwuService] polishTextForTtsSpeech failed, using raw text:', e);
+    return text;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function normalizeReferenceDataUrls(urls: string[]): Promise<string[]> {
   const out: string[] = [];
   for (const u of urls) {
@@ -635,11 +728,14 @@ export const generateImage = async (
     }
     
     const data = await response.json();
-    
+    const first = data.data?.[0];
+    const normalizedUrl =
+      openAiImageDataItemToUrl(first) || (typeof data.url === 'string' ? data.url.trim() : undefined);
+
     return {
       success: true,
       data,
-      url: data.data?.[0]?.url || data.url,
+      url: normalizedUrl,
     };
   } catch (error: any) {
     console.error('[YunwuService] 图片生成失败:', error);

@@ -99,16 +99,18 @@ export function loadOneClickQueue(): OneClickQueueTask[] {
   return raw.map((x) => normalizeTask(x as OneClickQueueTask));
 }
 
-export function saveOneClickQueue(tasks: OneClickQueueTask[]): void {
-  if (typeof localStorage === 'undefined') return;
+export function saveOneClickQueue(tasks: OneClickQueueTask[]): boolean {
+  if (typeof localStorage === 'undefined') return false;
   const payload: OneClickQueuePersisted = {
     tasks,
     updatedAt: Date.now(),
   };
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    return true;
   } catch (e) {
     console.warn('[oneClickTaskQueue] 保存队列失败（可能超出配额）', e);
+    return false;
   }
 }
 
@@ -126,16 +128,16 @@ export function upsertQueueTask(tasks: OneClickQueueTask[], task: OneClickQueueT
   const next = [...tasks];
   if (i >= 0) next[i] = { ...task, updatedAt: Date.now() };
   else next.push({ ...task, updatedAt: Date.now() });
-  saveOneClickQueue(next);
+  void saveOneClickQueue(next);
   return next;
 }
 
 export function removeQueueTask(tasks: OneClickQueueTask[], id: string): OneClickQueueTask[] {
   const next = tasks.filter((t) => t.id !== id);
-  saveOneClickQueue(next);
+  void saveOneClickQueue(next);
   return next;
 }
 
 export function replaceQueue(tasks: OneClickQueueTask[]): void {
-  saveOneClickQueue(tasks);
+  void saveOneClickQueue(tasks);
 }

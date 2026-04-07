@@ -2,6 +2,11 @@
  * RunningHub IndexTTS2 配音工作流模板（与控制台提交参数一致）
  * workflowId 与节点 id 需与 RunningHub 上应用保持一致
  */
+
+/** 平台侧默认参考音（与节点 25 LoadAudio 一致；用户未上传语音库时 TTS ai-app 亦使用此路径） */
+export const INDEXTTS2_DEFAULT_REFERENCE_AUDIO_PATH =
+  'api/ca5d4142bb545e1e0ca255721717f4282664e359789f17b00b5f9fbbec6de53f.wav';
+
 export const INDEXTTS2_RUNNINGHUB_WORKFLOW_ID = '1930910447648571394';
 
 /** 默认文案占位，运行前由调用方写入节点 29 的 String */
@@ -36,7 +41,7 @@ export const INDEXTTS2_WORKFLOW_TEMPLATE: Record<string, unknown> = {
   '25': {
     class_type: 'LoadAudio',
     inputs: {
-      audio: 'api/ca5d4142bb545e1e0ca255721717f4282664e359789f17b00b5f9fbbec6de53f.wav',
+      audio: INDEXTTS2_DEFAULT_REFERENCE_AUDIO_PATH,
       audioUI: '',
     },
     _meta: { title: 'Load Audio' },

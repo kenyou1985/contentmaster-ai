@@ -479,11 +479,15 @@ export const MINDFUL_PSYCHOLOGY_TOPIC_PROMPT = `
 - 情绪共鸣：直击现代人的心理痛点但不制造焦虑
 - 标题简洁：短小精悍，一眼看穿核心
 
-## 选题格式
-[编号]. **[YouTube 英文标题]** (含Hook，需含狗相关关键词) | **[受众痛点/情绪价值]**
+## 选题格式（必须严格遵守）
+- 每行一条，**仅**允许这种结构：**英文爆款标题：中文痛点说明**
+- **英文部分**：YouTube 点击向标题，须含狗相关关键词（如 dog、puppy、paw、canine、man's best friend 等），可带自然 Hook，但不要堆砌符号
+- **分隔符**：**一个中文全角冒号「：」**（禁止使用半角 \`:\`、竖线 \`|\`、破折号等）
+- **中文部分**：一句话写清受众痛点或情绪价值（简练、扎心、好读）
 
 ## 格式要求
-只输出10个爆款标题，每行一个，不要前缀说明，不要解释。
+- **禁止**输出 \`*\`、\`**\`、Markdown、加粗、列表编号、引号包裹整行、竖线 \`|\` 等任何装饰
+只输出10条，每行一条，不要前缀说明，不要解释，不要编号。
 `;
 
 const RICH_MINDSET_TOPIC_PROMPT = `
@@ -571,18 +575,12 @@ export const MINDFUL_PSYCHOLOGY_SCRIPT_PROMPT = `
 ## 内容结构
 Hook(0-15s) -> Empathy Bridge -> Deep Dive(5-7个要点) -> Healing Solution -> **必须输出互动引导 CTA（不可省略）**
 
-## 字数要求（按配音语速 8-15 分钟）
-按英文单词平均约 4-5 个字母 + 1 个空格来算，折合字符（含空格）：
-- 8 分钟视频：约 4800–6000 字符
-- 15 分钟视频：约 9000–11250 字符
-- 正常语速：1 分钟 ≈ 600–750 字符
+## 字数要求（英文 TTS，按「字符」计：含空格与标点）
+**硬性区间：全文约 10000–15000 个字符（UTF-16 计，与常见编辑器字符数一致）。禁止低于 10000 或超过 15000。**
+- 约对应 12–18 分钟口播（约每分钟 600–900 英文字符，视句式而定）。
+- 根据选题复杂度在区间内取中：简单主题靠区间下限，复杂主题靠上限，但**不得超出 15000**。
 
-根据选题复杂度自动匹配：
-- 简单单点主题：4800-6000 字符（8-10分钟）
-- 中等复合主题：6000-9000 字符（10-12分钟）
-- 深度复杂主题：9000-11250 字符（12-15分钟）
-
-**重要**：在达到目标字数后，必须在末尾输出互动引导 CTA，不可省略！
+**重要**：在达到目标区间后，必须在末尾输出互动引导 CTA，不可省略！
 
 ## 互动引导要求（末尾必须包含）
 - **英文（默认）**：最后 1–3 句内必须包含清晰订阅引导，且**必须出现**完整一句：**Please like and subscribe to my channel.**  
@@ -613,17 +611,19 @@ export const MINDFUL_PSYCHOLOGY_STORYBOARD_PROMPT = `
 - Solution阶段：人物互动 + 场景环境，展示疗愈过程
 - Outro阶段：人物互动 + 纯文字引导
 
-## 图片提示词格式要求
-- 图片提示词中当且仅当只出现英文时才用双引号（如"XX"）进行描述
-- 图片提示词必须从原文内容中提取关键信息进行描述
-- 不同画面类型需明确标注
+## 图片提示词格式要求（强制）
+- **「图片提示词」字段内必须为纯英文**，禁止出现任何汉字；如需强调术语仅用英文。
+- 根据画面需要从脚本提取关键信息；不同画面类型需在英文描述中体现（人物互动 / 特写 / 图解 / 文字卡 / 环境等）。
+- 需要出现人物与狗时：使用 **minimalist character**（极简人物）与 **small healing puppy**（小狗），禁止写 young woman、husky、Siberian husky、哈士奇、年轻女性等字样。
+- 禁止使用固定套话：如「Q版卡通卡片画面」「Q-version cartoon card」等与卡片/Q版绑定的模板句。
+- 英文短语可用逗号分隔；必要时可用英文双引号括起短词组。
 
 ## 分镜输出格式（严格按顺序输出所有镜头）
 
 ### 分镜格式（严格按顺序输出所有镜头，不输出任何类型标签）
 镜头 N
 镜头文案:[必须包含该分镜对应的所有原文句子，严禁删减。必须与原文完全一致]
-图片提示词:[Q版卡通风格，西伯利亚哈士奇（灰蓝白毛发，竖立尖耳，蓬松卷尾，黑鼻头蓝眼睛）与Q版卡通年轻女性（齐肩深棕长直发，简约黑圆眼，灰蓝色罗纹毛衣，米白休闲裤，红平底鞋）同框互动，根据画面类型生成具体内容]
+图片提示词:[English only. When the shot needs them: minimalist character (shoulder-length dark brown straight hair, simple black dot eyes, gray-blue ribbed sweater, off-white casual pants, red flats) and small healing puppy (soft coat, gentle expression) in the same frame where relevant; otherwise describe the shot type per allocation rules—interaction, close-up, infographic/text card, or environment. No Chinese characters in this field.]
 视频提示词:[画面连续性描述]
 景别:特写/中景/远景/全景
 语音分镜:旁白
@@ -1828,9 +1828,10 @@ export function applyTopicCountToPrompt(prompt: string, count: number): string {
   );
   p += `\n\n【数量铁律·最高优先级】本次必须恰好输出 ${n} 个标题（或选题），每行一个，共 ${n} 行；不要多也不要少；若上文出现其他数字，一律以本段 ${n} 为准。`;
 
-  // Mindful Paws 赛道：必须至少 2 条与狗/宠物相关
+  // Mindful Paws 赛道：必须至少 2 条与狗/宠物相关 + 输出形态
   if (p.includes('Mindful Paws') || p.includes('治愈心理学') || p.includes('MINDFUL')) {
     p += `\n\n【狗主题铁律·最高优先级】本次所有选题中，**至少 2 条**必须显式包含狗/宠物元素（如标题中出现 dog、puppy、paw、canine、man's best friend、furry、pet、companion 等英文词，或中文"狗""汪星人""毛孩子"等）；若不足 2 条满足，整组作废重写。`;
+    p += `\n\n【标点与符号铁律·最高优先级】每行仅允许「英文爆款标题：中文痛点说明」；**禁止**星号 *、**、竖线 |、Markdown、编号前缀；英文与中文痛点之间**必须**用中文全角冒号「：」分隔；中文痛点须为简体中文一句。`;
   }
 
   return p;

@@ -5,6 +5,7 @@
  */
 
 import {
+  INDEXTTS2_DEFAULT_REFERENCE_AUDIO_PATH,
   INDEXTTS2_RUNNINGHUB_WORKFLOW_ID,
   INDEXTTS2_WORKFLOW_TEMPLATE,
 } from './indexTts2WorkflowTemplate';
@@ -35,8 +36,9 @@ export interface RunningHubVideoOptions {
 
 export interface RunningHubAudioOptions {
   text: string;
-  model: 'indextts2.0';
-  /** 可选：RunningHub 上的参考音频路径（如 "xxx.MP3"），写入 nodeId=13/15 */
+  /** 保留字段；当前 TTS 走 ai-app 固定模板，可不传 */
+  model?: 'indextts2.0';
+  /** 可选：RunningHub 上的参考音频路径（如 "xxx.MP3"），写入 nodeId=13/15；省略则用平台默认参考音 */
   referenceAudioPath?: string;
   speed?: number;
 }
@@ -945,15 +947,9 @@ export const generateAudio = async (
       return { success: false, error: '配音文本为空' };
     }
 
-    // 模板 1986388299516411905 要求节点 13/15 的参考音与 14 的文案同时存在（与官方 curl 一致）
-    const refAudio = options.referenceAudioPath?.trim();
-    if (!refAudio) {
-      return {
-        success: false,
-        error:
-          '该 TTS 应用必须提供参考音频路径（语音库选择音色后首次会自动上传；需媒体生成页 RunningHub API Key）',
-      };
-    }
+    // 模板 1986388299516411905 要求节点 13/15 的参考音与 14 的文案同时存在；未上传语音库时用 IndexTTS2 同款平台默认参考音
+    const refAudio =
+      options.referenceAudioPath?.trim() || INDEXTTS2_DEFAULT_REFERENCE_AUDIO_PATH;
 
     const nodeInfoList: Array<{
       nodeId: string;

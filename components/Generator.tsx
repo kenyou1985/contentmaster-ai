@@ -38,14 +38,43 @@ import {
   type YiJingChapterPlan,
 } from '../services/yiJingParallelLongForm';
 import JSZip from 'jszip';
-import { saveHistory, getHistory, getHistoryKey, deleteHistory, clearHistory, HistoryRecord } from '../services/historyService';
+import {
+  saveHistory,
+  getHistory,
+  getHistoryKey,
+  deleteHistory,
+  clearHistory,
+  HistoryRecord,
+  generateDatedRandomHistoryLabel,
+} from '../services/historyService';
 import { HistorySelector } from './HistorySelector';
 import { useToast } from './Toast';
 import { ProgressBar } from './ProgressBar';
+import {
+  getMediaImageStylePromptEn,
+  MEDIA_IMAGE_STYLE_STORAGE_KEY,
+  MEDIA_IMAGE_STYLE_SELECT_OPTIONS,
+} from '../services/coverStylePresets';
+import {
+  MINDFUL_EN_SCRIPT_CHARS_MAX,
+  MINDFUL_EN_SCRIPT_CHARS_MIN,
+  clampMindfulParallelTargetChars,
+  finalizeMindfulEnglishScriptLength,
+  mindfulMergeCharClamp,
+} from '../services/mindfulScriptPostProcess';
 
 function clampSystemSummary(raw: string, maxLen = 960): string {
   const s = raw.replace(/\s+/g, ' ').trim();
   return s.length > maxLen ? `${s.slice(0, maxLen)}…` : s;
+}
+
+/** 治愈心理学选题：去掉 * / **，竖线改「：」，英文与中文之间的半角冒号改全角「：」 */
+function sanitizeMindfulPsychologyTopicLine(raw: string): string {
+  let t = raw.replace(/^\s*\d+[\.)．、]\s*/, '').trim();
+  t = t.replace(/\*+/g, '');
+  t = t.replace(/\s*\|\s*/, '：');
+  t = t.replace(/([a-zA-Z0-9\)?.!'"…])\s*:\s*([\u4e00-\u9fff])/g, '$1：$2');
+  return t.replace(/\s{2,}/g, ' ').trim();
 }
 
 /** 各赛道分段并行：大纲 / 分段 / 合并 的提示与人设 */
@@ -93,6 +122,9 @@ function getParallelPipelineBundle(
     }
   }
 
+  const mindfulEnglishLongParallel =
+    niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
+
   if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
     channelLabel = 'Mindful Paws–style English healing psychology voice-over';
     contentKindOutline =
@@ -112,9 +144,18 @@ function getParallelPipelineBundle(
       : `全文语气、视角与「${baseName}」人设保持一致，衔接自然。`;
 
   return {
-    outline: { channelLabel, contentKind: contentKindOutline, logicBlueprint },
+    outline: {
+      channelLabel,
+      contentKind: contentKindOutline,
+      logicBlueprint,
+      englishCharOutline: mindfulEnglishLongParallel,
+    },
     outlineSystem: buildParallelOutlineSystem(directorLine),
-    segment: { outputLanguage, voiceRules },
+    segment: {
+      outputLanguage,
+      voiceRules,
+      englishChapterCharStrict: mindfulEnglishLongParallel,
+    },
     merge: {
       channelTag: baseName,
       toneInstruction: mergeTone,
@@ -216,6 +257,9 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const [showHistorySelector, setShowHistorySelector] = useState(false);
   const [historyRecords, setHistoryRecords] = useState<HistoryRecord[]>([]);
   const [pendingSubModeChange, setPendingSubModeChange] = useState<{ niche: NicheType; submode: string } | null>(null);
+  /** 治愈心理学·一键动画分镜：独立历史弹窗（与脚本历史 key 分离为 mindful_mode2） */
+  const [showStoryboardHistorySelector, setShowStoryboardHistorySelector] = useState(false);
+  const [storyboardHistoryRecords, setStoryboardHistoryRecords] = useState<HistoryRecord[]>([]);
 
   // Mindful Psychology 频道相关状态
   const [mindfulMode, setMindfulMode] = useState<'mode1' | 'mode2'>('mode1');
@@ -225,18 +269,48 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   /** 治愈心理学：一键动画分镜默认折叠，点击标题展开 */
   const [mindfulStoryboardExpanded, setMindfulStoryboardExpanded] = useState(false);
   const mindfulStoryboardAnchorRef = useRef<HTMLDivElement>(null);
+  /** 一键动画分镜画面风格：与媒体生成「风格设置」同一套选项与 localStorage */
+  const [mindfulStoryboardStyleId, setMindfulStoryboardStyleId] = useState(() => {
+    try {
+      const s = localStorage.getItem(MEDIA_IMAGE_STYLE_STORAGE_KEY);
+      if (s && MEDIA_IMAGE_STYLE_SELECT_OPTIONS.some((o) => o.id === s)) return s;
+    } catch {
+      /* ignore */
+    }
+    return 'none';
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(MEDIA_IMAGE_STYLE_STORAGE_KEY, mindfulStoryboardStyleId);
+    } catch {
+      /* ignore */
+    }
+  }, [mindfulStoryboardStyleId]);
 
   /** 易经命理·长视频：大纲 + 分段并行 + 合并润色 */
   /** 全文目标字数（分段并行的总目标，默认 3500，与各章 min/max 联动） */
   const [yiJingTotalTargetChars, setYiJingTotalTargetChars] = useState(3500);
+  /** 治愈心理学长视频：并行目标为英文总字符数，限制在 10000–15000 */
+  useEffect(() => {
+    if (niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG') {
+      setYiJingTotalTargetChars((prev) => clampMindfulParallelTargetChars(prev));
+    }
+  }, [niche, scriptLengthMode]);
+  const parallelTotalTargetChars = useMemo(
+    () =>
+      niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG'
+        ? clampMindfulParallelTargetChars(yiJingTotalTargetChars)
+        : yiJingTotalTargetChars,
+    [niche, scriptLengthMode, yiJingTotalTargetChars]
+  );
   /** 按目标总字数与单次输出上限自动推算章数（非固定 3–7） */
   const yiJingComputedSegCount = useMemo(
     () =>
       computeParallelSegmentCount(
-        yiJingTotalTargetChars,
+        parallelTotalTargetChars,
         scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
       ),
-    [yiJingTotalTargetChars, scriptLengthMode]
+    [parallelTotalTargetChars, scriptLengthMode]
   );
   const [yiJingOutlineText, setYiJingOutlineText] = useState('');
   const [yiJingOutlineParsed, setYiJingOutlineParsed] = useState<YiJingOutlinePayload | null>(null);
@@ -305,6 +379,35 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   // 生成历史记录 key 的统一函数
   const getHistoryKeyForSubMode = (nicheType: NicheType, submodeId: string): string => {
     return `${nicheType}_${submodeId}`;
+  };
+
+  /** 治愈心理学动画分镜历史（与 save 分镜时使用的 submode 一致） */
+  const getMindfulStoryboardHistoryKey = () =>
+    getHistoryKeyForSubMode(NicheType.MINDFUL_PSYCHOLOGY, 'mindful_mode2');
+
+  const openMindfulStoryboardHistory = () => {
+    const historyKey = getMindfulStoryboardHistoryKey();
+    const records = getHistory('generator', historyKey);
+    if (records.length === 0) {
+      toast.info('暂无分镜历史，请先生成过一次「一键动画分镜」');
+      return;
+    }
+    setStoryboardHistoryRecords(records);
+    setShowStoryboardHistorySelector(true);
+  };
+
+  const handleStoryboardHistorySelect = (record: HistoryRecord) => {
+    const text = record.content?.trim();
+    if (!text) {
+      toast.warning('该条记录没有分镜内容');
+      return;
+    }
+    setStoryboard(text);
+    const src = record.metadata?.input?.trim();
+    if (src) setMindfulScript(src);
+    setMindfulStoryboardExpanded(true);
+    toast.success('已载入分镜历史');
+    setShowStoryboardHistorySelector(false);
   };
 
   /**
@@ -703,8 +806,9 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       
       const newTopics: Topic[] = rawTopics.map((t, i) => ({
         id: `topic-${i}`,
-        title: t,
-        selected: true
+        title:
+          niche === NicheType.MINDFUL_PSYCHOLOGY ? sanitizeMindfulPsychologyTopicLine(t) : t,
+        selected: true,
       }));
       setTopics(newTopics);
       setStatus(GenerationStatus.IDLE);
@@ -757,13 +861,19 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       const systemInstruction =
         '你是一个科普动画分镜生成器。严格按照格式输出分镜内容，不要任何前缀说明。输出时不要包含 [TYPE:...] 这样的类型标签。';
 
+      const stylePromptEn = getMediaImageStylePromptEn(mindfulStoryboardStyleId);
+      const styleDirective = stylePromptEn
+        ? `**【画面风格预设】**用户已选画面风格；每个镜头的「图片提示词」除满足全英文要求外，须在同一字段内自然融入以下英文风格描述（可微调语序，不得译为中文，不得省略核心语义）：\n${stylePromptEn}`
+        : '**【图片提示词语言】**每个镜头的「图片提示词」须为纯英文，禁止汉字。';
+
       const prompt = `${MINDFUL_PSYCHOLOGY_STORYBOARD_PROMPT}
 
 # 用户脚本（共 ${effectiveScript.length} 字，预计 ${estimatedShots} 个镜头）
 
 **【数量铁律】必须严格输出 ${estimatedShots} 个镜头，不许多一个也不能少一个。**
 **【序号格式】镜头序号用"镜头 1"、"镜头 2"格式，禁止用"镜头[1]"格式。**
-**【角色风格】图片提示词中：Q版卡通年轻女性（齐肩深棕长直发，简约黑圆眼，灰蓝色罗纹毛衣，米白休闲裤，红平底鞋）；西伯利亚哈士奇（灰蓝白毛发，竖立尖耳，蓬松卷尾，黑鼻头蓝眼睛）。**
+**【角色指称】图片提示词中如需人物与狗：用 minimalist character 与 small healing puppy（小狗），禁止 husky / Siberian husky / young woman / 哈士奇 / 年轻女性；禁止「Q版卡通卡片」类固定套话。**
+${styleDirective}
 **【内容铁律】每个镜头的镜头文案必须 100% 包含对应的原文内容。允许将多个相邻句子合并到一个镜头文案中，以合理划分镜头边界。每个镜头文案不得删减、不得改写原文。**
 ${effectiveScript}`;
 
@@ -806,13 +916,13 @@ ${effectiveScript}`;
       }
 
       try {
-        const historyKey = getHistoryKeyForSubMode(NicheType.MINDFUL_PSYCHOLOGY, 'mindful_mode2');
-        const scriptPreview = effectiveScript.slice(0, 100);
+        const historyKey = getMindfulStoryboardHistoryKey();
+        const recordName = generateDatedRandomHistoryLabel();
         saveHistory('generator', historyKey, localContent, {
-          topic: `分镜-${scriptPreview}${scriptPreview.length >= 100 ? '…' : ''}`,
+          topic: recordName,
           input: effectiveScript,
         });
-        console.log('[Generator] 分镜已保存历史记录，key:', historyKey);
+        console.log('[Generator] 分镜已保存历史记录，key:', historyKey, 'name:', recordName);
       } catch (e) {
         console.error('[Generator] 保存分镜历史记录失败:', e);
       }
@@ -1253,16 +1363,20 @@ ${segmentSourceText}
     Math.min(70000, Math.max(1000, Math.round(Number.isFinite(v) ? v : 8000)));
 
   /** 在已有大纲上按当前「目标全文字数」重算各章 min_chars / max_chars，并同步 JSON 文本 */
-  const applyYiJingTotalTargetToOutline = useCallback((total: number) => {
-    const n = clampYiJingTotalTarget(total);
-    setYiJingTotalTargetChars(n);
-    setYiJingOutlineParsed((prev) => {
-      if (!prev) return null;
-      const next = rescaleChapterWordCounts(prev, n);
-      setYiJingOutlineText(outlinePayloadToJsonPretty(next));
-      return next;
-    });
-  }, []);
+  const applyYiJingTotalTargetToOutline = useCallback(
+    (total: number) => {
+      const mindfulLong = niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
+      const n = mindfulLong ? clampMindfulParallelTargetChars(total) : clampYiJingTotalTarget(total);
+      setYiJingTotalTargetChars(n);
+      setYiJingOutlineParsed((prev) => {
+        if (!prev) return null;
+        const next = rescaleChapterWordCounts(prev, n);
+        setYiJingOutlineText(outlinePayloadToJsonPretty(next));
+        return next;
+      });
+    },
+    [niche, scriptLengthMode]
+  );
 
   /** 仅生成并解析大纲（可编辑后再并行） */
   const handleYiJingGenerateOutline = useCallback(async () => {
@@ -1292,14 +1406,14 @@ ${segmentSourceText}
       hint: `正在生成大纲（约 ${segN} 章）…`,
     });
     pushYiJingLog(
-      `开始生成大纲（自动约 ${segN} 章，全文目标约 ${yiJingTotalTargetChars} 字）…`
+      `开始生成大纲（自动约 ${segN} 章，全文目标约 ${parallelTotalTargetChars} 字）…`
     );
     try {
       const raw = await collectStreamText(
         buildParallelOutlineUserPrompt(
           sel[0].title,
           segN,
-          yiJingTotalTargetChars,
+          parallelTotalTargetChars,
           bundle.outline,
           lead || undefined
         ),
@@ -1308,7 +1422,7 @@ ${segmentSourceText}
       );
       const parsedRaw = parseYiJingOutline(raw);
       const parsed = parsedRaw
-        ? rescaleChapterWordCounts(parsedRaw, yiJingTotalTargetChars)
+        ? rescaleChapterWordCounts(parsedRaw, parallelTotalTargetChars)
         : null;
       setYiJingOutlineParsed(parsed);
       setYiJingOutlineText(parsed ? outlinePayloadToJsonPretty(parsed) : raw);
@@ -1341,7 +1455,7 @@ ${segmentSourceText}
     storyDuration,
     topics,
     yiJingComputedSegCount,
-    yiJingTotalTargetChars,
+    parallelTotalTargetChars,
     collectStreamText,
     pushYiJingLog,
     toast,
@@ -1362,11 +1476,11 @@ ${segmentSourceText}
         toast.error('请先「生成大纲」，或在编辑大纲中保存有效结构');
         return;
       }
-      parsed = rescaleChapterWordCounts(parsed, yiJingTotalTargetChars);
+      parsed = rescaleChapterWordCounts(parsed, parallelTotalTargetChars);
       setYiJingOutlineParsed(parsed);
       setYiJingOutlineText(outlinePayloadToJsonPretty(parsed));
     } else {
-      parsed = rescaleChapterWordCounts(parsed, yiJingTotalTargetChars);
+      parsed = rescaleChapterWordCounts(parsed, parallelTotalTargetChars);
       setYiJingOutlineParsed(parsed);
       setYiJingOutlineText(outlinePayloadToJsonPretty(parsed));
     }
@@ -1470,7 +1584,7 @@ ${segmentSourceText}
     topics,
     yiJingOutlineParsed,
     yiJingOutlineText,
-    yiJingTotalTargetChars,
+    parallelTotalTargetChars,
     pushYiJingLog,
     toast,
   ]);
@@ -1503,12 +1617,22 @@ ${segmentSourceText}
         NICHES[niche]
       );
       const combined = parts.join('\n\n');
+      const mindfulLong =
+        niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
       const merged = await collectStreamText(
-        buildParallelMergeUserPrompt(sel[0].title, combined, yiJingTotalTargetChars, bundle.merge),
+        buildParallelMergeUserPrompt(sel[0].title, combined, parallelTotalTargetChars, {
+          ...bundle.merge,
+          englishMergedCharClamp: mindfulLong
+            ? mindfulMergeCharClamp(parallelTotalTargetChars)
+            : undefined,
+        }),
         bundle.mergeSystem,
         24576
       );
-      const norm = normalizeYiJingBody(merged);
+      let norm = normalizeYiJingBody(merged);
+      if (mindfulLong) {
+        norm = finalizeMindfulEnglishScriptLength(norm, MINDFUL_EN_SCRIPT_CHARS_MAX);
+      }
       setYiJingMergedOutput(norm);
       setBatchProgress({ current: 1, total: 1, hint: '合并完成' });
       setGeneratedContents((prev) => {
@@ -1548,7 +1672,7 @@ ${segmentSourceText}
     storyDuration,
     topics,
     yiJingSegDrafts,
-    yiJingTotalTargetChars,
+    parallelTotalTargetChars,
     collectStreamText,
     pushYiJingLog,
     normalizeYiJingBody,
@@ -1571,7 +1695,7 @@ ${segmentSourceText}
     setYiJingPipelineBusy(true);
     const topicTitle = sel[0].title;
     const plannedSeg = computeParallelSegmentCount(
-      yiJingTotalTargetChars,
+      parallelTotalTargetChars,
       scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
     );
     const bundle = getParallelPipelineBundle(
@@ -1588,14 +1712,14 @@ ${segmentSourceText}
       hint: '正在生成章节大纲…',
     });
     pushYiJingLog(
-      `全自动：大纲 → 并行分段 → 合并（全文目标约 ${yiJingTotalTargetChars} 字，约 ${plannedSeg} 章）`
+      `全自动：大纲 → 并行分段 → 合并（全文目标约 ${parallelTotalTargetChars} 字，约 ${plannedSeg} 章）`
     );
     try {
       const raw = await collectStreamText(
         buildParallelOutlineUserPrompt(
           topicTitle,
           plannedSeg,
-          yiJingTotalTargetChars,
+          parallelTotalTargetChars,
           bundle.outline,
           outlineLead || undefined
         ),
@@ -1608,7 +1732,7 @@ ${segmentSourceText}
         setYiJingOutlineViewMode('readable');
         throw new Error('大纲 JSON 解析失败');
       }
-      const parsed = rescaleChapterWordCounts(parsedRaw, yiJingTotalTargetChars);
+      const parsed = rescaleChapterWordCounts(parsedRaw, parallelTotalTargetChars);
       const n = parsed.chapters.length;
       setYiJingOutlineText(outlinePayloadToJsonPretty(parsed));
       setYiJingOutlineParsed(parsed);
@@ -1691,12 +1815,22 @@ ${segmentSourceText}
         hint: '正在合并、统一语气…',
       });
       const combined = results.join('\n\n');
+      const mindfulLongAp =
+        niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
       const merged = await collectStreamText(
-        buildParallelMergeUserPrompt(topicTitle, combined, yiJingTotalTargetChars, bundle.merge),
+        buildParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
+          ...bundle.merge,
+          englishMergedCharClamp: mindfulLongAp
+            ? mindfulMergeCharClamp(parallelTotalTargetChars)
+            : undefined,
+        }),
         bundle.mergeSystem,
         24576
       );
-      const norm = normalizeYiJingBody(merged);
+      let norm = normalizeYiJingBody(merged);
+      if (mindfulLongAp) {
+        norm = finalizeMindfulEnglishScriptLength(norm, MINDFUL_EN_SCRIPT_CHARS_MAX);
+      }
       setYiJingMergedOutput(norm);
       setGeneratedContents([{ topic: topicTitle, content: norm }]);
       setViewIndex(0);
@@ -1736,7 +1870,7 @@ ${segmentSourceText}
     storyLanguage,
     storyDuration,
     topics,
-    yiJingTotalTargetChars,
+    parallelTotalTargetChars,
     collectStreamText,
     pushYiJingLog,
     normalizeYiJingBody,
@@ -1801,7 +1935,7 @@ ${segmentSourceText}
       setViewIndex(0);
       const planned =
         computeParallelSegmentCount(
-          yiJingTotalTargetChars,
+          parallelTotalTargetChars,
           scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
         ) + 2;
       setBatchProgress({
@@ -2332,7 +2466,9 @@ ${segmentSourceText}
                         niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO
                             ? 3000
                             : niche === NicheType.MINDFUL_PSYCHOLOGY
-                                ? 4800  // Mindful Psychology 4800-11250 字符
+                                ? Math.round(
+                                    (MINDFUL_EN_SCRIPT_CHARS_MIN + MINDFUL_EN_SCRIPT_CHARS_MAX) / 2
+                                  )
                                 : niche === NicheType.YI_JING_METAPHYSICS
                                     ? MIN_YI_JING_SCRIPT_CHARS
                                     : niche === NicheType.TCM_METAPHYSICS
@@ -2634,7 +2770,7 @@ ${segmentSourceText}
                                 : niche === NicheType.FINANCE_CRYPTO
                                     ? MIN_FIN_SCRIPT_CHARS
                                     : niche === NicheType.MINDFUL_PSYCHOLOGY
-                                        ? 4800  // Mindful Psychology 4800-11250 字符（8-15分钟）
+                                        ? MINDFUL_EN_SCRIPT_CHARS_MIN
                                         : MIN_NEWS_SCRIPT_CHARS;
                 const maxChars = isShortScript
                     ? 500
@@ -2647,7 +2783,7 @@ ${segmentSourceText}
                                 : niche === NicheType.FINANCE_CRYPTO
                                     ? MAX_FIN_SCRIPT_CHARS
                                     : niche === NicheType.MINDFUL_PSYCHOLOGY
-                                        ? 11250  // Mindful Psychology 4800-11250 字符（8-15分钟）
+                                        ? MINDFUL_EN_SCRIPT_CHARS_MAX
                                         : MAX_NEWS_SCRIPT_CHARS;
                 
                 // GENERAL_VIRAL（小美）：严格字数控制，禁止强制续写
@@ -2720,19 +2856,19 @@ ${segmentSourceText}
                         console.log(`[Generator] News truncated to ${localContent.length} chars (semantic boundary)`);
                     }
                 } else if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
-                    // Mindful Psychology：禁止强制续写，按照选题内容自然输出
-                    // 核心原则：AI 根据选题复杂度自动匹配字数，完成后自然停笔
-                    const minC = 4800;
-                    const maxC = 11250;
-                    let clLen = sanitizeTtsScript(localContent).length;
+                    const minC = MINDFUL_EN_SCRIPT_CHARS_MIN;
+                    const maxC = MINDFUL_EN_SCRIPT_CHARS_MAX;
+                    const mindfulCtaOk = (t: string) =>
+                      /please like and subscribe to my channel/i.test(t) ||
+                      /请点赞并订阅我的频道/.test(t);
 
-                    // 如果字数低于下限，续写一次补充内容
-                    if (clLen < minC) {
-                        console.log(`[Generator] Mindful Psychology: body ${clLen} < ${minC}, supplementary pass`);
+                    let len = localContent.length;
+                    if (len < minC) {
+                        console.log(`[Generator] Mindful Psychology: body ${len} < ${minC}, supplementary pass`);
                         await streamContentGeneration(
                             [
                                 `Continue the voice-over in **English** with the same warm, healing-psychology tone (dog–human emotional metaphors when relevant).`,
-                                `Current ~${clLen} characters; target ${minC}–${maxC} characters.`,
+                                `Current ~${len} characters (editor count, including spaces); hard target ${minC}–${maxC} characters.`,
                                 `Extend the body only—no closing subscribe CTA or sign-off yet.`,
                                 '',
                                 '【上文】',
@@ -2744,27 +2880,15 @@ ${segmentSourceText}
                             { maxTokens: 8192 }
                         );
                         localContent = maybeNormalizeLayout(localContent);
-                        clLen = sanitizeTtsScript(localContent).length;
+                        len = localContent.length;
                     }
 
-                    // 检查是否缺少 CTA，如果没有则强制补充（与 constants 中英收尾规则一致）
-                    const mindfulCtaOk = (t: string) =>
-                      /please like and subscribe to my channel/i.test(t) ||
-                      /请点赞并订阅我的频道/.test(t);
-                    if (!mindfulCtaOk(localContent)) {
+                    if (localContent.length > maxC) {
+                        localContent = finalizeMindfulEnglishScriptLength(localContent, maxC);
+                        console.log(`[Generator] Mindful Psychology capped to ${localContent.length} chars`);
+                    } else if (!mindfulCtaOk(localContent)) {
                         console.log(`[Generator] Mindful Psychology: CTA not found, adding mandatory CTA`);
-                        const ctaText = `\n\nPlease like and subscribe to my channel.`;
-                        localContent = localContent.trimEnd() + ctaText;
-                    }
-
-                    // 语义截断，确保不超过硬上限
-                    if (clLen > maxC) {
-                        localContent = truncateToMax(localContent, maxC);
-                        if (!mindfulCtaOk(localContent)) {
-                            const ctaText = `\n\nPlease like and subscribe to my channel.`;
-                            localContent = localContent.trimEnd() + ctaText;
-                        }
-                        console.log(`[Generator] Mindful Psychology truncated to ${localContent.length} chars`);
+                        localContent = `${localContent.trimEnd()}\n\nPlease like and subscribe to my channel.`;
                     }
                 } else {
                     // 需要续写的情况
@@ -3909,7 +4033,9 @@ ${segmentSourceText}
                     ? '短视频：400-500字，悬念开场+感官铺垫+心理拉扯+高光瞬间+反思引导。'
                     : niche === NicheType.YI_JING_METAPHYSICS
                       ? '长视频：默认「大纲→多段并行→合并润色」生成约万字口播，减轻单请求截断；仍沿用曾氏口吻；短视频：≤500字快讲。'
-                      : '短视频：在选题基础上详细展开，加入排比与总结排列，输出 500 字以内短视频文案。'}
+                      : niche === NicheType.MINDFUL_PSYCHOLOGY
+                        ? `长视频：英文全文约 ${MINDFUL_EN_SCRIPT_CHARS_MIN}–${MINDFUL_EN_SCRIPT_CHARS_MAX} 字符（含空格）；分段并行工作台「目标全文字数」与此一致。短视频：≤500 字。`
+                        : '短视频：在选题基础上详细展开，加入排比与总结排列，输出 500 字以内短视频文案。'}
             </p>
           </div>
         )}
@@ -4082,8 +4208,16 @@ ${segmentSourceText}
                       <label className="text-xs text-slate-400 shrink-0">目标全文字数：</label>
                       <input
                         type="number"
-                        min={1000}
-                        max={70000}
+                        min={
+                          niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG'
+                            ? MINDFUL_EN_SCRIPT_CHARS_MIN
+                            : 1000
+                        }
+                        max={
+                          niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG'
+                            ? MINDFUL_EN_SCRIPT_CHARS_MAX
+                            : 70000
+                        }
                         step={100}
                         disabled={yiJingPipelineBusy}
                         value={yiJingTotalTargetChars}
@@ -4095,7 +4229,9 @@ ${segmentSourceText}
                         className="w-[7.5rem] bg-slate-900 border border-slate-600 rounded-lg px-2 py-1.5 text-sm text-slate-200 focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
                       />
                       <span className="text-[10px] text-slate-500">
-                        1000–70000；失焦后按总字数均摊各章字数区间。生成/全自动时按上式向模型要对应章数
+                        {niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG'
+                          ? `治愈心理学长视频：此处为英文正文目标总字符数（含空格与标点），${MINDFUL_EN_SCRIPT_CHARS_MIN}–${MINDFUL_EN_SCRIPT_CHARS_MAX}；失焦后均摊各章 min/max。`
+                          : '1000–70000；失焦后按总字数均摊各章字数区间。生成/全自动时按上式向模型要对应章数'}
                       </span>
                     </div>
                     {yiJingOutlineParsed &&
@@ -4133,7 +4269,7 @@ ${segmentSourceText}
                               onClick={() => {
                                 const scaled = rescaleChapterWordCounts(
                                   yiJingOutlineEditDraft,
-                                  yiJingTotalTargetChars
+                                  parallelTotalTargetChars
                                 );
                                 setYiJingOutlineParsed(scaled);
                                 setYiJingOutlineText(outlinePayloadToJsonPretty(scaled));
@@ -4571,6 +4707,26 @@ ${segmentSourceText}
               </button>
               {mindfulStoryboardExpanded && (
                 <>
+                  <div className="mb-3 flex flex-wrap items-end gap-3">
+                    <div className="min-w-[200px] max-w-[320px] flex-1">
+                      <label className="text-[10px] text-slate-500 mb-0.5 block">风格设置（与媒体生成一致）</label>
+                      <select
+                        value={
+                          MEDIA_IMAGE_STYLE_SELECT_OPTIONS.some((o) => o.id === mindfulStoryboardStyleId)
+                            ? mindfulStoryboardStyleId
+                            : 'none'
+                        }
+                        onChange={(e) => setMindfulStoryboardStyleId(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+                      >
+                        {MEDIA_IMAGE_STYLE_SELECT_OPTIONS.map((o) => (
+                          <option key={o.id} value={o.id}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
                   <div className="flex gap-4">
                     <div className="flex-1">
                       <textarea
@@ -4581,20 +4737,31 @@ ${segmentSourceText}
                       />
                     </div>
                     <div className="flex-1">
-                      <div className="flex justify-between items-center mb-2">
+                      <div className="flex justify-between items-center mb-2 gap-2 flex-wrap">
                         <label className="text-sm text-slate-400">分镜输出</label>
-                        {storyboard && (
+                        <div className="flex items-center gap-2">
                           <button
                             type="button"
-                            onClick={() => {
-                              navigator.clipboard.writeText(storyboard);
-                              toast.success('分镜内容已复制到剪贴板');
-                            }}
-                            className="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm rounded-lg flex items-center gap-1 transition-all"
+                            onClick={openMindfulStoryboardHistory}
+                            className="px-3 py-1 bg-slate-700/90 hover:bg-slate-600 text-slate-200 text-sm rounded-lg flex items-center gap-1.5 transition-all border border-slate-600/80"
+                            title="按日期+随机数命名的历史分镜记录"
                           >
-                            <Copy size={12} /> 复制
+                            <History size={12} />
+                            读取历史
                           </button>
-                        )}
+                          {storyboard && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(storyboard);
+                                toast.success('分镜内容已复制到剪贴板');
+                              }}
+                              className="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm rounded-lg flex items-center gap-1 transition-all"
+                            >
+                              <Copy size={12} /> 复制
+                            </button>
+                          )}
+                        </div>
                       </div>
                       <div className="w-full h-[280px] bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-slate-200 overflow-y-auto whitespace-pre-wrap leading-relaxed custom-scrollbar text-sm">
                         {storyboard ? (
@@ -4745,6 +4912,25 @@ ${segmentSourceText}
         </section>
       )}
       
+      {showStoryboardHistorySelector && (
+        <HistorySelector
+          records={storyboardHistoryRecords}
+          onSelect={handleStoryboardHistorySelect}
+          onClose={() => setShowStoryboardHistorySelector(false)}
+          onDelete={(record) => {
+            const historyKey = getMindfulStoryboardHistoryKey();
+            deleteHistory('generator', historyKey, record.timestamp);
+            setStoryboardHistoryRecords(getHistory('generator', historyKey));
+          }}
+          onClearAll={() => {
+            const historyKey = getMindfulStoryboardHistoryKey();
+            clearHistory('generator', historyKey);
+            setStoryboardHistoryRecords([]);
+          }}
+          title="一键动画分镜历史"
+        />
+      )}
+
       {/* 历史记录选择器 */}
       {showHistorySelector && (
         <HistorySelector

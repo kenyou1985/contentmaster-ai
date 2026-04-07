@@ -45,9 +45,13 @@ function runPythonStdin(args, stdinData) {
     child.stderr.on('data', (d) => { stderr += d.toString(); });
 
     // 通过 stdin 写入 JSON，避免命令行参数超限（E2BIG）
+    // 必须等 stdin 完全 flush 再 end()，确保 Python read() 能读到完整数据
     if (stdinData !== undefined) {
-      child.stdin.write(JSON.stringify(stdinData));
-      child.stdin.end();
+      const jsonData = JSON.stringify(stdinData);
+      const writable = child.stdin;
+      writable.write(jsonData, () => {
+        writable.end();
+      });
     }
 
     child.on('close', (code) => {
@@ -56,8 +60,12 @@ function runPythonStdin(args, stdinData) {
         reject(new Error('Python 进程超时（60s），可能被大文件阻塞'));
         return;
       }
+      // 始终打印 stderr 调试信息（即使 exit 0，Python 的 print 日志对调试很有用）
+      if (stderr.trim()) {
+        console.error(`[server] Python stderr:\n${stderr.slice(0, 3000)}`);
+      }
       if (code !== 0) {
-        console.error(`[server] Python 错误 (exit ${code}):\nstdout: ${stdout.slice(0, 500)}\nstderr: ${stderr.slice(0, 1000)}`);
+        console.error(`[server] Python exit ${code}: stdout: ${stdout.slice(0, 500)}`);
       }
       resolve({ code, stdout, stderr });
     });

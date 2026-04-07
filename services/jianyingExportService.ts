@@ -157,16 +157,106 @@ function coerceExportResultFromText(
   };
 }
 
+/** Base64（大文件分块，避免栈溢出） */
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunk = 8192;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    const sub = bytes.subarray(i, Math.min(i + chunk, bytes.length));
+    binary += String.fromCharCode.apply(null, sub as unknown as number[]);
+  }
+  return btoa(binary);
+}
+
+function inferAudioMimeFromUrl(url: string): string | undefined {
+  const m = url.split(/[?#]/)[0].match(/\.(flac|wav|mp3|m4a|aac|ogg|webm)$/i);
+  if (!m) return undefined;
+  const ext = m[1].toLowerCase();
+  const map: Record<string, string> = {
+    flac: 'audio/flac',
+    wav: 'audio/wav',
+    mp3: 'audio/mpeg',
+    m4a: 'audio/mp4',
+    aac: 'audio/aac',
+    ogg: 'audio/ogg',
+    webm: 'audio/webm',
+  };
+  return map[ext];
+}
+
+/**
+ * 剪映导出服务跑在本地，无法带浏览器 Cookie；RunningHub 等外链音频服务端 urllib 常下载失败。
+ * 导出前在浏览器拉取配音字节并转为 data: URL，Python 端可直接落盘，保证音轨与时长对齐。
+ */
+export async function embedAudioDataUrlsForJianyingExport(shots: JianyingShot[]): Promise<JianyingShot[]> {
+  const out: JianyingShot[] = [];
+  for (const s of shots) {
+    const raw = (s.audioUrl || s.voiceoverAudioUrl)?.trim();
+    if (!raw) {
+      out.push(s);
+      continue;
+    }
+    if (raw.startsWith('data:')) {
+      out.push(s);
+      continue;
+    }
+    if (!/^https?:\/\//i.test(raw)) {
+      out.push(s);
+      continue;
+    }
+    try {
+      let data: ArrayBuffer;
+      let mime = '';
+      try {
+        const r = await fetch(raw);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        mime = r.headers.get('content-type')?.split(';')[0]?.trim() || '';
+        data = await r.arrayBuffer();
+      } catch {
+        if (typeof window === 'undefined') throw new Error('fetch failed');
+        const proxy = `/__image_proxy?url=${encodeURIComponent(raw)}`;
+        const r2 = await fetch(proxy);
+        if (!r2.ok) {
+          const t = await r2.text().catch(() => '');
+          throw new Error(`proxy ${r2.status}: ${t.slice(0, 200)}`);
+        }
+        mime = r2.headers.get('content-type')?.split(';')[0]?.trim() || '';
+        data = await r2.arrayBuffer();
+      }
+      const ct =
+        mime && mime !== 'application/octet-stream' ? mime : inferAudioMimeFromUrl(raw) || 'audio/mpeg';
+      const dataUrl = `data:${ct};base64,${arrayBufferToBase64(data)}`;
+      out.push({ ...s, audioUrl: dataUrl, voiceoverAudioUrl: dataUrl });
+    } catch (e) {
+      console.warn('[JianyingExport] 浏览器拉取配音失败，仍尝试由服务端下载 URL:', e);
+      out.push(s);
+    }
+  }
+  return out;
+}
+
 /** 批量导出剪映草稿 */
 export async function exportJianyingDraft(
   options: JianyingExportOptions
 ): Promise<JianyingExportResult> {
+  const shots = await embedAudioDataUrlsForJianyingExport(options.shots);
+  if (typeof console !== 'undefined' && console.debug) {
+    console.debug(
+      '[JianyingExport] 镜头音频摘要',
+      shots.map((s, i) => ({
+        i,
+        hasAudio: !!((s.audioUrl || s.voiceoverAudioUrl || '').trim()),
+        audioDurationSec: s.audioDurationSec,
+      }))
+    );
+  }
   const res = await fetch(`${BASE}/export`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       draftName: options.draftName,
-      shots: options.shots,
+      shots,
       resolution: options.resolution || '1920x1080',
       fps: options.fps || 30,
       outputPath: options.outputPath || null,
