@@ -1255,7 +1255,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   };
 
   // 组件加载时不自动读取，避免读取旧数据
-  // 用户需要手动点击"从改写工具读取"按钮来加载最新脚本
+  // 用户需要手动点击"获取分镜脚本"按钮来加载最新脚本
 
   // 视频预览组件（支持缓存）
   const VideoPreview: React.FC<{
