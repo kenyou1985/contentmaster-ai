@@ -1627,10 +1627,10 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     shotsRef.current = restored;
     lastMediaHistorySignatureRef.current = computeMediaHistoryFingerprint(shotsToPersistPayloadFromShots(restored));
     lastMediaHistoryIdRef.current = pid;
-    setShowScriptInput(false);
+    setShowScriptInput(true);
     setShowScriptHistorySelector(false);
     setHistorySelectorKind(null);
-    appendTerminalLog('History', `已载入媒体历史 ${pid}（${restored.length} 镜）`);
+    appendTerminalLog('History', `已载入媒体历史 ${pid}（${restored.length} 镜），并展开脚本输入区`);
     toast.success(`已载入 ${pid}`, 3000);
   };
 
@@ -1648,10 +1648,10 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     }
     lastMediaHistorySignatureRef.current = '';
     handleScriptInput(text);
-    setShowScriptInput(false);
+    setShowScriptInput(true);
     setShowScriptHistorySelector(false);
     setHistorySelectorKind(null);
-    appendTerminalLog('Script', '已从选择器载入改写工具脚本');
+    appendTerminalLog('Script', '已从选择器载入改写工具脚本并展开脚本输入区');
     toast.success('已载入脚本', 3000);
   };
 
