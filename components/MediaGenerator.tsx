@@ -79,6 +79,8 @@ interface Shot {
   voiceAudioUrl?: string;
   /** TTS 音频时长（秒），导出剪映时用于音频下载失败的兜底时长 */
   audioDurationSec?: number;
+  /** 生成该音频时实际送入 TTS 的文案（用于导出字幕与音频严格一致） */
+  voiceSourceText?: string;
   voiceGenerating?: boolean;
   imageUrls?: string[]; // 支持多张图片
   videoUrl?: string; // 保留向后兼容（显示第一个视频）
@@ -202,6 +204,7 @@ function queueSnapshotRowsToShots(raw: unknown[] | undefined | null): Shot[] {
       soundEffect: String(p.soundEffect ?? ''),
       voiceAudioUrl: rawVoice,
       audioDurationSec: p.audioDurationSec,
+      voiceSourceText: (p as any).voiceSourceText,
       imageUrls: p.imageUrls,
       videoUrl: p.videoUrl,
       videoUrls: p.videoUrls,
@@ -233,6 +236,7 @@ function shotsToPersistPayloadFromShots(list: Shot[]) {
     videoUrls: s.videoUrls,
     voiceoverAudioUrl: s.voiceAudioUrl,
     audioDurationSec: s.audioDurationSec,
+    voiceSourceText: s.voiceSourceText,
     selected: s.selected,
     selectedImageIndex: s.selectedImageIndex,
   }));
@@ -341,6 +345,7 @@ function restoredShotsFromProject(shots: MediaProjectRecord['shots']): Shot[] {
       soundEffect: p.soundEffect,
       voiceAudioUrl: p.voiceoverAudioUrl,
       audioDurationSec: p.audioDurationSec,
+      voiceSourceText: (p as any).voiceSourceText,
       imageUrls: p.imageUrls,
       videoUrl: p.videoUrl,
       videoUrls: p.videoUrls,
@@ -773,8 +778,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         rawAudio && !/^https?:|^data:|^blob:/i.test(rawAudio)
           ? resolveRunningHubOutputUrl(rawAudio)
           : rawAudio;
+      const exportCaption = (s.voiceSourceText || getTtsSpeakText(s) || s.caption || '').trim();
       return {
-        caption: s.caption,
+        caption: exportCaption,
         imagePrompt: s.imagePrompt,
         imageUrl: s.imageUrls?.[s.selectedImageIndex ?? 0] || s.imageUrls?.[0],
         videoPrompt: s.videoPrompt,
@@ -2660,7 +2666,12 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         probedSec != null && Number.isFinite(probedSec) && probedSec > 0
           ? Math.max(1, Math.round(probedSec))
           : estimatedSec;
-      updateShot(shot.id, { voiceAudioUrl: playableUrl, audioDurationSec, voiceGenerating: false });
+      updateShot(shot.id, {
+        voiceAudioUrl: playableUrl,
+        audioDurationSec,
+        voiceSourceText: text,
+        voiceGenerating: false,
+      });
       appendTerminalLog(
         'Voice',
         `镜头${shot.number}: 配音完成（${probedSec != null ? `实测约 ${audioDurationSec}s` : `估算 ${audioDurationSec}s`}）`
