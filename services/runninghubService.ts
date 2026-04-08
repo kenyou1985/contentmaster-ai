@@ -844,6 +844,39 @@ export const generateVideo = async (
   }
 };
 
+/** IndexTTS2 文本轻量优化：不改原文，只插入可读韵律标记 */
+const escapeSsmlText = (text: string): string =>
+  text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+const buildIndexTts2FastOptimizedInput = (rawText: string): string => {
+  const src = (rawText || '').trim();
+  if (!src) return '';
+
+  // 按标点切分并在不改字的前提下插入短停顿
+  const parts = src.split(/([。！？!?；;：:,，、])/g).filter(Boolean);
+  const buf: string[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const token = parts[i];
+    if (!token) continue;
+    const escaped = escapeSsmlText(token);
+    buf.push(escaped);
+
+    if (/^[。！？!?]$/.test(token)) {
+      buf.push('<break time="220ms"/>');
+    } else if (/^[；;]$/.test(token)) {
+      buf.push('<break time="170ms"/>');
+    } else if (/^[：:,，、]$/.test(token)) {
+      buf.push('<break time="110ms"/>');
+    }
+  }
+
+  // 仅包裹韵律与呼吸标记，正文字符保持一字不改
+  return `<speak><prosody rate="1.0" pitch="0" volume="1.0"><breath/>${buf.join('')}</prosody></speak>`;
+};
+
 /**
  * IndexTTS2 工作流配音：POST /task/openapi/create（与控制台 curl 一致）
  * 文案写入节点 29（KepStringLiteral.inputs.String）
@@ -860,7 +893,13 @@ export const createIndexTts2VoiceoverTask = async (
     if (!node29?.inputs) {
       throw new Error('IndexTTS2 工作流模板缺少节点 29');
     }
-    node29.inputs.String = captionText.trim();
+    const optimizedCaption = buildIndexTts2FastOptimizedInput(captionText);
+    node29.inputs.String = optimizedCaption;
+    console.log('[RunningHub] IndexTTS2 提交前轻量优化完成:', {
+      rawLen: (captionText || '').trim().length,
+      optimizedLen: optimizedCaption.length,
+      usesSsml: optimizedCaption.startsWith('<speak>'),
+    });
 
     const node25 = wf['25'];
     if (opts?.loadAudioApiPath && node25?.inputs) {
