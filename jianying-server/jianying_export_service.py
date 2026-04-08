@@ -839,7 +839,7 @@ def _build_lv59_main_script(
             shot_last_seg_dur.append(int(last_seg_d))
 
         apath = row.get("audio_abs")
-        apath_rel = row.get("audio_rel") or (os.path.join("Resources", "audio", os.path.basename(apath)).replace("\\", "/") if apath else None)
+        apath_rel = row.get("audio_rel") or (("./" + os.path.join("Resources", "audio", os.path.basename(apath)).replace("\\", "/")) if apath else None)
         if apath and os.path.isfile(apath):
             probe_adur = row.get("audio_duration_us")
             if probe_adur and int(probe_adur) > 0:
@@ -1396,7 +1396,7 @@ def create_draft_on_mac(
                 duration_us = vd
             row["media_kind"] = "video"
             row["video_abs"] = vabs
-            row["video_rel"] = os.path.join("Resources", "video", os.path.basename(vabs)).replace("\\", "/")
+            row["video_rel"] = ("./" + os.path.join("Resources", "video", os.path.basename(vabs)).replace("\\", "/"))
             row["video_w"] = vw or width
             row["video_h"] = vh or height
             row["video_material_duration_us"] = vd or duration_us
@@ -1415,7 +1415,7 @@ def create_draft_on_mac(
             iw, ih = _read_image_dimensions(img_abs, width, height)
             row["media_kind"] = "photo"
             row["image_abs"] = img_abs
-            row["image_rel"] = os.path.join("Resources", "image", os.path.basename(img_abs)).replace("\\", "/")
+            row["image_rel"] = ("./" + os.path.join("Resources", "image", os.path.basename(img_abs)).replace("\\", "/"))
             row["image_w"] = iw
             row["image_h"] = ih
 
@@ -1439,7 +1439,7 @@ def create_draft_on_mac(
             print(f"[jianying_export] 镜头{i} 音频: url={'有' if audio_url else '无'} → 文件={audio_filename} → 下载={'成功' if ok else '失败'} {'(' + str(audio_url)[:80] + ')' if audio_url else ''}", file=sys.stderr, flush=True)
             if ok:
                 row["audio_abs"] = os.path.abspath(lap)
-                row["audio_rel"] = os.path.join("Resources", "audio", os.path.basename(lap)).replace("\\", "/")
+                row["audio_rel"] = ("./" + os.path.join("Resources", "audio", os.path.basename(lap)).replace("\\", "/"))
                 probe_us = _ffprobe_duration_us(row["audio_abs"])
                 # 以文件实测为准；客户端 audioDurationSec 多为文案估算，取 max 会把时间线拉长得远超真实波形（见 pyJianYingDraft：片段时长应对齐素材）。
                 if probe_us:
