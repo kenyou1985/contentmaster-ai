@@ -1696,17 +1696,26 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     // 按时间戳排序（最新的在前）
     allRecords.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
     
-    // 去重（相同内容的记录只保留最新的）
+    // 去重（仅去除“同来源+同时间+同内容”的完全重复项，避免把不同历史误合并成一条）
     const uniqueRecords: HistoryRecord[] = [];
-    const seenContents = new Set<string>();
-    allRecords.forEach(record => {
+    const seenRecords = new Set<string>();
+    allRecords.forEach((record) => {
       const raw = typeof record.content === 'string' ? record.content.trim() : '';
       if (!raw) return;
-      const contentHash = raw.substring(0, 200);
-      if (!seenContents.has(contentHash)) {
-        seenContents.add(contentHash);
-        uniqueRecords.push(record);
-      }
+      const sourceTag =
+        String(record.metadata?.topic || '') +
+        '|' +
+        String(record.metadata?.mediaProjectId || '') +
+        '|' +
+        String(record.metadata?.historyDelete?.kind || '') +
+        '|' +
+        String(record.metadata?.historyDelete?.module || '') +
+        '|' +
+        String(record.metadata?.historyDelete?.key || '');
+      const dedupeKey = `${sourceTag}|${record.timestamp || 0}|${raw}`;
+      if (seenRecords.has(dedupeKey)) return;
+      seenRecords.add(dedupeKey);
+      uniqueRecords.push(record);
     });
     
     console.log(`[MediaGenerator] 总共找到 ${uniqueRecords.length} 条唯一脚本记录`);
