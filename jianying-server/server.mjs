@@ -22,6 +22,7 @@ const PYTHON_SCRIPT = join(__dirname, 'jianying_export_service.py');
 const PORT = process.env.PORT || 10000; // Render.com 免费版分配随机端口
 
 const app = express();
+const recentZipPathByName = new Map();
 
 // CORS：允许 Vercel 部署的前端调用
 app.use(cors({
@@ -128,7 +129,9 @@ app.post('/api/jianying/export', (req, res) => {
       try {
         const result = JSON.parse(text);
         if (returnZip && result?.zip_path) {
-          result.zip_download_url = `/api/jianying/download/${encodeURIComponent(basename(result.zip_path))}`;
+          const zipFilename = basename(result.zip_path);
+          recentZipPathByName.set(zipFilename, result.zip_path);
+          result.zip_download_url = `/api/jianying/download/${encodeURIComponent(zipFilename)}`;
         }
         res.json(result);
       } catch {
@@ -140,7 +143,9 @@ app.post('/api/jianying/export', (req, res) => {
           try {
             const result = JSON.parse(s.slice(i, j + 1));
             if (returnZip && result?.zip_path) {
-              result.zip_download_url = `/api/jianying/download/${encodeURIComponent(basename(result.zip_path))}`;
+              const zipFilename = basename(result.zip_path);
+              recentZipPathByName.set(zipFilename, result.zip_path);
+              result.zip_download_url = `/api/jianying/download/${encodeURIComponent(zipFilename)}`;
             }
             return res.json(result);
           } catch {
@@ -168,8 +173,18 @@ app.get('/api/jianying/download/:filename', (req, res) => {
     if (!filename || !filename.endsWith('.zip')) {
       return res.status(400).json({ error: 'invalid filename' });
     }
-    const zipPath = resolve('/root/Movies/JianyingPro/User Data/Projects/com.lveditor.draft', filename);
-    if (!existsSync(zipPath)) {
+    const candidates = [];
+
+    const remembered = recentZipPathByName.get(filename);
+    if (remembered) candidates.push(resolve(remembered));
+
+    // 默认目录兜底（兼容历史行为）
+    candidates.push(resolve('/root/Movies/JianyingPro/User Data/Projects/com.lveditor.draft', filename));
+    // 当前服务目录 exports 兜底
+    candidates.push(resolve(__dirname, 'exports', filename));
+
+    const zipPath = candidates.find((p) => existsSync(p));
+    if (!zipPath) {
       return res.status(404).json({ error: 'zip not found' });
     }
     res.download(zipPath, filename);
