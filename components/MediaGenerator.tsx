@@ -753,6 +753,12 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
   // ==================== 剪映导出相关 State ====================
   const [jianyingOutputDir, setJianyingOutputDir] = useState(() => localStorage.getItem('JIANYING_OUTPUT_DIR') || '');
+  const onChangeJianyingOutputDir = (value: string) => {
+    setJianyingOutputDir(value);
+    const next = value.trim();
+    if (next) localStorage.setItem('JIANYING_OUTPUT_DIR', next);
+    else localStorage.removeItem('JIANYING_OUTPUT_DIR');
+  };
   const [jyRandomEffectBundle, setJyRandomEffectBundle] = useState(false);
   const [jyRandomTransitions, setJyRandomTransitions] = useState(false);
   const [jyRandomFilters, setJyRandomFilters] = useState(false);
@@ -3674,6 +3680,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
           {/* 一键成片 & 队列按钮 */}
           <div className="flex items-center gap-2 ml-4 flex-shrink-0">
+            <input
+              type="text"
+              value={jianyingOutputDir}
+              onChange={(e) => onChangeJianyingOutputDir(e.target.value)}
+              placeholder="剪映草稿绝对路径，例如 /Users/kenyou/Downloads/JianyingPro Drafts"
+              className="w-[360px] px-3 py-1.5 bg-slate-900/70 border border-slate-600 focus:border-purple-500 outline-none text-slate-100 text-xs rounded-lg"
+              title="填写本机剪映草稿绝对路径，导出时会按该路径生成草稿目录"
+            />
             <button
               onClick={() => handleOneClickPipeline()}
               disabled={oneClickRunning || generatingCount > 0}
