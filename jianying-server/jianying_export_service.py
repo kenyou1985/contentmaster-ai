@@ -1696,7 +1696,7 @@ def batch_export(
         "fps": fps,
     }
 
-    if system == "Darwin":
+    if system in ("Darwin", "Linux"):
         try:
             draft_result = create_draft_on_mac(
                 draft_name=draft_name,
@@ -1710,33 +1710,44 @@ def batch_export(
             )
             result.update(draft_result)
 
-            # 打开剪映
-            open_msg = _open_jianying_pro()
-            result["open_jianying"] = open_msg
+            if system == "Darwin":
+                # 仅 macOS 才尝试打开剪映和 Finder
+                open_msg = _open_jianying_pro()
+                result["open_jianying"] = open_msg
 
-            # 在 Finder 中显示
-            try:
-                _reveal_in_finder(draft_result["draft_folder"])
-                result["reveal_folder"] = "已在 Finder 中显示"
-            except Exception:
-                result["reveal_folder"] = "Finder 显示失败"
+                try:
+                    _reveal_in_finder(draft_result["draft_folder"])
+                    result["reveal_folder"] = "已在 Finder 中显示"
+                except Exception:
+                    result["reveal_folder"] = "Finder 显示失败"
+
+                result["message"] = (
+                    f"✅ 剪映草稿已生成！\n"
+                    f"📁 {draft_result['draft_folder']}\n"
+                    f"📹 {draft_result['shots_count']} 个镜头\n"
+                    f"🖼 {draft_result.get('materials_count', 0)} 个媒体文件\n"
+                    f"⏱ {draft_result['total_duration']/1_000_000:.1f}s\n"
+                    f"{open_msg}\n"
+                    f"💡 请在剪映中打开该草稿 → 导出视频"
+                )
+            else:
+                # Linux（Railway）：仅生成标准草稿目录，供下载后在本机剪映加载
+                result["message"] = (
+                    f"✅ Linux 已生成剪映标准草稿目录\n"
+                    f"📁 {draft_result['draft_folder']}\n"
+                    f"📹 {draft_result['shots_count']} 个镜头\n"
+                    f"🖼 {draft_result.get('materials_count', 0)} 个媒体文件\n"
+                    f"⏱ {draft_result['total_duration']/1_000_000:.1f}s\n"
+                    f"💡 请将该目录打包下载后放入本机剪映草稿目录"
+                )
 
             result["success"] = True
-            result["message"] = (
-                f"✅ 剪映草稿已生成！\n"
-                f"📁 {draft_result['draft_folder']}\n"
-                f"📹 {draft_result['shots_count']} 个镜头\n"
-                f"🖼 {draft_result.get('materials_count', 0)} 个媒体文件\n"
-                f"⏱ {draft_result['total_duration']/1_000_000:.1f}s\n"
-                f"{open_msg}\n"
-                f"💡 请在剪映中打开该草稿 → 导出视频"
-            )
         except Exception as e:
             import traceback
             result["success"] = False
             result["error"] = str(e)
             result["traceback"] = traceback.format_exc()
-            result["message"] = f"❌ macOS 草稿生成失败：{e}"
+            result["message"] = f"❌ {system} 草稿生成失败：{e}"
 
     else:  # Windows
         try:
