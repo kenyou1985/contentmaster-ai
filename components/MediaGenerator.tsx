@@ -1551,186 +1551,58 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     reader.readAsText(file);
   };
 
-  // 加载脚本历史记录并显示选择器
+  // 读取「一键动画分镜历史」并显示选择器（与截图1同源）
   const loadScriptFromTools = () => {
-    console.log('[MediaGenerator] ========== 开始读取脚本历史记录 ==========');
-    
-    // 收集所有可能的脚本历史记录来源
+    console.log('[MediaGenerator] ========== 打开一键动画分镜历史 ==========');
+
     const allRecords: HistoryRecord[] = [];
-    
-    // 仅读取「改写工具 > 脚本输出」模块的脚本记录
-    const historyKeys = new Set<string>([
-      `${ToolMode.SCRIPT}_GLOBAL`,
-      `${ToolMode.SCRIPT}_global`,
-    ]);
 
-    historyKeys.forEach((historyKey) => {
-      const records = getHistory('tools', historyKey);
-      console.log(`[MediaGenerator] 从脚本输出历史 ${historyKey} 读取到 ${records.length} 条记录`);
-      allRecords.push(
-        ...records
-          .filter((r) => typeof r.content === 'string' && r.content.trim())
-          .map((r) => ({
-            ...r,
-            metadata: {
-              ...r.metadata,
-              topic: '脚本输出',
-              historyDelete: { module: 'tools' as const, key: historyKey },
-            },
-          }))
-      );
-    });
-
-    // 兼容脚本输出模块的本地缓存（仍属于脚本输出来源）
     try {
-      const historyStr = localStorage.getItem('scriptHistory_GLOBAL');
-      if (historyStr) {
-        const history = JSON.parse(historyStr);
-        if (Array.isArray(history)) {
-          history.forEach((item: any) => {
-            const txt = typeof item?.content === 'string' ? item.content.trim() : '';
-            if (!txt) return;
-            allRecords.push({
-              content: txt,
-              timestamp: item.timestamp || Date.now(),
-              metadata: { topic: '脚本输出（本地缓存）' },
-            });
-          });
-          console.log(`[MediaGenerator] 从 scriptHistory_GLOBAL 读取到 ${history.length} 条记录`);
-        }
-      }
-
-      const latestScript = localStorage.getItem('lastGeneratedScript');
-      if (latestScript && latestScript.trim()) {
-        allRecords.push({
-          content: latestScript.trim(),
-          timestamp: Date.now(),
-          metadata: { topic: '脚本输出（最新缓存）' },
-        });
-        console.log('[MediaGenerator] 从 lastGeneratedScript 读取到 1 条记录');
-      }
+      const generatorStoryboardKeys = [
+        `${NicheType.MINDFUL_PSYCHOLOGY}_mindful_mode2`,
+        'mindful_mode2',
+      ];
+      generatorStoryboardKeys.forEach((key) => {
+        const records = getHistory('generator', key);
+        console.log(`[MediaGenerator] 从 generator/${key} 读取到 ${records.length} 条记录`);
+        allRecords.push(
+          ...records
+            .filter((r) => typeof r.content === 'string' && r.content.trim())
+            .map((r) => ({
+              ...r,
+              metadata: {
+                ...r.metadata,
+                topic: r.metadata?.topic || `一键动画分镜历史 · ${key}`,
+                historyDelete: { module: 'generator' as const, key },
+              },
+            }))
+        );
+      });
     } catch (error) {
-      console.error('[MediaGenerator] 读取脚本输出本地缓存失败:', error);
+      console.error('[MediaGenerator] 读取一键动画分镜历史失败:', error);
     }
-    
-    // 按时间戳排序（最新的在前）
+
     allRecords.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-    
-    // 去重（仅去除“同来源+同时间+同内容”的完全重复项，避免把不同历史误合并成一条）
+
     const uniqueRecords: HistoryRecord[] = [];
-    const seenRecords = new Set<string>();
+    const seen = new Set<string>();
     allRecords.forEach((record) => {
       const raw = typeof record.content === 'string' ? record.content.trim() : '';
       if (!raw) return;
-      const sourceTag =
-        String(record.metadata?.topic || '') +
-        '|' +
-        String(record.metadata?.mediaProjectId || '') +
-        '|' +
-        String(record.metadata?.historyDelete?.kind || '') +
-        '|' +
-        String(record.metadata?.historyDelete?.module || '') +
-        '|' +
-        String(record.metadata?.historyDelete?.key || '');
-      const dedupeKey = `${sourceTag}|${record.timestamp || 0}|${raw}`;
-      if (seenRecords.has(dedupeKey)) return;
-      seenRecords.add(dedupeKey);
+      const key = `${record.timestamp || 0}|${record.metadata?.topic || ''}|${raw}`;
+      if (seen.has(key)) return;
+      seen.add(key);
       uniqueRecords.push(record);
     });
-    
-    console.log(`[MediaGenerator] 总共找到 ${uniqueRecords.length} 条唯一脚本记录`);
 
-    // 兜底：若脚本输出主来源为空，自动回退到兼容来源（避免误报“无记录”）
-    let finalRecords = uniqueRecords;
-    if (finalRecords.length === 0) {
-      const fallbackRecords: HistoryRecord[] = [];
-
-      // A) Generator 一键动画分镜历史
-      try {
-        const generatorStoryboardKeys = [
-          `${NicheType.MINDFUL_PSYCHOLOGY}_mindful_mode2`,
-          'mindful_mode2',
-        ];
-        generatorStoryboardKeys.forEach((key) => {
-          const records = getHistory('generator', key);
-          fallbackRecords.push(
-            ...records
-              .filter((r) => typeof r.content === 'string' && r.content.trim())
-              .map((r) => ({
-                ...r,
-                metadata: {
-                  ...r.metadata,
-                  topic: r.metadata?.topic || `一键动画分镜历史 · ${key}`,
-                  historyDelete: { module: 'generator' as const, key },
-                },
-              }))
-          );
-        });
-      } catch (error) {
-        console.error('[MediaGenerator] 回退读取 generator 分镜历史失败:', error);
-      }
-
-      // B) 旧 scriptHistory
-      try {
-        const historyStr = localStorage.getItem('scriptHistory');
-        if (historyStr) {
-          const history = JSON.parse(historyStr);
-          if (Array.isArray(history)) {
-            history.forEach((item: any) => {
-              const txt = typeof item?.content === 'string' ? item.content.trim() : '';
-              if (!txt) return;
-              fallbackRecords.push({
-                content: txt,
-                timestamp: item.timestamp || Date.now(),
-                metadata: {
-                  topic: '脚本历史记录（旧缓存）',
-                  historyDelete: { kind: 'legacyScriptHistory' as const },
-                },
-              });
-            });
-          }
-        }
-      } catch (error) {
-        console.error('[MediaGenerator] 回退读取 scriptHistory 失败:', error);
-      }
-
-      // C) 媒体历史项目里的 scriptText
-      try {
-        const mediaProjects = listMediaProjects();
-        mediaProjects.forEach((p) => {
-          const txt = typeof p.scriptText === 'string' ? p.scriptText.trim() : '';
-          if (!txt) return;
-          fallbackRecords.push({
-            content: txt,
-            timestamp: p.updatedAt || p.createdAt || Date.now(),
-            metadata: { topic: `一键动画分镜历史 · ${p.id}`, mediaProjectId: p.id },
-          });
-        });
-      } catch (error) {
-        console.error('[MediaGenerator] 回退读取媒体历史失败:', error);
-      }
-
-      fallbackRecords.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-      const seen = new Set<string>();
-      finalRecords = fallbackRecords.filter((record) => {
-        const raw = typeof record.content === 'string' ? record.content.trim() : '';
-        if (!raw) return false;
-        const key = `${record.timestamp || 0}|${record.metadata?.topic || ''}|${raw}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-      console.log(`[MediaGenerator] 回退来源找到 ${finalRecords.length} 条记录`);
-    }
-
-    if (finalRecords.length > 0) {
-      appendTerminalLog('Script', `打开脚本历史选择器，共 ${finalRecords.length} 条候选`);
+    if (uniqueRecords.length > 0) {
+      appendTerminalLog('Script', `打开一键动画分镜历史，共 ${uniqueRecords.length} 条候选`);
       setHistorySelectorKind('script');
-      setScriptHistoryRecords(finalRecords);
+      setScriptHistoryRecords(uniqueRecords);
       setShowScriptHistorySelector(true);
     } else {
-      appendTerminalLog('Script', '未找到可加载的脚本历史');
-      toast.warning('未找到脚本历史记录。请先在改写工具中生成脚本。');
+      appendTerminalLog('Script', '未找到一键动画分镜历史');
+      toast.warning('未找到一键动画分镜历史记录。');
     }
   };
   
