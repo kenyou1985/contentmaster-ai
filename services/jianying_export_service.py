@@ -182,6 +182,35 @@ def _reveal_in_finder(path: str):
     subprocess.run(["open", "-R", path], check=False, capture_output=True, timeout=10)
 
 
+def _normalize_jianying_path(path: str) -> str:
+    """规范写入草稿 JSON 的路径，避免出现 /app/C:\\... 这类前缀污染。"""
+    p = (path or "").strip()
+    if not p:
+        return p
+
+    # 1) Linux 容器里对 Windows 盘符路径做了 abspath，会变成 /app/C:\... → 还原为 C:\...
+    m = re.match(r"^/[^/]+/([A-Za-z]:[\\/].*)$", p)
+    if m:
+        p = m.group(1)
+
+    # 2) 兜底：直接 /C:\... 或 /D:/... 也还原
+    p = re.sub(r"^/([A-Za-z]:[\\/])", r"\1", p)
+
+    # 3) Windows 盘符路径统一反斜杠
+    if re.match(r"^[A-Za-z]:[\\/]", p):
+        p = p.replace('/', '\\')
+
+    return p
+
+
+def _safe_abs_for_jianying(path: str) -> str:
+    """生成供剪映写入的路径：Windows 盘符路径不做 abspath，其他路径取绝对并规范。"""
+    p = (path or "").strip()
+    if re.match(r"^[A-Za-z]:[\\/]", p):
+        return _normalize_jianying_path(p)
+    return _normalize_jianying_path(os.path.abspath(p))
+
+
 def _write_png_rgb(path: str, w: int, h: int, r: int, g: int, b: int) -> bool:
     """写入纯色 RGB PNG（8-bit）。"""
     try:
@@ -473,11 +502,26 @@ _LV59_FILTER_PRESETS = [
 ]
 
 
-def _split_caption_into_natural_chunks(text: str, max_chars: int = 44) -> list[str]:
-    """按句读切分字幕，便于按本镜时长比例排时间轴（无逐字时间戳时的近似同步）。"""
+def _split_caption_into_natural_chunks(text: str, max_chars: int = 28) -> list[str]:
+    """按句读切分字幕，并在无标点长句时强制分块，避免整段粘连。"""
     t = " ".join((text or "").strip().split())
     if not t:
         return []
+
+    def _force_wrap(raw: str, limit: int) -> list[str]:
+        s = (raw or "").strip()
+        if not s:
+            return []
+        buf, arr = "", []
+        for ch in s:
+            buf += ch
+            if len(buf) >= limit:
+                arr.append(buf.strip())
+                buf = ""
+        if buf.strip():
+            arr.append(buf.strip())
+        return arr
+
     parts = re.split(r"(?<=[。！？．.!?])\s*", t)
     chunks: list[str] = []
     for piece in parts:
@@ -487,11 +531,18 @@ def _split_caption_into_natural_chunks(text: str, max_chars: int = 44) -> list[s
         if len(piece) <= max_chars:
             chunks.append(piece)
             continue
-        sub = re.split(r"(?<=[，,；;])\s*", piece)
+
+        sub = re.split(r"(?<=[，,；;：:])\s*", piece)
         buf = ""
         for s in sub:
             s = s.strip()
             if not s:
+                continue
+            if len(s) > max_chars:
+                if buf:
+                    chunks.append(buf)
+                    buf = ""
+                chunks.extend(_force_wrap(s, max_chars))
                 continue
             if not buf:
                 buf = s
@@ -502,16 +553,20 @@ def _split_caption_into_natural_chunks(text: str, max_chars: int = 44) -> list[s
                 buf = s
         if buf:
             chunks.append(buf)
+
     out: list[str] = []
     for c in chunks:
         c = c.strip()
         if not c:
             continue
+        if len(c) > max_chars:
+            out.extend(_force_wrap(c, max_chars))
+            continue
         if out and len(c) < 5:
             out[-1] = out[-1] + c
         else:
             out.append(c)
-    return out if out else [t]
+    return out if out else _force_wrap(t, max_chars)
 
 
 def _distribute_chunk_durations_us(chunks: list[str], total_duration_us: int, min_chunk_us: int = 120_000) -> list[int]:
@@ -1389,7 +1444,7 @@ def create_draft_on_mac(
         }
 
         if use_video and local_video_path:
-            vabs = os.path.abspath(local_video_path)
+            vabs = _safe_abs_for_jianying(local_video_path)
             vd, vw, vh = _ffprobe_video_meta(vabs)
             if vd:
                 duration_us = vd
@@ -1409,7 +1464,7 @@ def create_draft_on_mac(
                     local_image_path = None
             if not local_image_path:
                 local_image_path = _placeholder_shot_image_path(draft_folder, i, width, height)
-            img_abs = os.path.abspath(local_image_path)
+            img_abs = _safe_abs_for_jianying(local_image_path)
             iw, ih = _read_image_dimensions(img_abs, width, height)
             row["media_kind"] = "photo"
             row["image_abs"] = img_abs
@@ -1435,7 +1490,7 @@ def create_draft_on_mac(
             ok = _download_file(str(audio_url), lap)
             print(f"[jianying_export] 镜头{i} 音频: url={'有' if audio_url else '无'} → 文件={audio_filename} → 下载={'成功' if ok else '失败'} {'(' + str(audio_url)[:80] + ')' if audio_url else ''}", file=sys.stderr, flush=True)
             if ok:
-                row["audio_abs"] = os.path.abspath(lap)
+                row["audio_abs"] = _safe_abs_for_jianying(lap)
                 probe_us = _ffprobe_duration_us(row["audio_abs"])
                 # 以文件实测为准；客户端 audioDurationSec 多为文案估算，取 max 会把时间线拉长得远超真实波形（见 pyJianYingDraft：片段时长应对齐素材）。
                 if probe_us:

@@ -324,6 +324,21 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const [yiJingMergedOutput, setYiJingMergedOutput] = useState('');
   const [yiJingPipelineBusy, setYiJingPipelineBusy] = useState(false);
 
+  type ParallelTopicStage = 'idle' | 'outline' | 'segments' | 'merge' | 'done' | 'error';
+  type ParallelTopicRun = {
+    id: string;
+    title: string;
+    status: 'pending' | 'running' | 'done' | 'error';
+    stage: ParallelTopicStage;
+    progress: number;
+    logs: string[];
+  };
+  const [parallelTopicRuns, setParallelTopicRuns] = useState<ParallelTopicRun[]>([]);
+  const [activeParallelTopicId, setActiveParallelTopicId] = useState<string | null>(null);
+  const [parallelTopicOutlineMap, setParallelTopicOutlineMap] = useState<Record<string, string>>({});
+  const [parallelTopicSegDraftsMap, setParallelTopicSegDraftsMap] = useState<Record<string, string[]>>({});
+  const [parallelTopicSegStatusMap, setParallelTopicSegStatusMap] = useState<Record<string, ('idle' | 'running' | 'done' | 'error')[]>>({});
+
   // UTC 时间锚定（仅在需要时间锚的赛道/子模式注入）
   const getUtcAnchor = (): string => {
     const now = new Date();
@@ -333,6 +348,11 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     const hour = String(now.getUTCHours()).padStart(2, '0');
     const minute = String(now.getUTCMinutes()).padStart(2, '0');
     return `时间锚（内部推演，不可原样输出）：${year}年${month}月${day}日 ${hour}:${minute}。若用户未给年份，默认按${year}年推演；若用户已给年份，以用户年份为准。正文禁止出现“UTC/系统时间/时间锚”等字样。`;
+  };
+
+  const getUtcYearGuardrail = (): string => {
+    const y = getCurrentUtcYear();
+    return `【全赛道时空锚定铁律（最高优先级）】\n- 现在的基准年份按 UTC 当日：${y}年。\n- 若用户未明确指定年份，正文中凡出现“今年/本年/年初/年中/年末/跨年/明年/去年”等时间指代，必须与${y}年一致推导（如“今年年底”即${y}年年底，“明年”即${y + 1}年）。\n- 禁止把“当前”写成过去年份（如 ${y - 1} / ${y - 2} 等）或滞后时间线。\n- 仅当用户明确给出年份时，才可使用用户年份；否则一律按${y}年锚定。`;
   };
 
   const shouldInjectUtcAnchor = (): boolean => {
@@ -353,6 +373,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     const parts: string[] = [];
     if (shouldInjectUtcAnchor()) {
       parts.push(getUtcAnchor());
+      parts.push(getUtcYearGuardrail());
     }
     if (
       niche === NicheType.FINANCE_CRYPTO &&
@@ -711,7 +732,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
         // 2. UTC 时间锚定（中医玄学仅时辰禁忌注入）
         if (shouldInjectUtcAnchor()) {
-          prompt = `${getUtcAnchor()}\n\n${prompt}`;
+          prompt = `${getUtcAnchor()}\n\n${getUtcYearGuardrail()}\n\n${prompt}`;
         }
 
         // 3. Story Specific Injection
@@ -747,7 +768,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
         }
         // UTC 时间锚定（中医玄学仅时辰禁忌注入）
         if (shouldInjectUtcAnchor()) {
-          prompt = `${getUtcAnchor()}\n\n${prompt}`;
+          prompt = `${getUtcAnchor()}\n\n${getUtcYearGuardrail()}\n\n${prompt}`;
         }
     }
 
@@ -1683,17 +1704,18 @@ ${segmentSourceText}
 
   const handleYiJingAutoPilot = useCallback(async (): Promise<boolean> => {
     const sel = topics.filter((t) => t.selected);
-    if (!sel[0]) {
-      toast.warning('请先选择一个选题');
+    if (!sel.length) {
+      toast.warning('请先选择至少一个选题');
       return false;
     }
     if (!apiKey?.trim()) {
       toast.error('请先配置 API Key');
       return false;
     }
+
     initializeGemini(apiKey, { provider });
     setYiJingPipelineBusy(true);
-    const topicTitle = sel[0].title;
+
     const plannedSeg = computeParallelSegmentCount(
       parallelTotalTargetChars,
       scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
@@ -1706,159 +1728,184 @@ ${segmentSourceText}
       NICHES[niche]
     );
     const outlineLead = getParallelOutlineLeadContext();
-    setBatchProgress({
-      current: 0,
-      total: plannedSeg + 2,
-      hint: '正在生成章节大纲…',
-    });
-    pushYiJingLog(
-      `全自动：大纲 → 并行分段 → 合并（全文目标约 ${parallelTotalTargetChars} 字，约 ${plannedSeg} 章）`
-    );
-    try {
-      const raw = await collectStreamText(
-        buildParallelOutlineUserPrompt(
-          topicTitle,
-          plannedSeg,
-          parallelTotalTargetChars,
-          bundle.outline,
-          outlineLead || undefined
-        ),
-        bundle.outlineSystem,
-        6144
-      );
-      const parsedRaw = parseYiJingOutline(raw);
-      if (!parsedRaw) {
-        setYiJingOutlineText(raw);
-        setYiJingOutlineViewMode('readable');
-        throw new Error('大纲 JSON 解析失败');
-      }
-      const parsed = rescaleChapterWordCounts(parsedRaw, parallelTotalTargetChars);
-      const n = parsed.chapters.length;
-      setYiJingOutlineText(outlinePayloadToJsonPretty(parsed));
-      setYiJingOutlineParsed(parsed);
-      setYiJingOutlineEditDraft(null);
-      setYiJingOutlineViewMode('readable');
-      setBatchProgress({
-        current: 1,
-        total: n + 2,
-        hint: `大纲就绪（${n} 章），并行生成各段…`,
-      });
-      pushYiJingLog(`大纲 OK，${n} 章，开始并行…`);
-      setYiJingSegDrafts(Array(n).fill(''));
-      setYiJingSegStatus(Array(n).fill('idle'));
 
-      const config = NICHES[niche];
-      const sys = config.systemInstruction;
-      const segDone = new Set<number>();
-      const results = await Promise.all(
-        parsed.chapters.map(async (ch, idx) => {
-          setYiJingSegStatus((prev) => {
-            const next = [...prev];
-            next[idx] = 'running';
-            return next;
-          });
-          let local = '';
-          const user = buildParallelSegmentUserPrompt(
-            {
-              topic: topicTitle,
-              coreTheme: parsed.core_theme,
-              logicLine: parsed.logic_line,
-              chapter: ch,
-              chapterIndex: idx,
-              totalChapters: n,
-            },
-            bundle.segment
-          );
-          try {
-            await streamContentGeneration(user, sys, (c) => {
-              local += c;
-              setYiJingSegDrafts((prev) => {
-                const arr = [...prev];
-                arr[idx] = local;
-                return arr;
-              });
-            }, undefined, { maxTokens: 12288 });
-            setYiJingSegStatus((prev) => {
-              const next = [...prev];
-              next[idx] = 'done';
-              return next;
-            });
-            segDone.add(idx);
-            setBatchProgress({
-              current: 1 + segDone.size,
-              total: n + 2,
-              hint: `并行生成 ${segDone.size}/${n} 段`,
-            });
-            return local;
-          } catch (err: any) {
-            setYiJingSegStatus((prev) => {
-              const next = [...prev];
-              next[idx] = 'error';
-              return next;
-            });
-            pushYiJingLog(`第 ${idx + 1} 段 错误：${err?.message || err}`);
-            segDone.add(idx);
-            setBatchProgress({
-              current: 1 + segDone.size,
-              total: n + 2,
-              hint: `并行生成 ${segDone.size}/${n} 段（含失败）`,
-            });
-            return `[本段生成失败：${err?.message || err}]`;
-          }
-        })
-      );
-      setYiJingSegDrafts(results);
-      pushYiJingLog('分段完成，正在合并润色…');
+    const initRuns: ParallelTopicRun[] = sel.map((t) => ({
+      id: t.id,
+      title: t.title,
+      status: 'pending',
+      stage: 'idle',
+      progress: 0,
+      logs: [],
+    }));
+    setParallelTopicRuns(initRuns);
+    setActiveParallelTopicId(sel[0].id);
+
+    const totalSteps = sel.length * (plannedSeg + 2);
+    let finishedSteps = 0;
+    const bumpGlobalProgress = (hint: string) => {
+      finishedSteps += 1;
       setBatchProgress({
-        current: n + 1,
-        total: n + 2,
-        hint: '正在合并、统一语气…',
+        current: Math.min(totalSteps, finishedSteps),
+        total: totalSteps,
+        hint,
       });
-      const combined = results.join('\n\n');
-      const mindfulLongAp =
-        niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
-      const merged = await collectStreamText(
-        buildParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
-          ...bundle.merge,
-          englishMergedCharClamp: mindfulLongAp
-            ? mindfulMergeCharClamp(parallelTotalTargetChars)
-            : undefined,
-        }),
-        bundle.mergeSystem,
-        24576
+    };
+
+    const appendRunLog = (topicId: string, line: string) => {
+      setParallelTopicRuns((prev) =>
+        prev.map((r) =>
+          r.id === topicId
+            ? { ...r, logs: [...r.logs.slice(-39), `[${new Date().toLocaleTimeString()}] ${line}`] }
+            : r
+        )
       );
-      let norm = normalizeYiJingBody(merged);
-      if (mindfulLongAp) {
-        norm = finalizeMindfulEnglishScriptLength(norm, MINDFUL_EN_SCRIPT_CHARS_MAX);
-      }
-      setYiJingMergedOutput(norm);
-      setGeneratedContents([{ topic: topicTitle, content: norm }]);
-      setViewIndex(0);
-      setBatchProgress({
-        current: n + 2,
-        total: n + 2,
-        hint: '全文已就绪',
-      });
-      pushYiJingLog(`全流程完成，终稿约 ${norm.length} 字`);
-      toast.success('分段并行全文已生成');
+    };
+
+    const patchRun = (topicId: string, patch: Partial<ParallelTopicRun>) => {
+      setParallelTopicRuns((prev) => prev.map((r) => (r.id === topicId ? { ...r, ...patch } : r)));
+    };
+
+    setBatchProgress({ current: 0, total: totalSteps, hint: `并行处理 ${sel.length} 个选题…` });
+    pushYiJingLog(`全自动并行：共 ${sel.length} 个选题`);
+
+    const runSingleTopic = async (topic: Topic): Promise<{ ok: boolean; content?: string }> => {
+      const topicTitle = topic.title;
+      patchRun(topic.id, { status: 'running', stage: 'outline', progress: 5 });
+      appendRunLog(topic.id, '开始：生成大纲');
+
       try {
-        const historyKey = getHistoryKeyForSubMode(niche, getParallelHistorySubModeId());
-        if (norm.length > 200) {
-          saveHistory('generator', historyKey, norm, { topic: topicTitle, input: inputVal });
+        const raw = await collectStreamText(
+          buildParallelOutlineUserPrompt(
+            topicTitle,
+            plannedSeg,
+            parallelTotalTargetChars,
+            bundle.outline,
+            outlineLead || undefined
+          ),
+          bundle.outlineSystem,
+          6144
+        );
+        const parsedRaw = parseYiJingOutline(raw);
+        if (!parsedRaw) throw new Error('大纲 JSON 解析失败');
+        const parsed = rescaleChapterWordCounts(parsedRaw, parallelTotalTargetChars);
+        const n = parsed.chapters.length;
+
+        patchRun(topic.id, { stage: 'segments', progress: 18 });
+        appendRunLog(topic.id, `大纲完成：${n} 章`);
+        bumpGlobalProgress(`已完成大纲：${topicTitle}`);
+
+        const config = NICHES[niche];
+        const sys = config.systemInstruction;
+        const segDone = new Set<number>();
+        const results = await Promise.all(
+          parsed.chapters.map(async (ch, idx) => {
+            let local = '';
+            const user = buildParallelSegmentUserPrompt(
+              {
+                topic: topicTitle,
+                coreTheme: parsed.core_theme,
+                logicLine: parsed.logic_line,
+                chapter: ch,
+                chapterIndex: idx,
+                totalChapters: n,
+              },
+              bundle.segment
+            );
+            try {
+              await streamContentGeneration(user, sys, (c) => {
+                local += c;
+              }, undefined, { maxTokens: 12288 });
+              segDone.add(idx);
+              const p = 18 + Math.round((segDone.size / n) * 58);
+              patchRun(topic.id, { progress: p });
+              bumpGlobalProgress(`分段 ${segDone.size}/${n}：${topicTitle}`);
+              return local;
+            } catch (err: any) {
+              segDone.add(idx);
+              bumpGlobalProgress(`分段异常（已跳过）：${topicTitle}`);
+              appendRunLog(topic.id, `第 ${idx + 1} 段失败：${err?.message || err}`);
+              return `[本段生成失败：${err?.message || err}]`;
+            }
+          })
+        );
+
+        patchRun(topic.id, { stage: 'merge', progress: 82 });
+        appendRunLog(topic.id, '分段完成：开始合并');
+
+        const combined = results.join('\n\n');
+        const mindfulLongAp =
+          niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
+        const merged = await collectStreamText(
+          buildParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
+            ...bundle.merge,
+            englishMergedCharClamp: mindfulLongAp
+              ? mindfulMergeCharClamp(parallelTotalTargetChars)
+              : undefined,
+          }),
+          bundle.mergeSystem,
+          24576
+        );
+        let norm = normalizeYiJingBody(merged);
+        if (mindfulLongAp) {
+          norm = finalizeMindfulEnglishScriptLength(norm, MINDFUL_EN_SCRIPT_CHARS_MAX);
         }
-      } catch {
-        /* ignore */
+
+        patchRun(topic.id, { status: 'done', stage: 'done', progress: 100 });
+        appendRunLog(topic.id, `完成：终稿约 ${norm.length} 字`);
+        bumpGlobalProgress(`已完成：${topicTitle}`);
+
+        try {
+          const historyKey = getHistoryKeyForSubMode(niche, getParallelHistorySubModeId());
+          if (norm.length > 200) {
+            saveHistory('generator', historyKey, norm, { topic: topicTitle, input: inputVal });
+          }
+        } catch {
+          /* ignore */
+        }
+
+        return { ok: true, content: norm };
+      } catch (e: any) {
+        patchRun(topic.id, { status: 'error', stage: 'error' });
+        appendRunLog(topic.id, `失败：${e?.message || e}`);
+        return { ok: false };
       }
-      return true;
-    } catch (e: any) {
-      pushYiJingLog(`失败：${e?.message || e}`);
-      toast.error(e?.message || '全自动流程失败');
-      setBatchProgress((prev) =>
-        prev
-          ? { ...prev, hint: `未完成：${e?.message || e}` }
-          : { current: 0, total: 1, hint: '流程失败' }
-      );
-      return false;
+    };
+
+    try {
+      const settled = await Promise.all(sel.map((t) => runSingleTopic(t)));
+      const okCount = settled.filter((x) => x.ok).length;
+
+      const nextContents = sel.map((t, i) => ({
+        topic: t.title,
+        content: settled[i]?.content || generatedContents.find((g) => g.topic === t.title)?.content || '',
+      }));
+      setGeneratedContents(nextContents);
+      setViewIndex(0);
+
+      const firstOkIdx = settled.findIndex((x) => x.ok && x.content);
+      if (firstOkIdx >= 0) {
+        const firstTopic = sel[firstOkIdx];
+        setActiveParallelTopicId(firstTopic.id);
+        setYiJingMergedOutput(settled[firstOkIdx].content || '');
+      }
+
+      if (okCount > 0) {
+        const firstOkParsed = settled.find((x) => x.ok && x.content)?.content;
+        if (firstOkParsed) {
+          setYiJingOutlineText('（多选并行模式：各选题独立大纲已完成，详见题签日志）');
+          setYiJingOutlineViewMode('readable');
+        }
+      }
+
+      if (okCount === sel.length) {
+        pushYiJingLog(`全流程完成：${okCount}/${sel.length} 个选题成功`);
+        toast.success(`分段并行完成：${okCount}/${sel.length}`);
+        return true;
+      }
+
+      pushYiJingLog(`部分完成：${okCount}/${sel.length} 个选题成功`);
+      toast.warning(`部分完成：${okCount}/${sel.length}`);
+      return okCount > 0;
     } finally {
       setYiJingPipelineBusy(false);
     }
@@ -1878,6 +1925,7 @@ ${segmentSourceText}
     inputVal,
     getParallelOutlineLeadContext,
     getParallelHistorySubModeId,
+    generatedContents,
   ]);
 
   const handleBatchGenerate = async () => {
@@ -1925,37 +1973,226 @@ ${segmentSourceText}
       !(niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION);
 
     if (useGlobalParallelPipeline) {
-      if (selectedTopics.length > 1) {
-        toast.warning('分段并行模式每次仅处理第一个已选选题；多篇请分批执行。');
-      }
-      const first = selectedTopics[0];
       setStatus(GenerationStatus.WRITING);
-      setGeneratedContents([{ topic: first.title, content: '' }]);
-      setActiveIndices(new Set([0]));
+      setGeneratedContents(selectedTopics.map((t) => ({ topic: t.title, content: '' })));
       setViewIndex(0);
-      const planned =
+      setActiveIndices(new Set(selectedTopics.map((_, i) => i)));
+
+      const runItems: ParallelTopicRun[] = selectedTopics.map((t) => ({
+        id: t.id,
+        title: t.title,
+        status: 'pending',
+        stage: 'idle',
+        progress: 0,
+        logs: [],
+      }));
+      setParallelTopicRuns(runItems);
+      setActiveParallelTopicId(selectedTopics[0]?.id || null);
+      setParallelTopicOutlineMap({});
+      setParallelTopicSegDraftsMap({});
+      setParallelTopicSegStatusMap({});
+
+      const plannedPerTopic =
         computeParallelSegmentCount(
           parallelTotalTargetChars,
           scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
         ) + 2;
+      const totalSteps = Math.max(1, plannedPerTopic * selectedTopics.length);
+      let doneSteps = 0;
+      const bumpProgress = (hint?: string) => {
+        doneSteps += 1;
+        setBatchProgress({
+          current: Math.min(doneSteps, totalSteps),
+          total: totalSteps,
+          hint,
+        });
+      };
+      const patchRun = (topicId: string, patch: Partial<ParallelTopicRun>) => {
+        setParallelTopicRuns((prev) => prev.map((r) => (r.id === topicId ? { ...r, ...patch } : r)));
+      };
+      const appendRunLog = (topicId: string, line: string) => {
+        setParallelTopicRuns((prev) =>
+          prev.map((r) =>
+            r.id === topicId
+              ? { ...r, logs: [...r.logs.slice(-39), `[${new Date().toLocaleTimeString()}] ${line}`] }
+              : r
+          )
+        );
+      };
+
+      const runPipelineForTopic = async (topic: Topic, idx: number) => {
+        const topicTitle = topic.title;
+        patchRun(topic.id, { status: 'running', stage: 'outline', progress: 8 });
+        appendRunLog(topic.id, '开始生成大纲');
+        try {
+          const bundle = getParallelPipelineBundle(
+            niche,
+            scriptLengthMode,
+            storyLanguage,
+            storyDuration,
+            NICHES[niche]
+          );
+          const outlineLead = getParallelOutlineLeadContext();
+
+          // 1) 大纲
+          const plannedSeg = computeParallelSegmentCount(
+            parallelTotalTargetChars,
+            scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
+          );
+          const raw = await collectStreamText(
+            buildParallelOutlineUserPrompt(
+              topicTitle,
+              plannedSeg,
+              parallelTotalTargetChars,
+              bundle.outline,
+              outlineLead || undefined
+            ),
+            bundle.outlineSystem,
+            6144
+          );
+          const parsedRaw = parseYiJingOutline(raw);
+          if (!parsedRaw) throw new Error('大纲解析失败');
+          const parsed = rescaleChapterWordCounts(parsedRaw, parallelTotalTargetChars);
+          setParallelTopicOutlineMap((prev) => ({
+            ...prev,
+            [topic.id]: outlinePayloadToJsonPretty(parsed),
+          }));
+          setParallelTopicSegDraftsMap((prev) => ({ ...prev, [topic.id]: Array(parsed.chapters.length).fill('') }));
+          setParallelTopicSegStatusMap((prev) => ({ ...prev, [topic.id]: Array(parsed.chapters.length).fill('idle') }));
+          patchRun(topic.id, { stage: 'segments', progress: 20 });
+          appendRunLog(topic.id, `大纲完成：${parsed.chapters.length} 章`);
+          pushYiJingLog(`【${topicTitle.slice(0, 18)}】大纲完成：${parsed.chapters.length} 章`);
+          bumpProgress(`「${topicTitle.slice(0, 16)}${topicTitle.length > 16 ? '…' : ''}」大纲完成`);
+
+          // 2) 分段并行
+          const config = NICHES[niche];
+          const sys = config.systemInstruction;
+          const segResults = await Promise.all(
+            parsed.chapters.map(async (ch, chIdx) => {
+              const user = buildParallelSegmentUserPrompt(
+                {
+                  topic: topicTitle,
+                  coreTheme: parsed.core_theme,
+                  logicLine: parsed.logic_line,
+                  chapter: ch,
+                  chapterIndex: chIdx,
+                  totalChapters: parsed.chapters.length,
+                },
+                bundle.segment
+              );
+              let local = '';
+              setParallelTopicSegStatusMap((prev) => {
+                const arr = [...(prev[topic.id] || [])];
+                if (arr.length <= chIdx) arr[chIdx] = 'idle';
+                arr[chIdx] = 'running';
+                return { ...prev, [topic.id]: arr };
+              });
+              await streamContentGeneration(user, sys, (c) => {
+                local += c;
+                setParallelTopicSegDraftsMap((prev) => {
+                  const arr = [...(prev[topic.id] || [])];
+                  arr[chIdx] = local;
+                  return { ...prev, [topic.id]: arr };
+                });
+                setGeneratedContents((prev) => {
+                  const next = [...prev];
+                  const partial = next[idx]?.content || '';
+                  next[idx] = {
+                    ...next[idx],
+                    content: `${partial.slice(0, 1200)}\n\n[正在并行生成各分段…已完成第 ${chIdx + 1}/${parsed.chapters.length} 段]`,
+                  };
+                  return next;
+                });
+              }, undefined, { maxTokens: 12288 });
+              setParallelTopicSegStatusMap((prev) => {
+                const arr = [...(prev[topic.id] || [])];
+                arr[chIdx] = 'done';
+                return { ...prev, [topic.id]: arr };
+              });
+              appendRunLog(topic.id, `第 ${chIdx + 1}/${parsed.chapters.length} 段完成（约 ${local.length} 字）`);
+              const per = 20 + Math.round(((chIdx + 1) / parsed.chapters.length) * 56);
+              patchRun(topic.id, { progress: per });
+              return local;
+            })
+          );
+          patchRun(topic.id, { stage: 'merge', progress: 80 });
+          appendRunLog(topic.id, '分段完成：开始合并');
+          pushYiJingLog(`【${topicTitle.slice(0, 18)}】分段完成，开始合并`);
+          bumpProgress(`「${topicTitle.slice(0, 16)}${topicTitle.length > 16 ? '…' : ''}」分段完成`);
+
+          // 3) 合并
+          const combined = segResults.join('\n\n');
+          const mindfulLong =
+            niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
+          const merged = await collectStreamText(
+            buildParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
+              ...bundle.merge,
+              englishMergedCharClamp: mindfulLong
+                ? mindfulMergeCharClamp(parallelTotalTargetChars)
+                : undefined,
+            }),
+            bundle.mergeSystem,
+            24576
+          );
+          let finalText = normalizeYiJingBody(merged);
+          if (mindfulLong) {
+            finalText = finalizeMindfulEnglishScriptLength(finalText, MINDFUL_EN_SCRIPT_CHARS_MAX);
+          }
+
+          setGeneratedContents((prev) => {
+            const next = [...prev];
+            next[idx] = { topic: topicTitle, content: finalText };
+            return next;
+          });
+          patchRun(topic.id, { status: 'done', stage: 'done', progress: 100 });
+          appendRunLog(topic.id, `完成：终稿约 ${finalText.length} 字`);
+          pushYiJingLog(`【${topicTitle.slice(0, 18)}】终稿完成，约 ${finalText.length} 字`);
+
+          try {
+            const historyKey = getHistoryKeyForSubMode(niche, getParallelHistorySubModeId());
+            if (finalText.length > 200) {
+              saveHistory('generator', historyKey, finalText, { topic: topicTitle, input: inputVal });
+            }
+          } catch {
+            /* ignore */
+          }
+          bumpProgress(`「${topicTitle.slice(0, 16)}${topicTitle.length > 16 ? '…' : ''}」合并完成`);
+        } catch (e: any) {
+          setGeneratedContents((prev) => {
+            const next = [...prev];
+            next[idx] = {
+              topic: topicTitle,
+              content: `生成失败：${e?.message || e}`,
+            };
+            return next;
+          });
+          patchRun(topic.id, { status: 'error', stage: 'error' });
+          appendRunLog(topic.id, `失败：${e?.message || e}`);
+          pushYiJingLog(`【${topicTitle.slice(0, 18)}】失败：${e?.message || e}`);
+          // 失败也推进步数，避免总进度卡住
+          bumpProgress(`「${topicTitle.slice(0, 16)}${topicTitle.length > 16 ? '…' : ''}」失败`);
+          bumpProgress();
+          bumpProgress();
+        } finally {
+          setActiveIndices((prev) => {
+            const next = new Set(prev);
+            next.delete(idx);
+            return next;
+          });
+        }
+      };
+
       setBatchProgress({
         current: 0,
-        total: planned,
-        hint: '分段并行流水线启动…',
+        total: totalSteps,
+        hint: `分段并行流水线启动（${selectedTopics.length} 个选题）…`,
       });
-      let pipelineOk = false;
-      try {
-        pipelineOk = await handleYiJingAutoPilot();
-        if (pipelineOk) {
-          setBatchProgress((prev) =>
-            prev ? { ...prev, current: prev.total, hint: '生成完成' } : null
-          );
-        }
-      } finally {
-        setStatus(GenerationStatus.COMPLETED);
-        setActiveIndices(new Set());
-        setTimeout(() => setBatchProgress(null), pipelineOk ? 1400 : 2600);
-      }
+
+      await Promise.all(selectedTopics.map((t, i) => runPipelineForTopic(t, i)));
+      setStatus(GenerationStatus.COMPLETED);
+      setBatchProgress({ current: totalSteps, total: totalSteps, hint: '全部选题已完成' });
+      setActiveIndices(new Set());
+      setTimeout(() => setBatchProgress(null), 1600);
       return;
     }
 
@@ -2588,7 +2825,7 @@ ${segmentSourceText}
 
         // UTC 时间锚定（中医玄学仅时辰禁忌注入）
         if (shouldInjectUtcAnchor()) {
-          prompt = `${getUtcAnchor()}\n\n${prompt}`;
+          prompt = `${getUtcAnchor()}\n\n${getUtcYearGuardrail()}\n\n${prompt}`;
         }
 
         if (niche === NicheType.YI_JING_METAPHYSICS && !mapIsShortScript) {
@@ -2969,6 +3206,7 @@ ${segmentSourceText}
                                   : ['不要出現「下課」「今天的課到這裡」等其他收尾語。']),
                             '直接续写正文，不要任何分隔符、标记或元信息。',
                             `目標字數：至少 ${minChars} 字，當前已${currentLength}字。`,
+                            getUtcYearGuardrail(),
                             '',
                             '【上文】',
                             context
@@ -3018,6 +3256,7 @@ ${segmentSourceText}
                             const tcmAutoPrompt = [
                                 `继续无缝衔接上文，不要重复已输出内容。当前约${cleaned.length}字，必须补足到至少${MIN_TCM_SCRIPT_CHARS}字。`,
                                 '必须保持“好了，我们开始上课。”后的课程化结构，课程标题与正文自然衔接，不生硬。',
+                                getUtcYearGuardrail(),
                                 '若已进入某节中间，则继续该节；若该节完成，再进入下一节。禁止跳节、禁止重写已完成内容。',
                                 `严禁第十节课及以上（仅允许${tcmRequiredLessons}节课）。`,
                                 '不要输出任何分隔符、说明文字、元信息。',
@@ -3043,6 +3282,7 @@ ${segmentSourceText}
                                 const rescuePrompt = [
                                     `继续补充正文，不要重复，直接承接当前段落写下去，直到总字数达到${MIN_TCM_SCRIPT_CHARS}字。严禁第十节课及以上（仅允许${tcmRequiredLessons}节课）。`,
                                     '保持第一人称与课堂口吻，禁止输出分隔符和注释。',
+                                    getUtcYearGuardrail(),
                                     '',
                                     cleaned.slice(-2000)
                                 ].join('\n');
@@ -3157,6 +3397,7 @@ ${segmentSourceText}
                                 [
                                     `第一人称查理·芒格口吻，承接上文继续深入分析。**绝对禁止写任何收尾语、互动引导、「咱们下期见」等。**继续展开正文分析。`,
                                     `当前约${finLen}字，目标至少${minChars}字。不要分段标记，不要分隔符。`,
+                                getUtcYearGuardrail(),
                                     '',
                                     '【上文】',
                                     localContent.slice(-3000)
@@ -3181,6 +3422,7 @@ ${segmentSourceText}
                                 [
                                     `上文约${finLen}字，已达目标字数。现在写最后收束段（约400–600字）：先用芒格式冷笑话或对华尔街的调侃收束，然后自然过渡到互动引导（选一：「评论区聊聊」「点赞咱们下期见」「转发给朋友」），**文末必须以「咱们下期见」或「咱们下期继续拆」结尾；出现这句话后立即停笔，绝对不得续写任何内容。**`,
                                     '不要分段标记，不要分隔符。',
+                                    getUtcYearGuardrail(),
                                     '',
                                     '【上文】',
                                     localContent.slice(-3000)
@@ -4163,7 +4405,7 @@ ${segmentSourceText}
                     <span className="text-sm text-slate-400">
                         {niche === NicheType.STORY_REVENGE 
                             ? `选择要生成的故事 (${storyDuration === StoryDuration.SHORT ? '短篇' : '長篇'}/${storyLanguage})；全文统一走分段并行 → 合并：`
-                            : '选择选题后，可用下方「分段并行工作台」分步执行，或点主按钮全自动：大纲 → 并行各章 → 合并终稿。'
+                            : '选择选题后，可并行处理多个选题；每个选题独立执行「大纲 → 并行各章 → 合并终稿」。'
                         }
                     </span>
                     <span className="text-sm text-emerald-400 font-medium">已选 {topics.filter(t => t.selected).length} 个</span>
@@ -4197,6 +4439,173 @@ ${segmentSourceText}
                         《原创万字长文生成分段输出重构合并技术》：保证最强的情绪张力和细节还原
                       </span>
                     </div>
+                    {parallelTopicRuns.length > 0 && (
+                      <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3 space-y-3">
+                        <div className="text-[11px] text-slate-400">多选题签并行状态</div>
+                        <div className="flex flex-wrap gap-2">
+                          {parallelTopicRuns.map((run) => (
+                            <button
+                              key={run.id}
+                              type="button"
+                              onClick={() => {
+                                setActiveParallelTopicId(run.id);
+                                const idx = generatedContents.findIndex((g) => g.topic === run.title);
+                                if (idx >= 0) setViewIndex(idx);
+                              }}
+                              className={`px-3 py-1.5 rounded-lg border text-xs transition-all ${
+                                activeParallelTopicId === run.id
+                                  ? 'border-cyan-400 bg-cyan-900/40 text-cyan-200'
+                                  : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500'
+                              }`}
+                            >
+                              <span className="font-medium">{run.title.length > 14 ? `${run.title.slice(0, 14)}…` : run.title}</span>
+                              <span
+                                className={`ml-2 ${
+                                  run.status === 'done'
+                                    ? 'text-emerald-400'
+                                    : run.status === 'error'
+                                      ? 'text-rose-400'
+                                      : run.status === 'running'
+                                        ? 'text-amber-300'
+                                        : 'text-slate-500'
+                                }`}
+                              >
+                                {run.status === 'done'
+                                  ? '完成'
+                                  : run.status === 'error'
+                                    ? '失败'
+                                    : run.status === 'running'
+                                      ? '进行中'
+                                      : '待开始'}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                        {(() => {
+                          const active = parallelTopicRuns.find((r) => r.id === activeParallelTopicId) || parallelTopicRuns[0];
+                          if (!active) return null;
+                          const stageLabel: Record<ParallelTopicStage, string> = {
+                            idle: '待开始',
+                            outline: '大纲阶段',
+                            segments: '并行分段',
+                            merge: '合并润色',
+                            done: '完成',
+                            error: '失败',
+                          };
+                          return (
+                            <div className="rounded-md border border-slate-700 bg-black/30 p-2.5 space-y-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                                <span className="text-slate-300">当前题签：{active.title}</span>
+                                <span className="text-cyan-300">阶段：{stageLabel[active.stage]} · {active.progress}%</span>
+                              </div>
+                              <div className="h-1.5 rounded bg-slate-800 overflow-hidden">
+                                <div
+                                  className="h-full bg-cyan-500 transition-all"
+                                  style={{ width: `${Math.max(0, Math.min(100, active.progress))}%` }}
+                                />
+                              </div>
+                              {(() => {
+                                const outline = parallelTopicOutlineMap[active.id];
+                                if (!outline) return null;
+
+                                let parsedOutline: YiJingOutlinePayload | null = null;
+                                try {
+                                  parsedOutline = JSON.parse(outline) as YiJingOutlinePayload;
+                                } catch {
+                                  parsedOutline = null;
+                                }
+
+                                if (!parsedOutline) {
+                                  return (
+                                    <div className="rounded-md border border-slate-700/70 bg-slate-950/80 p-2">
+                                      <div className="text-[10px] text-slate-400 mb-1">章节大纲（当前题签）</div>
+                                      <pre className="text-[10px] leading-relaxed text-slate-300 max-h-32 overflow-y-auto custom-scrollbar whitespace-pre-wrap">
+                                        {outline}
+                                      </pre>
+                                    </div>
+                                  );
+                                }
+
+                                return (
+                                  <div className="rounded-md border border-slate-700/70 bg-slate-950/80 p-2.5 space-y-2">
+                                    <div className="text-[10px] text-slate-400">章节大纲（当前题签）</div>
+                                    <div className="text-[11px] text-slate-300 leading-relaxed">
+                                      <span className="text-slate-500">核心主题：</span>
+                                      {parsedOutline.core_theme}
+                                    </div>
+                                    <div className="text-[11px] text-slate-300 leading-relaxed whitespace-pre-wrap">
+                                      <span className="text-slate-500">逻辑主线：</span>
+                                      {parsedOutline.logic_line}
+                                    </div>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-40 overflow-y-auto custom-scrollbar pr-1">
+                                      {parsedOutline.chapters.map((ch, i) => (
+                                        <div key={i} className="rounded border border-slate-700/80 bg-black/30 p-2">
+                                          <div className="text-[10px] text-cyan-300 font-medium mb-1">
+                                            第 {i + 1} 章 · {ch.title}
+                                          </div>
+                                          <div className="text-[10px] text-slate-400 mb-1">
+                                            {ch.min_chars}–{ch.max_chars} 字
+                                          </div>
+                                          <div className="text-[10px] text-slate-500 leading-relaxed line-clamp-3">
+                                            {ch.core_brief || '（本章要点待生成）'}
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+
+                              <pre className="text-[10px] leading-relaxed font-mono text-emerald-500/90 max-h-28 overflow-y-auto custom-scrollbar whitespace-pre-wrap">
+                                {active.logs.length ? active.logs.join('\n') : '等待该题签开始…'}
+                              </pre>
+
+                              {(() => {
+                                const drafts = parallelTopicSegDraftsMap[active.id] || [];
+                                const statuses = parallelTopicSegStatusMap[active.id] || [];
+                                if (!drafts.length && !statuses.length) return null;
+                                return (
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                                    {Array.from({ length: Math.max(drafts.length, statuses.length) }).map((_, i) => {
+                                      const st = statuses[i] || 'idle';
+                                      const draft = drafts[i] || '';
+                                      const wordCount = draft ? draft.replace(/\s+/g, '').length : 0;
+                                      return (
+                                        <div
+                                          key={i}
+                                          className="rounded-md border border-slate-700/80 bg-slate-950/70 p-2 min-h-[110px]"
+                                        >
+                                          <div className="flex items-center justify-between mb-1">
+                                            <span className="text-[10px] text-slate-400">第 {i + 1} 段 · {wordCount} 字</span>
+                                            <span
+                                              className={`text-[10px] ${
+                                                st === 'done'
+                                                  ? 'text-emerald-400'
+                                                  : st === 'running'
+                                                    ? 'text-amber-400'
+                                                    : st === 'error'
+                                                      ? 'text-rose-400'
+                                                      : 'text-slate-500'
+                                              }`}
+                                            >
+                                              {st === 'done' ? '完成' : st === 'running' ? '生成中' : st === 'error' ? '失败' : '待生成'}
+                                            </span>
+                                          </div>
+                                          <div className="text-[10px] text-slate-400 leading-relaxed max-h-20 overflow-y-auto custom-scrollbar whitespace-pre-wrap">
+                                            {draft || '等待内容…'}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
+
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                       <div className="text-xs text-slate-300">
                         <span className="text-slate-500">自动分章：</span>
@@ -4246,6 +4655,11 @@ ${segmentSourceText}
                         <label className="block text-xs text-slate-400">
                           章节大纲（一键生成；默认可读，点「编辑大纲」用表单改正文结构）
                         </label>
+                        {parallelTopicRuns.length > 1 && (
+                          <span className="text-[10px] text-cyan-300/90">
+                            多选并行时，此区域显示手动模式大纲；各题完整大纲请看上方「当前题签」卡片
+                          </span>
+                        )}
                         {yiJingOutlineParsed && yiJingOutlineViewMode === 'readable' && (
                           <button
                             type="button"
@@ -4534,31 +4948,51 @@ ${segmentSourceText}
                         />
                       )}
                     </div>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap gap-2 items-center">
                       <button
                         type="button"
-                        disabled={yiJingPipelineBusy || status === GenerationStatus.WRITING}
+                        disabled={
+                          yiJingPipelineBusy ||
+                          status === GenerationStatus.WRITING ||
+                          topics.filter((t) => t.selected).length !== 1
+                        }
                         onClick={() => void handleYiJingGenerateOutline()}
                         className="px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm hover:bg-slate-700 disabled:opacity-40"
+                        title="手动模式需先只勾选 1 个选题"
                       >
                         仅生成大纲
                       </button>
                       <button
                         type="button"
-                        disabled={yiJingPipelineBusy || status === GenerationStatus.WRITING}
+                        disabled={
+                          yiJingPipelineBusy ||
+                          status === GenerationStatus.WRITING ||
+                          topics.filter((t) => t.selected).length !== 1
+                        }
                         onClick={() => void handleYiJingRunSegments()}
                         className="px-4 py-2 rounded-lg bg-cyan-900/40 border border-cyan-600/50 text-cyan-200 text-sm hover:bg-cyan-900/60 disabled:opacity-40"
+                        title="手动模式需先只勾选 1 个选题"
                       >
                         并行生成各段
                       </button>
                       <button
                         type="button"
-                        disabled={yiJingPipelineBusy || status === GenerationStatus.WRITING}
+                        disabled={
+                          yiJingPipelineBusy ||
+                          status === GenerationStatus.WRITING ||
+                          topics.filter((t) => t.selected).length !== 1
+                        }
                         onClick={() => void handleYiJingMergeFinal()}
                         className="px-4 py-2 rounded-lg bg-violet-900/40 border border-violet-600/50 text-violet-200 text-sm hover:bg-violet-900/60 disabled:opacity-40"
+                        title="手动模式需先只勾选 1 个选题"
                       >
                         合并最终文案
                       </button>
+                      {topics.filter((t) => t.selected).length !== 1 && (
+                        <span className="text-[10px] text-amber-400/90">
+                          手动模式请只勾选 1 个选题；多选请用「全自动并行」
+                        </span>
+                      )}
                       <button
                         type="button"
                         disabled={yiJingPipelineBusy}
