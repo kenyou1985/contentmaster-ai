@@ -1640,6 +1640,39 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     } catch (error) {
       console.error('[MediaGenerator] 读取 lastGeneratedScript 失败:', error);
     }
+
+    // 4. 从一键动画队列读取脚本快照（兼容未写入 tools 历史的任务）
+    try {
+      const queueTasks = loadOneClickQueue();
+      queueTasks.forEach((task) => {
+        const candidates: Array<{ text?: string; ts?: number; topic: string }> = [
+          {
+            text: task.snapshot?.scriptText,
+            ts: task.updatedAt || task.createdAt,
+            topic: `一键动画分镜 · ${task.draftName || task.id}`,
+          },
+          {
+            text: task.resultSnapshot?.scriptText,
+            ts: task.updatedAt || task.createdAt,
+            topic: `一键动画结果 · ${task.draftName || task.id}`,
+          },
+        ];
+        candidates.forEach((c) => {
+          const txt = typeof c.text === 'string' ? c.text.trim() : '';
+          if (!txt) return;
+          const hasShots = /(?:镜头|镜头)\s*\d+/.test(txt);
+          if (!hasShots) return;
+          allRecords.push({
+            content: txt,
+            timestamp: c.ts || Date.now(),
+            metadata: { topic: c.topic },
+          });
+        });
+      });
+      console.log(`[MediaGenerator] 从一键动画队列读取到 ${queueTasks.length} 条任务`);
+    } catch (error) {
+      console.error('[MediaGenerator] 读取一键动画队列失败:', error);
+    }
     
     // 按时间戳排序（最新的在前）
     allRecords.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
