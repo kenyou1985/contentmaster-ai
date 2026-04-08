@@ -870,7 +870,12 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     let localContent = '';
 
     const cleanOutput = (text: string): string =>
-      text.replace(/\[TYPE:[^\]]+\]\s*/g, '').replace(/\n{3,}/g, '\n\n').trim();
+      text
+        .replace(/\[TYPE:[^\]]+\]\s*/g, '')
+        // 统一视频标签：严禁 video prompt / 各语种乱码变体
+        .replace(/^\s*(?:video\s*prompt|video\s*提示词|ভিডিও\s*prompt|ভিডিও\s*提示词|ভিডিও)\s*[:：]\s*/gim, '视频提示词:')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
 
     try {
       const { MINDFUL_PSYCHOLOGY_STORYBOARD_PROMPT } = await import('../constants');
@@ -900,6 +905,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 **【数量铁律】必须严格输出 ${estimatedShots} 个镜头，不许多一个也不能少一个。**
 **【序号格式】镜头序号用"镜头 1"、"镜头 2"格式，禁止用"镜头[1]"格式。**
 **【角色指称】图片提示词中如需人物与狗：用 minimalist character 与 small healing puppy（小狗），禁止 husky / Siberian husky / young woman / 哈士奇 / 年轻女性；禁止「Q版卡通卡片」类固定套话。**
+**【字段标签铁律】每个镜头字段名必须严格使用：镜头文案 / 图片提示词 / 视频提示词 / 景别 / 语音分镜 / 音效。尤其视频字段只允许“视频提示词:”，严禁输出“video prompt”“ভিডিও prompt”或任何其他语言变体。**
 ${styleDirective}
 **【内容铁律】每个镜头的镜头文案必须 100% 包含对应的原文内容。允许将多个相邻句子合并到一个镜头文案中，以合理划分镜头边界。每个镜头文案不得删减、不得改写原文。**
 ${effectiveScript}`;
