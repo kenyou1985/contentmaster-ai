@@ -1624,7 +1624,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     try {
       const savedScript = localStorage.getItem('lastGeneratedScript');
       if (savedScript && savedScript.trim()) {
-        const hasShots = /(?:镜头|镜头)\s*\d+/.test(savedScript);
+        const hasShots = /(?:镜头|shot)\s*\d+/i.test(savedScript);
         if (hasShots) {
           allRecords.unshift({
             content: savedScript,
@@ -1660,7 +1660,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         candidates.forEach((c) => {
           const txt = typeof c.text === 'string' ? c.text.trim() : '';
           if (!txt) return;
-          const hasShots = /(?:镜头|镜头)\s*\d+/.test(txt);
+          const hasShots = /(?:镜头|shot)\s*\d+/i.test(txt);
           if (!hasShots) return;
           allRecords.push({
             content: txt,
@@ -1672,6 +1672,25 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       console.log(`[MediaGenerator] 从一键动画队列读取到 ${queueTasks.length} 条任务`);
     } catch (error) {
       console.error('[MediaGenerator] 读取一键动画队列失败:', error);
+    }
+
+    // 5. 从一键动画分镜历史（媒体历史）读取脚本（你截图中的列表来源）
+    try {
+      const mediaProjects = listMediaProjects();
+      mediaProjects.forEach((p) => {
+        const txt = typeof p.scriptText === 'string' ? p.scriptText.trim() : '';
+        if (!txt) return;
+        const hasShots = /(?:镜头|shot)\s*\d+/i.test(txt);
+        if (!hasShots) return;
+        allRecords.push({
+          content: txt,
+          timestamp: p.updatedAt || p.createdAt || Date.now(),
+          metadata: { topic: `一键动画分镜历史 · ${p.id}` },
+        });
+      });
+      console.log(`[MediaGenerator] 从一键动画分镜历史读取到 ${mediaProjects.length} 条项目`);
+    } catch (error) {
+      console.error('[MediaGenerator] 读取一键动画分镜历史失败:', error);
     }
     
     // 按时间戳排序（最新的在前）
