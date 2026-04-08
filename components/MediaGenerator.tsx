@@ -1382,8 +1382,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       const line = lines[i];
       const trimmedLine = line.trim();
       
-      // 检测镜头开始
-      const shotMatch = trimmedLine.match(/^(?:镜头|镜头)(\d+)/);
+      // 检测镜头开始（兼容：镜头1 / 镜头 1 / Shot 1 / shot-1）
+      const shotMatch = trimmedLine.match(/^(?:[#>*\-\s]*)?(?:镜头|shot)\s*[-#:]?\s*(\d+)\b/i);
       if (shotMatch) {
         // 保存上一个镜头的当前字段
         if (currentShot && currentField && fieldContent.length > 0) {
