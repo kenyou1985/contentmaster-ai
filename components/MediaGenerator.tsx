@@ -77,10 +77,10 @@ interface Shot {
   soundEffect: string;
   /** RunningHub TTS 生成的配音试听地址 */
   voiceAudioUrl?: string;
-  /** TTS 音频时长（秒），导出剪映时用于音频下载失败的兜底时长 */
-  audioDurationSec?: number;
   /** 生成该音频时实际送入 TTS 的文案（用于导出字幕与音频严格一致） */
   voiceSourceText?: string;
+  /** TTS 音频时长（秒），导出剪映时用于音频下载失败的兜底时长 */
+  audioDurationSec?: number;
   voiceGenerating?: boolean;
   imageUrls?: string[]; // 支持多张图片
   videoUrl?: string; // 保留向后兼容（显示第一个视频）
@@ -2625,11 +2625,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       );
     }
     if (apiKey?.trim()) {
-      appendTerminalLog('Voice', `镜头${shot.number}: 大模型优化口播（TTS 前）…`);
-      const polished = await polishTextForTtsSpeech(apiKey.trim(), text);
-      if (polished.trim()) text = polished.trim();
+      appendTerminalLog('Voice', `镜头${shot.number}: 已禁用口播重写，直接使用当前文案生成配音`);
     } else {
-      appendTerminalLog('Voice', `镜头${shot.number}: 未配置云雾 API Key，跳过口播优化`);
+      appendTerminalLog('Voice', `镜头${shot.number}: 未配置云雾 API Key，直接使用当前文案生成配音`);
     }
     appendTerminalLog('Voice', `镜头${shot.number}: 开始生成配音（${text.slice(0, 40)}${text.length > 40 ? '…' : ''}）`);
     updateShot(shot.id, { voiceGenerating: true });
