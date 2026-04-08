@@ -794,9 +794,19 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       });
       if (result.success) {
         const apiBase = (import.meta.env.VITE_JIANYING_API_BASE || '/api/jianying').replace(/\/$/, '');
-        const downloadUrl = result.zip_download_url
-          ? `${apiBase}${result.zip_download_url.startsWith('/') ? '' : '/'}${result.zip_download_url}`
-          : '';
+        const rawZipUrl = (result.zip_download_url || '').trim();
+        let downloadUrl = '';
+        if (rawZipUrl) {
+          if (/^https?:\/\//i.test(rawZipUrl)) {
+            downloadUrl = rawZipUrl;
+          } else {
+            const baseOrigin = /^https?:\/\//i.test(apiBase)
+              ? new URL(apiBase).origin
+              : window.location.origin;
+            const normalizedPath = rawZipUrl.startsWith('/') ? rawZipUrl : `/${rawZipUrl}`;
+            downloadUrl = `${baseOrigin}${normalizedPath}`;
+          }
+        }
         if (downloadUrl) {
           setLastJianyingDownloadUrl(downloadUrl);
           appendTerminalLog('Jianying', `导出成功并生成下载链接: ${downloadUrl}`);
