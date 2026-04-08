@@ -1639,16 +1639,97 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     });
     
     console.log(`[MediaGenerator] 总共找到 ${uniqueRecords.length} 条唯一脚本记录`);
-    
-    if (uniqueRecords.length > 0) {
-      appendTerminalLog('Script', `打开脚本历史选择器，共 ${uniqueRecords.length} 条候选`);
-      // 显示历史记录选择器
+
+    // 兜底：若脚本输出主来源为空，自动回退到兼容来源（避免误报“无记录”）
+    let finalRecords = uniqueRecords;
+    if (finalRecords.length === 0) {
+      const fallbackRecords: HistoryRecord[] = [];
+
+      // A) Generator 一键动画分镜历史
+      try {
+        const generatorStoryboardKeys = [
+          `${NicheType.MINDFUL_PSYCHOLOGY}_mindful_mode2`,
+          'mindful_mode2',
+        ];
+        generatorStoryboardKeys.forEach((key) => {
+          const records = getHistory('generator', key);
+          fallbackRecords.push(
+            ...records
+              .filter((r) => typeof r.content === 'string' && r.content.trim())
+              .map((r) => ({
+                ...r,
+                metadata: {
+                  ...r.metadata,
+                  topic: r.metadata?.topic || `一键动画分镜历史 · ${key}`,
+                  historyDelete: { module: 'generator' as const, key },
+                },
+              }))
+          );
+        });
+      } catch (error) {
+        console.error('[MediaGenerator] 回退读取 generator 分镜历史失败:', error);
+      }
+
+      // B) 旧 scriptHistory
+      try {
+        const historyStr = localStorage.getItem('scriptHistory');
+        if (historyStr) {
+          const history = JSON.parse(historyStr);
+          if (Array.isArray(history)) {
+            history.forEach((item: any) => {
+              const txt = typeof item?.content === 'string' ? item.content.trim() : '';
+              if (!txt) return;
+              fallbackRecords.push({
+                content: txt,
+                timestamp: item.timestamp || Date.now(),
+                metadata: {
+                  topic: '脚本历史记录（旧缓存）',
+                  historyDelete: { kind: 'legacyScriptHistory' as const },
+                },
+              });
+            });
+          }
+        }
+      } catch (error) {
+        console.error('[MediaGenerator] 回退读取 scriptHistory 失败:', error);
+      }
+
+      // C) 媒体历史项目里的 scriptText
+      try {
+        const mediaProjects = listMediaProjects();
+        mediaProjects.forEach((p) => {
+          const txt = typeof p.scriptText === 'string' ? p.scriptText.trim() : '';
+          if (!txt) return;
+          fallbackRecords.push({
+            content: txt,
+            timestamp: p.updatedAt || p.createdAt || Date.now(),
+            metadata: { topic: `一键动画分镜历史 · ${p.id}`, mediaProjectId: p.id },
+          });
+        });
+      } catch (error) {
+        console.error('[MediaGenerator] 回退读取媒体历史失败:', error);
+      }
+
+      fallbackRecords.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      const seen = new Set<string>();
+      finalRecords = fallbackRecords.filter((record) => {
+        const raw = typeof record.content === 'string' ? record.content.trim() : '';
+        if (!raw) return false;
+        const key = `${record.timestamp || 0}|${record.metadata?.topic || ''}|${raw}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      console.log(`[MediaGenerator] 回退来源找到 ${finalRecords.length} 条记录`);
+    }
+
+    if (finalRecords.length > 0) {
+      appendTerminalLog('Script', `打开脚本历史选择器，共 ${finalRecords.length} 条候选`);
       setHistorySelectorKind('script');
-      setScriptHistoryRecords(uniqueRecords);
+      setScriptHistoryRecords(finalRecords);
       setShowScriptHistorySelector(true);
     } else {
       appendTerminalLog('Script', '未找到可加载的脚本历史');
-      // 没有历史记录，提示用户
       toast.warning('未找到脚本历史记录。请先在改写工具中生成脚本。');
     }
   };
