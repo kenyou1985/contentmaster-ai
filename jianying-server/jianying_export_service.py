@@ -977,7 +977,10 @@ def _build_lv59_main_script(
                 {"choice": 0, "id": avs_id, "production_path": "", "time_range": None, "type": "vocal_separation"}
             )
             aseg_id = _make_id()
-            use_src = max(33_333, min(int(dur_us), int(adur)))
+            # 音频只取真实素材时长，避免 target 长于 source 时尾部出现噪声/破音
+            use_src = max(33_333, int(adur))
+            # 轨道长度以音频真实时长为准（有配音时），由视频轨决定总时间线
+            audio_target_dur = use_src
             audio_segments.append(
                 {
                     "caption_info": None,
@@ -1012,7 +1015,7 @@ def _build_lv59_main_script(
                     "reverse": False,
                     "source_timerange": {"start": 0, "duration": use_src},
                     "speed": 1.0,
-                    "target_timerange": {"start": start_us, "duration": dur_us},
+                    "target_timerange": {"start": start_us, "duration": audio_target_dur},
                     "template_id": "",
                     "template_scene": "default",
                     "track_attribute": 0,

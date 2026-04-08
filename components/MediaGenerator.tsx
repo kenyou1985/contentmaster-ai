@@ -142,6 +142,14 @@ function isTextPrimarilyEnglish(text: string): boolean {
   return totalChars > 0 && latinChars / totalChars > 0.3;
 }
 
+/** 导出字幕默认去标点（中英） */
+function stripSubtitlePunctuation(text: string): string {
+  return (text || '')
+    .replace(/[，。！？；：、“”‘’（）《》【】……—,.!?;:'"()\[\]{}<>`~@#$%^&*_+=\\/|-]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /**
  * 语音分镜应为短「角色名」；若误写入整段口播或与镜头文案重复，纠正为角色前缀或「讲述者」
  */
@@ -778,7 +786,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         rawAudio && !/^https?:|^data:|^blob:/i.test(rawAudio)
           ? resolveRunningHubOutputUrl(rawAudio)
           : rawAudio;
-      const exportCaption = (s.voiceSourceText || getTtsSpeakText(s) || s.caption || '').trim();
+      const exportCaptionRaw = (s.voiceSourceText || getTtsSpeakText(s) || s.caption || '').trim();
+      const exportCaption = stripSubtitlePunctuation(exportCaptionRaw);
       return {
         caption: exportCaption,
         imagePrompt: s.imagePrompt,
