@@ -1568,9 +1568,26 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     const allRecords: HistoryRecord[] = [];
     
     // 1. 从 Tools 模块的新历史记录系统读取（SCRIPT 模式）
-    const niches = [NicheType.YI_JING_METAPHYSICS, NicheType.TCM_METAPHYSICS, NicheType.FINANCE_CRYPTO, NicheType.STORY_REVENGE, NicheType.GENERAL_VIRAL];
-    niches.forEach((niche) => {
-      const historyKey = `${ToolMode.SCRIPT}_${niche}`;
+    // 兼容旧键（SCRIPT_赛道）与新全局键（SCRIPT_GLOBAL / SCRIPT_global）
+    const historyKeys = new Set<string>([
+      `${ToolMode.SCRIPT}_GLOBAL`,
+      `${ToolMode.SCRIPT}_global`,
+    ]);
+    const niches = [
+      NicheType.YI_JING_METAPHYSICS,
+      NicheType.TCM_METAPHYSICS,
+      NicheType.FINANCE_CRYPTO,
+      NicheType.STORY_REVENGE,
+      NicheType.GENERAL_VIRAL,
+      NicheType.PSYCHOLOGY,
+      NicheType.PHILOSOPHY_WISDOM,
+      NicheType.EMOTION_TABOO,
+      NicheType.RICH_MINDSET,
+      NicheType.MINDFUL_PSYCHOLOGY,
+    ];
+    niches.forEach((niche) => historyKeys.add(`${ToolMode.SCRIPT}_${niche}`));
+
+    historyKeys.forEach((historyKey) => {
       const records = getHistory('tools', historyKey);
       console.log(`[MediaGenerator] 从 ${historyKey} 读取到 ${records.length} 条记录`);
       allRecords.push(
@@ -1772,14 +1789,24 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       clearAllMediaProjects();
       return;
     }
+    const historyKeys = new Set<string>([
+      `${ToolMode.SCRIPT}_GLOBAL`,
+      `${ToolMode.SCRIPT}_global`,
+    ]);
     const niches = [
       NicheType.YI_JING_METAPHYSICS,
       NicheType.TCM_METAPHYSICS,
       NicheType.FINANCE_CRYPTO,
       NicheType.STORY_REVENGE,
       NicheType.GENERAL_VIRAL,
+      NicheType.PSYCHOLOGY,
+      NicheType.PHILOSOPHY_WISDOM,
+      NicheType.EMOTION_TABOO,
+      NicheType.RICH_MINDSET,
+      NicheType.MINDFUL_PSYCHOLOGY,
     ];
-    niches.forEach((niche) => clearHistory('tools', `${ToolMode.SCRIPT}_${niche}`));
+    niches.forEach((niche) => historyKeys.add(`${ToolMode.SCRIPT}_${niche}`));
+    historyKeys.forEach((key) => clearHistory('tools', key));
     clearScriptHistoryLegacy();
     clearLastGeneratedScript();
   };

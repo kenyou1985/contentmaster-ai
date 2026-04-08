@@ -1026,7 +1026,10 @@ def _build_lv59_main_script(
                 }
             )
 
-        cap = (row.get("caption") or "").strip()
+        cap_raw = (row.get("caption") or "").strip()
+        # 导出字幕统一去标点（中英文），避免画面字幕出现句末符号
+        cap = re.sub(r"[，。！？；：、“”‘’（）《》【】……—,.!?;:'\"()\[\]{}<>`~@#$%^&*_+=\\/|-]", "", cap_raw)
+        cap = re.sub(r"\s+", " ", cap).strip()
         if cap:
             cap_chunks = _split_caption_into_natural_chunks(cap)
             _floor_us = 33_333
