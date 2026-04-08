@@ -30,6 +30,9 @@ app.use(cors({
     /contentmaster.*\.vercel\.app$/,
     /\.contentmaster-ai\.vercel\.app$/,
     'https://contentmaster-ai.vercel.app',
+    // 自定义正式域名
+    'https://contentmaster-ai.77aiai.com',
+    'https://www.contentmaster-ai.77aiai.com',
     // 本地开发
     'http://localhost:3000',
     'http://127.0.0.1:3000',
