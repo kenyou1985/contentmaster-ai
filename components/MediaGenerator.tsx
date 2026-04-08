@@ -1580,6 +1580,38 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           }))
       );
     });
+
+    // 兼容脚本输出模块的本地缓存（仍属于脚本输出来源）
+    try {
+      const historyStr = localStorage.getItem('scriptHistory_GLOBAL');
+      if (historyStr) {
+        const history = JSON.parse(historyStr);
+        if (Array.isArray(history)) {
+          history.forEach((item: any) => {
+            const txt = typeof item?.content === 'string' ? item.content.trim() : '';
+            if (!txt) return;
+            allRecords.push({
+              content: txt,
+              timestamp: item.timestamp || Date.now(),
+              metadata: { topic: '脚本输出（本地缓存）' },
+            });
+          });
+          console.log(`[MediaGenerator] 从 scriptHistory_GLOBAL 读取到 ${history.length} 条记录`);
+        }
+      }
+
+      const latestScript = localStorage.getItem('lastGeneratedScript');
+      if (latestScript && latestScript.trim()) {
+        allRecords.push({
+          content: latestScript.trim(),
+          timestamp: Date.now(),
+          metadata: { topic: '脚本输出（最新缓存）' },
+        });
+        console.log('[MediaGenerator] 从 lastGeneratedScript 读取到 1 条记录');
+      }
+    } catch (error) {
+      console.error('[MediaGenerator] 读取脚本输出本地缓存失败:', error);
+    }
     
     // 按时间戳排序（最新的在前）
     allRecords.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
