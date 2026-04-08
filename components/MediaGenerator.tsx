@@ -2557,6 +2557,23 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       }
     });
 
+  // IndexTTS2 轻量优化：不改原文字符，仅插入韵律/停顿标记
+  const buildFastIndexTts2Input = (raw: string): string => {
+    const src = (raw || '').trim();
+    if (!src) return '';
+    const escape = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const parts = src.split(/([。！？!?；;：:,，、])/g).filter(Boolean);
+    const out: string[] = [];
+    parts.forEach((token) => {
+      out.push(escape(token));
+      if (/^[。！？!?]$/.test(token)) out.push('<break time="220ms"/>');
+      else if (/^[；;]$/.test(token)) out.push('<break time="170ms"/>');
+      else if (/^[：:,，、]$/.test(token)) out.push('<break time="110ms"/>');
+    });
+    return `<speak><prosody rate="1.0" pitch="0" volume="1.0"><breath/>${out.join('')}</prosody></speak>`;
+  };
+
   /**
    * 输入/输出：镜头文案/语音分镜 → 写入 voiceAudioUrl；仅 opts.playAfter===true 时自动播放（默认不播）
    */
@@ -2567,6 +2584,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     const playAfter = opts?.playAfter === true;
     let text = getTtsSpeakText(shot).trim();
     if (!text) throw new Error('没有可朗读的文案');
+    const rawTextForTts = text;
     if (!runningHubApiKey?.trim()) {
       appendTerminalLog('Voice', `镜头${shot.number}: 已中止 — 未配置 RunningHub API Key`);
       throw new Error('请先配置 RunningHub API Key（上方输入框）');
@@ -2590,7 +2608,15 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     } else {
       appendTerminalLog('Voice', `镜头${shot.number}: 未配置云雾 API Key，直接使用当前文案生成配音`);
     }
-    appendTerminalLog('Voice', `镜头${shot.number}: 开始生成配音（${text.slice(0, 40)}${text.length > 40 ? '…' : ''}）`);
+
+    const optimizedText = buildFastIndexTts2Input(rawTextForTts);
+    if (optimizedText) {
+      text = optimizedText;
+      appendTerminalLog('Voice', `镜头${shot.number}: IndexTTS2 轻量优化已启用（原文不改，仅韵律/停顿）`);
+      appendTerminalLog('Voice', `镜头${shot.number}: 优化长度 ${rawTextForTts.length} → ${optimizedText.length}`);
+    }
+
+    appendTerminalLog('Voice', `镜头${shot.number}: 开始生成配音（${rawTextForTts.slice(0, 40)}${rawTextForTts.length > 40 ? '…' : ''}）`);
     updateShot(shot.id, { voiceGenerating: true });
     // 保存原始文案用于时长估算（polishTextForTtsSpeech 会改短文案，导致估算偏小）
     const originalText = text;
@@ -2628,7 +2654,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       updateShot(shot.id, {
         voiceAudioUrl: playableUrl,
         audioDurationSec,
-        voiceSourceText: text,
+        voiceSourceText: rawTextForTts,
         voiceGenerating: false,
       });
       appendTerminalLog(
