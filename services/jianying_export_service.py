@@ -504,36 +504,23 @@ _LV59_FILTER_PRESETS = [
 
 def _split_caption_into_natural_chunks(text: str, max_chars: int = 28) -> list[str]:
     """
-    仅按句读切分字幕（逗号/句号等），不在句子中间按长度硬切。
-    这样可保持整句与配音节奏一致，避免出现只剩几个单词的截断字幕。
+    字幕严格按句读切分，优先按逗号/句号分段（中英文都支持），与配音停顿对齐。
+    不做文案改写；仅做分段展示。
     """
-    t = " ".join((text or "").strip().split())
-    if not t:
+    raw = (text or "").strip()
+    if not raw:
         return []
 
-    # 去掉“标题符号”，保留句读用于断句
+    # 保留标点、仅压缩空白；避免把文本“粘成一块”
+    t = re.sub(r"[\t\r\f\v ]+", " ", raw)
     t = re.sub(r"[《》【】「」『』]", "", t)
 
-    # 按中英文逗号/句号/问号/感叹号/分号/冒号断句；保留分隔符
-    parts = re.split(r"([，,。.!?！？；;：:])", t)
-    chunks: list[str] = []
-    buf = ""
-    for p in parts:
-        if not p:
-            continue
-        p = p.strip()
-        if not p:
-            continue
-        buf += p
-        if re.fullmatch(r"[，,。.!?！？；;：:]", p):
-            chunks.append(buf.strip())
-            buf = ""
+    # 以句读结束为一个块：优先逗号/句号，同时兼容问号/感叹号/分号/冒号
+    # 例："A, B. C" -> ["A,", "B.", "C"]
+    chunks = re.findall(r"[^，,。.!?！？；;：:]+[，,。.!?！？；;：:]?", t)
+    cleaned = [c.strip() for c in chunks if c and c.strip()]
 
-    if buf.strip():
-        chunks.append(buf.strip())
-
-    return [c for c in chunks if c]
-
+    return cleaned if cleaned else [t]
 
 def _distribute_chunk_durations_us(chunks: list[str], total_duration_us: int, min_chunk_us: int = 120_000) -> list[int]:
     """按字符权重把本镜总时长分到各字幕块，保证每块至少 min_chunk_us（约 0.12s）。"""
