@@ -519,6 +519,9 @@ def _split_caption_into_natural_chunks(text: str, max_chars: int = 28) -> list[s
     # 例："A, B. C" -> ["A,", "B.", "C"]
     chunks = re.findall(r"[^，,。.!?！？；;：:]+[，,。.!?！？；;：:]?", t)
     cleaned = [c.strip() for c in chunks if c and c.strip()]
+    # 字幕显示去掉逗号与句号，其他符号保持原样
+    cleaned = [re.sub(r"[，,。.]$", "", c).strip() for c in cleaned]
+    cleaned = [c for c in cleaned if c]
 
     return cleaned if cleaned else [t]
 
