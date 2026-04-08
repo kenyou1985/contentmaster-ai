@@ -1558,29 +1558,15 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     // 收集所有可能的脚本历史记录来源
     const allRecords: HistoryRecord[] = [];
     
-    // 1. 从 Tools 模块的新历史记录系统读取（SCRIPT 模式）
-    // 兼容旧键（SCRIPT_赛道）与新全局键（SCRIPT_GLOBAL / SCRIPT_global）
+    // 仅读取「改写工具 > 脚本输出」模块的脚本记录
     const historyKeys = new Set<string>([
       `${ToolMode.SCRIPT}_GLOBAL`,
       `${ToolMode.SCRIPT}_global`,
     ]);
-    const niches = [
-      NicheType.YI_JING_METAPHYSICS,
-      NicheType.TCM_METAPHYSICS,
-      NicheType.FINANCE_CRYPTO,
-      NicheType.STORY_REVENGE,
-      NicheType.GENERAL_VIRAL,
-      NicheType.PSYCHOLOGY,
-      NicheType.PHILOSOPHY_WISDOM,
-      NicheType.EMOTION_TABOO,
-      NicheType.RICH_MINDSET,
-      NicheType.MINDFUL_PSYCHOLOGY,
-    ];
-    niches.forEach((niche) => historyKeys.add(`${ToolMode.SCRIPT}_${niche}`));
 
     historyKeys.forEach((historyKey) => {
       const records = getHistory('tools', historyKey);
-      console.log(`[MediaGenerator] 从 ${historyKey} 读取到 ${records.length} 条记录`);
+      console.log(`[MediaGenerator] 从脚本输出历史 ${historyKey} 读取到 ${records.length} 条记录`);
       allRecords.push(
         ...records
           .filter((r) => typeof r.content === 'string' && r.content.trim())
@@ -1588,136 +1574,12 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             ...r,
             metadata: {
               ...r.metadata,
+              topic: '脚本输出',
               historyDelete: { module: 'tools' as const, key: historyKey },
             },
           }))
       );
     });
-    
-    // 2. 从 Generator 模块「一键动画分镜历史」读取（与截图1同源）
-    try {
-      const generatorStoryboardKeys = [
-        `${NicheType.MINDFUL_PSYCHOLOGY}_mindful_mode2`,
-        'mindful_mode2',
-      ];
-      generatorStoryboardKeys.forEach((key) => {
-        const records = getHistory('generator', key);
-        console.log(`[MediaGenerator] 从 generator/${key} 读取到 ${records.length} 条记录`);
-        allRecords.push(
-          ...records
-            .filter((r) => typeof r.content === 'string' && r.content.trim())
-            .map((r) => ({
-              ...r,
-              metadata: {
-                ...r.metadata,
-                topic: r.metadata?.topic || `一键动画分镜历史 · ${key}`,
-                historyDelete: { module: 'generator' as const, key },
-              },
-            }))
-        );
-      });
-    } catch (error) {
-      console.error('[MediaGenerator] 读取 generator 一键动画分镜历史失败:', error);
-    }
-
-    // 3. 从旧的 scriptHistory 读取（保持向后兼容）
-    try {
-      const historyKey = 'scriptHistory';
-      const historyStr = localStorage.getItem(historyKey);
-      if (historyStr) {
-        const history = JSON.parse(historyStr);
-        if (Array.isArray(history)) {
-          history.forEach((item: any) => {
-            if (item && item.content && item.content.trim()) {
-              allRecords.push({
-                content: item.content,
-                timestamp: item.timestamp || Date.now(),
-                metadata: {
-                  topic: '脚本历史记录',
-                  historyDelete: { kind: 'legacyScriptHistory' as const },
-                },
-              });
-            }
-          });
-          console.log(`[MediaGenerator] 从 scriptHistory 读取到 ${history.length} 条记录`);
-        }
-      }
-    } catch (error) {
-      console.error('[MediaGenerator] 读取 scriptHistory 失败:', error);
-    }
-    
-    // 3. 从 lastGeneratedScript 读取（最新脚本）
-    try {
-      const savedScript = localStorage.getItem('lastGeneratedScript');
-      if (savedScript && savedScript.trim()) {
-        const hasShots = /(?:镜头|shot)\s*\d+/i.test(savedScript);
-        if (hasShots) {
-          allRecords.unshift({
-            content: savedScript,
-            timestamp: LAST_GENERATED_SCRIPT_TIMELINE_TS,
-            metadata: {
-              topic: '最新生成的脚本',
-              historyDelete: { kind: 'lastGeneratedScript' as const },
-            },
-          });
-          console.log('[MediaGenerator] 从 lastGeneratedScript 读取到最新脚本');
-        }
-      }
-    } catch (error) {
-      console.error('[MediaGenerator] 读取 lastGeneratedScript 失败:', error);
-    }
-
-    // 4. 从一键动画队列读取脚本快照（兼容未写入 tools 历史的任务）
-    try {
-      const queueTasks = loadOneClickQueue();
-      queueTasks.forEach((task) => {
-        const candidates: Array<{ text?: string; ts?: number; topic: string }> = [
-          {
-            text: task.snapshot?.scriptText,
-            ts: task.updatedAt || task.createdAt,
-            topic: `一键动画分镜 · ${task.draftName || task.id}`,
-          },
-          {
-            text: task.resultSnapshot?.scriptText,
-            ts: task.updatedAt || task.createdAt,
-            topic: `一键动画结果 · ${task.draftName || task.id}`,
-          },
-        ];
-        candidates.forEach((c) => {
-          const txt = typeof c.text === 'string' ? c.text.trim() : '';
-          if (!txt) return;
-          const hasShots = /(?:镜头|shot)\s*\d+/i.test(txt);
-          if (!hasShots) return;
-          allRecords.push({
-            content: txt,
-            timestamp: c.ts || Date.now(),
-            metadata: { topic: c.topic },
-          });
-        });
-      });
-      console.log(`[MediaGenerator] 从一键动画队列读取到 ${queueTasks.length} 条任务`);
-    } catch (error) {
-      console.error('[MediaGenerator] 读取一键动画队列失败:', error);
-    }
-
-    // 5. 从一键动画分镜历史（媒体历史）读取脚本（你截图中的列表来源）
-    try {
-      const mediaProjects = listMediaProjects();
-      mediaProjects.forEach((p) => {
-        const txt = typeof p.scriptText === 'string' ? p.scriptText.trim() : '';
-        if (!txt) return;
-        const hasShots = /(?:镜头|shot)\s*\d+/i.test(txt);
-        if (!hasShots) return;
-        allRecords.push({
-          content: txt,
-          timestamp: p.updatedAt || p.createdAt || Date.now(),
-          metadata: { topic: `一键动画分镜历史 · ${p.id}` },
-        });
-      });
-      console.log(`[MediaGenerator] 从一键动画分镜历史读取到 ${mediaProjects.length} 条项目`);
-    } catch (error) {
-      console.error('[MediaGenerator] 读取一键动画分镜历史失败:', error);
-    }
     
     // 按时间戳排序（最新的在前）
     allRecords.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
