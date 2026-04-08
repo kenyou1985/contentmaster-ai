@@ -83,6 +83,12 @@ export const COVER_STYLE_PRESETS: CoverStylePreset[] = [
       'Ultra minimal flat design: simple geometric shapes, solid color blocks, no gradients, modern clean Swiss-style layout.',
   },
   {
+    id: 'minimalist',
+    label: '极简风格（Minimalist）',
+    promptEn:
+      'Minimalist flat illustration, clean simple design, tidy composition, generous negative space, low detail, soft low-saturation palette, Morandi tones, unified color scheme, black outlines, simplified geometric shapes, smooth lines, refined premium look, modern internet-style illustration,',
+  },
+  {
     id: 'mindful_paws',
     label: '治愈心理学(MindfulPaws)',
     promptEn:

@@ -883,9 +883,12 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
         '你是一个科普动画分镜生成器。严格按照格式输出分镜内容，不要任何前缀说明。输出时不要包含 [TYPE:...] 这样的类型标签。';
 
       const stylePromptEn = getMediaImageStylePromptEn(mindfulStoryboardStyleId);
-      const styleDirective = stylePromptEn
-        ? `**【画面风格预设】**用户已选画面风格；每个镜头的「图片提示词」除满足全英文要求外，须在同一字段内自然融入以下英文风格描述（可微调语序，不得译为中文，不得省略核心语义）：\n${stylePromptEn}`
-        : '**【图片提示词语言】**每个镜头的「图片提示词」须为纯英文，禁止汉字。';
+      const isMinimalistStyle = mindfulStoryboardStyleId === 'minimalist';
+      const styleDirective = isMinimalistStyle
+        ? `**【Minimalist 极简风格铁律（仅本风格生效）】**\n1) 每个镜头「图片提示词」必须以以下固定前缀开头，且原封不动保留：\n“Minimalist flat illustration, clean simple design, tidy composition, generous negative space, low detail, soft low-saturation palette, Morandi tones, unified color scheme, black outlines, simplified geometric shapes, smooth lines, refined premium look, modern internet-style illustration,”\n2) 固定前缀后面只允许追加「画面描述」。\n3) 画面描述只写画面里有什么（纯视觉元素），禁止氛围词、情绪词、叙事形容词。\n4) 画面描述必须是简易易懂的场景，极度简洁。\n5) 绝对禁止：PPT、图表、表格、数据类元素；禁止干扰性/解释性/否定性提示词；禁止复杂构图、复杂隐喻。\n6) 图片提示词仍须为纯英文，禁止汉字。`
+        : stylePromptEn
+          ? `**【画面风格预设】**用户已选画面风格；每个镜头的「图片提示词」除满足全英文要求外，须在同一字段内自然融入以下英文风格描述（可微调语序，不得译为中文，不得省略核心语义）：\n${stylePromptEn}`
+          : '**【图片提示词语言】**每个镜头的「图片提示词」须为纯英文，禁止汉字。';
 
       const prompt = `${MINDFUL_PSYCHOLOGY_STORYBOARD_PROMPT}
 
