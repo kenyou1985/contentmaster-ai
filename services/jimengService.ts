@@ -1,5 +1,7 @@
 /**
  * 即梦 API 服务（调用线上代理服务生成图片）
+ * 默认固定走 Railway: https://jimeng-api-production-4fbf.up.railway.app
+ * 默认请求即梦 5.0（通过 model 字段声明，后端若忽略也不影响）
  */
 
 /** 生产环境即梦代理（Railway），勿带末尾斜杠 */
@@ -27,6 +29,33 @@ export interface JimengGenerationResult {
   data?: Array<{ url: string }>;
   error?: string;
   message?: string;
+}
+
+export interface JimengVideoGenerationOptions {
+  model: string;
+  prompt: string;
+  ratio?: string;
+  resolution?: '480p' | '720p' | '1080p' | string;
+  duration?: number;
+  file_paths?: string[];
+}
+
+export interface JimengVideoTaskSubmitResult {
+  success: boolean;
+  taskId?: string;
+  status?: string;
+  message?: string;
+  error?: string;
+}
+
+export interface JimengVideoTaskResult {
+  success: boolean;
+  status?: string;
+  videoUrl?: string;
+  taskId?: string;
+  error?: string;
+  message?: string;
+  data?: any;
 }
 
 /**
@@ -98,19 +127,11 @@ export async function generateJimengImages(
   const apiBaseUrl = normalizeJimengBaseUrl(overrides?.apiBaseUrl ?? JIMENG_API_BASE_URL);
   const sessionId = (overrides?.sessionId ?? '').trim();
 
-  // Railway/Fly 部署的服务不支持 Authorization header，会导致 "Params headers.authorization invalid" 错误
-  // 检测是否为第三方部署的服务（非本地服务）
-  const isHostedService = apiBaseUrl.includes('railway.app') || 
-                          apiBaseUrl.includes('render.com') || 
-                          apiBaseUrl.includes('fly.dev') ||
-                          apiBaseUrl.includes('vercel.app');
-  
   // 基础 headers
   const jsonHeadersBase: Record<string, string> = { 'Content-Type': 'application/json' };
   
-  // 本地服务（localhost）且有 sessionId 时才添加 Authorization
-  // 第三方托管服务（如 Railway）不需要 Authorization 头
-  const jsonHeaders: Record<string, string> = (!isHostedService && sessionId && sessionId.length > 10)
+  // 统一按 Bearer 透传 sessionId（Railway 上部署的 jimeng-api 也需要）
+  const jsonHeaders: Record<string, string> = (sessionId && sessionId.length > 10)
     ? { ...jsonHeadersBase, Authorization: `Bearer ${sessionId}` }
     : jsonHeadersBase;
 
@@ -135,7 +156,7 @@ export async function generateJimengImages(
     const compositionsUrl = `${apiBaseUrl}/v1/images/compositions`;
 
     const multipartHeaders: Record<string, string> = {};
-    if (!isHostedService && sessionId && sessionId.length > 10) {
+    if (sessionId && sessionId.length > 10) {
       multipartHeaders.Authorization = `Bearer ${sessionId}`;
     }
 
@@ -169,6 +190,7 @@ export async function generateJimengImages(
 
     const jsonData: Record<string, unknown> = {
       prompt,
+      model: 'jimeng-5.0',
       images: images!,
       sample_strength,
     };
@@ -270,6 +292,7 @@ export async function generateJimengImages(
   // 即梦API需要的参数格式
   const data: any = {
     prompt,
+    model: 'jimeng-5.0',
   };
   
   // 即梦API只支持 ratio 和 resolution，不支持 width/height
@@ -360,6 +383,131 @@ export async function generateJimengImages(
       success: false,
       error: errors.length > 0 ? errors.join('\n') : '所有图片生成失败'
     };
+  }
+}
+
+export async function generateJimengVideoAsync(
+  options: JimengVideoGenerationOptions,
+  overrides?: { apiBaseUrl?: string; sessionId?: string }
+): Promise<JimengVideoTaskSubmitResult> {
+  const apiBaseUrl = normalizeJimengBaseUrl(overrides?.apiBaseUrl ?? JIMENG_API_BASE_URL);
+  const sessionId = (overrides?.sessionId ?? '').trim();
+  if (!sessionId) {
+    return { success: false, error: '缺少 SESSION_ID' };
+  }
+
+  try {
+    const res = await fetch(`${apiBaseUrl}/v1/videos/generations/async`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${sessionId}`,
+      },
+      body: JSON.stringify({
+        model: options.model,
+        prompt: options.prompt,
+        ratio: options.ratio || '16:9',
+        resolution: options.resolution || '720p',
+        duration: options.duration || 5,
+        file_paths: options.file_paths || [],
+      }),
+    });
+
+    const text = await res.text().catch(() => '');
+    let json: any = null;
+    try { json = text ? JSON.parse(text) : null; } catch { json = null; }
+
+    if (!res.ok) {
+      return {
+        success: false,
+        error: json?.error || json?.message || `HTTP ${res.status}`,
+      };
+    }
+
+    const taskId = json?.task_id || json?.taskId;
+    if (!taskId) {
+      return {
+        success: false,
+        error: json?.message || '未返回 task_id',
+      };
+    }
+
+    return {
+      success: true,
+      taskId,
+      status: json?.status || 'processing',
+      message: json?.message,
+    };
+  } catch (e: any) {
+    return { success: false, error: e?.message || String(e) };
+  }
+}
+
+export async function queryJimengVideoTask(
+  taskId: string,
+  overrides?: { apiBaseUrl?: string; sessionId?: string }
+): Promise<JimengVideoTaskResult> {
+  const apiBaseUrl = normalizeJimengBaseUrl(overrides?.apiBaseUrl ?? JIMENG_API_BASE_URL);
+  const sessionId = (overrides?.sessionId ?? '').trim();
+  if (!sessionId) {
+    return { success: false, error: '缺少 SESSION_ID' };
+  }
+
+  try {
+    const res = await fetch(`${apiBaseUrl}/v1/videos/generations/async/${encodeURIComponent(taskId)}`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${sessionId}`,
+      },
+    });
+
+    const text = await res.text().catch(() => '');
+    let json: any = null;
+    try { json = text ? JSON.parse(text) : null; } catch { json = null; }
+
+    if (!res.ok) {
+      return {
+        success: false,
+        taskId,
+        error: json?.error || json?.message || `HTTP ${res.status}`,
+        data: json,
+      };
+    }
+
+    const status = (json?.status || '').toLowerCase();
+    const first = Array.isArray(json?.data) ? json.data[0] : null;
+    const videoUrl = first?.url || first?.video_url || json?.video_url;
+
+    if (status === 'failed') {
+      return {
+        success: false,
+        taskId,
+        status,
+        error: json?.error || json?.message || '视频生成失败',
+        data: json,
+      };
+    }
+
+    if (status === 'succeeded' && videoUrl) {
+      return {
+        success: true,
+        taskId,
+        status,
+        videoUrl,
+        message: json?.message,
+        data: json,
+      };
+    }
+
+    return {
+      success: true,
+      taskId,
+      status: status || 'processing',
+      message: json?.message || '任务处理中',
+      data: json,
+    };
+  } catch (e: any) {
+    return { success: false, taskId, error: e?.message || String(e) };
   }
 }
 

@@ -20,7 +20,7 @@ import {
 } from '../services/runninghubService';
 import { getSelectedVoice, updateVoice } from '../services/voiceLibraryService';
 import { LTX2_WORKFLOW_TEMPLATE } from '../services/ltx2WorkflowTemplate';
-import { generateJimengImages } from '../services/jimengService';
+import { generateJimengImages, generateJimengVideoAsync, queryJimengVideoTask } from '../services/jimengService';
 import { detectCharactersInPrompt, pickPrimaryCharacterForPrompt } from '../services/characterLibraryService';
 import { CharacterLibrary } from './CharacterLibrary';
 import { VoiceLibrary } from './VoiceLibrary';
@@ -402,13 +402,20 @@ const IMAGE_MODELS = [
   { id: 'banana-2', name: 'Banana 2 (Gemini 3 Pro)', endpoint: '/v1/images/generations', apiModelName: 'gemini-3-pro-image-preview', supportsImageToImage: false },
   { id: 'grok-3-image', name: 'Grok 3 Image', endpoint: '/v1/chat/completions', supportsImageToImage: false },
   { id: 'grok-4-image', name: 'Grok 4 Image', endpoint: '/v1/chat/completions', supportsImageToImage: false },
-  { id: 'jimeng', name: '即梦 (Jimeng)', endpoint: 'jimeng', isJimeng: true, supportsImageToImage: true },
+  { id: 'jimeng', name: '即梦 5.0 (Jimeng)', endpoint: 'jimeng', isJimeng: true, supportsImageToImage: true },
 ];
 
 // 视频模型配置（仅 RunningHub）
 const VIDEO_MODELS = [
   { id: 'runninghub-wan2.2', name: 'RunningHub - Wan2.2', duration: 5, supportedDurations: [5, 10, 15], defaultSize: '720P', supportedSizes: ['720P'], orientation: 'landscape', isRunningHub: true },
   { id: 'runninghub-ltx2', name: 'RunningHub - LTX-2 (10s)', duration: 10, supportedDurations: [10], defaultSize: '720P', supportedSizes: ['720P'], orientation: 'landscape', isRunningHub: true, isLtx2: true },
+  { id: 'jimeng-video-3.5-pro', name: '即梦视频 3.5 Pro', duration: 5, supportedDurations: [5, 10], defaultSize: '720p', supportedSizes: ['480p', '720p', '1080p'], orientation: 'landscape', isJimengVideo: true },
+  { id: 'jimeng-video-3.0', name: '即梦视频 3.0', duration: 5, supportedDurations: [5, 10], defaultSize: '720p', supportedSizes: ['480p', '720p', '1080p'], orientation: 'landscape', isJimengVideo: true },
+  { id: 'jimeng-video-3.0-pro', name: '即梦视频 3.0 Pro', duration: 5, supportedDurations: [5, 10], defaultSize: '720p', supportedSizes: ['480p', '720p', '1080p'], orientation: 'landscape', isJimengVideo: true },
+  { id: 'jimeng-video-seedance-2.0', name: '即梦 Seedance 2.0', duration: 4, supportedDurations: [4, 5, 6, 8, 10, 12, 15], defaultSize: '720p', supportedSizes: ['480p', '720p', '1080p'], orientation: 'landscape', isJimengVideo: true },
+  { id: 'jimeng-video-seedance-2.0-fast', name: '即梦 Seedance 2.0 Fast', duration: 4, supportedDurations: [4, 5, 6, 8, 10, 12, 15], defaultSize: '720p', supportedSizes: ['480p', '720p', '1080p'], orientation: 'landscape', isJimengVideo: true },
+  { id: 'jimeng-video-seedance-2.0-fast-vip', name: '即梦 Seedance 2.0 Fast VIP', duration: 4, supportedDurations: [4, 5, 6, 8, 10, 12, 15], defaultSize: '720p', supportedSizes: ['480p', '720p', '1080p'], orientation: 'landscape', isJimengVideo: true },
+  { id: 'jimeng-video-seedance-2.0-vip', name: '即梦 Seedance 2.0 VIP', duration: 4, supportedDurations: [4, 5, 6, 8, 10, 12, 15], defaultSize: '720p', supportedSizes: ['480p', '720p', '1080p'], orientation: 'landscape', isJimengVideo: true },
 ];
 
 // 图片比例配置
@@ -463,11 +470,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     if (externalSetRunningHubKey) externalSetRunningHubKey(runningHubApiKey);
   }, [runningHubApiKey, externalSetRunningHubKey]);
 
-  // 即梦 API 配置状态
-  // 默认使用3030端口（简化方案，直接调用Node.js即梦API服务）
-  const [jimengApiBaseUrl, setJimengApiBaseUrl] = useState(() => {
-    return localStorage.getItem('JIMENG_API_BASE_URL') || 'http://localhost:3030';
-  });
+  // 即梦走固定线上代理地址（services/jimengService.ts 内嵌），前端仅保留 Session 配置
   const [jimengSessionId, setJimengSessionId] = useState(() => {
     return localStorage.getItem('JIMENG_SESSION_ID') || '';
   });
@@ -479,25 +482,19 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const [voiceLibraryEpoch, setVoiceLibraryEpoch] = useState(0);
   const selectedVoiceForUi = useMemo(() => getSelectedVoice(), [voiceLibraryEpoch]);
   
-  // 保存即梦配置到 localStorage
-  useEffect(() => {
-    if (jimengApiBaseUrl) {
-      localStorage.setItem('JIMENG_API_BASE_URL', jimengApiBaseUrl);
-    }
-  }, [jimengApiBaseUrl]);
   
   useEffect(() => {
     if (jimengSessionId) {
       localStorage.setItem('JIMENG_SESSION_ID', jimengSessionId);
     }
   }, [jimengSessionId]);
-  
+
   const [scriptText, setScriptText] = useState('');
   const [shots, setShots] = useState<Shot[]>([]);
   /** 避免一键成片/队列 pipeline 内 await 后仍读到旧的 shots 闭包（误判「未生成出图片」） */
   const shotsRef = useRef<Shot[]>(shots);
   shotsRef.current = shots;
-  const [selectedImageModel, setSelectedImageModel] = useState('banana');
+  const [selectedImageModel, setSelectedImageModel] = useState('jimeng');
   const [selectedVideoModel, setSelectedVideoModel] = useState(VIDEO_MODELS[0].id);
   const [selectedImageRatio, setSelectedImageRatio] = useState('16:9'); // 默认横屏 16:9
   const [selectedStyle, setSelectedStyle] = useState(() => {
@@ -2116,7 +2113,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         
         const result = await generateJimengImages(
           generationOptions,
-          { apiBaseUrl: jimengApiBaseUrl, sessionId: jimengSessionId }
+          { sessionId: jimengSessionId }
         );
         
         if (result.success && result.data) {
@@ -2668,17 +2665,23 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     opts?: { onVideoHubProgress?: (percent: number) => void }
   ) => {
     const selectedModel = VIDEO_MODELS.find(m => m.id === selectedVideoModel);
-    const isRunningHubModel = selectedModel?.isRunningHub;
+    const isRunningHubModel = !!selectedModel?.isRunningHub;
+    const isJimengVideoModel = !!selectedModel?.isJimengVideo;
 
-    if (!isRunningHubModel) {
-      appendTerminalLog('VideoGen', `镜头${shot.number}: 已中止 — 仅支持 RunningHub 视频模型`);
-      toast.error('当前仅支持 RunningHub 视频模型');
+    if (!isRunningHubModel && !isJimengVideoModel) {
+      appendTerminalLog('VideoGen', `镜头${shot.number}: 已中止 — 不支持的视频模型`);
+      toast.error('当前视频模型暂不支持');
       throw new Error('不支持的视频模型');
     }
-    if (!runningHubApiKey?.trim()) {
+    if (isRunningHubModel && !runningHubApiKey?.trim()) {
       appendTerminalLog('VideoGen', `镜头${shot.number}: 已中止 — 未配置 RunningHub API Key`);
       toast.error('请先配置 RunningHub API Key（上方输入框）');
       throw new Error('缺少 RunningHub API Key');
+    }
+    if (isJimengVideoModel && !jimengSessionId?.trim()) {
+      appendTerminalLog('VideoGen', `镜头${shot.number}: 已中止 — 未配置即梦 SESSION_ID`);
+      toast.error('请先配置即梦 SESSION_ID');
+      throw new Error('缺少即梦 SESSION_ID');
     }
     
     if (!shot.videoPrompt) {
@@ -2736,6 +2739,91 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     }
     
     try {
+      if (isJimengVideoModel) {
+        const ratio = selectedVideoOrientation === 'portrait' ? '9:16' : '16:9';
+        const selectedImageUrl = hasImages ? shotImages[shot.selectedImageIndex!] : undefined;
+        const submit = await generateJimengVideoAsync(
+          {
+            model: selectedVideoModel,
+            prompt: shot.videoPrompt,
+            ratio,
+            resolution: (selectedVideoSize || '720p').toLowerCase(),
+            duration: selectedVideoDuration || selectedModel?.duration || 5,
+            file_paths: selectedImageUrl ? [selectedImageUrl] : [],
+          },
+          { sessionId: jimengSessionId }
+        );
+
+        if (!submit.success || !submit.taskId) {
+          appendTerminalLog('VideoGen', `镜头${shot.number}: 即梦任务提交失败 — ${submit.error || '未知错误'}`);
+          updateShot(shot.id, { videoGenerating: false });
+          throw new Error(submit.error || '即梦任务提交失败');
+        }
+
+        appendTerminalLog('VideoGen', `镜头${shot.number}: 即梦任务已提交 taskId=${submit.taskId}`);
+        toast.info(`即梦视频任务已提交，正在等待结果…\n任务ID: ${submit.taskId}`, 6000);
+
+        let finalUrl = '';
+        let finalStatus = '';
+        const maxAttempts = 120;
+        for (let i = 0; i < maxAttempts; i++) {
+          const polled = await queryJimengVideoTask(submit.taskId, { sessionId: jimengSessionId });
+          finalStatus = polled.status || '';
+          if (!polled.success && finalStatus === 'failed') {
+            appendTerminalLog('VideoGen', `镜头${shot.number}: 即梦任务失败 — ${polled.error || '未知错误'}`);
+            updateShot(shot.id, { videoGenerating: false });
+            throw new Error(polled.error || '即梦视频生成失败');
+          }
+          if (polled.success && polled.videoUrl) {
+            finalUrl = polled.videoUrl;
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 5000));
+          if (opts?.onVideoHubProgress) {
+            const p = Math.min(95, Math.round(((i + 1) / maxAttempts) * 100));
+            opts.onVideoHubProgress(p);
+          }
+        }
+
+        if (!finalUrl) {
+          appendTerminalLog('VideoGen', `镜头${shot.number}: 即梦轮询超时 — status=${finalStatus || 'unknown'}`);
+          updateShot(shot.id, { videoGenerating: false });
+          throw new Error('即梦视频生成超时，请稍后重试');
+        }
+
+        try {
+          toast.info('即梦视频生成成功，正在缓存视频...', 2500);
+          const cachedUrl = await cacheVideo(finalUrl);
+          const currentVideoUrls = shot.videoUrls || (shot.videoUrl ? [shot.videoUrl] : []);
+          const currentCachedUrls = shot.cachedVideoUrls || (shot.cachedVideoUrl ? [shot.cachedVideoUrl] : []);
+          const updatedVideoUrls = [...currentVideoUrls, finalUrl];
+          const updatedCachedUrls = [...currentCachedUrls, cachedUrl];
+          updateShot(shot.id, {
+            videoUrl: finalUrl,
+            videoUrls: updatedVideoUrls,
+            cachedVideoUrl: cachedUrl,
+            cachedVideoUrls: updatedCachedUrls,
+            videoGenerating: false,
+          });
+          opts?.onVideoHubProgress?.(100);
+          toast.success(`即梦视频生成成功！（共 ${updatedVideoUrls.length} 个视频）`, 8000);
+          appendTerminalLog('VideoGen', `镜头${shot.number}: 即梦视频生成完成并已缓存`);
+        } catch (cacheError: any) {
+          const currentVideoUrls = shot.videoUrls || (shot.videoUrl ? [shot.videoUrl] : []);
+          const updatedVideoUrls = [...currentVideoUrls, finalUrl];
+          updateShot(shot.id, {
+            videoUrl: finalUrl,
+            videoUrls: updatedVideoUrls,
+            videoGenerating: false,
+          });
+          opts?.onVideoHubProgress?.(100);
+          toast.success(`即梦视频生成成功！（共 ${updatedVideoUrls.length} 个视频）`, 8000);
+          appendTerminalLog('VideoGen', `镜头${shot.number}: 即梦视频生成完成（缓存失败）`);
+          console.warn('[MediaGenerator] 即梦视频缓存失败:', cacheError);
+        }
+        return;
+      }
+
       let result: Awaited<ReturnType<typeof generateRunningHubVideo>>;
       const isLtx2Model = selectedModel?.isLtx2;
 
@@ -3087,8 +3175,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         }
       );
       
-      // 并发执行，最多同时3个请求（视频生成较耗时，设置较低的并发数避免API限流）
-      const concurrency = 3;
+      // 并发执行：即梦视频并发更保守，降低被限流概率
+      const selectedVideoModelCfg = VIDEO_MODELS.find(m => m.id === selectedVideoModel);
+      const concurrency = selectedVideoModelCfg?.isJimengVideo ? 2 : 3;
       const results = await runConcurrentTasks(
         tasks,
         concurrency,
@@ -3154,6 +3243,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const isMainWorkspace = activeWorkspaceTabId === 'main';
   const selectedCount = tableShots.filter((s) => s.selected).length;
   const generatingCount = tableShots.filter((s) => s.imageGenerating || s.videoGenerating || s.voiceGenerating).length;
+  const selectedVideoModelConfig = VIDEO_MODELS.find((m) => m.id === selectedVideoModel);
+  const isSelectedJimengVideoModel = !!selectedVideoModelConfig?.isJimengVideo;
+  const videoModelDurationHint = (selectedVideoModelConfig?.supportedDurations || [])
+    .map((d) => `${d}s`)
+    .join(' / ');
+  const videoModelConstraintHint = isSelectedJimengVideoModel
+    ? '即梦视频：普通模型仅 5/10 秒，Seedance 支持 4-15 秒；SESSION_ID 必填。'
+    : 'RunningHub：按所选模型支持时长生成。';
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
@@ -3164,7 +3261,41 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             <Video size={24} />
             媒体生成
           </h2>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            <div className="flex items-end gap-1.5 mr-1 border-r border-slate-700 pr-2">
+              <div>
+                <label className="text-[10px] text-emerald-300 font-bold mb-0.5 block whitespace-nowrap">角色库</label>
+                <button
+                  type="button"
+                  onClick={() => setShowCharacterLibrary(true)}
+                  className="px-2.5 py-1 bg-indigo-600/80 hover:bg-indigo-500 text-white text-[11px] font-semibold rounded flex items-center gap-1 shadow-sm"
+                  title="管理角色（图生图锚定）"
+                >
+                  <Users size={14} />
+                  打开
+                </button>
+              </div>
+              <div className="min-w-0 max-w-[140px]">
+                <label className="text-[10px] text-emerald-300 font-bold mb-0.5 block whitespace-nowrap">语音库</label>
+                {selectedVoiceForUi?.name && (
+                  <div
+                    className="text-[10px] text-amber-400/90 font-medium truncate mb-0.5"
+                    title={`当前参考音色（RunningHub 配音）: ${selectedVoiceForUi.name}`}
+                  >
+                    {selectedVoiceForUi.name}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowVoiceLibrary(true)}
+                  className="px-2.5 py-1 bg-teal-600/80 hover:bg-teal-500 text-white text-[11px] font-semibold rounded flex items-center gap-1 shadow-sm"
+                  title="管理参考音色：可选。上传后作为 RunningHub 配音参考音；未上传或未选条目时使用系统默认参考音（与 IndexTTS2 模板一致）。需配置 RunningHub API Key。"
+                >
+                  <HardDrive size={14} />
+                  打开
+                </button>
+              </div>
+            </div>
             <button
               onClick={loadScriptFromTools}
               className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded-lg transition-all"
@@ -3206,9 +3337,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         </div>
 
         {/* 设置选项 - 一排显示 */}
-        <div className="flex flex-nowrap items-end gap-2 pt-3 border-t border-slate-700 overflow-x-auto">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-2 pt-3 border-t border-slate-700 [&_label]:text-[11px] [&_label]:font-bold [&_label]:text-emerald-300 [&_select]:font-semibold [&_select]:text-slate-100 [&_select]:bg-slate-900 [&_select]:border-slate-600 [&_select]:rounded [&_select]:px-1.5 [&_select]:py-1 [&_input]:font-medium [&_input]:text-slate-100 [&_input]:border-slate-600 [&_button]:font-semibold">
           {/* RunningHub API Key（始终显示，配音/视频共用） */}
-          <div className="flex-shrink-0 w-[220px]">
+          <div className="w-full min-w-0">
             <label className="text-[10px] text-slate-500 mb-0.5 block flex items-center gap-1">
               <Rocket size={10} className="text-orange-400" />
               RunningHub API Key
@@ -3223,72 +3354,21 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             />
           </div>
 
-          {/* 角色库 / 语音库：始终显示（不依赖图片模型） */}
-          <div className="flex-shrink-0 flex items-end gap-1.5 border-l border-slate-700 pl-2 ml-0.5">
-            <div>
-              <label className="text-[10px] text-slate-500 mb-0.5 block whitespace-nowrap">角色库</label>
-              <button
-                type="button"
-                onClick={() => setShowCharacterLibrary(true)}
-                className="px-2.5 py-1 bg-indigo-600/80 hover:bg-indigo-500 text-white text-[11px] font-medium rounded flex items-center gap-1 shadow-sm"
-                title="管理角色（图生图锚定）"
-              >
-                <Users size={14} />
-                打开
-              </button>
-            </div>
-            <div className="min-w-0 max-w-[140px]">
-              <label className="text-[10px] text-slate-500 mb-0.5 block whitespace-nowrap">语音库</label>
-              {selectedVoiceForUi?.name && (
-                <div
-                  className="text-[10px] text-amber-400/90 font-medium truncate mb-0.5"
-                  title={`当前参考音色（RunningHub 配音）: ${selectedVoiceForUi.name}`}
-                >
-                  {selectedVoiceForUi.name}
-                </div>
-              )}
-              <button
-                type="button"
-                onClick={() => setShowVoiceLibrary(true)}
-                className="px-2.5 py-1 bg-teal-600/80 hover:bg-teal-500 text-white text-[11px] font-medium rounded flex items-center gap-1 shadow-sm"
-                title="管理参考音色：可选。上传后作为 RunningHub 配音参考音；未上传或未选条目时使用系统默认参考音（与 IndexTTS2 模板一致）。需配置 RunningHub API Key。"
-              >
-                <HardDrive size={14} />
-                打开
-              </button>
-            </div>
-          </div>
 
-          {/* 即梦 API 配置（仅在选择即梦模型时显示） */}
           {selectedImageModel === 'jimeng' && (
-            <>
-              <div className="flex-shrink-0 w-[140px]">
-                <label className="text-[10px] text-slate-500 mb-0.5 block flex items-center gap-1">
-                  即梦 API 地址
-                  <span className="text-blue-400 text-[9px]">(圖片)</span>
-                </label>
-                <input
-                  type="text"
-                  value={jimengApiBaseUrl}
-                  onChange={(e) => setJimengApiBaseUrl(e.target.value)}
-                  placeholder="http://localhost:5100"
-                  className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-              <div className="flex-shrink-0 w-[160px]">
-                <label className="text-[10px] text-slate-500 mb-0.5 block flex items-center gap-1">
-                  即梦 SESSION_ID
-                  <span className="text-blue-400 text-[9px]">(圖片)</span>
-                </label>
-                <input
-                  type="text"
-                  value={jimengSessionId}
-                  onChange={(e) => setJimengSessionId(e.target.value)}
-                  placeholder="输入 SESSION_ID"
-                  className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-            </>
+            <div className="w-full min-w-0">
+              <label className="text-[10px] text-slate-500 mb-0.5 block flex items-center gap-1">
+                即梦 SESSION_ID
+                <span className="text-blue-400 text-[9px]">(图片)</span>
+              </label>
+              <input
+                type="text"
+                value={jimengSessionId}
+                onChange={(e) => setJimengSessionId(e.target.value)}
+                placeholder="输入 SESSION_ID"
+                className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
+              />
+            </div>
           )}
 
           <div className="flex-shrink-0 w-[120px]">
@@ -3351,7 +3431,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             </select>
           </div>
 
-          <div className="flex-shrink-0 min-w-[168px] max-w-[220px] w-[min(100%,200px)]">
+          <div className="flex-shrink-0 w-[152px]">
             <label className="text-[10px] text-slate-500 mb-0.5 block">风格设置</label>
             <select
               value={STYLE_LIBRARY.some((s) => s.id === selectedStyle) ? selectedStyle : 'none'}
@@ -3365,6 +3445,13 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           </div>
           
           {/* 视频分辨率设置 */}
+          <div className="col-span-2 md:col-span-4 lg:col-span-6 xl:col-span-8">
+            <div className="text-[10px] leading-4 text-amber-300/90 bg-slate-900/60 border border-slate-700 rounded px-2 py-1">
+              {videoModelConstraintHint}
+              {videoModelDurationHint ? ` 当前可选时长：${videoModelDurationHint}` : ''}
+            </div>
+          </div>
+
           <div className="flex-shrink-0 w-[90px]">
             <label className="text-[10px] text-slate-500 mb-0.5 block">视频分辨率</label>
             <select
@@ -4445,8 +4532,6 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       {showCharacterLibrary && (
         <CharacterLibrary
           onClose={() => setShowCharacterLibrary(false)}
-          jimengApiBaseUrl={jimengApiBaseUrl}
-          jimengSessionId={jimengSessionId}
         />
       )}
 
