@@ -13,7 +13,7 @@ import express from 'express';
 import cors from 'cors';
 import { spawn } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, basename, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -82,6 +82,7 @@ app.post('/api/jianying/export', (req, res) => {
     outputPath = null,
     randomTransitions = false,
     randomVideoEffects = false,
+    returnZip = false,
   } = req.body || {};
 
   if (!Array.isArray(shots) || shots.length === 0) {
@@ -121,9 +122,26 @@ app.post('/api/jianying/export', (req, res) => {
       // 尝试解析 JSON，若失败则按成功文本处理
       try {
         const result = JSON.parse(text);
+        if (returnZip && result?.zip_path) {
+          result.zip_download_url = `/api/jianying/download/${encodeURIComponent(basename(result.zip_path))}`;
+        }
         res.json(result);
       } catch {
-        // 非 JSON 输出，检查是否像成功响应
+        // stdout 夹杂日志时，尝试提取最后一个 JSON 对象
+        const s = text.trim();
+        const i = s.lastIndexOf('{');
+        const j = s.lastIndexOf('}');
+        if (i >= 0 && j > i) {
+          try {
+            const result = JSON.parse(s.slice(i, j + 1));
+            if (returnZip && result?.zip_path) {
+              result.zip_download_url = `/api/jianying/download/${encodeURIComponent(basename(result.zip_path))}`;
+            }
+            return res.json(result);
+          } catch {
+            // ignore
+          }
+        }
         const low = text.toLowerCase();
         if (/success|完成|草稿|draft|✅/.test(text) && !/error|失败|traceback/.test(low)) {
           res.json({ success: true, message: text, platform: 'jianying' });
@@ -136,6 +154,23 @@ app.post('/api/jianying/export', (req, res) => {
       console.error('[jianying-server] export error:', err);
       res.status(500).json({ success: false, error: err.message });
     });
+});
+
+// ── 下载导出的 ZIP（Railway Linux 场景）────────────────────────────────────
+app.get('/api/jianying/download/:filename', (req, res) => {
+  try {
+    const filename = basename(req.params.filename || '');
+    if (!filename || !filename.endsWith('.zip')) {
+      return res.status(400).json({ error: 'invalid filename' });
+    }
+    const zipPath = resolve('/root/Movies/JianyingPro/User Data/Projects/com.lveditor.draft', filename);
+    if (!existsSync(zipPath)) {
+      return res.status(404).json({ error: 'zip not found' });
+    }
+    res.download(zipPath, filename);
+  } catch (e) {
+    res.status(500).json({ error: e.message || 'download failed' });
+  }
 });
 
 // ── 404 ──────────────────────────────────────────────────────────────────

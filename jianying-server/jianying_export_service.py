@@ -1731,14 +1731,23 @@ def batch_export(
                     f"💡 请在剪映中打开该草稿 → 导出视频"
                 )
             else:
-                # Linux（Railway）：仅生成标准草稿目录，供下载后在本机剪映加载
+                # Linux（Railway）：生成标准草稿目录 + ZIP，供 macOS/Windows 下载后导入剪映
+                zip_path = None
+                try:
+                    zip_base = os.path.join(os.path.dirname(draft_result["draft_folder"]), draft_result["draft_name"])
+                    zip_path = shutil.make_archive(zip_base, 'zip', root_dir=draft_result["draft_folder"])
+                    result["zip_path"] = zip_path
+                except Exception as _zip_err:
+                    result["zip_error"] = str(_zip_err)
+
                 result["message"] = (
                     f"✅ Linux 已生成剪映标准草稿目录\n"
                     f"📁 {draft_result['draft_folder']}\n"
                     f"📹 {draft_result['shots_count']} 个镜头\n"
                     f"🖼 {draft_result.get('materials_count', 0)} 个媒体文件\n"
                     f"⏱ {draft_result['total_duration']/1_000_000:.1f}s\n"
-                    f"💡 请将该目录打包下载后放入本机剪映草稿目录"
+                    + (f"📦 ZIP: {zip_path}\n" if zip_path else "")
+                    + f"💡 请下载 ZIP 后解压到本机剪映草稿目录"
                 )
 
             result["success"] = True
