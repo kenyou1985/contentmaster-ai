@@ -757,6 +757,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const [jyRandomTransitions, setJyRandomTransitions] = useState(false);
   const [jyRandomFilters, setJyRandomFilters] = useState(false);
   const [isExportingToJianying, setIsExportingToJianying] = useState(false);
+  const [lastJianyingDownloadUrl, setLastJianyingDownloadUrl] = useState<string>('');
 
   // shots 转 JianyingShot[]
   const shotsToJianying = (sList: Shot[]): JianyingShot[] =>
@@ -780,6 +781,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
   const performExportToJianying = async (exportShots: Shot[], exportDraftName: string, settings?: { randomEffectBundle?: boolean; randomTransitions?: boolean; randomFilters?: boolean }): Promise<boolean> => {
     setIsExportingToJianying(true);
+    setLastJianyingDownloadUrl('');
     try {
       const result = await exportJianyingDraft({
         draftName: exportDraftName,
@@ -791,6 +793,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           (settings?.randomFilters ?? jyRandomFilters),
       });
       if (result.success) {
+        const apiBase = (import.meta.env.VITE_JIANYING_API_BASE || '/api/jianying').replace(/\/$/, '');
+        const downloadUrl = result.zip_download_url
+          ? `${apiBase}${result.zip_download_url.startsWith('/') ? '' : '/'}${result.zip_download_url}`
+          : '';
+        if (downloadUrl) {
+          setLastJianyingDownloadUrl(downloadUrl);
+          appendTerminalLog('Jianying', `导出成功并生成下载链接: ${downloadUrl}`);
+        }
         appendTerminalLog('Jianying', `导出成功: ${exportDraftName} → ${result.draft_folder || jianyingOutputDir}`);
         toast.success(`剪映草稿导出成功: ${result.draft_folder || exportDraftName}`);
         return true;
@@ -3686,6 +3696,18 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               {isExportingToJianying ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
               导出剪映
             </button>
+            {lastJianyingDownloadUrl && (
+              <a
+                href={lastJianyingDownloadUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-lg transition-all"
+                title="下载导出的剪映草稿 ZIP"
+              >
+                <Download size={14} />
+                下载草稿ZIP
+              </a>
+            )}
           </div>
         </div>
 

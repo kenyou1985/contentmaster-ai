@@ -57,6 +57,8 @@ export interface JianyingExportResult {
   fps: number;
   draft_folder?: string;
   total_duration?: number;
+  zip_path?: string;
+  zip_download_url?: string;
   message: string;
   error?: string;
 }
@@ -262,6 +264,7 @@ export async function exportJianyingDraft(
       outputPath: options.outputPath || null,
       randomTransitions: !!options.randomTransitions,
       randomVideoEffects: !!options.randomVideoEffects,
+      returnZip: true,
     }),
   });
 
