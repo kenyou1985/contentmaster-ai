@@ -3277,7 +3277,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded-lg transition-all"
             >
               <FolderOpen size={16} />
-              从改写工具读取
+              读取分镜脚本
             </button>
             <button
               type="button"
@@ -3875,7 +3875,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                             onClick={() => handleReexportJianyingForTask(t.id)}
                             className="text-[10px] px-2 py-0.5 bg-purple-600 hover:bg-purple-500 text-white rounded transition-all shrink-0"
                           >
-                            补导出
+                            导出剪映草稿
                           </button>
                         )}
                         <button
