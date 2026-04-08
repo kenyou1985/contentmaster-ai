@@ -240,7 +240,7 @@ export async function embedAudioDataUrlsForJianyingExport(shots: JianyingShot[])
   return out;
 }
 
-/** 批量导出剪映草稿 */
+/** 批量导出剪映草稿（异步任务轮询，避免长连接超时） */
 export async function exportJianyingDraft(
   options: JianyingExportOptions
 ): Promise<JianyingExportResult> {
@@ -255,35 +255,78 @@ export async function exportJianyingDraft(
       }))
     );
   }
-  const res = await fetch(`${BASE}/export`, {
+
+  const payload = {
+    draftName: options.draftName,
+    shots,
+    resolution: options.resolution || '1920x1080',
+    fps: options.fps || 30,
+    outputPath: options.outputPath || null,
+    pathMapRoot: options.pathMapRoot || null,
+    randomTransitions: !!options.randomTransitions,
+    randomVideoEffects: !!options.randomVideoEffects,
+    returnZip: true,
+  };
+
+  const startRes = await fetch(`${BASE}/export/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      draftName: options.draftName,
-      shots,
-      resolution: options.resolution || '1920x1080',
-      fps: options.fps || 30,
-      outputPath: options.outputPath || null,
-      pathMapRoot: options.pathMapRoot || null,
-      randomTransitions: !!options.randomTransitions,
-      randomVideoEffects: !!options.randomVideoEffects,
-      returnZip: true,
-    }),
+    body: JSON.stringify(payload),
   });
-
-  const text = await res.text().catch(() => '');
-
-  if (!res.ok) {
-    const parsed = tryParseJsonObject(text);
-    const detail =
-      parsed?.error ||
-      parsed?.message ||
-      text.slice(0, 400);
-    throw new Error(`导出请求失败 (${res.status})${detail ? ': ' + detail : ''}`);
+  const startText = await startRes.text().catch(() => '');
+  if (!startRes.ok) {
+    const parsed = tryParseJsonObject(startText);
+    const detail = parsed?.error || parsed?.message || startText.slice(0, 400);
+    throw new Error(`导出任务提交失败 (${startRes.status})${detail ? ': ' + detail : ''}`);
   }
 
-  const parsed = tryParseJsonObject(text);
-  if (parsed) return parsed;
+  const startObj = tryParseJsonObject(startText) as any;
+  const taskId = startObj?.taskId;
+  if (!taskId) {
+    // 兼容旧服务：若未返回 taskId，尝试同步接口
+    const legacyRes = await fetch(`${BASE}/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const legacyText = await legacyRes.text().catch(() => '');
+    if (!legacyRes.ok) {
+      const parsed = tryParseJsonObject(legacyText);
+      const detail = parsed?.error || parsed?.message || legacyText.slice(0, 400);
+      throw new Error(`导出请求失败 (${legacyRes.status})${detail ? ': ' + detail : ''}`);
+    }
+    const parsed = tryParseJsonObject(legacyText);
+    if (parsed) return parsed;
+    return coerceExportResultFromText(legacyText, options, true);
+  }
 
-  return coerceExportResultFromText(text, options, true);
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const maxPoll = 240; // 最多约 8 分钟
+  for (let i = 0; i < maxPoll; i++) {
+    await sleep(2000);
+    const statusRes = await fetch(`${BASE}/export/status/${encodeURIComponent(taskId)}`);
+    const statusText = await statusRes.text().catch(() => '');
+    const statusObj = tryParseJsonObject(statusText) as any;
+    const status = String(statusObj?.status || '').toLowerCase();
+
+    if (status === 'success') {
+      const resultRes = await fetch(`${BASE}/export/result/${encodeURIComponent(taskId)}`);
+      const resultText = await resultRes.text().catch(() => '');
+      if (!resultRes.ok) {
+        const parsed = tryParseJsonObject(resultText);
+        const detail = parsed?.error || parsed?.message || resultText.slice(0, 400);
+        throw new Error(`导出结果获取失败 (${resultRes.status})${detail ? ': ' + detail : ''}`);
+      }
+      const parsed = tryParseJsonObject(resultText);
+      if (parsed) return parsed;
+      return coerceExportResultFromText(resultText, options, true);
+    }
+
+    if (status === 'failed') {
+      const detail = statusObj?.error || statusObj?.message || '导出任务失败';
+      throw new Error(String(detail));
+    }
+  }
+
+  throw new Error('导出任务超时（轮询超过 8 分钟）');
 }
