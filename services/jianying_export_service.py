@@ -178,6 +178,23 @@ def _download_file(url: str, dest_path: str, timeout: int = 30) -> bool:
         return False
 
 
+def _download_file_with_retry(url: str, dest_path: str, timeout: int = 30, retries: int = 2) -> bool:
+    """下载重试封装：快速重试，降低偶发网络抖动导致的整单失败。"""
+    last_ok = False
+    for attempt in range(retries + 1):
+        ok = _download_file(url, dest_path, timeout=timeout)
+        if ok:
+            return True
+        last_ok = ok
+        if attempt < retries:
+            wait_s = 0.35 * (attempt + 1)
+            try:
+                time.sleep(wait_s)
+            except Exception:
+                pass
+    return last_ok
+
+
 def _reveal_in_finder(path: str):
     subprocess.run(["open", "-R", path], check=False, capture_output=True, timeout=10)
 
@@ -1371,6 +1388,7 @@ def create_draft_on_mac(
 
     # ---- 下载资源，组装剪映 5.9 主脚本所需镜头行（绝对路径）----
     prepared_shots: list[dict] = []
+    download_issues: list[dict] = []
     timeline_cursor = 0
     for i, shot in enumerate(shots):
         base_dur = int(float(shot.get("duration", 5)) * 1_000_000)
@@ -1388,9 +1406,15 @@ def create_draft_on_mac(
             if not re.search(r"\.(mp4|mov|webm|m4v)$", vname, re.I):
                 vname = f"{vname}.mp4" if "." not in vname else re.sub(r"[^.]+$", "mp4", vname)
             local_video_path = os.path.join(draft_folder, "Resources", "video", vname)
-            if _download_file(str(video_url), local_video_path):
+            if _download_file_with_retry(str(video_url), local_video_path, timeout=60, retries=2):
                 use_video = True
             else:
+                download_issues.append({
+                    "shot": i,
+                    "kind": "video",
+                    "url": str(video_url)[:240],
+                    "reason": "download_failed_after_retries",
+                })
                 local_video_path = None
 
         duration_us = base_dur
@@ -1419,7 +1443,13 @@ def create_draft_on_mac(
             if image_url and str(image_url).strip():
                 img_filename = _safe_filename(str(image_url))
                 local_image_path = os.path.join(draft_folder, "Resources", "image", img_filename)
-                if not _download_file(str(image_url), local_image_path):
+                if not _download_file_with_retry(str(image_url), local_image_path, timeout=45, retries=2):
+                    download_issues.append({
+                        "shot": i,
+                        "kind": "image",
+                        "url": str(image_url)[:240],
+                        "reason": "download_failed_after_retries",
+                    })
                     local_image_path = None
             if not local_image_path:
                 local_image_path = _placeholder_shot_image_path(draft_folder, i, width, height)
@@ -1446,7 +1476,7 @@ def create_draft_on_mac(
         if audio_url and str(audio_url).strip():
             audio_filename = _safe_filename(str(audio_url))
             lap = os.path.join(draft_folder, "Resources", "audio", audio_filename)
-            ok = _download_file(str(audio_url), lap)
+            ok = _download_file_with_retry(str(audio_url), lap, timeout=75, retries=2)
             print(f"[jianying_export] 镜头{i} 音频: url={'有' if audio_url else '无'} → 文件={audio_filename} → 下载={'成功' if ok else '失败'} {'(' + str(audio_url)[:80] + ')' if audio_url else ''}", file=sys.stderr, flush=True)
             if ok:
                 row["audio_abs"] = _safe_abs_for_jianying(lap)
@@ -1461,6 +1491,12 @@ def create_draft_on_mac(
                 if ad and int(ad) > 0:
                     row["duration_us"] = int(ad)
             else:
+                download_issues.append({
+                    "shot": i,
+                    "kind": "audio",
+                    "url": str(audio_url)[:240],
+                    "reason": "download_failed_after_retries",
+                })
                 # 下载失败但客户端提供了时长估算（如前端 TTS），以此作时长兜底
                 if client_audio_us and int(client_audio_us) > 0:
                     row["audio_duration_us"] = int(client_audio_us)
@@ -1669,6 +1705,8 @@ def create_draft_on_mac(
         "shots_count": len(shots),
         "materials_count": materials_count,
         "platform": "macOS",
+        "download_issues": download_issues,
+        "download_issue_count": len(download_issues),
     }
 
 

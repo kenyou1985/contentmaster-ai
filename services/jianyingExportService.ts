@@ -63,6 +63,13 @@ export interface JianyingExportResult {
   zip_download_url?: string;
   message: string;
   error?: string;
+  download_issue_count?: number;
+  download_issues?: Array<{
+    shot: number;
+    kind: 'audio' | 'video' | 'image' | string;
+    url?: string;
+    reason?: string;
+  }>;
 }
 
 export interface JianyingHealth {
