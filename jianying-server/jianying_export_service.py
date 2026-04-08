@@ -512,6 +512,32 @@ def _split_caption_into_natural_chunks(text: str, max_chars: int = 28) -> list[s
         s = (raw or "").strip()
         if not s:
             return []
+
+        # 英文场景优先按单词切分，避免把 for 拆成 fo / r
+        if re.search(r"[A-Za-z]", s):
+            tokens = re.findall(r"[A-Za-z0-9']+|\s+|[^A-Za-z0-9\s]", s)
+            arr: list[str] = []
+            cur = ""
+            for tk in tokens:
+                candidate = cur + tk
+                if len(candidate.strip()) <= limit:
+                    cur = candidate
+                else:
+                    if cur.strip():
+                        arr.append(cur.strip())
+                        cur = tk.strip()
+                    else:
+                        # 单 token 超长时兜底硬切（极少见，如超长 URL）
+                        hard = tk.strip()
+                        while len(hard) > limit:
+                            arr.append(hard[:limit].strip())
+                            hard = hard[limit:]
+                        cur = hard
+            if cur.strip():
+                arr.append(cur.strip())
+            return [x for x in arr if x]
+
+        # 中文按字符兜底切分
         buf, arr = "", []
         for ch in s:
             buf += ch
@@ -1026,10 +1052,7 @@ def _build_lv59_main_script(
                 }
             )
 
-        cap_raw = (row.get("caption") or "").strip()
-        # 导出字幕统一去标点（中英文），避免画面字幕出现句末符号
-        cap = re.sub(r"[，。！？；：、“”‘’（）《》【】……—,.!?;:'\"()\[\]{}<>`~@#$%^&*_+=\\/|-]", "", cap_raw)
-        cap = re.sub(r"\s+", " ", cap).strip()
+        cap = (row.get("caption") or "").strip()
         if cap:
             cap_chunks = _split_caption_into_natural_chunks(cap)
             _floor_us = 33_333

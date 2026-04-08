@@ -39,11 +39,11 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({ onClose, onVoicesCha
     load();
   }, []);
 
-  const pickSelected = (id: string) => {
+  const pickSelected = (id: string | null) => {
     setSelectedVoiceId(id);
     setSelectedId(id);
     onVoicesChange?.();
-    toast.success('已设为默认配音音色', 2500);
+    toast.success(id ? '已设为默认配音音色' : '已切换为系统默认音色', 2500);
   };
 
   const handleFile = async (file: File) => {
@@ -106,6 +106,25 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({ onClose, onVoicesCha
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-2">
+          <div
+            className={`flex items-center gap-2 p-2 rounded-lg border ${
+              selectedId == null ? 'border-emerald-500/60 bg-emerald-950/20' : 'border-slate-700 bg-slate-800/40'
+            }`}
+          >
+            <input
+              type="radio"
+              name="voice-pick"
+              checked={selectedId == null}
+              onChange={() => pickSelected(null)}
+              className="accent-emerald-500"
+              title="使用系统默认音色"
+            />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-slate-200 font-medium truncate">不选择（系统默认音色）</div>
+              <div className="text-[10px] text-slate-500 truncate">与 IndexTTS2 模板内置参考音一致</div>
+            </div>
+          </div>
+
           {voices.length === 0 && !showAdd && (
             <p className="text-sm text-slate-500 text-center py-6">暂无音色，请点击下方添加</p>
           )}
