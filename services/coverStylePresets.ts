@@ -78,9 +78,15 @@ export const COVER_STYLE_PRESETS: CoverStylePreset[] = [
   },
   {
     id: 'minimal_flat',
-    label: '极简扁平（Minimal Flat）',
+    label: '二维扁平（Two-dimensional flat）',
     promptEn:
       'Ultra minimal flat design: simple geometric shapes, solid color blocks, no gradients, modern clean Swiss-style layout.',
+  },
+  {
+    id: 'anime_aesthetics',
+    label: '复古动漫（anime aesthetics）',
+    promptEn:
+      '采用干净、柔和的勾线笔风格，角色居中，拒绝冗杂，画面清爽、简洁、有呼吸感，局部点缀淡雅水彩，现代数字插画风格，干净的米白色背景，编辑插画风格，心理学概念艺术，充满情感且柔和',
   },
   {
     id: 'minimalist',
