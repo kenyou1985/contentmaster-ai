@@ -1594,7 +1594,33 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       );
     });
     
-    // 2. 从旧的 scriptHistory 读取（保持向后兼容）
+    // 2. 从 Generator 模块「一键动画分镜历史」读取（与截图1同源）
+    try {
+      const generatorStoryboardKeys = [
+        `${NicheType.MINDFUL_PSYCHOLOGY}_mindful_mode2`,
+        'mindful_mode2',
+      ];
+      generatorStoryboardKeys.forEach((key) => {
+        const records = getHistory('generator', key);
+        console.log(`[MediaGenerator] 从 generator/${key} 读取到 ${records.length} 条记录`);
+        allRecords.push(
+          ...records
+            .filter((r) => typeof r.content === 'string' && r.content.trim())
+            .map((r) => ({
+              ...r,
+              metadata: {
+                ...r.metadata,
+                topic: r.metadata?.topic || `一键动画分镜历史 · ${key}`,
+                historyDelete: { module: 'generator' as const, key },
+              },
+            }))
+        );
+      });
+    } catch (error) {
+      console.error('[MediaGenerator] 读取 generator 一键动画分镜历史失败:', error);
+    }
+
+    // 3. 从旧的 scriptHistory 读取（保持向后兼容）
     try {
       const historyKey = 'scriptHistory';
       const historyStr = localStorage.getItem(historyKey);
@@ -1819,12 +1845,12 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       return;
     }
     const hd = record.metadata?.historyDelete as
-      | { module: 'tools'; key: string }
+      | { module: 'tools' | 'generator'; key: string }
       | { kind: 'legacyScriptHistory' }
       | { kind: 'lastGeneratedScript' }
       | undefined;
-    if (hd && 'module' in hd && hd.module === 'tools' && hd.key) {
-      deleteHistory('tools', hd.key, record.timestamp);
+    if (hd && 'module' in hd && (hd.module === 'tools' || hd.module === 'generator') && hd.key) {
+      deleteHistory(hd.module, hd.key, record.timestamp);
       return;
     }
     if (hd && 'kind' in hd && hd.kind === 'legacyScriptHistory') {
