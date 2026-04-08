@@ -613,12 +613,12 @@ def _build_lv59_main_script(
         dur_us = row["duration_us"]
         media_kind = row.get("media_kind") or "photo"
         if media_kind == "video":
-            media_path = row.get("video_rel") or row["video_abs"]
+            media_path = row["video_abs"]
             iw, ih = int(row["video_w"]), int(row["video_h"])
             mat_duration = int(row.get("video_material_duration_us") or dur_us)
             is_video = True
         else:
-            media_path = row.get("image_rel") or row["image_abs"]
+            media_path = row["image_abs"]
             iw, ih = int(row["image_w"]), int(row["image_h"])
             mat_duration = 10800000000
             is_video = False
@@ -839,7 +839,6 @@ def _build_lv59_main_script(
             shot_last_seg_dur.append(int(last_seg_d))
 
         apath = row.get("audio_abs")
-        apath_rel = row.get("audio_rel") or (("./" + os.path.join("Resources", "audio", os.path.basename(apath)).replace("\\", "/")) if apath else None)
         if apath and os.path.isfile(apath):
             probe_adur = row.get("audio_duration_us")
             if probe_adur and int(probe_adur) > 0:
@@ -868,7 +867,7 @@ def _build_lv59_main_script(
                     "local_material_id": lm,
                     "music_id": music_id,
                     "name": os.path.basename(apath),
-                    "path": apath_rel or apath,
+                    "path": apath,
                     "query": "",
                     "request_id": "",
                     "resource_id": "",
