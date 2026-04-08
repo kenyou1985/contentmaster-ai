@@ -41,6 +41,14 @@ export interface RunningHubAudioOptions {
   /** 可选：RunningHub 上的参考音频路径（如 "xxx.MP3"），写入 nodeId=13/15；省略则用平台默认参考音 */
   referenceAudioPath?: string;
   speed?: number;
+  /** 以下为“仅优化朗读方式，不改文本”的增强开关 */
+  prosodyEnhance?: boolean;
+  breath?: boolean;
+  autoPause?: boolean;
+  pauseStrength?: number;
+  emphasisStrength?: number;
+  pitch?: number;
+  volume?: number;
 }
 
 export interface RunningHubResult {
@@ -986,6 +994,15 @@ export const generateAudio = async (
       nodeInfoList,
       instanceType: 'default' as const,
       usePersonalQueue: 'false' as const,
+      // 不改文案，仅优化朗读方式（若后端忽略这些字段也不影响主流程）
+      prosody_enhance: options.prosodyEnhance ?? true,
+      breath: options.breath ?? true,
+      auto_pause: options.autoPause ?? true,
+      pause_strength: options.pauseStrength ?? 0.7,
+      emphasis_strength: options.emphasisStrength ?? 0.5,
+      speed: options.speed ?? 1.0,
+      pitch: options.pitch ?? 0,
+      volume: options.volume ?? 1.0,
     };
 
     const runUrl = `${OPENAPI_V2_BASE}/run/ai-app/${TTS_AI_APP_RUN_ID}`;

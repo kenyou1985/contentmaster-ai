@@ -2593,7 +2593,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     }
 
     // 严格保持原文：提交给 TTS 的文本必须与镜头文案一字不差
-    appendTerminalLog('Voice', `镜头${shot.number}: 已锁定原文直送 TTS（不改字、不加标记）`);
+    appendTerminalLog('Voice', `镜头${shot.number}: 已锁定原文直送 TTS（不改字），并启用韵律/呼吸/停顿优化参数`);
     appendTerminalLog('Voice', `镜头${shot.number}: 开始生成配音（${rawTextForTts.slice(0, 40)}${rawTextForTts.length > 40 ? '…' : ''}）`);
     updateShot(shot.id, { voiceGenerating: true });
     const originalText = rawTextForTts;
@@ -2612,6 +2612,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       const r = await generateAudio(runningHubApiKey, {
         text: rawTextForTts,
         referenceAudioPath: refPath,
+        speed: 1.0,
+        prosodyEnhance: true,
+        breath: true,
+        autoPause: true,
+        pauseStrength: 0.7,
+        emphasisStrength: 0.5,
+        pitch: 0,
+        volume: 1.0,
       });
       if (!r.success) throw new Error(r.error || 'TTS 请求失败');
       const audioUrl = r.url;
