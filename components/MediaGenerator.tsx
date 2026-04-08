@@ -792,7 +792,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       const result = await exportJianyingDraft({
         draftName: exportDraftName,
         shots: shotsToJianying(exportShots),
-        outputPath: jianyingOutputDir || undefined,
+        outputPath: undefined,
+        pathMapRoot: jianyingOutputDir || undefined,
         randomTransitions: settings?.randomTransitions ?? jyRandomTransitions,
         randomVideoEffects:
           (settings?.randomEffectBundle ?? jyRandomEffectBundle) ||
@@ -3684,9 +3685,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               type="text"
               value={jianyingOutputDir}
               onChange={(e) => onChangeJianyingOutputDir(e.target.value)}
-              placeholder="剪映草稿绝对路径，例如 /Users/kenyou/Downloads/JianyingPro Drafts"
+              placeholder="本机剪映草稿根目录（路径映射），例如 /Users/kenyou/Downloads/JianyingPro Drafts"
               className="w-[360px] px-3 py-1.5 bg-slate-900/70 border border-slate-600 focus:border-purple-500 outline-none text-slate-100 text-xs rounded-lg"
-              title="填写本机剪映草稿绝对路径，导出时会按该路径生成草稿目录"
+              title="用于把 Railway 容器路径映射为你本机绝对路径；请填你的剪映草稿根目录"
             />
             <button
               onClick={() => handleOneClickPipeline()}

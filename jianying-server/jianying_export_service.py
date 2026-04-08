@@ -613,12 +613,12 @@ def _build_lv59_main_script(
         dur_us = row["duration_us"]
         media_kind = row.get("media_kind") or "photo"
         if media_kind == "video":
-            media_path = row["video_abs"]
+            media_path = row.get("video_client_path") or row["video_abs"]
             iw, ih = int(row["video_w"]), int(row["video_h"])
             mat_duration = int(row.get("video_material_duration_us") or dur_us)
             is_video = True
         else:
-            media_path = row["image_abs"]
+            media_path = row.get("image_client_path") or row["image_abs"]
             iw, ih = int(row["image_w"]), int(row["image_h"])
             mat_duration = 10800000000
             is_video = False
@@ -867,7 +867,7 @@ def _build_lv59_main_script(
                     "local_material_id": lm,
                     "music_id": music_id,
                     "name": os.path.basename(apath),
-                    "path": apath,
+                    "path": row.get("audio_client_path") or apath,
                     "query": "",
                     "request_id": "",
                     "resource_id": "",
@@ -1277,6 +1277,7 @@ def create_draft_on_mac(
     height: int = 1080,
     random_transitions: bool = False,
     random_filters: bool = False,
+    path_map_root: str = None,
 ) -> dict:
     """
     创建剪映草稿：
@@ -1355,6 +1356,22 @@ def create_draft_on_mac(
     now_us = _timestamp_us()
     timeline_id = _make_id()
 
+    mapped_root_abs = None
+    if path_map_root and str(path_map_root).strip():
+        mapped_root_abs = os.path.abspath(str(path_map_root).strip())
+
+    def _material_path_for_client(local_abs_path: str) -> str:
+        """将容器内绝对路径映射为客户端可用绝对路径（若提供 path_map_root）。"""
+        if not local_abs_path:
+            return local_abs_path
+        if not mapped_root_abs:
+            return local_abs_path
+        try:
+            rel = os.path.relpath(local_abs_path, draft_folder)
+            return os.path.abspath(os.path.join(mapped_root_abs, draft_folder_name, rel)).replace("\\", "/")
+        except Exception:
+            return local_abs_path
+
     # ---- 下载资源，组装剪映 5.9 主脚本所需镜头行（绝对路径）----
     prepared_shots: list[dict] = []
     timeline_cursor = 0
@@ -1395,7 +1412,7 @@ def create_draft_on_mac(
                 duration_us = vd
             row["media_kind"] = "video"
             row["video_abs"] = vabs
-            row["video_rel"] = ("./" + os.path.join("Resources", "video", os.path.basename(vabs)).replace("\\", "/"))
+            row["video_client_path"] = _material_path_for_client(vabs)
             row["video_w"] = vw or width
             row["video_h"] = vh or height
             row["video_material_duration_us"] = vd or duration_us
@@ -1414,7 +1431,7 @@ def create_draft_on_mac(
             iw, ih = _read_image_dimensions(img_abs, width, height)
             row["media_kind"] = "photo"
             row["image_abs"] = img_abs
-            row["image_rel"] = ("./" + os.path.join("Resources", "image", os.path.basename(img_abs)).replace("\\", "/"))
+            row["image_client_path"] = _material_path_for_client(img_abs)
             row["image_w"] = iw
             row["image_h"] = ih
 
@@ -1438,7 +1455,7 @@ def create_draft_on_mac(
             print(f"[jianying_export] 镜头{i} 音频: url={'有' if audio_url else '无'} → 文件={audio_filename} → 下载={'成功' if ok else '失败'} {'(' + str(audio_url)[:80] + ')' if audio_url else ''}", file=sys.stderr, flush=True)
             if ok:
                 row["audio_abs"] = os.path.abspath(lap)
-                row["audio_rel"] = ("./" + os.path.join("Resources", "audio", os.path.basename(lap)).replace("\\", "/"))
+                row["audio_client_path"] = _material_path_for_client(row["audio_abs"])
                 probe_us = _ffprobe_duration_us(row["audio_abs"])
                 # 以文件实测为准；客户端 audioDurationSec 多为文案估算，取 max 会把时间线拉长得远超真实波形（见 pyJianYingDraft：片段时长应对齐素材）。
                 if probe_us:
@@ -1671,6 +1688,7 @@ def batch_export(
     output_path: str = None,
     random_transitions: bool = False,
     random_filters: bool = False,
+    path_map_root: str = None,
 ) -> dict:
     """
     跨平台批量导出。
@@ -1710,6 +1728,7 @@ def batch_export(
                 height=h,
                 random_transitions=random_transitions,
                 random_filters=random_filters,
+                path_map_root=path_map_root,
             )
             result.update(draft_result)
 
@@ -1812,11 +1831,13 @@ if __name__ == "__main__":
             stdin_data = json.loads(stdin_raw)
             shots = stdin_data.get("shots", [])
             output_path = stdin_data.get("outputPath") or args.output
+            path_map_root = stdin_data.get("pathMapRoot")
             rnd_tr = bool(stdin_data.get("randomTransitions"))
             rnd_fx = bool(stdin_data.get("randomVideoEffects"))
         else:
             shots = json.loads(args.shots)
             output_path = args.output
+            path_map_root = None
             rnd_tr = rnd_fx = False
         result = batch_export(
             draft_name=args.name,
@@ -1826,5 +1847,6 @@ if __name__ == "__main__":
             output_path=output_path,
             random_transitions=rnd_tr,
             random_filters=rnd_fx,
+            path_map_root=path_map_root,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))

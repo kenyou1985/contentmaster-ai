@@ -83,6 +83,7 @@ app.post('/api/jianying/export', (req, res) => {
     resolution = '1920x1080',
     fps = 30,
     outputPath = null,
+    pathMapRoot = process.env.JIANYING_PATH_MAP_ROOT || null,
     randomTransitions = false,
     randomVideoEffects = false,
     returnZip = false,
@@ -102,6 +103,7 @@ app.post('/api/jianying/export', (req, res) => {
     {
       shots,
       outputPath,
+      pathMapRoot,
       randomTransitions,
       randomVideoEffects,
     }

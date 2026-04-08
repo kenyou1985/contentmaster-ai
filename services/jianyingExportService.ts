@@ -32,6 +32,8 @@ export interface JianyingExportOptions {
   fps?: number;
   /** 输出目录（不填则用剪映默认草稿目录） */
   outputPath?: string;
+  /** 将服务端草稿绝对路径映射到本机路径根（用于跨机导入） */
+  pathMapRoot?: string;
   /** 片段间随机转场（剪映内置资源 ID，与 pyJianYingDraft 一致） */
   randomTransitions?: boolean;
   /** 每段随机滤镜（强度适中，剪映版本差异时可能需手动调整） */
@@ -262,6 +264,7 @@ export async function exportJianyingDraft(
       resolution: options.resolution || '1920x1080',
       fps: options.fps || 30,
       outputPath: options.outputPath || null,
+      pathMapRoot: options.pathMapRoot || null,
       randomTransitions: !!options.randomTransitions,
       randomVideoEffects: !!options.randomVideoEffects,
       returnZip: true,
