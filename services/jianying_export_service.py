@@ -503,96 +503,36 @@ _LV59_FILTER_PRESETS = [
 
 
 def _split_caption_into_natural_chunks(text: str, max_chars: int = 28) -> list[str]:
-    """按句读切分字幕，并在无标点长句时强制分块，避免整段粘连。"""
+    """
+    仅按句读切分字幕（逗号/句号等），不在句子中间按长度硬切。
+    这样可保持整句与配音节奏一致，避免出现只剩几个单词的截断字幕。
+    """
     t = " ".join((text or "").strip().split())
     if not t:
         return []
 
-    def _force_wrap(raw: str, limit: int) -> list[str]:
-        s = (raw or "").strip()
-        if not s:
-            return []
+    # 去掉“标题符号”，保留句读用于断句
+    t = re.sub(r"[《》【】「」『』]", "", t)
 
-        # 英文场景优先按单词切分，避免把 for 拆成 fo / r
-        if re.search(r"[A-Za-z]", s):
-            tokens = re.findall(r"[A-Za-z0-9']+|\s+|[^A-Za-z0-9\s]", s)
-            arr: list[str] = []
-            cur = ""
-            for tk in tokens:
-                candidate = cur + tk
-                if len(candidate.strip()) <= limit:
-                    cur = candidate
-                else:
-                    if cur.strip():
-                        arr.append(cur.strip())
-                        cur = tk.strip()
-                    else:
-                        # 单 token 超长时兜底硬切（极少见，如超长 URL）
-                        hard = tk.strip()
-                        while len(hard) > limit:
-                            arr.append(hard[:limit].strip())
-                            hard = hard[limit:]
-                        cur = hard
-            if cur.strip():
-                arr.append(cur.strip())
-            return [x for x in arr if x]
-
-        # 中文按字符兜底切分
-        buf, arr = "", []
-        for ch in s:
-            buf += ch
-            if len(buf) >= limit:
-                arr.append(buf.strip())
-                buf = ""
-        if buf.strip():
-            arr.append(buf.strip())
-        return arr
-
-    parts = re.split(r"(?<=[。！？．.!?])\s*", t)
+    # 按中英文逗号/句号/问号/感叹号/分号/冒号断句；保留分隔符
+    parts = re.split(r"([，,。.!?！？；;：:])", t)
     chunks: list[str] = []
-    for piece in parts:
-        piece = piece.strip()
-        if not piece:
+    buf = ""
+    for p in parts:
+        if not p:
             continue
-        if len(piece) <= max_chars:
-            chunks.append(piece)
+        p = p.strip()
+        if not p:
             continue
+        buf += p
+        if re.fullmatch(r"[，,。.!?！？；;：:]", p):
+            chunks.append(buf.strip())
+            buf = ""
 
-        sub = re.split(r"(?<=[，,；;：:])\s*", piece)
-        buf = ""
-        for s in sub:
-            s = s.strip()
-            if not s:
-                continue
-            if len(s) > max_chars:
-                if buf:
-                    chunks.append(buf)
-                    buf = ""
-                chunks.extend(_force_wrap(s, max_chars))
-                continue
-            if not buf:
-                buf = s
-            elif len(buf) + len(s) <= max_chars:
-                buf = buf + s
-            else:
-                chunks.append(buf)
-                buf = s
-        if buf:
-            chunks.append(buf)
+    if buf.strip():
+        chunks.append(buf.strip())
 
-    out: list[str] = []
-    for c in chunks:
-        c = c.strip()
-        if not c:
-            continue
-        if len(c) > max_chars:
-            out.extend(_force_wrap(c, max_chars))
-            continue
-        if out and len(c) < 5:
-            out[-1] = out[-1] + c
-        else:
-            out.append(c)
-    return out if out else _force_wrap(t, max_chars)
+    return [c for c in chunks if c]
 
 
 def _distribute_chunk_durations_us(chunks: list[str], total_duration_us: int, min_chunk_us: int = 120_000) -> list[int]:
