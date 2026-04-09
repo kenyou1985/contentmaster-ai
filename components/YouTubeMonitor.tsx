@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Search, 
   Video, 
@@ -25,13 +25,48 @@ import {
 // YouTube Data API v3 - 从环境变量获取（Vercel部署时配置）
 const YOUTUBE_API_KEY = (import.meta as any).env?.VITE_YOUTUBE_API_KEY || '';
 
-// Invidious 备用服务地址（Railway部署的公共后端）
-const INVIDIOUS_INSTANCES = [
-  'https://invidious.privacyredirect.com',
-  'https://yewtu.be',
-  'https://invidious.projectsegfau.lt',
-];
-const getInvidiousBase = () => INVIDIOUS_INSTANCES[Math.floor(Math.random() * INVIDIOUS_INSTANCES.length)];
+/** 同源 Invidious 代理（Vercel: api/invidious；开发: vite 中间件）。勿把 MeTube 当作 Invidious。 */
+function invidiousProxyUrl(path: string, query: Record<string, string> = {}): string {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const params = new URLSearchParams({ path, ...query });
+  return `${origin}/api/invidious?${params.toString()}`;
+}
+
+async function fetchInvidiousJson<T>(path: string, query: Record<string, string> = {}): Promise<T> {
+  const res = await fetch(invidiousProxyUrl(path, query));
+  const text = await res.text();
+  let data: unknown;
+  try {
+    data = JSON.parse(text) as unknown;
+  } catch {
+    throw new Error(text.slice(0, 240) || `HTTP ${res.status}`);
+  }
+  if (!res.ok) {
+    const err = (data as { error?: string })?.error;
+    throw new Error(err || `HTTP ${res.status}`);
+  }
+  return data as T;
+}
+
+async function metubeAddToQueue(videoUrl: string): Promise<void> {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const res = await fetch(`${origin}/api/metube/add`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: videoUrl }),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    let msg = text;
+    try {
+      const j = JSON.parse(text) as { error?: string };
+      if (j.error) msg = j.error;
+    } catch {
+      /* keep text */
+    }
+    throw new Error(msg || `MeTube ${res.status}`);
+  }
+}
 
 // ============================================================
 // 类型定义
@@ -205,27 +240,27 @@ const youtubeApi = {
   },
 };
 
-// Invidious API 调用
+// Invidious API（经本站代理，避免第三方实例 CORS）
 const invidiousApi = {
   searchChannels: async (query: string): Promise<InvidiousChannel[]> => {
-    const base = getInvidiousBase();
-    const res = await fetch(`${base}/api/v1/search?q=${encodeURIComponent(query)}&type=channel`);
-    const data = await res.json();
+    const data = await fetchInvidiousJson<unknown[]>('search', {
+      q: query,
+      type: 'channel',
+    });
     if (!Array.isArray(data)) return [];
     return data.slice(0, 10).filter((i: any) => i.type === 'channel');
   },
 
   getChannelVideos: async (channelId: string): Promise<InvidiousVideo[]> => {
-    const base = getInvidiousBase();
-    const res = await fetch(`${base}/api/v1/channels/${channelId}/videos`);
-    const data = await res.json();
+    const data = await fetchInvidiousJson<{ videos?: InvidiousVideo[] }>(
+      `channels/${channelId}/videos`,
+      {}
+    );
     return data.videos?.slice(0, 20) || [];
   },
 
   getVideoDetails: async (videoId: string): Promise<any> => {
-    const base = getInvidiousBase();
-    const res = await fetch(`${base}/api/v1/videos/${videoId}`);
-    return await res.json();
+    return fetchInvidiousJson(`videos/${videoId}`, {});
   },
 };
 
@@ -242,6 +277,8 @@ export const YouTubeMonitor: React.FC = () => {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [infoMsg, setInfoMsg] = useState<string | null>(null);
+  const [metubeBusy, setMetubeBusy] = useState(false);
   
   // 频道详情
   const [selectedChannel, setSelectedChannel] = useState<any>(null);
@@ -280,12 +317,27 @@ export const YouTubeMonitor: React.FC = () => {
     localStorage.setItem('YOUTUBE_MONITORED_CHANNELS', JSON.stringify(monitoredChannels));
   }, [monitoredChannels]);
 
+  const queueMetubeDownload = async (url: string) => {
+    setMetubeBusy(true);
+    setInfoMsg(null);
+    setSearchError(null);
+    try {
+      await metubeAddToQueue(url);
+      setInfoMsg('已提交到 MeTube 下载队列，请到 Railway 上的 MeTube 页面查看进度。');
+    } catch (e: unknown) {
+      setSearchError(e instanceof Error ? e.message : 'MeTube 提交失败');
+    } finally {
+      setMetubeBusy(false);
+    }
+  };
+
   // 搜索频道
   const searchChannels = async () => {
     if (!searchQuery.trim()) return;
     
     setIsSearching(true);
     setSearchError(null);
+    setInfoMsg(null);
     try {
       let results: any[] = [];
       
@@ -342,6 +394,7 @@ export const YouTubeMonitor: React.FC = () => {
     
     setIsParsing(true);
     setParseError(null);
+    setInfoMsg(null);
     setParsedVideo(null);
     
     try {
@@ -501,12 +554,21 @@ export const YouTubeMonitor: React.FC = () => {
               {formatNumber(parseViewCount(viewCount || '0'))}
             </span>
           </div>
-          <div className="mt-2 flex gap-2">
+          <div className="mt-2 flex flex-wrap gap-2">
             <button
+              type="button"
               onClick={() => setVideoUrl(url)}
               className="px-3 py-1 text-xs bg-emerald-500/10 text-emerald-400 rounded-md hover:bg-emerald-500/20 transition-colors"
             >
               解析
+            </button>
+            <button
+              type="button"
+              disabled={metubeBusy}
+              onClick={() => queueMetubeDownload(url)}
+              className="px-3 py-1 text-xs bg-amber-500/10 text-amber-400 rounded-md hover:bg-amber-500/20 transition-colors disabled:opacity-50"
+            >
+              {metubeBusy ? '提交中…' : 'MeTube 下载'}
             </button>
             <a
               href={url}
@@ -647,27 +709,54 @@ export const YouTubeMonitor: React.FC = () => {
               )}
             </div>
 
-            {/* Railway/Invidious 说明 */}
+            {/* Invidious 代理 + MeTube 说明 */}
             <div className="space-y-2">
               <label className="block text-xs text-slate-400 mb-1.5 flex items-center gap-2">
                 <Rss className="w-4 h-4 text-amber-400" />
-                备用 API 服务
+                无 Key 时的数据与下载
               </label>
-              <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-3 text-xs text-slate-400 space-y-1">
-                <p>不填写上方 API Key 时自动使用备用服务</p>
-                <p className="text-slate-500">Railway 部署 MeTube 后可配置为专属后端</p>
+              <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-3 text-xs text-slate-400 space-y-2">
+                <p>
+                  <span className="text-slate-300">搜索 / 频道 / 解析</span>：走本站{' '}
+                  <code className="text-amber-300/90">/api/invidious</code> 代理到 Invidious（Vercel
+                  环境变量 <code className="text-slate-300">INVIDIOUS_UPSTREAM_URL</code>）。
+                </p>
+                <p className="text-slate-500">
+                  MeTube <strong className="text-slate-400">没有</strong> Invidious 的{' '}
+                  <code>/api/v1</code> 接口，不能把 MeTube 域名填进 Invidious 上游。
+                </p>
+                <p>
+                  <span className="text-slate-300">加入下载队列</span>：走{' '}
+                  <code className="text-amber-300/90">/api/metube/add</code>，需在 Vercel 配置{' '}
+                  <code className="text-slate-300">METUBE_URL</code>（你的 Railway MeTube 根地址）。
+                </p>
                 <a
                   href="https://railway.app/deploy/metube-1"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-amber-400 hover:text-amber-300 flex items-center gap-1 mt-2"
+                  className="text-amber-400 hover:text-amber-300 flex items-center gap-1"
                 >
                   <ExternalLink className="w-3 h-3" />
-                  部署专属 Railway 后端
+                  Railway 部署 MeTube
                 </a>
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* 成功提示 */}
+      {infoMsg && (
+        <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3 flex items-center gap-2 text-emerald-300 text-sm">
+          <Check className="w-4 h-4 flex-shrink-0" />
+          {infoMsg}
+          <button
+            type="button"
+            onClick={() => setInfoMsg(null)}
+            className="ml-auto text-emerald-400 hover:text-emerald-200"
+          >
+            ×
+          </button>
         </div>
       )}
 
@@ -873,6 +962,15 @@ export const YouTubeMonitor: React.FC = () => {
                     观看视频
                   </a>
                   <button
+                    type="button"
+                    disabled={metubeBusy}
+                    onClick={() => queueMetubeDownload(parsedVideo.url)}
+                    className="px-3 py-1.5 bg-amber-500/10 text-amber-400 rounded-md text-xs hover:bg-amber-500/20 transition-colors flex items-center gap-1 disabled:opacity-50"
+                  >
+                    {metubeBusy ? '提交中…' : 'MeTube 下载'}
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => copyToClipboard(parsedVideo.url, 'url')}
                     className="px-3 py-1.5 bg-slate-700/50 text-slate-300 rounded-md text-xs hover:bg-slate-700 transition-colors flex items-center gap-1"
                   >

@@ -1,157 +1,106 @@
-# YouTube 频道监控 - Railway 部署指南
+# YouTube 频道监控：Railway（MeTube）+ Vercel 配置说明
 
-本指南说明如何在 Railway 上部署 YouTube 监控后端服务（MeTube）。
+## 重要区分
 
-## 方案说明
+| 服务 | 作用 | 与前端的关系 |
+|------|------|----------------|
+| **MeTube**（Railway） | 下载队列：`POST /add` | 通过 Vercel **`METUBE_URL`** + 本站 **`/api/metube/add`** 代理调用 |
+| **Invidious**（公共或自建） | 元数据：`/api/v1/search`、`/api/v1/videos/...` | 通过 Vercel **`INVIDIOUS_UPSTREAM_URL`** + 本站 **`/api/invidious`** 代理调用 |
 
-### 架构
-```
-┌─────────────────┐     ┌──────────────────┐
-│  Vercel 前端    │────▶│  Railway 后端    │
-│  (用户浏览器)   │     │  (MeTube/Invidious)│
-└─────────────────┘     └──────────────────┘
-        │                        │
-        │                        │
-   YouTube Data              YouTube
-   API v3 (官方)            (无Key)
-```
-
-### API 优先级
-1. **优先使用官方 API**（`VITE_YOUTUBE_API_KEY`）
-2. **无官方 Key 时使用 Railway 后端**（Invidious/MeTube）
+**MeTube 不提供 Invidious 的 `/api/v1` 接口**，不能把 MeTube 域名当作 Invidious 上游，否则搜索/解析会失败。
 
 ---
 
-## 部署步骤
-
-### 1. 部署 MeTube 到 Railway
-
-MeTube 是开箱即用的 YouTube 下载/监控服务，支持 Invidious API。
-
-**一键部署：**
-
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/deploy/metube-1)
-
-**或者手动部署：**
-
-1. 访问 [railway.app](https://railway.app)
-2. 创建新项目，选择 "Deploy from GitHub repo"
-3. 填入仓库: `alexta69/metube`
-4. Railway 会自动检测 Dockerfile 并部署
-
-### 2. 配置持久化存储
-
-MeTube 需要持久化存储来保存下载的视频：
-
-1. 在 Railway 项目中，点击部署的服务
-2. 进入 "Storage" 标签
-3. 添加 Volume，挂载路径: `/downloads`
-4. 重新部署
-
-### 3. 获取 API 地址
-
-部署完成后，Railway 会提供公共域名：
+## 架构（当前实现）
 
 ```
-https://metube-xxxxx.up.railway.app
+浏览器
+  ├─ 有 VITE_YOUTUBE_API_KEY → 直连 Google YouTube Data API v3
+  └─ 无 Key → GET 同源 /api/invidious?path=... → Vercel 转发到 INVIDIOUS_UPSTREAM_URL
+
+下载队列
+  └─ POST 同源 /api/metube/add → Vercel 转发到 METUBE_URL/add（Railway MeTube）
 ```
 
-### 4. 更新 Vercel 环境变量
+浏览器**不能**直连大多数公共 Invidious（CORS），因此无官方 Key 时必须依赖 **Vercel Serverless 代理**。
 
-在 Vercel 项目设置中添加：
+---
+
+## 1. Railway：部署 MeTube
+
+1. 使用模板部署：[MeTube on Railway](https://railway.app/deploy/metube-1)
+2. 建议挂载 Volume 到 `/downloads`（持久化下载文件）
+3. 记录公网根地址，例如：`https://alexta69metubelatest-production-8283.up.railway.app`  
+   （MeTube 默认监听容器内端口，Railway 会映射到 443，**无需**在前端写 8081）
+
+---
+
+## 2. Vercel：环境变量
+
+在项目 **Environment Variables** 中配置（**不要**加 `VITE_` 前缀）：
 
 ```bash
-VITE_INVIDIOUS_BASE_URL=https://metube-xxxxx.up.railway.app
+# 必填（下载队列）：你的 Railway MeTube 根地址，无末尾斜杠
+METUBE_URL=https://alexta69metubelatest-production-8283.up.railway.app
+
+# 选填（无 YouTube Key 时的元数据上游；勿填 MeTube）
+INVIDIOUS_UPSTREAM_URL=https://invidious.projectsegfau.lt
 ```
 
-### 5. 更新前端代码（可选）
+可选（全站默认官方 Key）：
 
-如果使用 Railway 后端而非公共 Invidious 实例，修改 `YouTubeMonitor.tsx` 中的 `INVIDIOUS_INSTANCES` 数组：
-
-```typescript
-const INVIDIOUS_INSTANCES = [
-  'https://metube-xxxxx.up.railway.app',  // 你的 Railway 地址
-];
+```bash
+VITE_YOUTUBE_API_KEY=你的_YouTube_Data_API_Key
 ```
+
+部署后重新 **Redeploy**，Serverless 才能读到 `METUBE_URL` / `INVIDIOUS_UPSTREAM_URL`。
+
+**请删除** 旧的错误变量（若曾设置）：
+
+- `VITE_INVIDIOUS_BASE_URL` 指向 MeTube — 已废弃且逻辑错误。
 
 ---
 
-## Railway 免费额度
+## 3. 本地开发
 
-| 资源 | 免费额度 |
-|------|----------|
-| 每月运行时间 | 500 小时 |
-| 磁盘存储 | 1 GB |
-| 带宽 | 100 GB/月 |
+在项目根目录 `.env`（不要提交）中同样配置：
 
-**注意**：免费账户每月 500 小时，约合 20 天不停运行。超出后服务会休眠，但重新唤醒后配置和数据会保留。
+```bash
+INVIDIOUS_UPSTREAM_URL=https://invidious.projectsegfau.lt
+METUBE_URL=https://你的-metube.up.railway.app
+```
+
+`npm run dev` 时，Vite 会提供与生产类似的 `/api/invidious` 与 `/api/metube/add` 代理。
 
 ---
 
-## MeTube 主要 API 端点
+## 4. MeTube HTTP API 参考
 
-部署后可通过以下端点访问：
+向本站代理发送：
 
-### Invidious API
+`POST /api/metube/add`，`Content-Type: application/json`，body 示例：
 
-```
-# 搜索
-GET /api/v1/search?q=关键词&type=channel
-
-# 频道视频
-GET /api/v1/channels/{channelId}/videos
-
-# 视频详情
-GET /api/v1/videos/{videoId}
+```json
+{
+  "url": "https://www.youtube.com/watch?v=xxxxxxxxxxx",
+  "quality": "best",
+  "format": "any",
+  "auto_start": true
+}
 ```
 
-### MeTube Web UI
-
-```
-# Web 界面
-GET /
-
-# 下载视频
-POST /download
-```
+Vercel 会转发到 `METUBE_URL/add`。
 
 ---
 
-## 常见问题
+## 5. 可选：自建 Invidious 在 Railway
 
-### Q: Railway 部署后服务休眠了？
-A: 免费账户在闲置后会休眠。访问 URL 会自动唤醒，通常 10-30 秒恢复。
-
-### Q: 如何提高服务可用性？
-A: 可以使用 UptimeRobot 等免费监控服务定期 ping 你的 Railway URL，防止休眠。
-
-### Q: 支持哪些视频网站？
-A: MeTube 基于 yt-dlp，支持 1000+ 网站，包括 YouTube、Bilibili、TikTok 等。
-
-### Q: 如何更新 MeTube 版本？
-A: 在 Railway 中触发重新部署，会自动拉取最新版本。
-
----
-
-## 替代方案：使用公共 Invidious 实例
-
-如果不想自建 Railway 服务，可以使用公共 Invidious 实例（无需部署）：
-
-```typescript
-const INVIDIOUS_INSTANCES = [
-  'https://invidious.privacyredirect.com',
-  'https://yewtu.be',
-  'https://invidious.projectsegfau.lt',
-];
-```
-
-**注意**：公共实例可能不稳定，建议自建 Railway 服务。
+若公共 Invidious 不稳定，可单独部署 Invidious，将 `INVIDIOUS_UPSTREAM_URL` 改为你的 Invidious 根地址（仍**不要**与 MeTube 混用）。
 
 ---
 
 ## 相关链接
 
-- [MeTube GitHub](https://github.com/alexta69/metube)
-- [Railway 官网](https://railway.app)
-- [Invidious 官方实例列表](https://docs.invidious.io/instances/)
-- [yt-dlp 支持网站列表](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md)
+- [MeTube](https://github.com/alexta69/metube)
+- [Invidious](https://github.com/iv-org/invidious)
+- [YouTube Data API v3](https://developers.google.com/youtube/v3)
