@@ -2,12 +2,44 @@ import path from 'path';
 import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { buildMetubeCookiesMultipart } from './api/metube/_multipartCookies';
-import {
-  INVIDIOUS_FETCH_HEADERS,
-  INVIDIOUS_UPSTREAM_FETCH_MS,
-  listInvidiousUpstreamBases,
-  shouldTryNextInvidiousUpstream,
-} from './api/invidiousShared';
+
+// ─── Invidious 代理内部函数（与 api/invidious.ts 保持同步）────────────────────
+
+const INVIDIOUS_FETCH_HEADERS_DEV: Record<string, string> = {
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  Accept: 'application/json, text/plain, */*',
+  'Accept-Language': 'en-US,en;q=0.9',
+};
+const FETCH_TIMEOUT_MS = 2200;
+const MAX_UPSTREAMS = 4;
+
+function listInvidiousUpstreamBases(env: Record<string, string>): string[] {
+  const urlsEnv = (env.INVIDIOUS_UPSTREAM_URLS || '').trim();
+  if (urlsEnv) {
+    return urlsEnv.split(',').map((s) => s.trim().replace(/\/$/, '')).filter(Boolean).slice(0, MAX_UPSTREAMS);
+  }
+  const primary = (env.INVIDIOUS_UPSTREAM_URL || 'https://invidious.projectsegfau.lt').replace(/\/$/, '');
+  const extra = (env.INVIDIOUS_UPSTREAM_FALLBACKS || '')
+    .split(',')
+    .map((s) => s.trim().replace(/\/$/, ''))
+    .filter(Boolean);
+  return [...new Set([primary, ...extra])].slice(0, MAX_UPSTREAMS);
+}
+
+function looksLikeJsonBody(ct: string, prefix: string): boolean {
+  if (ct.toLowerCase().includes('json')) return true;
+  const p = prefix.trimStart();
+  return p.startsWith('{') || p.startsWith('[');
+}
+
+function shouldTryNext(status: number, ct: string, prefix: string, hasMore: boolean): boolean {
+  if (!hasMore) return false;
+  if (status >= 500) return true;
+  if ([401, 403, 404, 429, 502, 503, 504].includes(status)) return true;
+  if (status >= 200 && status < 300 && !looksLikeJsonBody(ct, prefix)) return true;
+  return false;
+}
 
 /**
  * 开发环境：绕过外链图片 CORS（如 Cloudflare R2），供 RunningHub 上传前拉取图片字节
@@ -51,13 +83,13 @@ function invidiousProxyDevPlugin(opts: {
             const upstream = candidates[i];
             const target = `${upstream}/api/v1/${sub}${qs ? `?${qs}` : ''}`;
             const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), INVIDIOUS_UPSTREAM_FETCH_MS);
+            const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
             let r: Response;
             try {
               r = await fetch(target, {
                 method: req.method,
                 signal: ctrl.signal,
-                headers: INVIDIOUS_FETCH_HEADERS,
+                headers: INVIDIOUS_FETCH_HEADERS_DEV,
                 redirect: 'follow',
               });
             } catch {
@@ -73,7 +105,7 @@ function invidiousProxyDevPlugin(opts: {
             const ct = r.headers.get('content-type') || '';
             const prefix = buf.slice(0, 256).toString('utf8');
             const hasMore = i < candidates.length - 1;
-            if (shouldTryNextInvidiousUpstream(r.status, ct, prefix, hasMore)) {
+            if (shouldTryNext(r.status, ct, prefix, hasMore)) {
               lastStatus = r.status;
               lastBuf = buf;
               lastCt = ct;
