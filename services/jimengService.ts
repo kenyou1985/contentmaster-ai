@@ -16,6 +16,7 @@ export interface JimengImageGenerationOptions {
   num_images?: number;
   width?: number;
   height?: number;
+  model?: string; // 如 jimeng-5.0 / jimeng-4.0
   // 即梦API支持的参数
   ratio?: string; // 如 "9:16", "16:9", "1:1" 等
   resolution?: string; // 如 "1k", "2k", "4k"
@@ -118,6 +119,7 @@ export async function generateJimengImages(
     num_images = 1, 
     width = 1080, 
     height = 1920, 
+    model = 'jimeng-5.0',
     ratio, 
     resolution,
     images,
@@ -190,7 +192,7 @@ export async function generateJimengImages(
 
     const jsonData: Record<string, unknown> = {
       prompt,
-      model: 'jimeng-5.0',
+      model,
       images: images!,
       sample_strength,
     };
@@ -292,7 +294,7 @@ export async function generateJimengImages(
   // 即梦API需要的参数格式
   const data: any = {
     prompt,
-    model: 'jimeng-5.0',
+    model,
   };
   
   // 即梦API只支持 ratio 和 resolution，不支持 width/height

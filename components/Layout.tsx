@@ -70,7 +70,7 @@ export const Layout: React.FC<LayoutProps> = ({
               >
                 <div className="flex items-center gap-2">
                     <PenTool size={14} />
-                    改写工具
+                    深度洗稿
                 </div>
               </button>
               <button

@@ -402,7 +402,8 @@ const IMAGE_MODELS = [
   { id: 'banana-2', name: 'Banana 2 (Gemini 3 Pro)', endpoint: '/v1/images/generations', apiModelName: 'gemini-3-pro-image-preview', supportsImageToImage: false },
   { id: 'grok-3-image', name: 'Grok 3 Image', endpoint: '/v1/chat/completions', supportsImageToImage: false },
   { id: 'grok-4-image', name: 'Grok 4 Image', endpoint: '/v1/chat/completions', supportsImageToImage: false },
-  { id: 'jimeng', name: '即梦 5.0 (Jimeng)', endpoint: 'jimeng', isJimeng: true, supportsImageToImage: true },
+  { id: 'jimeng-5.0', name: '即梦 5.0 (Jimeng)', endpoint: 'jimeng', isJimeng: true, supportsImageToImage: true, jimengModel: 'jimeng-5.0' },
+  { id: 'jimeng-4.0', name: '即梦 4.0 (Jimeng)', endpoint: 'jimeng', isJimeng: true, supportsImageToImage: true, jimengModel: 'jimeng-4.0' },
 ];
 
 // 视频模型配置（仅 RunningHub）
@@ -494,7 +495,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   /** 避免一键成片/队列 pipeline 内 await 后仍读到旧的 shots 闭包（误判「未生成出图片」） */
   const shotsRef = useRef<Shot[]>(shots);
   shotsRef.current = shots;
-  const [selectedImageModel, setSelectedImageModel] = useState('jimeng');
+  const [selectedImageModel, setSelectedImageModel] = useState('jimeng-5.0');
   const [selectedVideoModel, setSelectedVideoModel] = useState(VIDEO_MODELS[0].id);
   const [selectedImageRatio, setSelectedImageRatio] = useState('16:9'); // 默认横屏 16:9
   const [selectedStyle, setSelectedStyle] = useState(() => {
@@ -2103,7 +2104,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           prompt: finalPrompt,
           num_images: generateImageCount,
           width,
-          height
+          height,
+          model: selectedModel.jimengModel || 'jimeng-5.0'
         };
         
         if (primaryChar) {
@@ -3355,7 +3357,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           </div>
 
 
-          {selectedImageModel === 'jimeng' && (
+          {selectedImageModel.startsWith('jimeng') && (
             <div className="w-full min-w-0">
               <label className="text-[10px] text-slate-500 mb-0.5 block flex items-center gap-1">
                 即梦 SESSION_ID

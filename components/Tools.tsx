@@ -97,6 +97,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   const scriptShotMode = activeTask.scriptShotMode || 'auto';
   const scriptShotCountRaw = activeTask.scriptShotCount;
   const scriptShotCount = Math.min(100, Math.max(10, scriptShotCountRaw || 10));
+  const isDeepRewriteMode = [ToolMode.REWRITE, ToolMode.EXPAND, ToolMode.POLISH].includes(mode);
   const lastProgressUpdateRef = useRef<number>(0);
   const getToolsHistoryKey = (m: ToolMode, n: NicheType) => {
     if (m === ToolMode.SCRIPT) return `${ToolMode.SCRIPT}_GLOBAL`;
@@ -182,6 +183,43 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   const setInputText = (text: string) => {
     updateActiveTask({ inputText: text });
   };
+
+  const isChineseHeavy = (text: string) => (text.match(/[\u4e00-\u9fff]/g) || []).length > 25;
+
+  const quickDetectBestNiche = (text: string): { niche: NicheType; score: number; reason: string } | null => {
+    const t = text.toLowerCase();
+    if (!text.trim() || text.trim().length < 80) return null;
+
+    const rules: Array<{ niche: NicheType; words: string[]; reason: string }> = [
+      { niche: NicheType.MINDFUL_PSYCHOLOGY, words: ['dog', 'puppy', 'pet parent', 'canine', 'bark', 'anxiety', 'reactive dog'], reason: '检测到治愈心理学（宠物心理）特征词' },
+      { niche: NicheType.PSYCHOLOGY, words: ['心理', '创伤', '焦虑', '抑郁', '人格', '认知', '情绪管理'], reason: '检测到心理学高频词' },
+      { niche: NicheType.FINANCE_CRYPTO, words: ['股票', '基金', '投资', '资产', '估值', '巴菲特', '芒格', '比特币', 'crypto'], reason: '检测到投资财经相关词' },
+      { niche: NicheType.GENERAL_VIRAL, words: ['新闻', '热点', '国际', '地缘', '关税', '贸易战', '突发'], reason: '检测到新闻热点相关词' },
+      { niche: NicheType.TCM_METAPHYSICS, words: ['中医', '玄学', '风水', '气血', '经络', '倪海厦', '阴阳'], reason: '检测到中医玄学相关词' },
+      { niche: NicheType.YI_JING_METAPHYSICS, words: ['易经', '卦', '爻', '八卦', '命理', '天干地支'], reason: '检测到易经命理相关词' },
+      { niche: NicheType.PHILOSOPHY_WISDOM, words: ['哲学', '意义', '存在', '人生智慧', '觉醒'], reason: '检测到哲学智慧相关词' },
+      { niche: NicheType.EMOTION_TABOO, words: ['情感', '恋爱', '分手', '暧昧', '禁忌', '婚姻'], reason: '检测到情感关系相关词' },
+      { niche: NicheType.RICH_MINDSET, words: ['富人思维', '商业认知', '赚钱', '财富自由', '老板思维'], reason: '检测到富人思维相关词' },
+      { niche: NicheType.STORY_REVENGE, words: ['复仇', '反击', '剧情', '角色', '冲突', '叙事'], reason: '检测到复仇故事相关词' },
+    ];
+
+    let best: { niche: NicheType; score: number; reason: string } | null = null;
+    for (const r of rules) {
+      let score = 0;
+      for (const w of r.words) {
+        if (t.includes(w.toLowerCase())) score += 1;
+      }
+      if (score > 0 && (!best || score > best.score)) {
+        best = { niche: r.niche, score, reason: r.reason };
+      }
+    }
+
+    if (!best && !isChineseHeavy(text) && /dog|pet|canine|puppy/.test(t)) {
+      return { niche: NicheType.MINDFUL_PSYCHOLOGY, score: 1, reason: '检测到英文宠物心理语料' };
+    }
+
+    return best && best.score >= 2 ? best : null;
+  };
   
   // 设置输出文本（更新当前任务）
   const setOutputText = (text: string) => {
@@ -211,8 +249,69 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   const [shotPromptProgress, setShotPromptProgress] = useState<{ success: number; failed: number; hint: string } | null>(null);
   const shotSegmentsRef = useRef<string[] | null>(null);
   const originalScriptInputRef = useRef<string>('');
+
+  // 生深度洗稿：5段分段编辑流
+  const [rewriteSegments, setRewriteSegments] = useState<string[]>(['', '', '', '', '']);
+  const [segmentOutputs, setSegmentOutputs] = useState<string[]>(['', '', '', '', '']);
+  const [segmentGenerating, setSegmentGenerating] = useState<boolean[]>([false, false, false, false, false]);
+  const [mergedOutput, setMergedOutput] = useState<string>('');
+  const [painPointText, setPainPointText] = useState<string>('');
+  const [terminalLog, setTerminalLog] = useState<string>('等待任务...');
+  const [rewriteOutputLanguage, setRewriteOutputLanguage] = useState<'source' | 'zh' | 'en' | 'ja' | 'ko' | 'es' | 'de' | 'hi'>('source');
+  const [allSegmentsDoneNotified, setAllSegmentsDoneNotified] = useState(false);
+  const [autoMatchedNiche, setAutoMatchedNiche] = useState<{ niche: NicheType; score: number; reason: string } | null>(null);
+  const [autoSwitchNicheEnabled, setAutoSwitchNicheEnabled] = useState(true);
+  const [isOptimizingMerge, setIsOptimizingMerge] = useState(false);
+  const [outlineText, setOutlineText] = useState<string>('');
+  const [outlineItems, setOutlineItems] = useState<string[]>(['', '', '', '', '']);
+  const [isExtractingOutline, setIsExtractingOutline] = useState(false);
   
   // 创建新任务
+  React.useEffect(() => {
+    if ([ToolMode.REWRITE, ToolMode.EXPAND, ToolMode.POLISH].includes(mode) && outputText.trim()) {
+      syncFiveSegmentStateFromOutput(outputText, inputText);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [outputText, mode]);
+
+  React.useEffect(() => {
+    if (!isDeepRewriteMode) return;
+    const allDone = segmentOutputs.every((s, i) => {
+      const base = rewriteSegments[i]?.trim() || '';
+      const out = s?.trim() || '';
+      return out.length > 0 && out !== base;
+    });
+    if (allDone && !allSegmentsDoneNotified) {
+      setAllSegmentsDoneNotified(true);
+      const modeName = mode === ToolMode.EXPAND ? '深度扩写' : mode === ToolMode.POLISH ? '润色优化' : '深度洗稿';
+      toast.success(`5段${modeName}任务已全部完成，可直接导出最终合并文案。`, 6000);
+      appendTerminal(`全部分段任务已完成（${modeName}）。`);
+    }
+    if (!allDone && allSegmentsDoneNotified) {
+      setAllSegmentsDoneNotified(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [segmentOutputs, rewriteSegments, isDeepRewriteMode, mode]);
+
+  React.useEffect(() => {
+    const detected = quickDetectBestNiche(inputText);
+    setAutoMatchedNiche(detected);
+    if (
+      detected &&
+      autoSwitchNicheEnabled &&
+      detected.niche !== niche &&
+      detected.score >= 3 &&
+      !isGenerating
+    ) {
+      updateActiveTask({ niche: detected.niche });
+      if (isDeepRewriteMode) {
+        appendTerminal(`已自动匹配赛道：${NICHES[detected.niche]?.name || detected.niche}`);
+      }
+      toast.info(`已为你自动匹配赛道：${NICHES[detected.niche]?.name || detected.niche}`, 3500);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inputText, autoSwitchNicheEnabled, niche, isGenerating, isDeepRewriteMode]);
+
   const createNewTask = () => {
     const newTask: Task = {
       id: `task-${Date.now()}`,
@@ -248,6 +347,69 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   // 切换任务
   const switchTask = (taskId: string) => {
     setActiveTaskId(taskId);
+  };
+
+  const splitTextIntoFiveSegments = (text: string): string[] => {
+    const fallback = ['', '', '', '', ''];
+    const cleaned = text.replace(/\s+/g, ' ').trim();
+    if (!cleaned) return fallback;
+
+    const sentenceSplitPattern = /(?<=[。！？.!?])\s+/;
+    const sentences = cleaned.split(sentenceSplitPattern).filter(Boolean);
+    if (sentences.length <= 5) {
+      const out = [...sentences];
+      while (out.length < 5) out.push('');
+      return out.slice(0, 5);
+    }
+
+    const totalChars = cleaned.length;
+    const target = Math.max(80, Math.round(totalChars / 5));
+    const result: string[] = [];
+    let buf = '';
+
+    for (const sentence of sentences) {
+      const next = buf ? `${buf} ${sentence}` : sentence;
+      if (next.length > target && result.length < 4 && buf) {
+        result.push(buf.trim());
+        buf = sentence;
+      } else {
+        buf = next;
+      }
+    }
+    if (buf.trim()) result.push(buf.trim());
+
+    while (result.length < 5) result.push('');
+    if (result.length > 5) {
+      const head = result.slice(0, 4);
+      const tail = result.slice(4).join(' ').trim();
+      return [...head, tail];
+    }
+    return result;
+  };
+
+  const mergeFiveSegments = (segs: string[]): string => {
+    return segs.map(s => s.trim()).filter(Boolean).join('\n\n');
+  };
+
+  const calcSimilarityRough = (a: string, b: string): number => {
+    const sa = (a || '').replace(/\s+/g, '').trim();
+    const sb = (b || '').replace(/\s+/g, '').trim();
+    if (!sa || !sb) return 0;
+    const short = sa.length <= sb.length ? sa : sb;
+    const long = sa.length > sb.length ? sa : sb;
+    let hit = 0;
+    const step = Math.max(2, Math.floor(short.length / 40));
+    for (let i = 0; i < short.length; i += step) {
+      const chunk = short.slice(i, i + 12);
+      if (chunk.length >= 6 && long.includes(chunk)) hit += 1;
+    }
+    const total = Math.max(1, Math.ceil(short.length / step));
+    return hit / total;
+  };
+
+  const appendTerminal = (msg: string) => {
+    const stamp = new Date().toLocaleTimeString();
+    setTerminalLog(prev => `${prev}\n[${stamp}] ${msg}`.trim());
   };
 
   const segmentTextByShots = (text: string, targetShots: number): string[] => {
@@ -1397,20 +1559,23 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   const handleExtractTranscript = async () => {
     const videoId = extractYouTubeVideoId(inputText.trim());
     if (!videoId) {
-      setOutputText('❌ 无法识别YouTube视频链接，请检查链接格式。');
+      toast.error('无法识别 YouTube 视频链接，请检查链接格式');
       return;
     }
     
     setIsExtractingTranscript(true);
-    setOutputText('⏳ 正在提取YouTube视频字幕，请稍候...');
+    toast.info('正在提取 YouTube 视频字幕，请稍候...', 3500);
     
     try {
       const result = await fetchYouTubeTranscript(videoId, gasApiUrl || undefined);
       
       if (result.success && result.transcript) {
-        // 将字幕显示在输入框中
+        // 将字幕显示在输入框中，并在深度洗稿模式下自动拆分5段
         setInputText(result.transcript);
-        setOutputText('✅ 字幕提取成功！已自动填入输入框，您可以选择处理模式后点击生成按钮。');
+        if (isDeepRewriteMode) {
+          await initializeFiveSegmentsFromText(result.transcript, 'YouTube 字幕提取成功，已自动提炼大纲并拆分为5段。');
+        }
+        toast.success('字幕提取成功！已自动填入输入框。', 5000);
         console.log(`[Tools] YouTube字幕提取成功，长度: ${result.transcript.length}字`);
       } else {
         // 字幕提取失败，提供手动操作指南
@@ -1440,11 +1605,12 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
 
 💡 提示：手动提取后，自动字幕功能仍在开发调试中。`;
         
-        setOutputText(manualGuide);
+        toast.error(result.error || '自动提取字幕失败，请改为手动提取', 6000);
+        appendTerminal('自动提取字幕失败，已提示手动提取路径。');
         console.error('[Tools] YouTube字幕提取失败:', result.error);
       }
     } catch (error: any) {
-      setOutputText(`❌ 字幕提取异常：${error.message}\n\n请尝试手动复制YouTube字幕。`);
+      toast.error(`字幕提取异常：${error.message || '未知错误'}`, 6000);
       console.error('[Tools] YouTube字幕提取异常:', error);
     } finally {
       setIsExtractingTranscript(false);
@@ -3852,64 +4018,353 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
     }
   };
 
+  const syncFiveSegmentStateFromOutput = (text: string, sourceInput?: string) => {
+    const t = (text || '').trim();
+    if (!t) return;
+    if (/^✅|^❌|^⏳/.test(t) || /字幕提取成功|YouTube|自动提取字幕失败|手动提取/.test(t)) {
+      return;
+    }
+
+    const baseInput = (sourceInput ?? inputText) || '';
+    const baseSegs = splitTextIntoFiveSegments(baseInput);
+    const outSegs = splitTextIntoFiveSegments(t);
+    setRewriteSegments(baseSegs);
+    setSegmentOutputs(outSegs.map((s, i) => s || baseSegs[i] || ''));
+    setMergedOutput(mergeFiveSegments(outSegs));
+  };
+
+  const parseOutlineToFiveItems = (outline: string): string[] => {
+    const lines = outline
+      .split('\n')
+      .map(l => l.replace(/^\s*[-*\d一二三四五六七八九十\.、:：\)\(]+\s*/, '').trim())
+      .filter(Boolean);
+    const items = lines.slice(0, 5);
+    while (items.length < 5) items.push('');
+    return items;
+  };
+
+  const extractOutlineAndInitializeFiveSegments = async (text: string): Promise<string[]> => {
+    const raw = text.trim();
+    if (!raw) {
+      toast.warning('请先输入原文');
+      return ['', '', '', '', ''];
+    }
+
+    if (!apiKey?.trim()) {
+      const segs = splitTextIntoFiveSegments(raw);
+      setOutlineItems(segs.map((s, i) => `第${i + 1}段要点：${(s || '').slice(0, 36)}...`));
+      setOutlineText(segs.map((s, i) => `${i + 1}. 第${i + 1}段要点：${(s || '').slice(0, 60)}`).join('\n'));
+      setRewriteSegments(segs);
+      setSegmentOutputs(segs);
+      setMergedOutput(mergeFiveSegments(segs));
+      appendTerminal('未配置 API Key，已使用本地规则拆分并生成简版大纲。');
+      return segs;
+    }
+
+    setIsExtractingOutline(true);
+    appendTerminal('正在提炼原文5段大纲...');
+    try {
+      initializeGemini(apiKey, { provider });
+      let outline = '';
+      const prompt = `请将以下原文提炼为严格5条分段大纲（第1段-第5段），每条1-2句，按原文逻辑推进，不要遗漏核心观点。只输出5条，不要解释。\n\n原文：\n${raw}`;
+      await streamContentGeneration(prompt, '你是专业中文总编，只输出5条清晰大纲。', (chunk) => {
+        outline += chunk;
+        setOutlineText(outline);
+      });
+
+      const parsed = parseOutlineToFiveItems(outline || raw);
+      const segs = splitTextIntoFiveSegments(raw);
+      setOutlineItems(parsed);
+      setOutlineText(outline.trim());
+      setRewriteSegments(segs);
+      setSegmentOutputs(segs);
+      setMergedOutput(mergeFiveSegments(segs));
+      setAllSegmentsDoneNotified(false);
+      appendTerminal('5段大纲提炼完成，已初始化分段。');
+      return segs;
+    } catch (e: any) {
+      const segs = splitTextIntoFiveSegments(raw);
+      setOutlineItems(segs.map((s, i) => `第${i + 1}段要点：${(s || '').slice(0, 36)}...`));
+      setOutlineText('大纲提炼失败，已回退本地拆分。');
+      setRewriteSegments(segs);
+      setSegmentOutputs(segs);
+      setMergedOutput(mergeFiveSegments(segs));
+      appendTerminal(`大纲提炼失败，已回退本地拆分：${e?.message || e}`);
+      return segs;
+    } finally {
+      setIsExtractingOutline(false);
+    }
+  };
+
+  const initializeFiveSegmentsFromText = async (text: string, logMessage?: string) => {
+    await extractOutlineAndInitializeFiveSegments(text);
+    appendTerminal(logMessage || '已将原文拆分为5段，可逐段洗稿/扩写/润色。');
+  };
+
+  const handleInitializeFiveSegments = async () => {
+    if (!inputText.trim()) {
+      toast.warning('请先输入需要处理的文案');
+      return;
+    }
+    await initializeFiveSegmentsFromText(inputText);
+  };
+
+  const handleClearDeepRewritePanel = () => {
+    setInputText('');
+    setPainPointText('');
+    setTerminalLog('等待任务...\n[系统] 已清空深度洗稿面板。');
+    setRewriteSegments(['', '', '', '', '']);
+    setSegmentOutputs(['', '', '', '', '']);
+    setSegmentGenerating([false, false, false, false, false]);
+    setMergedOutput('');
+    setOutlineText('');
+    setOutlineItems(['', '', '', '', '']);
+    setOutputText('');
+    toast.success('面板已清空');
+  };
+
+  const getRewriteTargetLanguageInstruction = (sampleText: string) => {
+    const map: Record<string, string> = {
+      source: '与原文保持同语言输出（原文中文就输出中文，原文英文就输出英文，其他语言同理）',
+      zh: '简体中文',
+      en: 'English',
+      ja: '日本語',
+      ko: '한국어',
+      es: 'Español',
+      de: 'Deutsch',
+      hi: 'हिन्दी',
+    };
+    if (rewriteOutputLanguage !== 'source') return map[rewriteOutputLanguage];
+    const detected = detectToolsInputLanguage(sampleText || inputText);
+    if (/English/i.test(detected)) return 'English';
+    return '与原文保持同语言输出（原文中文就输出中文，原文英文就输出英文，其他语言同理）';
+  };
+
+  const handleRegenerateSingleSegment = async (idx: number, forcedSource?: string) => {
+    const source = (forcedSource ?? rewriteSegments[idx] ?? '').trim();
+    if (!apiKey || !source) {
+      toast.warning('该分段为空，无法重新生成');
+      return;
+    }
+
+    const segSource = source;
+    setSegmentGenerating(prev => prev.map((v, i) => (i === idx ? true : v)));
+    appendTerminal(`开始生成第 ${idx + 1} 段...`);
+
+    try {
+      initializeGemini(apiKey, { provider });
+      let out = '';
+      const modeText =
+        mode === ToolMode.EXPAND ? '深度扩写' : mode === ToolMode.POLISH ? '润色优化' : '深度洗稿';
+      const targetLang = getRewriteTargetLanguageInstruction(segSource);
+      const segmentOutline = outlineItems[idx] || `第${idx + 1}段`;
+      const expectedMin = Math.max(Math.round(segSource.length * (mode === ToolMode.EXPAND ? 1.3 : 1.18)), segSource.length + 120);
+      const nicheName = NICHES[niche]?.name || niche;
+      const prompt = `请执行【${modeText}】，基于以下规则重写第${idx + 1}段：
+
+【赛道】${nicheName}
+【输出语言】${targetLang}
+【分段大纲】${segmentOutline}
+【评论区痛点/关键词】${painPointText || '无'}
+
+【原文分段】
+${segSource}
+
+【强制扩写/洗稿维度（必须覆盖）】
+1) 场景维度：补充时间/地点/人物/环境/使用场景
+2) 情绪维度：加入痛点、期待、感官体验、心理活动
+3) 细节维度：动作、状态、质感、真实细节
+4) 逻辑价值维度：原因、结果、长期价值、身份标签
+5) 对比反差维度：前后变化或现实反差
+6) 故事化维度：起因-经过-转折-结果
+7) 金句升华维度：结尾观点拔高并形成记忆点
+8) 数据权威维度：可用合理数字/案例增强可信度
+
+【硬性约束】
+- 不得照抄原句，不得只换同义词
+- 保留核心中心思想，但表达必须重构
+- 输出总字数至少 ${expectedMin} 字
+- 只输出正文，不要解释，不要标题
+`;
+      await streamContentGeneration(prompt, '你是资深多语种内容总编，必须深度重写并满足长度与维度约束。', (chunk) => {
+        out += chunk;
+        setSegmentOutputs(prev => prev.map((v, i) => (i === idx ? out : v)));
+      });
+
+      let finalOut = out.trim();
+      const rawSimilarity = calcSimilarityRough(segSource, finalOut);
+      const minLen = Math.max(Math.round(segSource.length * (mode === ToolMode.EXPAND ? 1.3 : 1.18)), segSource.length + 120);
+
+      if (finalOut.length < minLen || rawSimilarity > 0.72) {
+        appendTerminal(`第 ${idx + 1} 段触发二次强化（长度/相似度未达标）...`);
+        let pass2 = '';
+        const strengthenPrompt = `请对以下文本进行二次深度重写，必须显著区别于原文表达，同时保留核心观点。\n\n约束：\n1) 输出至少 ${minLen} 字\n2) 与原文表达相似度要明显降低\n3) 补充场景、细节、情绪、对比、故事与结论升华\n4) 保持语言：${targetLang}\n5) 只输出正文\n\n【原文】\n${segSource}\n\n【初稿】\n${finalOut}`;
+        await streamContentGeneration(
+          strengthenPrompt,
+          '你是严格编辑，必须进行深度改写，避免同义替换式输出。',
+          (chunk) => {
+            pass2 += chunk;
+            setSegmentOutputs(prev => prev.map((v, i) => (i === idx ? pass2 : v)));
+          }
+        );
+        if (pass2.trim()) finalOut = pass2.trim();
+      }
+
+      setSegmentOutputs(prev => {
+        const next = prev.map((v, i) => (i === idx ? finalOut : v));
+        setMergedOutput(mergeFiveSegments(next));
+        return next;
+      });
+      appendTerminal(`第 ${idx + 1} 段生成完成。`);
+    } catch (e: any) {
+      appendTerminal(`第 ${idx + 1} 段生成失败：${e?.message || e}`);
+      toast.error(`第 ${idx + 1} 段生成失败`);
+    } finally {
+      setSegmentGenerating(prev => prev.map((v, i) => (i === idx ? false : v)));
+    }
+  };
+
+  const handleAutoPilotGenerateFiveSegments = async () => {
+    if (!inputText.trim()) {
+      toast.warning('请先输入需要处理的文案');
+      return;
+    }
+
+    appendTerminal('开始自动一键：提炼大纲 -> 拆分5段 -> 并行生成...');
+    const sourceSegs = await extractOutlineAndInitializeFiveSegments(inputText);
+
+    const indexes = [0, 1, 2, 3, 4].filter(i => (sourceSegs[i] || '').trim().length > 0);
+    if (indexes.length === 0) {
+      toast.warning('没有可生成的分段内容');
+      return;
+    }
+
+    await Promise.allSettled(indexes.map((i) => handleRegenerateSingleSegment(i, sourceSegs[i])));
+    appendTerminal('全自动一键流程完成（含大纲提炼）。');
+  };
+
+  const handleMergeFinalWithPolish = async () => {
+    const rawMerged = mergeFiveSegments(segmentOutputs);
+    if (!rawMerged.trim()) {
+      toast.warning('没有可合并的内容');
+      return;
+    }
+
+    setMergedOutput(rawMerged);
+
+    if (!apiKey?.trim()) {
+      appendTerminal('未配置 API Key，已按原样合并。');
+      toast.info('已原样合并（未配置 API Key，跳过衔接优化）');
+      return;
+    }
+
+    setIsOptimizingMerge(true);
+    appendTerminal('开始对合并文案做上下文衔接清洗优化...');
+
+    try {
+      initializeGemini(apiKey, { provider });
+      let polished = '';
+      const modeText = mode === ToolMode.EXPAND ? '深度扩写' : mode === ToolMode.POLISH ? '润色优化' : '深度洗稿';
+      const targetLang = getRewriteTargetLanguageInstruction(rawMerged);
+      const sourceLen = (inputText || '').replace(/\s+/g, '').length;
+      const minFinalLen = Math.max(Math.round(sourceLen * (mode === ToolMode.EXPAND ? 1.3 : 1.2)), sourceLen + 300);
+      const prompt = `你将收到5段${modeText}结果，请执行“无缝衔接合并”。\n\n要求：\n1) 保留每段核心信息，不丢观点\n2) 清理重复、跳跃、断裂\n3) 在段间补上承上启下过渡句，让全文连贯自然\n4) 统一口吻与时态\n5) 输出语言：${targetLang}\n6) 最终字数至少 ${minFinalLen} 字（低于该长度必须主动补充）\n7) 只输出最终正文，不要解释\n\n【评论区痛点/关键词】\n${painPointText || '无'}\n\n【5段原文】\n${segmentOutputs.map((s, i) => `第${i + 1}段：\n${(s || '').trim() || '（空）'}`).join('\n\n')}`;
+
+      await streamContentGeneration(
+        prompt,
+        '你是专业总编，请做深度衔接清洗后输出可直接发布的完整正文。',
+        (chunk) => {
+          polished += chunk;
+          if (polished.trim()) setMergedOutput(polished);
+        }
+      );
+
+      if (polished.trim()) {
+        let finalText = polished.trim();
+        const sourceLen = (inputText || '').replace(/\s+/g, '').length;
+        const minFinalLen = Math.max(Math.round(sourceLen * (mode === ToolMode.EXPAND ? 1.3 : 1.2)), sourceLen + 300);
+
+        if (finalText.replace(/\s+/g, '').length < minFinalLen) {
+          appendTerminal('合并结果长度不足，开始自动补强扩写...');
+          let pass2 = '';
+          const strengthenPrompt = `请在保持原中心思想不变的前提下，对以下成稿进行二次补强扩写，必须超过 ${minFinalLen} 字，并增强叙事完整度、论证力度和情绪感染力。只输出正文。\n\n${finalText}`;
+          await streamContentGeneration(
+            strengthenPrompt,
+            '你是严格总编，请补强为完整长文，避免重复堆砌。',
+            (chunk) => {
+              pass2 += chunk;
+              if (pass2.trim()) setMergedOutput(pass2);
+            }
+          );
+          if (pass2.trim()) finalText = pass2.trim();
+        }
+
+        setMergedOutput(finalText);
+        appendTerminal('合并文案衔接优化完成。');
+        toast.success('已完成清洗优化并无缝合并');
+      } else {
+        setMergedOutput(rawMerged);
+        appendTerminal('优化返回为空，已回退原样合并结果。');
+      }
+    } catch (e: any) {
+      setMergedOutput(rawMerged);
+      appendTerminal(`合并优化失败，已回退原样合并：${e?.message || e}`);
+      toast.error('合并优化失败，已回退原样合并');
+    } finally {
+      setIsOptimizingMerge(false);
+    }
+  };
+
   const copyToClipboard = () => {
     navigator.clipboard.writeText(outputText);
   };
 
-  // 导出脚本为 txt 文件
-  const exportToTxt = () => {
-    if (!outputText || !outputText.trim()) {
+  const exportTextAsTxt = (content: string, fileName: string) => {
+    if (!content || !content.trim()) {
       toast.warning('没有可导出的内容');
       return;
     }
 
     try {
-      // 创建 Blob 对象
-      const blob = new Blob([outputText], { type: 'text/plain;charset=utf-8' });
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
       const url = URL.createObjectURL(blob);
-      
-      // 创建下载链接
       const a = document.createElement('a');
       a.href = url;
-      
-      // 根据模式生成文件名
-      let fileName = '脚本';
-      if (mode === ToolMode.SCRIPT) {
-        fileName = '视频脚本';
-      } else if (mode === ToolMode.REWRITE) {
-        fileName = '改写内容';
-      } else if (mode === ToolMode.EXPAND) {
-        fileName = '扩写内容';
-      } else if (mode === ToolMode.SUMMARIZE) {
-        fileName = '摘要总结';
-      } else if (mode === ToolMode.POLISH) {
-        fileName = '润色内容';
-      }
-      
-      // 添加时间戳
       const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
       a.download = `${fileName}_${timestamp}.txt`;
-      
-      // 触发下载
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      
-      // 释放 URL 对象
       URL.revokeObjectURL(url);
-      
-      // 显示成功通知
+
       const targetToast = externalToast || internalToast;
-      if (targetToast && typeof targetToast.success === 'function') {
-        targetToast.success('内容已成功导出为 TXT 文件', 5000);
-      }
+      targetToast?.success?.('内容已成功导出为 TXT 文件', 5000);
     } catch (error: any) {
       console.error('导出失败:', error);
       const targetToast = externalToast || internalToast;
-      if (targetToast && typeof targetToast.error === 'function') {
-        targetToast.error(`导出失败: ${error.message || '未知错误'}`, 6000);
-      }
+      targetToast?.error?.(`导出失败: ${error.message || '未知错误'}`, 6000);
     }
+  };
+
+  // 导出常规输出为 txt
+  const exportToTxt = () => {
+    let fileName = '脚本';
+    if (mode === ToolMode.SCRIPT) {
+      fileName = '视频脚本';
+    } else if (mode === ToolMode.REWRITE) {
+      fileName = '深度洗稿内容';
+    } else if (mode === ToolMode.EXPAND) {
+      fileName = '扩写内容';
+    } else if (mode === ToolMode.SUMMARIZE) {
+      fileName = '摘要总结';
+    } else if (mode === ToolMode.POLISH) {
+      fileName = '润色内容';
+    }
+    exportTextAsTxt(outputText, fileName);
+  };
+
+  const exportMergedToTxt = () => {
+    exportTextAsTxt(mergedOutput || outputText, '最终合并文案');
   };
 
   return (
@@ -3920,7 +4375,7 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
            <div className="flex flex-wrap lg:flex-nowrap items-center gap-1.5 min-w-0">
              {/* Tool Modes */}
             {[
-              { id: ToolMode.REWRITE, label: '改写/洗稿', icon: <RefreshCw size={15} /> },
+              { id: ToolMode.REWRITE, label: '深度洗稿', icon: <RefreshCw size={15} /> },
               { id: ToolMode.EXPAND, label: '深度扩写', icon: <Maximize2 size={15} /> },
               { id: ToolMode.SUMMARIZE, label: '摘要总结', icon: <Scissors size={15} /> },
               { id: ToolMode.POLISH, label: '润色优化', icon: <FileText size={15} /> },
@@ -3981,6 +4436,14 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                     </button>
                   ) : null;
                 })()}
+                <label className="hidden sm:flex items-center gap-1 text-xs text-slate-400 whitespace-nowrap">
+                  <input
+                    type="checkbox"
+                    checked={autoSwitchNicheEnabled}
+                    onChange={(e) => setAutoSwitchNicheEnabled(e.target.checked)}
+                  />
+                  自动匹配赛道
+                </label>
               </div>
             )}
 
@@ -4096,6 +4559,225 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
       )}
 
       {/* Grid: Input and Output */}
+      {isDeepRewriteMode ? (
+        <div className="space-y-4">
+          {/* 顶部：终端日志 + 原文输入 + 评论区/痛点 */}
+          <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 min-h-[280px]">
+            <div className="xl:col-span-3 flex flex-col gap-2">
+              <label className="text-sm font-medium text-slate-400">终端日志</label>
+              <textarea
+                value={terminalLog}
+                onChange={(e) => setTerminalLog(e.target.value)}
+                className="h-full min-h-[260px] bg-slate-900/70 border border-slate-700 rounded-xl p-3 text-[12px] text-emerald-300 resize-none focus:outline-none focus:ring-1 focus:ring-emerald-500 custom-scrollbar"
+              />
+            </div>
+
+            <div className="xl:col-span-6 flex flex-col gap-2">
+              <label className="text-sm font-medium text-slate-400 flex justify-between items-center">
+                <span>原始文案（自动拆分为5段，支持 YouTube 链接提取字幕）</span>
+                <span className="flex items-center gap-2">
+                  <span className="text-xs text-slate-600 font-mono">{inputText.length.toLocaleString()} 字</span>
+                  {isYouTubeLink(inputText.trim()) && (
+                    <button
+                      onClick={handleExtractTranscript}
+                      disabled={isExtractingTranscript}
+                      className="flex items-center gap-1 px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-md shadow disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                    >
+                      <Download size={14} />
+                      <span>{isExtractingTranscript ? '提取中...' : '提取字幕'}</span>
+                    </button>
+                  )}
+                </span>
+              </label>
+              <textarea
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                placeholder="请粘贴需要扩写/洗稿/润色的原文，或直接粘贴 YouTube 链接..."
+                className="h-full min-h-[260px] bg-slate-800/60 border border-slate-700 rounded-xl p-4 text-slate-200 resize-none focus:outline-none focus:ring-1 focus:ring-emerald-500 custom-scrollbar"
+              />
+            </div>
+
+            <div className="xl:col-span-3 flex flex-col gap-2">
+              <label className="text-sm font-medium text-slate-400">评论区 / 用户痛点植入</label>
+              <textarea
+                value={painPointText}
+                onChange={(e) => setPainPointText(e.target.value)}
+                placeholder="可输入评论区热词、用户痛点、情绪关键词..."
+                className="h-full min-h-[260px] bg-slate-800/60 border border-slate-700 rounded-xl p-3 text-slate-200 resize-none focus:outline-none focus:ring-1 focus:ring-emerald-500 custom-scrollbar"
+              />
+            </div>
+          </div>
+
+          {/* 大纲提炼区 */}
+          <div className="bg-slate-900/45 border border-slate-800 rounded-xl p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium text-slate-300">原文大纲（5段，可编辑）</label>
+              <button
+                onClick={() => initializeFiveSegmentsFromText(inputText, '已重新提炼大纲并重置5段。')}
+                disabled={isExtractingOutline || !inputText.trim()}
+                className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs text-white disabled:opacity-50"
+              >
+                {isExtractingOutline ? '提炼中...' : '重新提炼大纲'}
+              </button>
+            </div>
+            <textarea
+              value={outlineText}
+              onChange={(e) => {
+                const v = e.target.value;
+                setOutlineText(v);
+                setOutlineItems(parseOutlineToFiveItems(v));
+              }}
+              placeholder="这里会显示根据原文提炼的5段大纲，可手动编辑后再执行分段生成。"
+              className="w-full min-h-[120px] bg-slate-950 border border-slate-800 rounded-lg p-3 text-sm text-slate-200 resize-y focus:outline-none focus:ring-1 focus:ring-emerald-500 custom-scrollbar"
+            />
+          </div>
+
+          {/* 操作条 */}
+          <div className="flex flex-wrap items-center gap-2 bg-slate-900/50 border border-slate-800 rounded-xl p-3">
+            {autoMatchedNiche && autoMatchedNiche.niche !== niche && (
+              <div className="w-full text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-2 py-1">
+                检测建议赛道：{NICHES[autoMatchedNiche.niche]?.name || autoMatchedNiche.niche}（置信度 {autoMatchedNiche.score}）
+                <button
+                  onClick={() => handleNicheChange(autoMatchedNiche.niche)}
+                  className="ml-2 px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-200"
+                >
+                  一键切换
+                </button>
+              </div>
+            )}
+            <button
+              onClick={handleInitializeFiveSegments}
+              disabled={isExtractingOutline}
+              className="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm text-white disabled:opacity-50"
+            >
+              {isExtractingOutline ? '提炼并拆分中...' : '提炼大纲并拆分5段'}
+            </button>
+            <button
+              onClick={handleAutoPilotGenerateFiveSegments}
+              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm text-white"
+            >
+              全自动一键生成（Auto-Pilot）
+            </button>
+            <button
+              onClick={handleMergeFinalWithPolish}
+              disabled={isOptimizingMerge}
+              className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-sm text-white disabled:opacity-60"
+            >
+              {isOptimizingMerge ? '优化合并中...' : '合并最终文案'}
+            </button>
+            <button
+              onClick={handleClearDeepRewritePanel}
+              className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-sm text-white"
+            >
+              清空面板
+            </button>
+
+            <div className="ml-auto flex items-center gap-2 text-xs text-slate-400">
+              <span>输出语言</span>
+              <select
+                value={rewriteOutputLanguage}
+                onChange={(e) => setRewriteOutputLanguage(e.target.value as any)}
+                className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-slate-200"
+              >
+                <option value="source">原文输出（默认）</option>
+                <option value="en">English</option>
+                <option value="zh">中文</option>
+                <option value="ja">日文</option>
+                <option value="ko">韩文</option>
+                <option value="es">西班牙语</option>
+                <option value="de">德语</option>
+                <option value="hi">印度语</option>
+              </select>
+            </div>
+          </div>
+
+          {/* 中部：5段输出编辑框 */}
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {Array.from({ length: 5 }).map((_, idx) => (
+              <div key={idx} className="bg-slate-900/55 border border-slate-800 rounded-xl p-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-sm font-semibold text-slate-200">第{idx + 1}段</h4>
+                    <span className="text-[11px] text-slate-400">
+                      {segmentOutputs[idx]?.trim() ? `${segmentOutputs[idx].trim().length.toLocaleString()} 字` : '0 字'}
+                    </span>
+                    {(() => {
+                      const base = (rewriteSegments[idx] || '').trim();
+                      const out = (segmentOutputs[idx] || '').trim();
+                      const done = out.length > 0 && out !== base;
+                      return (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded border ${done ? 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10' : 'text-slate-400 border-slate-600 bg-slate-800/60'}`}>
+                          {done ? '已完成' : '原始'}
+                        </span>
+                      );
+                    })()}
+                  </div>
+                  <button
+                    onClick={() => handleRegenerateSingleSegment(idx)}
+                    disabled={segmentGenerating[idx]}
+                    className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs text-white disabled:opacity-50"
+                  >
+                    {segmentGenerating[idx] ? '生成中...' : '重新生成该部分'}
+                  </button>
+                </div>
+                <textarea
+                  value={segmentOutputs[idx]}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    const next = segmentOutputs.map((v, i) => (i === idx ? val : v));
+                    setSegmentOutputs(next);
+                    setMergedOutput(mergeFiveSegments(next));
+                  }}
+                  placeholder="该段生成结果会显示在这里..."
+                  className="w-full h-40 bg-slate-950 border border-slate-800 rounded-lg p-3 text-sm text-slate-200 resize-none focus:outline-none focus:ring-1 focus:ring-emerald-500 custom-scrollbar"
+                />
+              </div>
+            ))}
+          </div>
+
+          {/* 下方：最终合并文案 */}
+          <div className="flex flex-col gap-2">
+            <label className="text-sm font-medium text-slate-300 flex justify-between items-center">
+              <span className="flex items-center gap-2">
+                <span>最终合并文案（可继续编辑）</span>
+                {(() => {
+                  const completed = mergedOutput.trim().length > 0 && segmentOutputs.every((s, i) => {
+                    const base = (rewriteSegments[i] || '').trim();
+                    const out = (s || '').trim();
+                    return out.length > 0 && out !== base;
+                  });
+                  return (
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded border ${completed ? 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10' : 'text-slate-400 border-slate-600 bg-slate-800/60'}`}>
+                      {completed ? '已完成' : '原始'}
+                    </span>
+                  );
+                })()}
+              </span>
+              <span className="flex items-center gap-2">
+                <span className="text-xs text-slate-600 font-mono">{mergedOutput.length.toLocaleString()} 字</span>
+                <button
+                  onClick={() => navigator.clipboard.writeText(mergedOutput || outputText)}
+                  className="text-xs flex items-center gap-1 text-emerald-400 hover:text-emerald-300"
+                >
+                  <Copy size={12} /> 复制
+                </button>
+                <button
+                  onClick={exportMergedToTxt}
+                  className="text-xs flex items-center gap-1 text-blue-400 hover:text-blue-300"
+                >
+                  <Download size={12} /> 导出 TXT
+                </button>
+              </span>
+            </label>
+            <textarea
+              value={mergedOutput}
+              onChange={(e) => setMergedOutput(e.target.value)}
+              placeholder="点击「合并最终文案」后在这里查看并编辑最终成稿..."
+              className="w-full min-h-[220px] bg-slate-950 border border-slate-800 rounded-xl p-4 text-slate-200 resize-y focus:outline-none focus:ring-1 focus:ring-emerald-500 custom-scrollbar"
+            />
+          </div>
+        </div>
+      ) : (
        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 h-[600px]">
             {/* Input */}
             <div className="flex flex-col gap-2">
@@ -4177,6 +4859,7 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                 </div>
             </div>
        </div>
+      )}
        
        {/* 历史记录选择器 */}
        {showHistorySelector && (
