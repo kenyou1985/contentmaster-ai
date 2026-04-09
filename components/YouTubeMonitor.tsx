@@ -81,6 +81,19 @@ async function metubeAddToQueue(
   }
 }
 
+async function fetchMetubeHistory(): Promise<any[]> {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const res = await fetch(`${origin}/api/metube/history`);
+  if (!res.ok) return [];
+  try {
+    const text = await res.text();
+    const data = JSON.parse(text);
+    return Array.isArray(data) ? data : (data.history ?? []);
+  } catch {
+    return [];
+  }
+}
+
 // ============================================================
 // 类型定义
 // ============================================================
@@ -319,6 +332,9 @@ export const YouTubeMonitor: React.FC = () => {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
   const [metubeBusy, setMetubeBusy] = useState(false);
+  /** MeTube 下载历史（轮询展示） */
+  const [metubeHistory, setMetubeHistory] = useState<any[]>([]);
+  const [metubeHistoryLoading, setMetubeHistoryLoading] = useState(false);
   
   // 频道详情
   const [selectedChannel, setSelectedChannel] = useState<any>(null);
@@ -371,12 +387,26 @@ export const YouTubeMonitor: React.FC = () => {
     try {
       const fmt = metubeQuality === 'audio' ? 'bestaudio' : 'any';
       await metubeAddToQueue(url, { quality: metubeQuality, format: fmt });
-      setInfoMsg('已提交到 MeTube 下载队列，请到 Railway 上的 MeTube 页面查看画质/格式与进度。');
+      // 延迟 1.5s 后轮询历史，展示最新下载项
+      setTimeout(async () => {
+        const hist = await fetchMetubeHistory();
+        setMetubeHistory(hist.slice(0, 10));
+      }, 1500);
+      setInfoMsg(
+        '已提交到 MeTube 下载队列。页面将自动刷新下载历史状态（首次可能需等待 5-10 秒）。'
+      );
     } catch (e: unknown) {
       setSearchError(e instanceof Error ? e.message : 'MeTube 提交失败');
     } finally {
       setMetubeBusy(false);
     }
+  };
+
+  const refreshMetubeHistory = async () => {
+    setMetubeHistoryLoading(true);
+    const hist = await fetchMetubeHistory();
+    setMetubeHistory(hist.slice(0, 10));
+    setMetubeHistoryLoading(false);
   };
 
   const selectChannel = (channel: any) => {
@@ -1273,6 +1303,92 @@ export const YouTubeMonitor: React.FC = () => {
                 </div>
               </div>
             )}
+          </div>
+
+          {/* MeTube 下载历史 */}
+          <div className="bg-slate-900/50 border border-slate-700/50 rounded-xl p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Download className="w-4 h-4 text-amber-400" />
+                <h2 className="text-sm font-medium text-slate-200">MeTube 下载记录</h2>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-slate-500">自动轮询</span>
+                <button
+                  type="button"
+                  onClick={() => void refreshMetubeHistory()}
+                  disabled={metubeHistoryLoading}
+                  className="p-1 rounded text-slate-500 hover:text-amber-400 transition-colors"
+                  title="手动刷新"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${metubeHistoryLoading ? 'animate-spin' : ''}`} />
+                </button>
+              </div>
+            </div>
+
+            {metubeHistoryLoading && metubeHistory.length === 0 ? (
+              <div className="flex items-center justify-center py-4">
+                <Loader2 className="w-4 h-4 text-amber-400 animate-spin" />
+              </div>
+            ) : metubeHistory.length === 0 ? (
+              <p className="text-xs text-slate-500 text-center py-2">
+                暂无下载记录。提交后会自动刷新（首次约需 5-10 秒）。
+              </p>
+            ) : (
+              <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                {metubeHistory.map((item: any, idx: number) => {
+                  const title = item.title || item.name || `下载 #${idx + 1}`;
+                  const status: string = item.status || item.state || 'unknown';
+                  const isError = status === 'error' || status === 'failed' || status === 'error';
+                  const isDone = status === 'completed' || status === 'done' || status === 'finished';
+                  return (
+                    <div
+                      key={item.uid || item.id || idx}
+                      className={`flex items-start gap-2 p-2 rounded-lg text-xs ${
+                        isError
+                          ? 'bg-red-500/10 border border-red-500/20'
+                          : isDone
+                          ? 'bg-emerald-500/10 border border-emerald-500/20'
+                          : 'bg-slate-800/30 border border-slate-700/30'
+                      }`}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="text-slate-200 font-medium truncate">{title}</p>
+                        {item.url && (
+                          <a
+                            href={item.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-slate-500 hover:text-amber-400 truncate block mt-0.5"
+                          >
+                            {item.url}
+                          </a>
+                        )}
+                        {item.error && (
+                          <p className="text-red-400 mt-0.5 break-all">
+                            错误：{item.error.slice(0, 120)}
+                          </p>
+                        )}
+                        <p className={`mt-0.5 ${isError ? 'text-red-400' : isDone ? 'text-emerald-400' : 'text-slate-500'}`}>
+                          状态：{status}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Bot 检测提示 */}
+            <div className="mt-3 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-300">
+              ⚠️ 若下载状态为 <span className="font-mono text-amber-200">No video formats found</span>，说明 Railway MeTube
+              的 IP 被 YouTube 识别为机器人。解决方法：
+              <ol className="mt-1 ml-3 list-decimal space-y-0.5">
+                <li>在 Railway 挂载 Volume 后手动上传 cookies.txt（yt-dlp 支持 <code>--cookies</code>）</li>
+                <li>或用 <code>--extractor-args "youtube:player_client=android"</code> 等参数绕过</li>
+                <li>或在 Railway 设置环境变量 <code>YTDL_OPTIONS</code> 加入代理（需境外 IP）</li>
+              </ol>
+            </div>
           </div>
         </div>
       </div>
