@@ -10,6 +10,12 @@ export const INVIDIOUS_FETCH_HEADERS: Record<string, string> = {
   'Accept-Language': 'en-US,en;q=0.9',
 };
 
+/** 单次上游请求超时（毫秒）。Hobby 函数约 10s 上限，串行多实例时总时长须低于该限制 */
+export const INVIDIOUS_UPSTREAM_FETCH_MS = 2200;
+
+/** 最多尝试的上游数量（主站 + 备用），避免总等待超过 Serverless 时限 */
+export const INVIDIOUS_MAX_UPSTREAMS = 4;
+
 type EnvLike = Record<string, string | undefined>;
 
 /** 解析上游根地址列表（无末尾斜杠） */
@@ -19,14 +25,16 @@ export function listInvidiousUpstreamBases(env: EnvLike): string[] {
     return urlsEnv
       .split(',')
       .map((s) => s.trim().replace(/\/$/, ''))
-      .filter(Boolean);
+      .filter(Boolean)
+      .slice(0, INVIDIOUS_MAX_UPSTREAMS);
   }
   const primary = (env.INVIDIOUS_UPSTREAM_URL || 'https://invidious.projectsegfau.lt').replace(/\/$/, '');
   const extra =
     env.INVIDIOUS_UPSTREAM_FALLBACKS?.split(',')
       .map((s) => s.trim().replace(/\/$/, ''))
       .filter(Boolean) ?? [];
-  return [...new Set([primary, ...extra])];
+  const merged = [...new Set([primary, ...extra])];
+  return merged.slice(0, INVIDIOUS_MAX_UPSTREAMS);
 }
 
 function looksLikeJsonBody(contentType: string, bodyUtf8Prefix: string): boolean {

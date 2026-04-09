@@ -33,6 +33,51 @@ const YOUTUBE_API_KEY = (import.meta as any).env?.VITE_YOUTUBE_API_KEY || '';
 /** 可选：Railway MeTube 公网根地址，用于设置里「打开 MeTube」链接（勿与 METUBE_URL 混用：后者在服务端） */
 const VITE_METUBE_PUBLIC_URL = ((import.meta as any).env?.VITE_METUBE_PUBLIC_URL as string | undefined)?.trim() || '';
 
+type MetubeDownloadKind = 'video' | 'audio' | 'captions' | 'thumbnail';
+
+function metubeHistoryEntryRelPath(item: Record<string, unknown>): string | null {
+  const e = item.entry;
+  if (typeof e === 'string' && e.trim()) return e.trim();
+  if (e && typeof e === 'object') {
+    const o = e as Record<string, unknown>;
+    if (typeof o.filename === 'string') return o.filename;
+    if (typeof o.filepath === 'string') return o.filepath;
+    if (typeof o._filename === 'string') return o._filename;
+  }
+  if (typeof item.filename === 'string') return item.filename;
+  const ch = item.chapter_files;
+  if (Array.isArray(ch) && ch.length && typeof ch[0] === 'string') return ch[0];
+  return null;
+}
+
+/** 已完成任务直链（需配置 VITE_METUBE_PUBLIC_URL 为 MeTube 公网根地址，与 Railway 域名一致） */
+function metubePublicFileHref(publicBase: string, item: Record<string, unknown>): string | null {
+  const rel = metubeHistoryEntryRelPath(item);
+  if (!rel || !publicBase.trim()) return null;
+  const base = publicBase.trim().replace(/\/$/, '');
+  return `${base}/download/${rel.split('/').map(encodeURIComponent).join('/')}`;
+}
+
+async function metubePostAdd(body: Record<string, unknown>): Promise<void> {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const res = await fetch(`${origin}/api/metube/add`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    let msg = text;
+    try {
+      const j = JSON.parse(text) as { error?: string };
+      if (j.error) msg = j.error;
+    } catch {
+      /* keep */
+    }
+    throw new Error(msg || `MeTube ${res.status}`);
+  }
+}
+
 /** 同源 Invidious 代理（Vercel: api/invidious；开发: vite 中间件）。勿把 MeTube 当作 Invidious。 */
 function invidiousProxyUrl(path: string, query: Record<string, string> = {}): string {
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
@@ -54,42 +99,6 @@ async function fetchInvidiousJson<T>(path: string, query: Record<string, string>
     throw new Error(err || `HTTP ${res.status}`);
   }
   return data as T;
-}
-
-async function metubeAddToQueue(
-  videoUrl: string,
-  opts?: { quality?: string; format?: string; download_type?: 'audio' }
-): Promise<void> {
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
-  const body =
-    opts?.download_type === 'audio'
-      ? {
-          url: videoUrl,
-          download_type: 'audio' as const,
-          format: 'm4a',
-          quality: opts?.quality ?? 'best',
-        }
-      : {
-          url: videoUrl,
-          quality: opts?.quality ?? 'best',
-          format: opts?.format ?? 'any',
-        };
-  const res = await fetch(`${origin}/api/metube/add`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    let msg = text;
-    try {
-      const j = JSON.parse(text) as { error?: string };
-      if (j.error) msg = j.error;
-    } catch {
-      /* keep text */
-    }
-    throw new Error(msg || `MeTube ${res.status}`);
-  }
 }
 
 function normalizeMetubeHistoryPayload(data: unknown): any[] {
@@ -396,8 +405,12 @@ export const YouTubeMonitor: React.FC = () => {
   /** 按链接 / UC / @ 打开频道 */
   const [channelLinkInput, setChannelLinkInput] = useState('');
   const [resolvingChannel, setResolvingChannel] = useState(false);
-  /** MeTube 画质（对应 yt-dlp 常用写法） */
-  const [metubeQuality, setMetubeQuality] = useState<string>('best');
+  /** MeTube 下载类型与参数（与 alexta69/metube POST /add 一致） */
+  const [metubeKind, setMetubeKind] = useState<MetubeDownloadKind>('video');
+  const [metubeVideoQuality, setMetubeVideoQuality] = useState('best');
+  const [metubeAudioFormat, setMetubeAudioFormat] = useState('m4a');
+  const [metubeAudioQuality, setMetubeAudioQuality] = useState('best');
+  const [metubeCaptionFormat, setMetubeCaptionFormat] = useState('srt');
   const [descExpanded, setDescExpanded] = useState(false);
 
   // 使用的API
@@ -416,16 +429,54 @@ export const YouTubeMonitor: React.FC = () => {
     localStorage.setItem('YOUTUBE_MONITORED_CHANNELS', JSON.stringify(monitoredChannels));
   }, [monitoredChannels]);
 
+  const buildMetubePayload = (videoUrl: string): Record<string, unknown> => {
+    const u = videoUrl.trim();
+    const base: Record<string, unknown> = { url: u, auto_start: true };
+    switch (metubeKind) {
+      case 'video':
+        return {
+          ...base,
+          download_type: 'video',
+          quality: metubeVideoQuality,
+          format: 'any',
+          codec: 'auto',
+        };
+      case 'audio':
+        return {
+          ...base,
+          download_type: 'audio',
+          format: metubeAudioFormat,
+          quality: metubeAudioQuality,
+        };
+      case 'captions':
+        return {
+          ...base,
+          download_type: 'captions',
+          format: metubeCaptionFormat,
+          quality: 'best',
+          codec: 'auto',
+          subtitle_language: 'en',
+          subtitle_mode: 'prefer_manual',
+        };
+      case 'thumbnail':
+        return {
+          ...base,
+          download_type: 'thumbnail',
+          format: 'jpg',
+          quality: 'best',
+          codec: 'auto',
+        };
+      default:
+        return { ...base, download_type: 'video', quality: 'best', format: 'any', codec: 'auto' };
+    }
+  };
+
   const queueMetubeDownload = async (url: string) => {
     setMetubeSubmittingUrl(url);
     setInfoMsg(null);
     setSearchError(null);
     try {
-      await metubeAddToQueue(url, {
-        quality: metubeQuality === 'audio' ? 'best' : metubeQuality,
-        format: 'any',
-        download_type: metubeQuality === 'audio' ? 'audio' : undefined,
-      });
+      await metubePostAdd(buildMetubePayload(url));
       // 延迟 1.5s 后轮询历史，展示最新下载项
       setTimeout(async () => {
         const hist = await fetchMetubeHistory();
@@ -1318,19 +1369,92 @@ export const YouTubeMonitor: React.FC = () => {
               <Download className="w-4 h-4 text-blue-400" />
               <h2 className="text-sm font-medium text-slate-200">视频解析</h2>
             </div>
-            <div className="mb-3 flex flex-col gap-1">
-              <label className="text-[10px] uppercase tracking-wider text-slate-500">MeTube 画质偏好</label>
+            <div className="mb-3 space-y-2 rounded-lg border border-slate-700/60 bg-slate-800/30 p-2">
+              <label className="text-[10px] uppercase tracking-wider text-slate-500">MeTube 下载选项</label>
               <select
-                value={metubeQuality}
-                onChange={(e) => setMetubeQuality(e.target.value)}
+                value={metubeKind}
+                onChange={(e) => setMetubeKind(e.target.value as MetubeDownloadKind)}
                 className="w-full bg-slate-800/50 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200"
               >
-                <option value="best">最佳（best）</option>
-                <option value="1080">1080p</option>
-                <option value="720">720p</option>
-                <option value="480">480p</option>
-                <option value="audio">仅音频</option>
+                <option value="video">视频</option>
+                <option value="audio">音频</option>
+                <option value="captions">字幕文件</option>
+                <option value="thumbnail">封面图（jpg）</option>
               </select>
+              {metubeKind === 'video' && (
+                <select
+                  value={metubeVideoQuality}
+                  onChange={(e) => setMetubeVideoQuality(e.target.value)}
+                  className="w-full bg-slate-800/50 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200"
+                >
+                  <option value="best">画质：最佳</option>
+                  <option value="worst">画质：最低</option>
+                  <option value="2160">2160p</option>
+                  <option value="1440">1440p</option>
+                  <option value="1080">1080p</option>
+                  <option value="720">720p</option>
+                  <option value="480">480p</option>
+                  <option value="360">360p</option>
+                  <option value="240">240p</option>
+                </select>
+              )}
+              {metubeKind === 'audio' && (
+                <>
+                  <select
+                    value={metubeAudioFormat}
+                    onChange={(e) => {
+                      const f = e.target.value;
+                      setMetubeAudioFormat(f);
+                      if (f === 'opus' || f === 'wav' || f === 'flac') setMetubeAudioQuality('best');
+                    }}
+                    className="w-full bg-slate-800/50 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200"
+                  >
+                    <option value="m4a">格式 m4a</option>
+                    <option value="mp3">格式 mp3</option>
+                    <option value="opus">格式 opus</option>
+                    <option value="wav">格式 wav</option>
+                    <option value="flac">格式 flac</option>
+                  </select>
+                  <select
+                    value={metubeAudioQuality}
+                    onChange={(e) => setMetubeAudioQuality(e.target.value)}
+                    disabled={['opus', 'wav', 'flac'].includes(metubeAudioFormat)}
+                    className="w-full bg-slate-800/50 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 disabled:opacity-50"
+                  >
+                    {['opus', 'wav', 'flac'].includes(metubeAudioFormat) ? (
+                      <option value="best">音质：最佳（仅此选项）</option>
+                    ) : metubeAudioFormat === 'mp3' ? (
+                      <>
+                        <option value="best">音质：最佳</option>
+                        <option value="320">320 kbps</option>
+                        <option value="192">192 kbps</option>
+                        <option value="128">128 kbps</option>
+                      </>
+                    ) : (
+                      <>
+                        <option value="best">音质：最佳</option>
+                        <option value="192">192 kbps</option>
+                        <option value="128">128 kbps</option>
+                      </>
+                    )}
+                  </select>
+                </>
+              )}
+              {metubeKind === 'captions' && (
+                <select
+                  value={metubeCaptionFormat}
+                  onChange={(e) => setMetubeCaptionFormat(e.target.value)}
+                  className="w-full bg-slate-800/50 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200"
+                >
+                  <option value="srt">srt</option>
+                  <option value="vtt">vtt</option>
+                  <option value="txt">txt</option>
+                  <option value="ttml">ttml</option>
+                </select>
+              )}
+              {metubeKind === 'thumbnail' && (
+                <p className="text-[10px] text-slate-500">将下载 YouTube 封面为 jpg（MeTube 仅支持 jpg）。</p>
+              )}
             </div>
             <div className="space-y-3">
               <input
@@ -1477,6 +1601,20 @@ export const YouTubeMonitor: React.FC = () => {
                 <h2 className="text-sm font-medium text-slate-200">MeTube 下载记录</h2>
               </div>
               <div className="flex items-center gap-1.5">
+                {VITE_METUBE_PUBLIC_URL ? (
+                  <a
+                    href={VITE_METUBE_PUBLIC_URL.replace(/\/$/, '')}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[10px] text-amber-400/90 hover:text-amber-300"
+                  >
+                    打开 MeTube
+                  </a>
+                ) : (
+                  <span className="text-[10px] text-slate-600" title="配置 VITE_METUBE_PUBLIC_URL 后可显示「下载文件」直链">
+                    未配公网地址
+                  </span>
+                )}
                 <span className="text-[10px] text-slate-500">自动轮询</span>
                 <button
                   type="button"
@@ -1509,6 +1647,11 @@ export const YouTubeMonitor: React.FC = () => {
                     /error|fail|No video formats/i.test(status) ||
                     ['error', 'failed'].includes(status);
                   const isDone = ['completed', 'done', 'finished'].includes(status);
+                  const fileHref =
+                    isDone && VITE_METUBE_PUBLIC_URL
+                      ? metubePublicFileHref(VITE_METUBE_PUBLIC_URL, item as Record<string, unknown>)
+                      : null;
+                  const watchUrl = typeof item.url === 'string' ? item.url : '';
                   return (
                     <div
                       key={item.uid || item.id || idx}
@@ -1522,14 +1665,14 @@ export const YouTubeMonitor: React.FC = () => {
                     >
                       <div className="flex-1 min-w-0">
                         <p className="text-slate-200 font-medium truncate">{title}</p>
-                        {item.url && (
+                        {watchUrl && (
                           <a
-                            href={item.url}
+                            href={watchUrl}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-slate-500 hover:text-amber-400 truncate block mt-0.5"
                           >
-                            {item.url}
+                            {watchUrl}
                           </a>
                         )}
                         {item.error && (
@@ -1540,6 +1683,33 @@ export const YouTubeMonitor: React.FC = () => {
                         <p className={`mt-0.5 ${isError ? 'text-red-400' : isDone ? 'text-emerald-400' : 'text-slate-500'}`}>
                           状态：{status}
                         </p>
+                        <div className="mt-1.5 flex flex-wrap gap-1.5">
+                          {fileHref && (
+                            <a
+                              href={fileHref}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              download
+                              className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded bg-amber-600/20 text-amber-300 hover:bg-amber-600/35 text-[10px]"
+                            >
+                              <Download className="w-3 h-3" />
+                              下载文件
+                            </a>
+                          )}
+                          {isDone && !fileHref && VITE_METUBE_PUBLIC_URL && (
+                            <span className="text-[10px] text-slate-600">无本地路径，请到 MeTube 页下载</span>
+                          )}
+                          {watchUrl && (
+                            <button
+                              type="button"
+                              disabled={metubeSubmittingUrl === watchUrl}
+                              onClick={() => void queueMetubeDownload(watchUrl)}
+                              className="inline-flex px-2 py-0.5 rounded bg-slate-700/60 text-slate-300 hover:bg-slate-600 text-[10px] disabled:opacity-50"
+                            >
+                              {metubeSubmittingUrl === watchUrl ? '提交中…' : '按当前选项重下'}
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   );

@@ -4,9 +4,10 @@ import react from '@vitejs/plugin-react';
 import { buildMetubeCookiesMultipart } from './api/metube/_multipartCookies';
 import {
   INVIDIOUS_FETCH_HEADERS,
+  INVIDIOUS_UPSTREAM_FETCH_MS,
   listInvidiousUpstreamBases,
   shouldTryNextInvidiousUpstream,
-} from './api/_invidiousUpstream';
+} from './api/invidiousShared';
 
 /**
  * 开发环境：绕过外链图片 CORS（如 Cloudflare R2），供 RunningHub 上传前拉取图片字节
@@ -50,7 +51,7 @@ function invidiousProxyDevPlugin(opts: {
             const upstream = candidates[i];
             const target = `${upstream}/api/v1/${sub}${qs ? `?${qs}` : ''}`;
             const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), 60_000);
+            const timer = setTimeout(() => ctrl.abort(), INVIDIOUS_UPSTREAM_FETCH_MS);
             let r: Response;
             try {
               r = await fetch(target, {

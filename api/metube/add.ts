@@ -1,8 +1,10 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
+const VALID_DOWNLOAD_TYPES = new Set(['video', 'audio', 'captions', 'thumbnail']);
+
 /**
  * MeTube 的 POST /add 通常不带浏览器 CORS；通过本站代理转发到 Railway 上的 MeTube。
- * 在 Vercel 配置 METUBE_URL，例如 https://xxx.up.railway.app（无末尾斜杠）。
+ * 请求体与 MeTube parse_download_options 对齐：download_type、quality、format、codec 等。
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -34,23 +36,41 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'missing url string in body' });
   }
 
-  const downloadType = body.download_type;
-  const payload: Record<string, unknown> =
-    downloadType === 'audio'
-      ? {
-          url,
-          download_type: 'audio',
-          format: typeof body.format === 'string' ? body.format : 'm4a',
-          quality: typeof body.quality === 'string' ? body.quality : 'best',
-          auto_start: body.auto_start !== false,
-        }
-      : {
-          url,
-          quality: typeof body.quality === 'string' ? body.quality : 'best',
-          format: typeof body.format === 'string' ? body.format : 'any',
-          auto_start: body.auto_start !== false,
-          playlist_strict_mode: false,
-        };
+  let downloadType =
+    typeof body.download_type === 'string' ? body.download_type.trim().toLowerCase() : 'video';
+  if (!VALID_DOWNLOAD_TYPES.has(downloadType)) {
+    downloadType = 'video';
+  }
+
+  const payload: Record<string, unknown> = {
+    url: url.trim(),
+    download_type: downloadType,
+    auto_start: body.auto_start !== false,
+    playlist_strict_mode: false,
+  };
+
+  const str = (k: string, fallback: string) =>
+    typeof body[k] === 'string' ? (body[k] as string).trim() : fallback;
+
+  if (downloadType === 'video') {
+    payload.quality = str('quality', 'best');
+    payload.format = str('format', 'any');
+    payload.codec = str('codec', 'auto');
+  } else if (downloadType === 'audio') {
+    payload.quality = str('quality', 'best');
+    payload.format = str('format', 'm4a');
+    payload.codec = 'auto';
+  } else if (downloadType === 'captions') {
+    payload.quality = 'best';
+    payload.format = str('format', 'srt');
+    payload.codec = 'auto';
+    if (typeof body.subtitle_language === 'string') payload.subtitle_language = body.subtitle_language;
+    if (typeof body.subtitle_mode === 'string') payload.subtitle_mode = body.subtitle_mode;
+  } else if (downloadType === 'thumbnail') {
+    payload.quality = 'best';
+    payload.format = str('format', 'jpg');
+    payload.codec = 'auto';
+  }
 
   const overridesRaw = process.env.METUBE_YTDL_OVERRIDES_JSON?.trim();
   if (overridesRaw) {
