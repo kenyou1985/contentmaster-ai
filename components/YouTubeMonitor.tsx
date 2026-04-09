@@ -16,7 +16,13 @@ import {
   Copy,
   Check,
   AlertCircle,
-  Youtube
+  Youtube,
+  ThumbsUp,
+  Tag,
+  Link2,
+  ChevronDown,
+  ChevronUp,
+  FileText,
 } from 'lucide-react';
 
 // ============================================================
@@ -48,12 +54,19 @@ async function fetchInvidiousJson<T>(path: string, query: Record<string, string>
   return data as T;
 }
 
-async function metubeAddToQueue(videoUrl: string): Promise<void> {
+async function metubeAddToQueue(
+  videoUrl: string,
+  opts?: { quality?: string; format?: string }
+): Promise<void> {
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
   const res = await fetch(`${origin}/api/metube/add`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url: videoUrl }),
+    body: JSON.stringify({
+      url: videoUrl,
+      quality: opts?.quality ?? 'best',
+      format: opts?.format ?? 'any',
+    }),
   });
   const text = await res.text();
   if (!res.ok) {
@@ -185,6 +198,19 @@ const parseViewCount = (text: string): number => {
   return parseInt(match[0].replace(/,/g, ''));
 };
 
+/** Invidious 字幕经同源代理下载（WebVTT） */
+function invidiousCaptionHref(videoId: string, label: string, lang?: string): string {
+  const q: Record<string, string> = { label };
+  if (lang) q.lang = lang;
+  return invidiousProxyUrl(`captions/${videoId}`, q);
+}
+
+function normalizeInvidiousKeywords(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
+  if (typeof raw === 'string') return raw.split(',').map((s) => s.trim()).filter(Boolean);
+  return [];
+}
+
 // ============================================================
 // API调用函数
 // ============================================================
@@ -238,6 +264,15 @@ const youtubeApi = {
     if (data.error) throw new Error(data.error.message);
     return data.items[0];
   },
+
+  getChannelById: async (channelId: string, apiKey: string): Promise<YouTubeChannel | null> => {
+    const res = await fetch(
+      `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${channelId}&key=${apiKey}`
+    );
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message);
+    return data.items?.[0] ?? null;
+  },
 };
 
 // Invidious API（经本站代理，避免第三方实例 CORS）
@@ -261,6 +296,11 @@ const invidiousApi = {
 
   getVideoDetails: async (videoId: string): Promise<any> => {
     return fetchInvidiousJson(`videos/${videoId}`, {});
+  },
+
+  /** 频道详情（用于 UC ID / 监控列表打开） */
+  getChannel: async (channelId: string): Promise<any> => {
+    return fetchInvidiousJson(`channels/${channelId}`, {});
   },
 };
 
@@ -301,6 +341,13 @@ export const YouTubeMonitor: React.FC = () => {
   // 复制状态
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
+  /** 按链接 / UC / @ 打开频道 */
+  const [channelLinkInput, setChannelLinkInput] = useState('');
+  const [resolvingChannel, setResolvingChannel] = useState(false);
+  /** MeTube 画质（对应 yt-dlp 常用写法） */
+  const [metubeQuality, setMetubeQuality] = useState<string>('best');
+  const [descExpanded, setDescExpanded] = useState(false);
+
   // 使用的API
   const activeApiKey = YOUTUBE_API_KEY || userYoutubeApiKey;
   const isUsingOfficialApi = !!activeApiKey;
@@ -322,8 +369,9 @@ export const YouTubeMonitor: React.FC = () => {
     setInfoMsg(null);
     setSearchError(null);
     try {
-      await metubeAddToQueue(url);
-      setInfoMsg('已提交到 MeTube 下载队列，请到 Railway 上的 MeTube 页面查看进度。');
+      const fmt = metubeQuality === 'audio' ? 'bestaudio' : 'any';
+      await metubeAddToQueue(url, { quality: metubeQuality, format: fmt });
+      setInfoMsg('已提交到 MeTube 下载队列，请到 Railway 上的 MeTube 页面查看画质/格式与进度。');
     } catch (e: unknown) {
       setSearchError(e instanceof Error ? e.message : 'MeTube 提交失败');
     } finally {
@@ -331,9 +379,91 @@ export const YouTubeMonitor: React.FC = () => {
     }
   };
 
+  const selectChannel = (channel: any) => {
+    setSelectedChannel(channel);
+    fetchChannelVideos(channel);
+  };
+
+  /** 用频道 ID 拉取元数据并打开视频列表（监控列表 / 直链解析共用） */
+  const openChannelByChannelId = async (channelId: string) => {
+    setSearchError(null);
+    setInfoMsg(null);
+    try {
+      if (isUsingOfficialApi) {
+        const ch = await youtubeApi.getChannelById(channelId, activeApiKey);
+        if (!ch) {
+          setSearchError('频道不存在或 ID 无效');
+          return;
+        }
+        selectChannel(ch);
+      } else {
+        const raw = await invidiousApi.getChannel(channelId);
+        const normalized = {
+          type: 'channel',
+          authorId: raw.authorId || channelId,
+          author: raw.author || raw.title || channelId,
+          authorUrl: raw.authorUrl || '',
+          authorThumbnails: raw.authorThumbnails || [],
+          subscriberCount: raw.subscriberCount ?? 0,
+          videoCount: raw.videoCount ?? 0,
+        };
+        selectChannel(normalized);
+      }
+    } catch (e: unknown) {
+      setSearchError(e instanceof Error ? e.message : '打开频道失败');
+      setChannelVideos([]);
+      setSelectedChannel(null);
+    }
+  };
+
+  const openMonitoredChannel = (c: MonitoredChannel) => {
+    void openChannelByChannelId(c.channelId);
+  };
+
+  /** 粘贴频道页链接、UC…、或 @用户名 搜索 */
+  const resolveChannelFromInput = async () => {
+    const raw = channelLinkInput.trim();
+    if (!raw) return;
+    setResolvingChannel(true);
+    setSearchError(null);
+    setInfoMsg(null);
+    try {
+      const ucMatch = raw.match(/UC[\w-]{22}/);
+      if (ucMatch) {
+        await openChannelByChannelId(ucMatch[0]);
+        return;
+      }
+      const chUrl = raw.match(/youtube\.com\/channel\/([^/?#]+)/i);
+      if (chUrl?.[1]?.startsWith('UC')) {
+        await openChannelByChannelId(chUrl[1]);
+        return;
+      }
+      const handleMatch = raw.match(/youtube\.com\/@([^/?#]+)/i);
+      const handle = handleMatch ? handleMatch[1] : raw.startsWith('@') ? raw.slice(1) : null;
+      const searchTerm = handle || raw;
+      let results: any[] = [];
+      if (isUsingOfficialApi) {
+        results = await youtubeApi.searchChannels(searchTerm, activeApiKey);
+      } else {
+        results = await invidiousApi.searchChannels(searchTerm);
+      }
+      setSearchResults(results);
+      if (results[0]) {
+        selectChannel(results[0]);
+      } else {
+        setSearchError('未找到频道，请换关键词或粘贴完整频道链接 / UC ID');
+      }
+    } catch (e: unknown) {
+      setSearchError(e instanceof Error ? e.message : '解析频道失败');
+    } finally {
+      setResolvingChannel(false);
+    }
+  };
+
   // 搜索频道
-  const searchChannels = async () => {
-    if (!searchQuery.trim()) return;
+  const searchChannels = async (overrideQuery?: string) => {
+    const q = (overrideQuery ?? searchQuery).trim();
+    if (!q) return;
     
     setIsSearching(true);
     setSearchError(null);
@@ -342,11 +472,9 @@ export const YouTubeMonitor: React.FC = () => {
       let results: any[] = [];
       
       if (isUsingOfficialApi) {
-        // 使用官方 API
-        results = await youtubeApi.searchChannels(searchQuery, activeApiKey);
+        results = await youtubeApi.searchChannels(q, activeApiKey);
       } else {
-        // 使用 Invidious
-        results = await invidiousApi.searchChannels(searchQuery);
+        results = await invidiousApi.searchChannels(q);
       }
       
       setSearchResults(results);
@@ -396,33 +524,54 @@ export const YouTubeMonitor: React.FC = () => {
     setParseError(null);
     setInfoMsg(null);
     setParsedVideo(null);
+    setDescExpanded(false);
     
     try {
       let result: any = {};
       
       if (isUsingOfficialApi) {
         const video = await youtubeApi.getVideoDetails(videoId, activeApiKey);
+        const tags = video.snippet?.tags;
         result = {
           title: video.snippet.title,
           thumbnail: video.snippet.thumbnails.high?.url || video.snippet.thumbnails.medium?.url,
           viewCount: parseViewCount(video.statistics?.viewCount || '0'),
+          likeCount: video.statistics?.likeCount
+            ? parseViewCount(String(video.statistics.likeCount))
+            : undefined,
+          commentCount: video.statistics?.commentCount
+            ? parseViewCount(String(video.statistics.commentCount))
+            : undefined,
           duration: formatDuration(video.contentDetails?.duration || 'PT0S'),
           channelTitle: video.snippet.channelTitle,
-          description: video.snippet.description,
+          description: video.snippet.description || '',
+          tags: Array.isArray(tags) ? tags : [],
+          keywords: [] as string[],
+          captions: [] as { label: string; lang?: string }[],
           videoId: videoId,
           url: `https://youtube.com/watch?v=${videoId}`,
+          dataSource: 'youtube' as const,
         };
       } else {
         const video = await invidiousApi.getVideoDetails(videoId);
+        const caps = Array.isArray(video.captions) ? video.captions : [];
         result = {
           title: video.title,
           thumbnail: video.videoThumbnails?.[0]?.url,
           viewCount: video.viewCount || 0,
+          likeCount: typeof video.likeCount === 'number' ? video.likeCount : undefined,
           duration: video.lengthSeconds ? formatDuration(`PT${video.lengthSeconds}S`) : '未知',
           channelTitle: video.author,
-          description: video.description,
+          description: video.description || '',
+          tags: [] as string[],
+          keywords: normalizeInvidiousKeywords(video.keywords),
+          captions: caps.map((c: any) => ({
+            label: c.label || c.name || 'caption',
+            lang: c.language_code || c.languageCode,
+          })),
           videoId: videoId,
           url: `https://youtube.com/watch?v=${videoId}`,
+          dataSource: 'invidious' as const,
         };
       }
       
@@ -502,12 +651,6 @@ export const YouTubeMonitor: React.FC = () => {
       await new Promise(resolve => setTimeout(resolve, 300));
     }
     setIsRefreshing(false);
-  };
-
-  // 选择频道
-  const selectChannel = (channel: any) => {
-    setSelectedChannel(channel);
-    fetchChannelVideos(channel);
   };
 
   // 复制
@@ -637,7 +780,9 @@ export const YouTubeMonitor: React.FC = () => {
           </div>
           <div>
             <h1 className="text-xl font-bold text-slate-100">YouTube 频道监控</h1>
-            <p className="text-xs text-slate-500">监控频道更新 · 视频信息解析</p>
+            <p className="text-xs text-slate-500">
+              搜索 / 频道链接打开列表 · 点击监控项加载最新视频 · 解析详情与 MeTube 下载
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -778,6 +923,36 @@ export const YouTubeMonitor: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* 左侧：搜索和频道视频 */}
         <div className="lg:col-span-2 space-y-4">
+          {/* 频道链接 / UC / @ 直达 */}
+          <div className="bg-slate-900/50 border border-slate-700/50 rounded-xl p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Link2 className="w-4 h-4 text-cyan-400" />
+              <h2 className="text-sm font-medium text-slate-200">打开频道（不依赖搜索）</h2>
+            </div>
+            <p className="text-xs text-slate-500 mb-2">
+              粘贴频道页链接、<code className="text-slate-400">UC…</code> 频道 ID，或 <code className="text-slate-400">@用户名</code> / 关键词（取首个匹配频道）。
+            </p>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                type="text"
+                value={channelLinkInput}
+                onChange={(e) => setChannelLinkInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && void resolveChannelFromInput()}
+                placeholder="例如 https://www.youtube.com/@xxx 或 UCxxxxxxxx"
+                className="flex-1 bg-slate-800/50 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500/50"
+              />
+              <button
+                type="button"
+                onClick={() => void resolveChannelFromInput()}
+                disabled={resolvingChannel || !channelLinkInput.trim()}
+                className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-cyan-600/50 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 shrink-0"
+              >
+                {resolvingChannel ? <Loader2 className="w-4 h-4 animate-spin" /> : <Link2 className="w-4 h-4" />}
+                打开频道
+              </button>
+            </div>
+          </div>
+
           {/* 搜索 */}
           <div className="bg-slate-900/50 border border-slate-700/50 rounded-xl p-4">
             <div className="flex items-center gap-2 mb-3">
@@ -789,12 +964,13 @@ export const YouTubeMonitor: React.FC = () => {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && searchChannels()}
+                onKeyDown={(e) => e.key === 'Enter' && void searchChannels()}
                 placeholder="输入频道名称或关键词..."
                 className="flex-1 bg-slate-800/50 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500/50"
               />
               <button
-                onClick={searchChannels}
+                type="button"
+                onClick={() => void searchChannels()}
                 disabled={isSearching}
                 className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-600/50 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
               >
@@ -874,37 +1050,70 @@ export const YouTubeMonitor: React.FC = () => {
               </div>
             ) : (
               <div className="space-y-2 max-h-64 overflow-y-auto">
-                {monitoredChannels.map((channel) => (
-                  <div key={channel.id} className="p-2 rounded-lg bg-slate-800/30 border border-slate-700/30">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-slate-200 font-medium truncate">{channel.name}</span>
-                      <div className="flex items-center gap-1">
-                        <button
-                          onClick={() => refreshChannel(channel)}
-                          className="p-1 rounded text-slate-500 hover:text-emerald-400 transition-colors"
-                          title="刷新"
-                        >
-                          <RefreshCw className="w-3 h-3" />
-                        </button>
-                        <button
-                          onClick={() => removeFromMonitor(channel.id)}
-                          className="p-1 rounded text-slate-500 hover:text-red-400 transition-colors"
-                          title="移除"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
+                {monitoredChannels.map((channel) => {
+                  const active =
+                    selectedChannel &&
+                    (selectedChannel.id === channel.channelId ||
+                      selectedChannel.authorId === channel.channelId);
+                  return (
+                    <div
+                      key={channel.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => openMonitoredChannel(channel)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          openMonitoredChannel(channel);
+                        }
+                      }}
+                      className={`p-2 rounded-lg border text-left cursor-pointer transition-colors ${
+                        active
+                          ? 'bg-emerald-500/15 border-emerald-500/40 ring-1 ring-emerald-500/30'
+                          : 'bg-slate-800/30 border-slate-700/30 hover:border-slate-600 hover:bg-slate-800/50'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm text-slate-200 font-medium truncate">{channel.name}</span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void refreshChannel(channel);
+                            }}
+                            className="p-1 rounded text-slate-500 hover:text-emerald-400 transition-colors"
+                            title="仅刷新摘要"
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeFromMonitor(channel.id);
+                            }}
+                            className="p-1 rounded text-slate-500 hover:text-red-400 transition-colors"
+                            title="移除"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-slate-600 font-mono truncate">
+                        {channel.channelId}
+                      </div>
+                      {channel.lastVideoTitle && (
+                        <div className="mt-1 text-xs text-slate-500 line-clamp-1">
+                          最新：{channel.lastVideoTitle}
+                        </div>
+                      )}
+                      <div className="mt-1 text-xs text-slate-600">
+                        {channel.lastVideoDate ? `更新: ${channel.lastVideoDate}` : '从未更新'} · 点击查看视频列表
                       </div>
                     </div>
-                    {channel.lastVideoTitle && (
-                      <div className="mt-1 text-xs text-slate-500 line-clamp-1">
-                        最新：{channel.lastVideoTitle}
-                      </div>
-                    )}
-                    <div className="mt-1 text-xs text-slate-600">
-                      {channel.lastVideoDate ? `更新: ${channel.lastVideoDate}` : '从未更新'}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -914,6 +1123,20 @@ export const YouTubeMonitor: React.FC = () => {
             <div className="flex items-center gap-2 mb-3">
               <Download className="w-4 h-4 text-blue-400" />
               <h2 className="text-sm font-medium text-slate-200">视频解析</h2>
+            </div>
+            <div className="mb-3 flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-wider text-slate-500">MeTube 画质偏好</label>
+              <select
+                value={metubeQuality}
+                onChange={(e) => setMetubeQuality(e.target.value)}
+                className="w-full bg-slate-800/50 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200"
+              >
+                <option value="best">最佳（best）</option>
+                <option value="1080">1080p</option>
+                <option value="720">720p</option>
+                <option value="480">480p</option>
+                <option value="audio">仅音频</option>
+              </select>
             </div>
             <div className="space-y-3">
               <input
@@ -941,16 +1164,86 @@ export const YouTubeMonitor: React.FC = () => {
                   <img src={parsedVideo.thumbnail} alt={parsedVideo.title} className="w-full rounded-lg mb-3" />
                 )}
                 <h3 className="font-medium text-slate-200 text-sm line-clamp-2 mb-2">{parsedVideo.title}</h3>
-                <div className="flex items-center gap-3 text-xs text-slate-500 mb-3">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 mb-2">
                   <span className="flex items-center gap-1">
                     <Eye className="w-3 h-3" />
                     {formatNumber(parsedVideo.viewCount)} 次观看
                   </span>
+                  {parsedVideo.likeCount != null && (
+                    <span className="flex items-center gap-1">
+                      <ThumbsUp className="w-3 h-3" />
+                      {formatNumber(parsedVideo.likeCount)}
+                    </span>
+                  )}
+                  {parsedVideo.commentCount != null && (
+                    <span>{formatNumber(parsedVideo.commentCount)} 条评论</span>
+                  )}
                   <span className="flex items-center gap-1">
                     <Clock className="w-3 h-3" />
                     {parsedVideo.duration}
                   </span>
                 </div>
+                {parsedVideo.channelTitle && (
+                  <p className="text-xs text-slate-500 mb-2">频道：{parsedVideo.channelTitle}</p>
+                )}
+                {(parsedVideo.tags?.length > 0 || parsedVideo.keywords?.length > 0) && (
+                  <div className="flex flex-wrap gap-1 mb-2">
+                    {(parsedVideo.tags?.length ? parsedVideo.tags : parsedVideo.keywords).slice(0, 24).map((t: string) => (
+                      <span
+                        key={t}
+                        className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-slate-700/50 text-[10px] text-slate-400"
+                      >
+                        <Tag className="w-2.5 h-2.5" />
+                        {t}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {parsedVideo.description ? (
+                  <div className="mb-3">
+                    <button
+                      type="button"
+                      onClick={() => setDescExpanded((v) => !v)}
+                      className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-200 mb-1"
+                    >
+                      <FileText className="w-3 h-3" />
+                      简介
+                      {descExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                    </button>
+                    <p
+                      className={`text-xs text-slate-500 whitespace-pre-wrap break-words ${
+                        descExpanded ? '' : 'line-clamp-4'
+                      }`}
+                    >
+                      {parsedVideo.description}
+                    </p>
+                  </div>
+                ) : null}
+                {parsedVideo.dataSource === 'invidious' &&
+                  parsedVideo.captions?.length > 0 && (
+                    <div className="mb-3">
+                      <p className="text-[10px] uppercase text-slate-500 mb-1">字幕（经本站代理拉取 WebVTT）</p>
+                      <div className="flex flex-wrap gap-1">
+                        {parsedVideo.captions.map((c: { label: string; lang?: string }, i: number) => (
+                          <a
+                            key={`${c.label}-${i}`}
+                            href={invidiousCaptionHref(parsedVideo.videoId, c.label, c.lang)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[10px] px-2 py-0.5 rounded bg-blue-500/10 text-blue-300 hover:bg-blue-500/20"
+                          >
+                            {c.label}
+                            {c.lang ? ` (${c.lang})` : ''}
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                {parsedVideo.dataSource === 'youtube' && (
+                  <p className="text-[10px] text-slate-600 mb-3">
+                    官方 API 不返回可下载字幕流；需要字幕文件时请清空 Key 用 Invidious 解析，或到 YouTube 站内查看。
+                  </p>
+                )}
                 <div className="flex flex-wrap gap-2">
                   <a
                     href={parsedVideo.url}
