@@ -1,8 +1,14 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import {
+  INVIDIOUS_FETCH_HEADERS,
+  listInvidiousUpstreamBases,
+  shouldTryNextInvidiousUpstream,
+} from './_invidiousUpstream';
 
 /**
  * 浏览器直连 Invidious 会被 CORS 拦截；通过本站同源代理转发到上游 Invidious。
- * 上游地址在 Vercel 环境变量 INVIDIOUS_UPSTREAM_URL 配置（勿用 MeTube，二者 API 不兼容）。
+ * 上游：INVIDIOUS_UPSTREAM_URL（主）+ 可选 INVIDIOUS_UPSTREAM_FALLBACKS（逗号分隔），
+ * 或单独使用 INVIDIOUS_UPSTREAM_URLS（逗号分隔完整列表）。勿填 MeTube 域名。
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -19,10 +25,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'invalid or missing path' });
   }
 
-  const upstream = (process.env.INVIDIOUS_UPSTREAM_URL || 'https://invidious.projectsegfau.lt').replace(
-    /\/$/,
-    ''
-  );
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(req.query)) {
     if (k === 'path') continue;
@@ -31,22 +33,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
   const qs = params.toString();
   const sub = pathParam.replace(/^\/+/, '');
-  const target = `${upstream}/api/v1/${sub}${qs ? `?${qs}` : ''}`;
 
-  try {
-    const r = await fetch(target, {
-      method: req.method,
-      headers: { 'User-Agent': 'ContentMaster-Invidious-Proxy/1.0' },
-      redirect: 'follow',
-    });
-    const ct = r.headers.get('content-type') || 'application/json';
-    res.setHeader('Content-Type', ct);
-    if (req.method === 'HEAD') {
-      return res.status(r.status).end();
+  const candidates = listInvidiousUpstreamBases(process.env);
+
+  for (let i = 0; i < candidates.length; i++) {
+    const upstream = candidates[i];
+    const target = `${upstream}/api/v1/${sub}${qs ? `?${qs}` : ''}`;
+    try {
+      const r = await fetch(target, {
+        method: req.method,
+        headers: INVIDIOUS_FETCH_HEADERS,
+        redirect: 'follow',
+      });
+      const buf = Buffer.from(await r.arrayBuffer());
+      const ct = r.headers.get('content-type') || '';
+      const prefix = buf.slice(0, 256).toString('utf8');
+      const hasMore = i < candidates.length - 1;
+
+      if (
+        shouldTryNextInvidiousUpstream(r.status, ct, prefix, hasMore)
+      ) {
+        continue;
+      }
+
+      res.setHeader('Content-Type', ct || 'application/octet-stream');
+      if (req.method === 'HEAD') {
+        return res.status(r.status).end();
+      }
+      return res.status(r.status).send(buf);
+    } catch {
+      if (i < candidates.length - 1) continue;
+      return res.status(502).json({ error: 'Invidious fetch failed for all upstreams' });
     }
-    const buf = Buffer.from(await r.arrayBuffer());
-    return res.status(r.status).send(buf);
-  } catch (e) {
-    return res.status(502).json({ error: e instanceof Error ? e.message : String(e) });
   }
+
+  return res.status(502).json({
+    error: 'Invidious upstream unavailable',
+    detail: 'All configured Invidious instances failed or returned non-JSON. Set INVIDIOUS_UPSTREAM_FALLBACKS or use YouTube Data API key.',
+  });
 }

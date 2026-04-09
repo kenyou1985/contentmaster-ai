@@ -34,13 +34,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'missing url string in body' });
   }
 
-  const payload = {
-    url,
-    quality: typeof body.quality === 'string' ? body.quality : 'best',
-    format: typeof body.format === 'string' ? body.format : 'any',
-    auto_start: body.auto_start !== false,
-    playlist_strict_mode: false,
-  };
+  const downloadType = body.download_type;
+  const payload: Record<string, unknown> =
+    downloadType === 'audio'
+      ? {
+          url,
+          download_type: 'audio',
+          format: typeof body.format === 'string' ? body.format : 'm4a',
+          quality: typeof body.quality === 'string' ? body.quality : 'best',
+          auto_start: body.auto_start !== false,
+        }
+      : {
+          url,
+          quality: typeof body.quality === 'string' ? body.quality : 'best',
+          format: typeof body.format === 'string' ? body.format : 'any',
+          auto_start: body.auto_start !== false,
+          playlist_strict_mode: false,
+        };
+
+  const overridesRaw = process.env.METUBE_YTDL_OVERRIDES_JSON?.trim();
+  if (overridesRaw) {
+    try {
+      const o = JSON.parse(overridesRaw) as Record<string, unknown>;
+      if (o && typeof o === 'object') {
+        payload.ytdl_options_overrides = o;
+      }
+    } catch {
+      return res.status(500).json({ error: 'METUBE_YTDL_OVERRIDES_JSON is invalid JSON' });
+    }
+  }
 
   try {
     const r = await fetch(`${base}/add`, {

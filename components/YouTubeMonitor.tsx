@@ -30,6 +30,8 @@ import {
 // ============================================================
 // YouTube Data API v3 - 从环境变量获取（Vercel部署时配置）
 const YOUTUBE_API_KEY = (import.meta as any).env?.VITE_YOUTUBE_API_KEY || '';
+/** 可选：Railway MeTube 公网根地址，用于设置里「打开 MeTube」链接（勿与 METUBE_URL 混用：后者在服务端） */
+const VITE_METUBE_PUBLIC_URL = ((import.meta as any).env?.VITE_METUBE_PUBLIC_URL as string | undefined)?.trim() || '';
 
 /** 同源 Invidious 代理（Vercel: api/invidious；开发: vite 中间件）。勿把 MeTube 当作 Invidious。 */
 function invidiousProxyUrl(path: string, query: Record<string, string> = {}): string {
@@ -56,17 +58,26 @@ async function fetchInvidiousJson<T>(path: string, query: Record<string, string>
 
 async function metubeAddToQueue(
   videoUrl: string,
-  opts?: { quality?: string; format?: string }
+  opts?: { quality?: string; format?: string; download_type?: 'audio' }
 ): Promise<void> {
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const body =
+    opts?.download_type === 'audio'
+      ? {
+          url: videoUrl,
+          download_type: 'audio' as const,
+          format: 'm4a',
+          quality: opts?.quality ?? 'best',
+        }
+      : {
+          url: videoUrl,
+          quality: opts?.quality ?? 'best',
+          format: opts?.format ?? 'any',
+        };
   const res = await fetch(`${origin}/api/metube/add`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      url: videoUrl,
-      quality: opts?.quality ?? 'best',
-      format: opts?.format ?? 'any',
-    }),
+    body: JSON.stringify(body),
   });
   const text = await res.text();
   if (!res.ok) {
@@ -81,6 +92,22 @@ async function metubeAddToQueue(
   }
 }
 
+function normalizeMetubeHistoryPayload(data: unknown): any[] {
+  if (!data || typeof data !== 'object') return [];
+  const o = data as Record<string, unknown>;
+  if (Array.isArray(data)) return data;
+  const done = Array.isArray(o.done) ? o.done : [];
+  const queue = Array.isArray(o.queue) ? o.queue : [];
+  const pending = Array.isArray(o.pending) ? o.pending : [];
+  const merged = [...done, ...queue, ...pending];
+  merged.sort((a: any, b: any) => {
+    const ta = Number(a?.added ?? a?.timestamp ?? a?.created ?? 0);
+    const tb = Number(b?.added ?? b?.timestamp ?? b?.created ?? 0);
+    return tb - ta;
+  });
+  return merged;
+}
+
 async function fetchMetubeHistory(): Promise<any[]> {
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
   const res = await fetch(`${origin}/api/metube/history`);
@@ -88,7 +115,11 @@ async function fetchMetubeHistory(): Promise<any[]> {
   try {
     const text = await res.text();
     const data = JSON.parse(text);
-    return Array.isArray(data) ? data : (data.history ?? []);
+    let list = normalizeMetubeHistoryPayload(data);
+    if (!list.length && (data as any)?.history != null) {
+      list = normalizeMetubeHistoryPayload((data as any).history);
+    }
+    return list;
   } catch {
     return [];
   }
@@ -331,7 +362,12 @@ export const YouTubeMonitor: React.FC = () => {
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
-  const [metubeBusy, setMetubeBusy] = useState(false);
+  /** 仅当前正在提交的 watch URL 显示「提交中」，避免全列表共用 loading */
+  const [metubeSubmittingUrl, setMetubeSubmittingUrl] = useState<string | null>(null);
+  const [cookiesPaste, setCookiesPaste] = useState('');
+  const [cookiesUploading, setCookiesUploading] = useState(false);
+  const [cookiesHint, setCookiesHint] = useState<string | null>(null);
+  const [cookieStatusText, setCookieStatusText] = useState<string | null>(null);
   /** MeTube 下载历史（轮询展示） */
   const [metubeHistory, setMetubeHistory] = useState<any[]>([]);
   const [metubeHistoryLoading, setMetubeHistoryLoading] = useState(false);
@@ -381,12 +417,15 @@ export const YouTubeMonitor: React.FC = () => {
   }, [monitoredChannels]);
 
   const queueMetubeDownload = async (url: string) => {
-    setMetubeBusy(true);
+    setMetubeSubmittingUrl(url);
     setInfoMsg(null);
     setSearchError(null);
     try {
-      const fmt = metubeQuality === 'audio' ? 'bestaudio' : 'any';
-      await metubeAddToQueue(url, { quality: metubeQuality, format: fmt });
+      await metubeAddToQueue(url, {
+        quality: metubeQuality === 'audio' ? 'best' : metubeQuality,
+        format: 'any',
+        download_type: metubeQuality === 'audio' ? 'audio' : undefined,
+      });
       // 延迟 1.5s 后轮询历史，展示最新下载项
       setTimeout(async () => {
         const hist = await fetchMetubeHistory();
@@ -398,7 +437,47 @@ export const YouTubeMonitor: React.FC = () => {
     } catch (e: unknown) {
       setSearchError(e instanceof Error ? e.message : 'MeTube 提交失败');
     } finally {
-      setMetubeBusy(false);
+      setMetubeSubmittingUrl(null);
+    }
+  };
+
+  const uploadCookiesToMetube = async () => {
+    const text = cookiesPaste.trim();
+    if (!text) {
+      setCookiesHint('请先粘贴 Netscape 格式的 cookies.txt 内容');
+      return;
+    }
+    setCookiesUploading(true);
+    setCookiesHint(null);
+    try {
+      const origin = window.location.origin;
+      const res = await fetch(`${origin}/api/metube/upload-cookies`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cookiesText: text }),
+      });
+      const t = await res.text();
+      if (!res.ok) {
+        setCookiesHint(t.slice(0, 400) || `上传失败 HTTP ${res.status}`);
+        return;
+      }
+      setCookiesHint('已上传到 MeTube（若仍失败请检查 Railway Volume 与 MeTube 版本是否支持 /upload-cookies）。');
+    } catch (e) {
+      setCookiesHint(e instanceof Error ? e.message : '上传失败');
+    } finally {
+      setCookiesUploading(false);
+    }
+  };
+
+  const refreshCookieStatus = async () => {
+    setCookieStatusText(null);
+    try {
+      const origin = window.location.origin;
+      const res = await fetch(`${origin}/api/metube/cookie-status`);
+      const t = await res.text();
+      setCookieStatusText(t.slice(0, 2000));
+    } catch (e) {
+      setCookieStatusText(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -737,11 +816,11 @@ export const YouTubeMonitor: React.FC = () => {
             </button>
             <button
               type="button"
-              disabled={metubeBusy}
+              disabled={metubeSubmittingUrl === url}
               onClick={() => queueMetubeDownload(url)}
               className="px-3 py-1 text-xs bg-amber-500/10 text-amber-400 rounded-md hover:bg-amber-500/20 transition-colors disabled:opacity-50"
             >
-              {metubeBusy ? '提交中…' : 'MeTube 下载'}
+              {metubeSubmittingUrl === url ? '提交中…' : 'MeTube 下载'}
             </button>
             <a
               href={url}
@@ -915,6 +994,91 @@ export const YouTubeMonitor: React.FC = () => {
                   Railway 部署 MeTube
                 </a>
               </div>
+            </div>
+          </div>
+
+          <div className="border-t border-slate-700/50 pt-4 space-y-3">
+            <div className="flex items-center gap-2 text-amber-400">
+              <Download className="w-4 h-4" />
+              <span className="text-sm font-medium">MeTube 下载失败（YouTube 机器人检测）</span>
+            </div>
+            <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-3 text-xs text-slate-400 space-y-2">
+              <p>
+                本站页面<strong className="text-slate-300">无法</strong>嵌入「YouTube
+                官方登录」并自动读取登录 Cookie：YouTube 的会话 Cookie 多为 HttpOnly，浏览器禁止任意第三方页面读取（安全策略）。可行做法是：在你本机浏览器登录
+                YouTube 后，按 yt-dlp 文档导出 Netscape 格式的{' '}
+                <code className="text-slate-300">cookies.txt</code>，再粘贴到下方上传到 Railway 上的 MeTube。
+              </p>
+              <a
+                href="https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-amber-400 hover:text-amber-300 inline-flex items-center gap-1"
+              >
+                <ExternalLink className="w-3 h-3" />
+                yt-dlp：导出 YouTube cookies 说明
+              </a>
+              {VITE_METUBE_PUBLIC_URL ? (
+                <p>
+                  <a
+                    href={VITE_METUBE_PUBLIC_URL.replace(/\/$/, '')}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-emerald-400 hover:text-emerald-300 inline-flex items-center gap-1"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    打开 MeTube（VITE_METUBE_PUBLIC_URL）
+                  </a>
+                </p>
+              ) : (
+                <p className="text-slate-500">
+                  可选：在前端环境变量中配置 <code className="text-slate-400">VITE_METUBE_PUBLIC_URL</code> 为你的 MeTube
+                  公网地址，此处会显示直达链接。
+                </p>
+              )}
+              <p className="text-slate-500">
+                <strong className="text-slate-400">方案 B（服务端）</strong>：在 Vercel 设置{' '}
+                <code className="text-slate-300">METUBE_YTDL_OVERRIDES_JSON</code>（需 Railway MeTube 开启{' '}
+                <code className="text-slate-300">ALLOW_YTDL_OPTIONS_OVERRIDES=true</code>
+                ），例如{' '}
+                <code className="text-slate-300 break-all">
+                  {`{"extractor_args":{"youtube":{"player_client":["android"]}}}`}
+                </code>
+                ；或在 MeTube 容器环境变量 <code className="text-slate-300">YTDL_OPTIONS</code> 中配置同等参数 / 代理。
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">粘贴 cookies.txt（Netscape 格式）</label>
+              <textarea
+                value={cookiesPaste}
+                onChange={(e) => setCookiesPaste(e.target.value)}
+                placeholder="# Netscape HTTP Cookie File&#10;.youtube.com	TRUE	/	TRUE	0	CONSENT	..."
+                rows={5}
+                className="w-full bg-slate-800/50 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 placeholder-slate-600 font-mono focus:outline-none focus:border-amber-500/50"
+              />
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void uploadCookiesToMetube()}
+                  disabled={cookiesUploading}
+                  className="px-3 py-1.5 rounded-lg text-xs bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white"
+                >
+                  {cookiesUploading ? '上传中…' : '上传到 MeTube'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void refreshCookieStatus()}
+                  className="px-3 py-1.5 rounded-lg text-xs bg-slate-700 hover:bg-slate-600 text-slate-200"
+                >
+                  查询 cookie 状态
+                </button>
+              </div>
+              {cookiesHint && <p className="mt-2 text-xs text-amber-300/90">{cookiesHint}</p>}
+              {cookieStatusText && (
+                <pre className="mt-2 p-2 rounded bg-slate-950/80 text-[10px] text-slate-400 overflow-x-auto max-h-40 whitespace-pre-wrap break-all">
+                  {cookieStatusText}
+                </pre>
+              )}
             </div>
           </div>
         </div>
@@ -1286,11 +1450,11 @@ export const YouTubeMonitor: React.FC = () => {
                   </a>
                   <button
                     type="button"
-                    disabled={metubeBusy}
+                    disabled={metubeSubmittingUrl === parsedVideo.url}
                     onClick={() => queueMetubeDownload(parsedVideo.url)}
                     className="px-3 py-1.5 bg-amber-500/10 text-amber-400 rounded-md text-xs hover:bg-amber-500/20 transition-colors flex items-center gap-1 disabled:opacity-50"
                   >
-                    {metubeBusy ? '提交中…' : 'MeTube 下载'}
+                    {metubeSubmittingUrl === parsedVideo.url ? '提交中…' : 'MeTube 下载'}
                   </button>
                   <button
                     type="button"
@@ -1338,9 +1502,13 @@ export const YouTubeMonitor: React.FC = () => {
               <div className="space-y-1.5 max-h-64 overflow-y-auto">
                 {metubeHistory.map((item: any, idx: number) => {
                   const title = item.title || item.name || `下载 #${idx + 1}`;
-                  const status: string = item.status || item.state || 'unknown';
-                  const isError = status === 'error' || status === 'failed' || status === 'error';
-                  const isDone = status === 'completed' || status === 'done' || status === 'finished';
+                  const status: string = String(item.status || item.state || 'unknown');
+                  const errMsg = item.error ? String(item.error) : '';
+                  const isError =
+                    !!errMsg ||
+                    /error|fail|No video formats/i.test(status) ||
+                    ['error', 'failed'].includes(status);
+                  const isDone = ['completed', 'done', 'finished'].includes(status);
                   return (
                     <div
                       key={item.uid || item.id || idx}
@@ -1378,17 +1546,6 @@ export const YouTubeMonitor: React.FC = () => {
                 })}
               </div>
             )}
-
-            {/* Bot 检测提示 */}
-            <div className="mt-3 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-300">
-              ⚠️ 若下载状态为 <span className="font-mono text-amber-200">No video formats found</span>，说明 Railway MeTube
-              的 IP 被 YouTube 识别为机器人。解决方法：
-              <ol className="mt-1 ml-3 list-decimal space-y-0.5">
-                <li>在 Railway 挂载 Volume 后手动上传 cookies.txt（yt-dlp 支持 <code>--cookies</code>）</li>
-                <li>或用 <code>--extractor-args "youtube:player_client=android"</code> 等参数绕过</li>
-                <li>或在 Railway 设置环境变量 <code>YTDL_OPTIONS</code> 加入代理（需境外 IP）</li>
-              </ol>
-            </div>
           </div>
         </div>
       </div>
