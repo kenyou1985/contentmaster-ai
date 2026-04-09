@@ -1,7 +1,11 @@
 import React, { useState, useRef } from 'react';
 import { ToolMode, NicheType, ApiProvider } from '../types';
 import { NICHES } from '../constants';
-import { streamContentGeneration, initializeGemini } from '../services/geminiService';
+import {
+  streamContentGeneration,
+  initializeGemini,
+  type StreamContentOptions,
+} from '../services/geminiService';
 import { fetchYouTubeTranscript, extractYouTubeVideoId, isYouTubeLink } from '../services/youtubeService';
 import { FileText, Maximize2, RefreshCw, Scissors, ArrowRight, Copy, ChevronDown, Video, Download, Plus, X, History } from 'lucide-react';
 import { saveHistory, getHistory, deleteHistory, clearHistory, HistoryRecord } from '../services/historyService';
@@ -262,9 +266,97 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   const [autoMatchedNiche, setAutoMatchedNiche] = useState<{ niche: NicheType; score: number; reason: string } | null>(null);
   const [autoSwitchNicheEnabled, setAutoSwitchNicheEnabled] = useState(true);
   const [isOptimizingMerge, setIsOptimizingMerge] = useState(false);
+  const [rewriteLengthMode, setRewriteLengthMode] = useState<'strict' | 'balanced' | 'expressive'>('balanced');
+
+  /** 深度洗稿 / 深度扩写（含同面板 5 段流）：Yunwu OpenAI 兼容流式主备模型 */
+  const DEEP_REWRITE_STREAM_PRIMARY = 'gpt-5.4-mini';
+  const DEEP_REWRITE_STREAM_FALLBACK = 'gemini-3.1-pro-preview';
+  const deepRewriteStreamOptions: StreamContentOptions = {
+    fallbackModelOnStall: DEEP_REWRITE_STREAM_FALLBACK,
+  };
+  const deepRewriteStreamModelArgs: [string | undefined, StreamContentOptions | undefined] =
+    provider === 'yunwu'
+      ? [DEEP_REWRITE_STREAM_PRIMARY, deepRewriteStreamOptions]
+      : [undefined, undefined];
+
+  /**
+   * 洗稿/润色字数策略（相对原文去空白后的字符数）：
+   * - strict：±5%
+   * - balanced：不低于约 95%，不高于 +8%
+   * - expressive：不低于约 95%，不高于 +12%
+   */
+  const rewriteRangeMap = {
+    strict: {
+      segmentMin: 0.95,
+      segmentMax: 1.05,
+      finalMin: 0.95,
+      finalMax: 1.05,
+      label: '严格贴近原文（±5%）',
+    },
+    balanced: {
+      segmentMin: 0.95,
+      segmentMax: 1.08,
+      finalMin: 0.95,
+      finalMax: 1.08,
+      label: '适度优化（+8%以内）',
+    },
+    expressive: {
+      segmentMin: 0.95,
+      segmentMax: 1.12,
+      finalMin: 0.95,
+      finalMax: 1.12,
+      label: '强化表达（+12%以内）',
+    },
+  } as const;
+  const expandRangeMap = {
+    strict: { min: 1.3, max: 1.6 },
+    balanced: { min: 1.5, max: 1.9 },
+    expressive: { min: 1.8, max: 2.3 },
+  } as const;
   const [outlineText, setOutlineText] = useState<string>('');
   const [outlineItems, setOutlineItems] = useState<string[]>(['', '', '', '', '']);
   const [isExtractingOutline, setIsExtractingOutline] = useState(false);
+  const [autoPilotStage, setAutoPilotStage] = useState<'idle' | 'outline' | 'split' | 'generate' | 'merge' | 'done'>('idle');
+
+  const segmentDoneCount = segmentOutputs.reduce((acc, s, i) => {
+    const base = (rewriteSegments[i] || '').trim();
+    const out = (s || '').trim();
+    const done = out.length > 0 && out !== base && !segmentGenerating[i] && isTextLikelyComplete(out);
+    return acc + (done ? 1 : 0);
+  }, 0);
+  const segmentProgressPercent = Math.round((segmentDoneCount / 5) * 100);
+
+  const outlineProgressPercent = isExtractingOutline ? 50 : (outlineText.trim() ? 100 : 0);
+  const splitProgressPercent = rewriteSegments.some(s => (s || '').trim()) ? 100 : 0;
+  const generateProgressPercent = segmentProgressPercent;
+  const mergeProgressPercent = isOptimizingMerge ? 60 : (mergedOutput.trim() ? 100 : 0);
+
+  const autoPilotOverallPercent = Math.round(
+    (outlineProgressPercent + splitProgressPercent + generateProgressPercent + mergeProgressPercent) / 4
+  );
+
+  const sourceLenForDashboard = (inputText || '').replace(/\s+/g, '').length;
+  const segmentsTotalLenForDashboard = segmentOutputs.reduce((acc, s) => acc + ((s || '').replace(/\s+/g, '').length), 0);
+  const mergedLenForDashboard = (mergedOutput || '').replace(/\s+/g, '').length;
+  const rewritePolicyForDashboard = rewriteRangeMap[rewriteLengthMode] || rewriteRangeMap.balanced;
+  const expandPolicyForDashboard = expandRangeMap[rewriteLengthMode] || expandRangeMap.balanced;
+  const rewriteMinForDashboard = Math.round(sourceLenForDashboard * rewritePolicyForDashboard.finalMin);
+  const rewriteMaxForDashboard = Math.round(sourceLenForDashboard * rewritePolicyForDashboard.finalMax);
+  const expandMinForDashboard = Math.round(sourceLenForDashboard * expandPolicyForDashboard.min);
+  const expandMaxForDashboard = Math.round(sourceLenForDashboard * expandPolicyForDashboard.max);
+  const mergedCompleteForDashboard = isTextLikelyComplete(mergedOutput || '');
+  const mergedBelowFloor = isDeepRewriteMode && mode !== ToolMode.EXPAND && sourceLenForDashboard > 0 && mergedLenForDashboard > 0 && mergedLenForDashboard < rewriteMinForDashboard;
+  const mergedAbovePolicy = isDeepRewriteMode && mode !== ToolMode.EXPAND && sourceLenForDashboard > 0 && mergedLenForDashboard > rewriteMaxForDashboard;
+  const mergedWithinRange = isDeepRewriteMode && mode !== ToolMode.EXPAND && sourceLenForDashboard > 0 && mergedLenForDashboard >= rewriteMinForDashboard && mergedLenForDashboard <= rewriteMaxForDashboard;
+  const mergedComplianceText = !isDeepRewriteMode || mode === ToolMode.EXPAND || sourceLenForDashboard === 0
+    ? '扩写模式/无原文，不做洗稿区间判定'
+    : mergedWithinRange
+      ? `合规（约 ${Math.round(rewritePolicyForDashboard.finalMin * 100)}%~${Math.round(rewritePolicyForDashboard.finalMax * 100)}% 相对原文）`
+      : mergedBelowFloor
+        ? '低于下限（未完成）'
+        : mergedAbovePolicy
+          ? '高于上限（完整性优先）'
+          : '待生成';
   
   // 创建新任务
   React.useEffect(() => {
@@ -279,7 +371,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     const allDone = segmentOutputs.every((s, i) => {
       const base = rewriteSegments[i]?.trim() || '';
       const out = s?.trim() || '';
-      return out.length > 0 && out !== base;
+      return out.length > 0 && out !== base && !segmentGenerating[i] && isTextLikelyComplete(out);
     });
     if (allDone && !allSegmentsDoneNotified) {
       setAllSegmentsDoneNotified(true);
@@ -291,7 +383,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       setAllSegmentsDoneNotified(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [segmentOutputs, rewriteSegments, isDeepRewriteMode, mode]);
+  }, [segmentOutputs, rewriteSegments, segmentGenerating, isDeepRewriteMode, mode]);
 
   React.useEffect(() => {
     const detected = quickDetectBestNiche(inputText);
@@ -627,6 +719,32 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       slice.lastIndexOf('?')
     );
     return (lastPunct > 0 ? slice.slice(0, lastPunct + 1) : slice).trim();
+  };
+
+  function isTextLikelyComplete(text: string): boolean {
+    const t = (text || '').trim();
+    if (!t) return false;
+    const hasEndingPunct = /[。！？.!?]$/.test(t);
+    const looksAbrupt = /(因此|所以|但是|然而|并且|同时|另外|此外|尤其是|如果|因为|比如|例如|首先|其次|最后)$/i.test(t);
+    return hasEndingPunct && !looksAbrupt;
+  }
+
+  const getCompletenessScore = (text: string): number => {
+    const t = (text || '').trim();
+    if (!t) return 0;
+
+    let score = 0;
+    const hasEndingPunct = /[。！？.!?]$/.test(t);
+    const paragraphCount = t.split(/\n+/).map(s => s.trim()).filter(Boolean).length;
+    const sentenceCount = t.split(/[。！？.!?]+/).map(s => s.trim()).filter(Boolean).length;
+    const looksAbrupt = /(例如|比如|首先|其次|最后|综上|总之|因此|所以|但|然而|并且|同时|以及|另外|此外|可见|这说明|换句话说)$/i.test(t);
+
+    if (hasEndingPunct) score += 2;
+    if (paragraphCount >= 2) score += 1;
+    if (sentenceCount >= 5) score += 1;
+    if (!looksAbrupt) score += 1;
+
+    return score;
   };
 
   const normalizeSummarizeOutput = (text: string, summarizeNiche?: NicheType): string => {
@@ -4030,7 +4148,7 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
     const outSegs = splitTextIntoFiveSegments(t);
     setRewriteSegments(baseSegs);
     setSegmentOutputs(outSegs.map((s, i) => s || baseSegs[i] || ''));
-    setMergedOutput(mergeFiveSegments(outSegs));
+    setMergedOutput('');
   };
 
   const parseOutlineToFiveItems = (outline: string): string[] => {
@@ -4056,21 +4174,27 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
       setOutlineText(segs.map((s, i) => `${i + 1}. 第${i + 1}段要点：${(s || '').slice(0, 60)}`).join('\n'));
       setRewriteSegments(segs);
       setSegmentOutputs(segs);
-      setMergedOutput(mergeFiveSegments(segs));
+      setMergedOutput('');
       appendTerminal('未配置 API Key，已使用本地规则拆分并生成简版大纲。');
       return segs;
     }
 
     setIsExtractingOutline(true);
+    setAutoPilotStage('outline');
     appendTerminal('正在提炼原文5段大纲...');
     try {
       initializeGemini(apiKey, { provider });
       let outline = '';
       const prompt = `请将以下原文提炼为严格5条分段大纲（第1段-第5段），每条1-2句，按原文逻辑推进，不要遗漏核心观点。只输出5条，不要解释。\n\n原文：\n${raw}`;
-      await streamContentGeneration(prompt, '你是专业中文总编，只输出5条清晰大纲。', (chunk) => {
-        outline += chunk;
-        setOutlineText(outline);
-      });
+      await streamContentGeneration(
+        prompt,
+        '你是专业中文总编，只输出5条清晰大纲。',
+        (chunk) => {
+          outline += chunk;
+          setOutlineText(outline);
+        },
+        ...deepRewriteStreamModelArgs
+      );
 
       const parsed = parseOutlineToFiveItems(outline || raw);
       const segs = splitTextIntoFiveSegments(raw);
@@ -4078,7 +4202,8 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
       setOutlineText(outline.trim());
       setRewriteSegments(segs);
       setSegmentOutputs(segs);
-      setMergedOutput(mergeFiveSegments(segs));
+      setMergedOutput('');
+      setAutoPilotStage('split');
       setAllSegmentsDoneNotified(false);
       appendTerminal('5段大纲提炼完成，已初始化分段。');
       return segs;
@@ -4088,7 +4213,7 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
       setOutlineText('大纲提炼失败，已回退本地拆分。');
       setRewriteSegments(segs);
       setSegmentOutputs(segs);
-      setMergedOutput(mergeFiveSegments(segs));
+      setMergedOutput('');
       appendTerminal(`大纲提炼失败，已回退本地拆分：${e?.message || e}`);
       return segs;
     } finally {
@@ -4140,14 +4265,15 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
     return '与原文保持同语言输出（原文中文就输出中文，原文英文就输出英文，其他语言同理）';
   };
 
-  const handleRegenerateSingleSegment = async (idx: number, forcedSource?: string) => {
+  const handleRegenerateSingleSegment = async (idx: number, forcedSource?: string): Promise<string> => {
     const source = (forcedSource ?? rewriteSegments[idx] ?? '').trim();
     if (!apiKey || !source) {
       toast.warning('该分段为空，无法重新生成');
-      return;
+      return '';
     }
 
     const segSource = source;
+    const sourceCharCount = segSource.replace(/\s+/g, '').length;
     setSegmentGenerating(prev => prev.map((v, i) => (i === idx ? true : v)));
     appendTerminal(`开始生成第 ${idx + 1} 段...`);
 
@@ -4158,8 +4284,26 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
         mode === ToolMode.EXPAND ? '深度扩写' : mode === ToolMode.POLISH ? '润色优化' : '深度洗稿';
       const targetLang = getRewriteTargetLanguageInstruction(segSource);
       const segmentOutline = outlineItems[idx] || `第${idx + 1}段`;
-      const expectedMin = Math.max(Math.round(segSource.length * (mode === ToolMode.EXPAND ? 1.3 : 1.18)), segSource.length + 120);
+      const rewriteRange = rewriteRangeMap[rewriteLengthMode] || rewriteRangeMap.balanced;
+      const expandRange = expandRangeMap[rewriteLengthMode] || expandRangeMap.balanced;
+      const rewritePolicy = rewriteRangeMap[rewriteLengthMode] || rewriteRangeMap.balanced;
+      const rewriteTargetMin =
+        mode === ToolMode.EXPAND
+          ? (sourceCharCount > 0 ? Math.round(sourceCharCount * expandRange.min) : 40)
+          : Math.max(Math.round(sourceCharCount * rewritePolicy.segmentMin), 40);
+      const rewriteTargetMax =
+        mode === ToolMode.EXPAND
+          ? Math.max(
+              sourceCharCount > 0 ? Math.round(sourceCharCount * expandRange.max) : 80,
+              rewriteTargetMin + 10
+            )
+          : Math.max(Math.round(sourceCharCount * rewritePolicy.segmentMax), rewriteTargetMin + 10);
+      const expectedMin = rewriteTargetMin;
       const nicheName = NICHES[niche]?.name || niche;
+      const segPctMin = Math.round(rewritePolicy.segmentMin * 100);
+      const segPctMax = Math.round(rewritePolicy.segmentMax * 100);
+      const expandPctMin = Math.round(expandRange.min * 100);
+      const expandPctMax = Math.round(expandRange.max * 100);
       const prompt = `请执行【${modeText}】，基于以下规则重写第${idx + 1}段：
 
 【赛道】${nicheName}
@@ -4170,55 +4314,152 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
 【原文分段】
 ${segSource}
 
-【强制扩写/洗稿维度（必须覆盖）】
-1) 场景维度：补充时间/地点/人物/环境/使用场景
-2) 情绪维度：加入痛点、期待、感官体验、心理活动
-3) 细节维度：动作、状态、质感、真实细节
-4) 逻辑价值维度：原因、结果、长期价值、身份标签
-5) 对比反差维度：前后变化或现实反差
-6) 故事化维度：起因-经过-转折-结果
-7) 金句升华维度：结尾观点拔高并形成记忆点
-8) 数据权威维度：可用合理数字/案例增强可信度
-
 【硬性约束】
 - 不得照抄原句，不得只换同义词
 - 保留核心中心思想，但表达必须重构
-- 输出总字数至少 ${expectedMin} 字
+- ${
+        mode === ToolMode.EXPAND
+          ? `【深度扩写 · 扩写强度策略】全文与分段计字均采用「去空白后的字符数」。该段原文约 ${sourceCharCount} 字，输出必须控制在 ${rewriteTargetMin}~${rewriteTargetMax} 字，约为原文 ${expandPctMin}%~${expandPctMax}% 体量（约 ${expandRange.min}~${expandRange.max} 倍），且必须明显长于原文`
+          : `输出字数（去空白计字）控制在 ${rewriteTargetMin} ~ ${rewriteTargetMax} 字（${modeText}，按当前洗稿字数策略执行）`
+      }
+- 必须完整收尾，结尾句闭环
 - 只输出正文，不要解释，不要标题
 `;
-      await streamContentGeneration(prompt, '你是资深多语种内容总编，必须深度重写并满足长度与维度约束。', (chunk) => {
-        out += chunk;
-        setSegmentOutputs(prev => prev.map((v, i) => (i === idx ? out : v)));
-      });
+      await streamContentGeneration(
+        prompt,
+        '你是资深多语种内容总编，必须深度重写并满足长度与维度约束。',
+        (chunk) => {
+          out += chunk;
+          setSegmentOutputs(prev => prev.map((v, i) => (i === idx ? out : v)));
+        },
+        ...deepRewriteStreamModelArgs
+      );
 
       let finalOut = out.trim();
-      const rawSimilarity = calcSimilarityRough(segSource, finalOut);
-      const minLen = Math.max(Math.round(segSource.length * (mode === ToolMode.EXPAND ? 1.3 : 1.18)), segSource.length + 120);
+      const segMin = rewriteTargetMin;
+      const segMax = rewriteTargetMax;
 
-      if (finalOut.length < minLen || rawSimilarity > 0.72) {
-        appendTerminal(`第 ${idx + 1} 段触发二次强化（长度/相似度未达标）...`);
-        let pass2 = '';
-        const strengthenPrompt = `请对以下文本进行二次深度重写，必须显著区别于原文表达，同时保留核心观点。\n\n约束：\n1) 输出至少 ${minLen} 字\n2) 与原文表达相似度要明显降低\n3) 补充场景、细节、情绪、对比、故事与结论升华\n4) 保持语言：${targetLang}\n5) 只输出正文\n\n【原文】\n${segSource}\n\n【初稿】\n${finalOut}`;
-        await streamContentGeneration(
-          strengthenPrompt,
-          '你是严格编辑，必须进行深度改写，避免同义替换式输出。',
-          (chunk) => {
-            pass2 += chunk;
-            setSegmentOutputs(prev => prev.map((v, i) => (i === idx ? pass2 : v)));
-          }
-        );
-        if (pass2.trim()) finalOut = pass2.trim();
+      if (mode === ToolMode.EXPAND) {
+        const maxExpandPasses = 3;
+        let segLen = finalOut.replace(/\s+/g, '').length;
+        let pass = 0;
+        while (segLen < segMin && pass < maxExpandPasses) {
+          pass += 1;
+          appendTerminal(
+            `第 ${idx + 1} 段扩写字数偏低（${segLen} < ${segMin}，去空白计字），基于当前成稿继续扩写（第 ${pass}/${maxExpandPasses} 次）...`
+          );
+          let expanded = '';
+          const deepenPrompt = `你是深度扩写编辑。请在「当前成稿」上继续扩写，禁止推翻重写、禁止只重复堆砌同义句。
+
+【计字】去空白后的字符数；输出必须在 ${segMin}~${segMax} 字之间。
+【策略】该段原文约 ${sourceCharCount} 字，目标约为原文 ${expandPctMin}%~${expandPctMax}% 体量（扩写强度约 ${expandRange.min}~${expandRange.max} 倍），必须明显长于原文。
+【要求】
+1) 在现有成稿上增量展开：至少加强场景/细节/论证/情绪/过渡/事例/金句中的多类维度
+2) 保留当前成稿的核心观点与叙事主线
+3) 结尾完整闭环；只输出正文
+
+【该段原文】
+${segSource}
+
+【当前成稿】
+${finalOut}`;
+          await streamContentGeneration(
+            deepenPrompt,
+            '你是深度扩写编辑，只在成稿上增量扩写直至字数达标。',
+            (chunk) => {
+              expanded += chunk;
+              setSegmentOutputs(prev => prev.map((v, i) => (i === idx ? expanded : v)));
+            },
+            ...deepRewriteStreamModelArgs
+          );
+          if (expanded.trim()) finalOut = expanded.trim();
+          segLen = finalOut.replace(/\s+/g, '').length;
+        }
+
+        if (segLen > segMax) {
+          appendTerminal(`第 ${idx + 1} 段扩写字数偏高（${segLen} > ${segMax}），基于当前成稿做温和压缩...`);
+          let compressed = '';
+          const compressExpandPrompt = `你是内容编辑。请在「当前成稿」上做温和压缩，不要推翻主线。
+
+【计字】去空白后的字符数；输出必须在 ${segMin}~${segMax} 字之间（该段原文约 ${sourceCharCount} 字，扩写强度约 ${expandRange.min}~${expandRange.max} 倍）。
+【要求】删除重复与赘述，保留核心信息与因果；结尾完整；只输出正文
+
+【该段原文】
+${segSource}
+
+【当前成稿】
+${finalOut}`;
+          await streamContentGeneration(
+            compressExpandPrompt,
+            '你是精简编辑，只做保真压缩以回到目标区间。',
+            (chunk) => {
+              compressed += chunk;
+              setSegmentOutputs(prev => prev.map((v, i) => (i === idx ? compressed : v)));
+            },
+            ...deepRewriteStreamModelArgs
+          );
+          if (compressed.trim()) finalOut = compressed.trim();
+          segLen = finalOut.replace(/\s+/g, '').length;
+        }
+
+        const inRange = segLen >= segMin && segLen <= segMax;
+        const complete = isTextLikelyComplete(finalOut);
+        if (!inRange || !complete) {
+          appendTerminal(
+            `⚠️ 第 ${idx + 1} 段扩写仍未完全达标（字数 ${segLen}，目标 ${segMin}~${segMax}；${complete ? '收尾完整' : '收尾不完整'}），可再点「重新生成该部分」。`
+          );
+        }
+      } else {
+        let segLen = finalOut.replace(/\s+/g, '').length;
+
+        if (segLen < segMin) {
+          appendTerminal(`第 ${idx + 1} 段字数偏低（${segLen} < ${segMin}），基于当前输出做补强扩写...`);
+          let expanded = '';
+          const expandPrompt = `请在“当前改写结果”基础上做补强扩写，不要推翻重写。\n\n要求：\n1) 输出字数控制在 ${segMin}~${segMax} 字（约原段 ${segPctMin}%~${segPctMax}%，与当前洗稿字数策略一致）\n2) 保留当前段核心观点与结构\n3) 增加必要过渡、细节、解释，避免灌水\n4) 结尾必须完整闭环\n5) 只输出正文\n\n【原文分段】\n${segSource}\n\n【当前改写结果】\n${finalOut}`;
+          await streamContentGeneration(
+            expandPrompt,
+            '你是内容补强编辑，只做增量扩写，保持原有主线。',
+            (chunk) => {
+              expanded += chunk;
+              setSegmentOutputs(prev => prev.map((v, i) => (i === idx ? expanded : v)));
+            },
+            ...deepRewriteStreamModelArgs
+          );
+          if (expanded.trim()) finalOut = expanded.trim();
+          segLen = finalOut.replace(/\s+/g, '').length;
+        }
+
+        if (segLen > segMax) {
+          appendTerminal(`第 ${idx + 1} 段字数偏高（${segLen} > ${segMax}），基于当前输出做清洗删减...`);
+          let compressed = '';
+          const compressPrompt = `请在“当前改写结果”基础上做温和删减，不要重写主线。\n\n要求：\n1) 输出字数控制在 ${segMin}~${segMax} 字（约原段 ${segPctMin}%~${segPctMax}%，与当前洗稿字数策略一致）\n2) 保留核心观点、因果关系与结论\n3) 删除重复、赘述、口水句\n4) 结尾必须完整闭环\n5) 只输出正文\n\n【原文分段】\n${segSource}\n\n【当前改写结果】\n${finalOut}`;
+          await streamContentGeneration(
+            compressPrompt,
+            '你是内容精简编辑，只做保真删减。',
+            (chunk) => {
+              compressed += chunk;
+              setSegmentOutputs(prev => prev.map((v, i) => (i === idx ? compressed : v)));
+            },
+            ...deepRewriteStreamModelArgs
+          );
+          if (compressed.trim()) finalOut = compressed.trim();
+          segLen = finalOut.replace(/\s+/g, '').length;
+        }
+
+        const inRange = segLen >= segMin && segLen <= segMax;
+        const complete = isTextLikelyComplete(finalOut);
+        if (!inRange || !complete) {
+          appendTerminal(`⚠️ 第 ${idx + 1} 段仍未完全达标（字数 ${segLen}，目标 ${segMin}~${segMax}；${complete ? '收尾完整' : '收尾不完整'}），请手动点“重新生成该部分”。`);
+        }
       }
 
-      setSegmentOutputs(prev => {
-        const next = prev.map((v, i) => (i === idx ? finalOut : v));
-        setMergedOutput(mergeFiveSegments(next));
-        return next;
-      });
+      setSegmentOutputs(prev => prev.map((v, i) => (i === idx ? finalOut : v)));
       appendTerminal(`第 ${idx + 1} 段生成完成。`);
+      return finalOut;
     } catch (e: any) {
       appendTerminal(`第 ${idx + 1} 段生成失败：${e?.message || e}`);
       toast.error(`第 ${idx + 1} 段生成失败`);
+      return '';
     } finally {
       setSegmentGenerating(prev => prev.map((v, i) => (i === idx ? false : v)));
     }
@@ -4230,8 +4471,10 @@ ${segSource}
       return;
     }
 
-    appendTerminal('开始自动一键：提炼大纲 -> 拆分5段 -> 并行生成...');
+    appendTerminal('开始自动一键：提炼大纲 -> 拆分5段 -> 并行生成 -> 自动合并...');
     const sourceSegs = await extractOutlineAndInitializeFiveSegments(inputText);
+    setAutoPilotStage('generate');
+    appendTerminal(`已完成前置规划：5段框架 + 目标字数策略（${mode === ToolMode.EXPAND ? '扩写' : '洗稿/润色'}-${rewriteLengthMode}）。`);
 
     const indexes = [0, 1, 2, 3, 4].filter(i => (sourceSegs[i] || '').trim().length > 0);
     if (indexes.length === 0) {
@@ -4239,27 +4482,42 @@ ${segSource}
       return;
     }
 
-    await Promise.allSettled(indexes.map((i) => handleRegenerateSingleSegment(i, sourceSegs[i])));
-    appendTerminal('全自动一键流程完成（含大纲提炼）。');
+    const generatedList = await Promise.all(indexes.map((i) => handleRegenerateSingleSegment(i, sourceSegs[i])));
+    const finalSegments = [...sourceSegs];
+    indexes.forEach((idx, p) => {
+      const generated = (generatedList[p] || '').trim();
+      if (generated) finalSegments[idx] = generated;
+    });
+
+    setSegmentOutputs(finalSegments);
+
+    appendTerminal('5段并行生成完成，开始自动合并最终文案...');
+    await handleMergeFinalWithPolish(finalSegments);
+
+    setAutoPilotStage('done');
+    appendTerminal('全自动一键流程完成（含大纲提炼 + 自动合并）。');
   };
 
-  const handleMergeFinalWithPolish = async () => {
-    const rawMerged = mergeFiveSegments(segmentOutputs);
+  const handleMergeFinalWithPolish = async (segmentsOverride?: string[]) => {
+    const effectiveSegments = (segmentsOverride && segmentsOverride.length === 5)
+      ? segmentsOverride
+      : segmentOutputs;
+    const rawMerged = mergeFiveSegments(effectiveSegments);
     if (!rawMerged.trim()) {
       toast.warning('没有可合并的内容');
       return;
     }
 
-    setMergedOutput(rawMerged);
-
     if (!apiKey?.trim()) {
+      setMergedOutput(rawMerged);
       appendTerminal('未配置 API Key，已按原样合并。');
       toast.info('已原样合并（未配置 API Key，跳过衔接优化）');
       return;
     }
 
     setIsOptimizingMerge(true);
-    appendTerminal('开始对合并文案做上下文衔接清洗优化...');
+    setAutoPilotStage('merge');
+    appendTerminal('开始执行“分段清洗 -> 全文合并优化”流程...');
 
     try {
       initializeGemini(apiKey, { provider });
@@ -4267,44 +4525,186 @@ ${segSource}
       const modeText = mode === ToolMode.EXPAND ? '深度扩写' : mode === ToolMode.POLISH ? '润色优化' : '深度洗稿';
       const targetLang = getRewriteTargetLanguageInstruction(rawMerged);
       const sourceLen = (inputText || '').replace(/\s+/g, '').length;
-      const minFinalLen = Math.max(Math.round(sourceLen * (mode === ToolMode.EXPAND ? 1.3 : 1.2)), sourceLen + 300);
-      const prompt = `你将收到5段${modeText}结果，请执行“无缝衔接合并”。\n\n要求：\n1) 保留每段核心信息，不丢观点\n2) 清理重复、跳跃、断裂\n3) 在段间补上承上启下过渡句，让全文连贯自然\n4) 统一口吻与时态\n5) 输出语言：${targetLang}\n6) 最终字数至少 ${minFinalLen} 字（低于该长度必须主动补充）\n7) 只输出最终正文，不要解释\n\n【评论区痛点/关键词】\n${painPointText || '无'}\n\n【5段原文】\n${segmentOutputs.map((s, i) => `第${i + 1}段：\n${(s || '').trim() || '（空）'}`).join('\n\n')}`;
+      const rewriteRange = rewriteRangeMap[rewriteLengthMode] || rewriteRangeMap.balanced;
+      const expandRange = expandRangeMap[rewriteLengthMode] || expandRangeMap.balanced;
+      const minFinalLen = mode === ToolMode.EXPAND
+        ? Math.round(sourceLen * expandRange.min)
+        : Math.round(sourceLen * rewriteRange.finalMin);
+      const maxFinalLen = mode === ToolMode.EXPAND
+        ? Math.round(sourceLen * expandRange.max)
+        : Math.round(sourceLen * rewriteRange.finalMax);
+      const mergeRewriteLenRule =
+        mode !== ToolMode.EXPAND
+          ? `最终成稿（去空白计字）控制在 ${minFinalLen}~${maxFinalLen} 字，对应「${rewriteRange.label}」：相对全篇原文约 ${Math.round(rewriteRange.finalMin * 100)}%~${Math.round(rewriteRange.finalMax * 100)}%，完整性优先，禁止重构成全新文案`
+          : '';
+
+      let cleanedSegmentsForMerge = [...effectiveSegments];
+      appendTerminal('开始逐段“衔接检查式清洗”（并行执行，仅检查段首/段尾衔接，不改主体）...');
+
+      const cleanedResults = await Promise.all(
+        cleanedSegmentsForMerge.map(async (segRaw, i) => {
+          const seg = (segRaw || '').trim();
+          if (!seg) return { idx: i, text: segRaw, changed: false, note: `第 ${i + 1} 段为空，跳过。` };
+
+          const prev = i > 0 ? (cleanedSegmentsForMerge[i - 1] || '').trim() : '';
+          const next = i < cleanedSegmentsForMerge.length - 1 ? (cleanedSegmentsForMerge[i + 1] || '').trim() : '';
+
+          if (isTextLikelyComplete(seg) && !prev && !next) {
+            return { idx: i, text: segRaw, changed: false, note: `第 ${i + 1} 段衔接检查：通过（首尾无上下文，保持原段）。` };
+          }
+
+          let cleaned = '';
+          const segLen = seg.replace(/\s+/g, '').length;
+          const segMin = Math.max(Math.round(segLen * 0.8), 30);
+          const segMax = Math.max(Math.round(segLen * 1.3), segMin + 20);
+          const segPrompt = `你要做“衔接检查式微调”，禁止重写本段主体。\n\n任务：\n- 只允许改本段开头1-2句和结尾1-2句，用于与上下文无缝衔接\n- 中间主体段落必须保持不变\n- 如果本段已连贯且不突兀，原样返回\n\n硬性限制：\n1) 输出字数必须在 ${segMin}~${segMax} 字（不允许大幅缩写）\n2) 不得删减核心观点，不得重写为新文案\n3) 只输出修订后的本段正文\n\n【上一段结尾】\n${prev ? prev.slice(-220) : '（无）'}\n\n【当前段】\n${seg}\n\n【下一段开头】\n${next ? next.slice(0, 220) : '（无）'}`;
+          await streamContentGeneration(
+            segPrompt,
+            '你是衔接编辑，只做边界微调，不动主体。',
+            (chunk) => {
+              cleaned += chunk;
+            },
+            ...deepRewriteStreamModelArgs
+          );
+
+          const cleanedText = (cleaned || '').trim();
+          if (!cleanedText) {
+            return { idx: i, text: segRaw, changed: false, note: `第 ${i + 1} 段衔接清洗返回空，已保留原段。` };
+          }
+
+          const cleanedLen = cleanedText.replace(/\s+/g, '').length;
+          const lenOk = cleanedLen >= segMin && cleanedLen <= segMax;
+          if (!lenOk) {
+            return { idx: i, text: segRaw, changed: false, note: `第 ${i + 1} 段衔接清洗超出长度边界（${segLen} -> ${cleanedLen}，边界 ${segMin}~${segMax}），已回退原段。` };
+          }
+
+          return { idx: i, text: cleanedText, changed: true, note: `第 ${i + 1} 段衔接清洗完成：${segLen} -> ${cleanedLen} 字` };
+        })
+      );
+
+      cleanedResults.forEach((r) => {
+        cleanedSegmentsForMerge[r.idx] = r.text;
+        appendTerminal(r.note);
+      });
+
+      const cleanedMerged = mergeFiveSegments(cleanedSegmentsForMerge);
+      const expandMergeRule =
+        mode === ToolMode.EXPAND
+          ? `最终成稿（去空白计字）控制在 ${minFinalLen}~${maxFinalLen} 字，对应扩写强度策略约 ${expandRange.min}~${expandRange.max} 倍全文原文（约 ${Math.round(expandRange.min * 100)}%~${Math.round(expandRange.max * 100)}% 体量），必须长于原文，并增强扩写维度（场景/情绪/细节/逻辑/对比/故事/金句/数据）`
+          : '';
+      const prompt = `你将收到5段“已清洗优化”结果，请执行“无缝衔接合并”。\n\n要求：\n1) 保留每段核心信息，不丢观点\n2) 在段间补上承上启下过渡句，让全文连贯自然\n3) 统一口吻与时态\n4) 输出语言：${targetLang}\n5) ${mode === ToolMode.EXPAND ? expandMergeRule : mergeRewriteLenRule}\n6) 只做衔接清洗与必要删改，不得推翻5段结构重写\n7) 只输出最终正文，不要解释\n\n【评论区痛点/关键词】\n${painPointText || '无'}\n\n【5段清洗结果】\n${cleanedSegmentsForMerge.map((s, idx) => `第${idx + 1}段：\n${(s || '').trim() || '（空）'}`).join('\n\n')}`;
 
       await streamContentGeneration(
         prompt,
-        '你是专业总编，请做深度衔接清洗后输出可直接发布的完整正文。',
+        '你是专业总编，请基于清洗后的5段做高连贯合并。',
         (chunk) => {
           polished += chunk;
           if (polished.trim()) setMergedOutput(polished);
-        }
+        },
+        ...deepRewriteStreamModelArgs
       );
 
       if (polished.trim()) {
         let finalText = polished.trim();
         const sourceLen = (inputText || '').replace(/\s+/g, '').length;
-        const minFinalLen = Math.max(Math.round(sourceLen * (mode === ToolMode.EXPAND ? 1.3 : 1.2)), sourceLen + 300);
+        const expandRange = expandRangeMap[rewriteLengthMode] || expandRangeMap.balanced;
+        const minFinalLenExpand = Math.round(sourceLen * expandRange.min);
+        const maxFinalLenExpand = Math.round(sourceLen * expandRange.max);
 
-        if (finalText.replace(/\s+/g, '').length < minFinalLen) {
-          appendTerminal('合并结果长度不足，开始自动补强扩写...');
-          let pass2 = '';
-          const strengthenPrompt = `请在保持原中心思想不变的前提下，对以下成稿进行二次补强扩写，必须超过 ${minFinalLen} 字，并增强叙事完整度、论证力度和情绪感染力。只输出正文。\n\n${finalText}`;
-          await streamContentGeneration(
-            strengthenPrompt,
-            '你是严格总编，请补强为完整长文，避免重复堆砌。',
-            (chunk) => {
-              pass2 += chunk;
-              if (pass2.trim()) setMergedOutput(pass2);
-            }
-          );
-          if (pass2.trim()) finalText = pass2.trim();
+        const mergedLen = finalText.replace(/\s+/g, '').length;
+        if (mode === ToolMode.EXPAND && mergedLen < minFinalLenExpand) {
+          let strengthenRound = 0;
+          const maxStrengthen = 4;
+          while (strengthenRound < maxStrengthen) {
+            strengthenRound += 1;
+            const curLenBefore = finalText.replace(/\s+/g, '').length;
+            appendTerminal(
+              `合并结果长度不足（${curLenBefore} < ${minFinalLenExpand}，去空白计字），第 ${strengthenRound}/${maxStrengthen} 次基于当前成稿补强扩写...`
+            );
+            let pass2 = '';
+            const strengthenPrompt = `请在「当前成稿」末尾**增量续写扩写**，禁止推翻重写、禁止只重复堆砌同义句。
+
+【计字规则】全文去空白字符数必须达到 ${minFinalLenExpand}~${maxFinalLenExpand} 字（原文字数约 ${sourceLen}，扩写强度约 ${expandRange.min}~${expandRange.max} 倍）。
+【模式】在「当前成稿」基础上增量展开，每段至少补充2-3个维度的内容（场景描写/情绪细节/案例数据/对比论证/金句升华/过渡衔接）。
+【原则】保持原中心思想不变；只输出正文，不要任何解释。
+
+【当前成稿】
+${finalText}`;
+            await streamContentGeneration(
+              strengthenPrompt,
+              '你是增量扩写编辑，只在成稿末尾追加新内容，直至全文达标。',
+              (chunk) => {
+                pass2 += chunk;
+                if (pass2.trim()) setMergedOutput(pass2);
+              },
+              ...deepRewriteStreamModelArgs
+            );
+            if (pass2.trim()) finalText = pass2.trim();
+            const newLen = finalText.replace(/\s+/g, '').length;
+            if (newLen >= minFinalLenExpand) break;
+          }
+        }
+
+        if (mode !== ToolMode.EXPAND) {
+          const srcLen = (inputText || '').replace(/\s+/g, '').length;
+          const rr = rewriteRangeMap[rewriteLengthMode] || rewriteRangeMap.balanced;
+          const maxRewriteLen = Math.round(srcLen * rr.finalMax);
+          const minRewriteLen = Math.round(srcLen * rr.finalMin);
+          const nowLen = finalText.replace(/\s+/g, '').length;
+
+          if (srcLen > 0 && nowLen > maxRewriteLen) {
+            appendTerminal(`⚠️ 最终合并字数偏长（当前 ${nowLen}，建议上限 ${maxRewriteLen}）。按“基于5段结果”原则，不再二次重写，已保留当前合并稿。`);
+          }
+          if (srcLen > 0 && nowLen < minRewriteLen) {
+            appendTerminal(`⚠️ 最终合并字数偏短（当前 ${nowLen}，建议下限 ${minRewriteLen}）。按“基于5段结果”原则，不再二次补写，已保留当前合并稿。`);
+          }
+        }
+
+        const sourceLenForGate = (inputText || '').replace(/\s+/g, '').length;
+        const policyRange = rewriteRangeMap[rewriteLengthMode] || rewriteRangeMap.balanced;
+        const hardMaxForRewrite = Math.round(sourceLenForGate * policyRange.finalMax);
+
+        let gateNote = '';
+        let needsSoftRecheck = false;
+
+        if (mode !== ToolMode.EXPAND && sourceLenForGate > 0) {
+          const beforeLen = finalText.replace(/\s+/g, '').length;
+          const completenessScore = getCompletenessScore(finalText);
+          const completeEnough = completenessScore >= 4;
+
+          if (beforeLen > hardMaxForRewrite && completeEnough) {
+            gateNote = `⚠️ 超出策略上限（当前 ${beforeLen}，上限 ${hardMaxForRewrite}）。为保证完整性，未强制截断，请考虑再温和压缩。`;
+            needsSoftRecheck = true;
+          } else if (beforeLen > hardMaxForRewrite && !completeEnough) {
+            gateNote = `⚠️ 超出策略上限（当前 ${beforeLen}，上限 ${hardMaxForRewrite}），且内容可能未完整。已保留原文案，建议人工检查。`;
+            needsSoftRecheck = true;
+          }
         }
 
         setMergedOutput(finalText);
         appendTerminal('合并文案衔接优化完成。');
-        toast.success('已完成清洗优化并无缝合并');
+
+        const finalLenForGate = finalText.replace(/\s+/g, '').length;
+        const rewriteBelowSource =
+          mode !== ToolMode.EXPAND &&
+          sourceLenForGate > 0 &&
+          finalLenForGate < Math.round(sourceLenForGate * policyRange.finalMin);
+
+        if (gateNote) appendTerminal(gateNote);
+
+        if (rewriteBelowSource) {
+          appendTerminal(`⚠️ 洗稿字数未达下限：当前 ${finalLenForGate}，原文 ${sourceLenForGate}（策略下限约 ${Math.round(policyRange.finalMin * 100)}%）。已标记为未完成，请继续补强。`);
+          toast.error(
+            `字数低于策略下限（约 ${Math.round(policyRange.finalMin * 100)}% 相对原文），已标记未完成，请继续补强`
+          );
+        } else if (needsSoftRecheck) {
+          toast.warning('字数超出策略上限，但为保证完整性已保留，请人工确认');
+        } else {
+          toast.success('已完成清洗优化并无缝合并');
+        }
       } else {
-        setMergedOutput(rawMerged);
-        appendTerminal('优化返回为空，已回退原样合并结果。');
+        setMergedOutput(cleanedMerged || rawMerged);
+        appendTerminal('合并优化返回为空，已回退为“清洗后分段合并结果”。');
       }
     } catch (e: any) {
       setMergedOutput(rawMerged);
@@ -4312,6 +4712,7 @@ ${segSource}
       toast.error('合并优化失败，已回退原样合并');
     } finally {
       setIsOptimizingMerge(false);
+      setAutoPilotStage('done');
     }
   };
 
@@ -4395,13 +4796,21 @@ ${segSource}
                   {tool.icon}
                   <span>{tool.label}</span>
                   {hasHistory && (
-                    <button
-                      onClick={(e) => handleManualModeHistoryClick(e, tool.id as ToolMode)}
-                      className="p-0.5 rounded hover:bg-slate-600/50 transition-colors"
+                    <span
+                      onClick={(e) => handleManualModeHistoryClick(e as unknown as React.MouseEvent, tool.id as ToolMode)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          handleManualModeHistoryClick(e as unknown as React.MouseEvent, tool.id as ToolMode);
+                        }
+                      }}
+                      className="p-0.5 rounded hover:bg-slate-600/50 transition-colors inline-flex cursor-pointer"
                       title="点击查看历史记录"
+                      role="button"
+                      tabIndex={0}
                     >
                       <History size={13} className="text-emerald-300 hover:text-emerald-200" />
-                    </button>
+                    </span>
                   )}
                 </button>
               );
@@ -4501,44 +4910,85 @@ ${segSource}
        </div>
 
       {/* 任务标签页 */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-2">
-        {tasks.map((task, index) => (
-          <div
-            key={task.id}
-            className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-all whitespace-nowrap ${
-              task.id === activeTaskId
-                ? 'bg-emerald-600/20 border-emerald-500 text-emerald-400'
-                : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:bg-slate-700/50'
-            }`}
-          >
-            <button
-              onClick={() => switchTask(task.id)}
-              className="flex items-center gap-2 text-sm font-medium"
+      <div className="flex items-center justify-between gap-3 pb-2">
+        <div className="flex items-center gap-2 overflow-x-auto">
+          {tasks.map((task, index) => (
+            <div
+              key={task.id}
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-all whitespace-nowrap ${
+                task.id === activeTaskId
+                  ? 'bg-emerald-600/20 border-emerald-500 text-emerald-400'
+                  : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:bg-slate-700/50'
+              }`}
             >
-              <span>任务 {index + 1}</span>
-              {task.isGenerating && (
-                <span className="inline-block w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
-              )}
-            </button>
-            {tasks.length > 1 && (
               <button
-                onClick={() => deleteTask(task.id)}
-                className="text-slate-500 hover:text-red-400 transition-colors"
-                title="删除任务"
+                onClick={() => switchTask(task.id)}
+                className="flex items-center gap-2 text-sm font-medium"
               >
-                <X size={14} />
+                <span>任务 {index + 1}</span>
+                {task.isGenerating && (
+                  <span className="inline-block w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+                )}
               </button>
-            )}
+              {tasks.length > 1 && (
+                <button
+                  onClick={() => deleteTask(task.id)}
+                  className="text-slate-500 hover:text-red-400 transition-colors"
+                  title="删除任务"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+          ))}
+          <button
+            onClick={createNewTask}
+            className="flex items-center gap-1 px-3 py-2 rounded-lg border border-slate-700 bg-slate-800/50 text-slate-400 hover:bg-slate-700/50 hover:text-emerald-400 transition-all"
+            title="新建任务"
+          >
+            <Plus size={16} />
+            <span className="text-sm font-medium">新建</span>
+          </button>
+
+          {isDeepRewriteMode && autoMatchedNiche && autoMatchedNiche.niche !== niche && (
+            <div className="ml-2 flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-500/35 bg-amber-500/10 text-amber-200 whitespace-nowrap">
+              <span className="text-xs">
+                检测建议赛道：{NICHES[autoMatchedNiche.niche]?.name || autoMatchedNiche.niche}（置信度 {autoMatchedNiche.score}）
+              </span>
+              <button
+                onClick={() => handleNicheChange(autoMatchedNiche.niche)}
+                className="px-2 py-0.5 rounded bg-amber-500/25 hover:bg-amber-500/35 text-xs text-amber-100"
+              >
+                一键切换
+              </button>
+            </div>
+          )}
+        </div>
+
+        {isDeepRewriteMode && (
+          <div className="flex items-center gap-2 text-xs text-emerald-300 shrink-0 bg-emerald-500/10 border border-emerald-500/35 rounded-lg px-2 py-1">
+            <span className="font-semibold tracking-wide">{mode === ToolMode.EXPAND ? '扩写强度策略' : '洗稿字数策略'}</span>
+            <select
+              value={rewriteLengthMode}
+              onChange={(e) => setRewriteLengthMode(e.target.value as 'strict' | 'balanced' | 'expressive')}
+              className="bg-slate-900 border border-emerald-500/50 rounded-lg px-2 py-1 text-emerald-100 font-semibold shadow-[0_0_0_1px_rgba(16,185,129,0.25)]"
+            >
+              {mode === ToolMode.EXPAND ? (
+                <>
+                  <option value="strict">稳健扩写（约1.3~1.6x）</option>
+                  <option value="balanced">标准扩写（约1.5~1.9x）</option>
+                  <option value="expressive">强力扩写（约1.8~2.3x）</option>
+                </>
+              ) : (
+                <>
+                  <option value="strict">严格贴近原文（±5%）</option>
+                  <option value="balanced">适度优化（+8%以内）</option>
+                  <option value="expressive">强化表达（+12%以内）</option>
+                </>
+              )}
+            </select>
           </div>
-        ))}
-        <button
-          onClick={createNewTask}
-          className="flex items-center gap-1 px-3 py-2 rounded-lg border border-slate-700 bg-slate-800/50 text-slate-400 hover:bg-slate-700/50 hover:text-emerald-400 transition-all"
-          title="新建任务"
-        >
-          <Plus size={16} />
-          <span className="text-sm font-medium">新建</span>
-        </button>
+        )}
       </div>
 
       {/* 生成进度条 */}
@@ -4608,43 +5058,8 @@ ${segSource}
             </div>
           </div>
 
-          {/* 大纲提炼区 */}
-          <div className="bg-slate-900/45 border border-slate-800 rounded-xl p-3 space-y-2">
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium text-slate-300">原文大纲（5段，可编辑）</label>
-              <button
-                onClick={() => initializeFiveSegmentsFromText(inputText, '已重新提炼大纲并重置5段。')}
-                disabled={isExtractingOutline || !inputText.trim()}
-                className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs text-white disabled:opacity-50"
-              >
-                {isExtractingOutline ? '提炼中...' : '重新提炼大纲'}
-              </button>
-            </div>
-            <textarea
-              value={outlineText}
-              onChange={(e) => {
-                const v = e.target.value;
-                setOutlineText(v);
-                setOutlineItems(parseOutlineToFiveItems(v));
-              }}
-              placeholder="这里会显示根据原文提炼的5段大纲，可手动编辑后再执行分段生成。"
-              className="w-full min-h-[120px] bg-slate-950 border border-slate-800 rounded-lg p-3 text-sm text-slate-200 resize-y focus:outline-none focus:ring-1 focus:ring-emerald-500 custom-scrollbar"
-            />
-          </div>
-
-          {/* 操作条 */}
+          {/* 操作条（上移到大纲区上方，提升可点击性） */}
           <div className="flex flex-wrap items-center gap-2 bg-slate-900/50 border border-slate-800 rounded-xl p-3">
-            {autoMatchedNiche && autoMatchedNiche.niche !== niche && (
-              <div className="w-full text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-2 py-1">
-                检测建议赛道：{NICHES[autoMatchedNiche.niche]?.name || autoMatchedNiche.niche}（置信度 {autoMatchedNiche.score}）
-                <button
-                  onClick={() => handleNicheChange(autoMatchedNiche.niche)}
-                  className="ml-2 px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-200"
-                >
-                  一键切换
-                </button>
-              </div>
-            )}
             <button
               onClick={handleInitializeFiveSegments}
               disabled={isExtractingOutline}
@@ -4691,26 +5106,171 @@ ${segSource}
             </div>
           </div>
 
+          {/* 大纲提炼区 */}
+          <div className="bg-slate-900/45 border border-slate-800 rounded-xl p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium text-slate-300">原文大纲（5段，可编辑）</label>
+              <button
+                onClick={() => initializeFiveSegmentsFromText(inputText, '已重新提炼大纲并重置5段。')}
+                disabled={isExtractingOutline || !inputText.trim()}
+                className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs text-white disabled:opacity-50"
+              >
+                {isExtractingOutline ? '提炼中...' : '重新提炼大纲'}
+              </button>
+            </div>
+            <textarea
+              value={outlineText}
+              onChange={(e) => {
+                const v = e.target.value;
+                setOutlineText(v);
+                setOutlineItems(parseOutlineToFiveItems(v));
+              }}
+              placeholder="这里会显示根据原文提炼的5段大纲，可手动编辑后再执行分段生成。"
+              className="w-full min-h-[120px] bg-slate-950 border border-slate-800 rounded-lg p-3 text-sm text-slate-200 resize-y focus:outline-none focus:ring-1 focus:ring-emerald-500 custom-scrollbar"
+            />
+          </div>
+
+          {/* 字数与合规仪表盘 */}
+          <div className="bg-slate-900/45 border border-slate-800 rounded-xl p-3 space-y-3">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-slate-300">字数与合规仪表盘</span>
+              <span className={`font-semibold ${mergedBelowFloor ? 'text-rose-300' : mergedAbovePolicy ? 'text-amber-300' : mergedWithinRange ? 'text-emerald-300' : 'text-slate-400'}`}>
+                {mergedComplianceText}
+              </span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              <div className="rounded border border-slate-800 bg-slate-900/60 p-2">
+                <div className="text-[11px] text-slate-400 mb-1">原文字数</div>
+                <div className="text-sm font-semibold text-slate-100">{sourceLenForDashboard.toLocaleString()} 字</div>
+              </div>
+              <div className="rounded border border-slate-800 bg-slate-900/60 p-2">
+                <div className="text-[11px] text-slate-400 mb-1">5段合计字数（预留）</div>
+                <div className="text-sm font-semibold text-cyan-200">{segmentsTotalLenForDashboard.toLocaleString()} 字</div>
+                {mode === ToolMode.EXPAND && sourceLenForDashboard > 0 && (
+                  <div className="text-[10px] text-slate-500 mt-1">
+                    分段目标（去空白计字）：相对本段原文约 {expandPolicyForDashboard.min}~{expandPolicyForDashboard.max}{' '}
+                    倍（与当前扩写强度策略一致）
+                  </div>
+                )}
+                {mode !== ToolMode.EXPAND && sourceLenForDashboard > 0 && (
+                  <div className="text-[10px] text-slate-500 mt-1">
+                    分段建议相对本段原文：约 {Math.round(rewritePolicyForDashboard.segmentMin * 100)}% ~{' '}
+                    {Math.round(rewritePolicyForDashboard.segmentMax * 100)}%（与当前洗稿字数策略一致）
+                  </div>
+                )}
+              </div>
+              <div className="rounded border border-slate-800 bg-slate-900/60 p-2">
+                <div className="text-[11px] text-slate-400 mb-1">最终合并字数</div>
+                <div className={`text-sm font-semibold ${mergedBelowFloor ? 'text-rose-300' : mergedAbovePolicy ? 'text-amber-300' : 'text-emerald-200'}`}>
+                  {mergedLenForDashboard.toLocaleString()} 字
+                </div>
+                {mode === ToolMode.EXPAND && sourceLenForDashboard > 0 && (
+                  <div className="text-[10px] text-slate-500 mt-1">
+                    全文目标区间：{expandMinForDashboard.toLocaleString()} ~ {expandMaxForDashboard.toLocaleString()} 字（约{' '}
+                    {expandPolicyForDashboard.min}~{expandPolicyForDashboard.max} 倍）
+                  </div>
+                )}
+                {mode !== ToolMode.EXPAND && sourceLenForDashboard > 0 && (
+                  <div className="text-[10px] text-slate-500 mt-1">目标区间：{rewriteMinForDashboard.toLocaleString()} ~ {rewriteMaxForDashboard.toLocaleString()} 字</div>
+                )}
+              </div>
+            </div>
+            <div className={`text-[11px] ${mergedCompleteForDashboard ? 'text-emerald-300' : 'text-amber-300'}`}>
+              完整性检测：{mergedOutput.trim() ? (mergedCompleteForDashboard ? '收尾完整' : '可能未完整（建议补尾）') : '待生成'}
+            </div>
+          </div>
+
+          {/* Auto-Pilot 百分比进度 */}
+          <div className="bg-slate-900/45 border border-slate-800 rounded-xl p-3 space-y-3">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-slate-300">Auto-Pilot 总进度</span>
+              <span className="text-emerald-300 font-semibold">{autoPilotOverallPercent}%</span>
+            </div>
+            <div className="w-full h-2 rounded bg-slate-800 overflow-hidden">
+              <div
+                className="h-full bg-emerald-500 transition-all duration-300"
+                style={{ width: `${autoPilotOverallPercent}%` }}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {[
+                { label: '1. 提炼大纲', pct: outlineProgressPercent },
+                { label: '2. 拆分5段', pct: splitProgressPercent },
+                { label: `3. 并行生成（${segmentDoneCount}/5）`, pct: generateProgressPercent },
+                { label: '4. 合并优化', pct: mergeProgressPercent },
+              ].map((item) => (
+                <div key={item.label} className="rounded border border-slate-800 bg-slate-900/50 p-2">
+                  <div className="flex items-center justify-between text-[11px] text-slate-300 mb-1">
+                    <span>{item.label}</span>
+                    <span className="text-slate-400">{item.pct}%</span>
+                  </div>
+                  <div className="w-full h-1.5 rounded bg-slate-800 overflow-hidden">
+                    <div className="h-full bg-sky-500 transition-all duration-300" style={{ width: `${item.pct}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
           {/* 中部：5段输出编辑框 */}
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             {Array.from({ length: 5 }).map((_, idx) => (
               <div key={idx} className="bg-slate-900/55 border border-slate-800 rounded-xl p-3 space-y-2">
                 <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <h4 className="text-sm font-semibold text-slate-200">第{idx + 1}段</h4>
-                    <span className="text-[11px] text-slate-400">
-                      {segmentOutputs[idx]?.trim() ? `${segmentOutputs[idx].trim().length.toLocaleString()} 字` : '0 字'}
-                    </span>
-                    {(() => {
-                      const base = (rewriteSegments[idx] || '').trim();
-                      const out = (segmentOutputs[idx] || '').trim();
-                      const done = out.length > 0 && out !== base;
-                      return (
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded border ${done ? 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10' : 'text-slate-400 border-slate-600 bg-slate-800/60'}`}>
-                          {done ? '已完成' : '原始'}
-                        </span>
-                      );
-                    })()}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-sm font-semibold text-slate-200">第{idx + 1}段</h4>
+                      {(() => {
+                        const base = (rewriteSegments[idx] || '').trim();
+                        const out = (segmentOutputs[idx] || '').trim();
+                        const generating = !!segmentGenerating[idx];
+                        const done = out.length > 0 && out !== base && !generating && isTextLikelyComplete(out);
+                        return (
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded border font-semibold ${generating ? 'text-amber-200 border-amber-400/60 bg-amber-500/25 shadow-[0_0_0_1px_rgba(251,191,36,0.35)]' : done ? 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10' : 'text-slate-400 border-slate-600 bg-slate-800/60'}`}>
+                            {generating ? '生成中' : done ? '已完成' : '原始/待补全'}
+                          </span>
+                        );
+                      })()}
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[10px] flex-wrap">
+                      {(() => {
+                        const rp = rewriteRangeMap[rewriteLengthMode] || rewriteRangeMap.balanced;
+                        const er = expandRangeMap[rewriteLengthMode] || expandRangeMap.balanced;
+                        const segRatioMin = mode === ToolMode.EXPAND ? er.min : rp.segmentMin;
+                        const segRatioMax = mode === ToolMode.EXPAND ? er.max : rp.segmentMax;
+                        const src = ((rewriteSegments[idx] || '').replace(/\s+/g, '').length);
+                        const out = ((segmentOutputs[idx] || '').replace(/\s+/g, '').length);
+                        const min =
+                          mode === ToolMode.EXPAND
+                            ? (src > 0 ? Math.round(src * segRatioMin) : 0)
+                            : Math.max(Math.round(src * segRatioMin), 40);
+                        const max = Math.max(Math.round(src * segRatioMax), min + 10);
+                        const ratio = src > 0 && out > 0 ? ((out / src) * 100).toFixed(0) : null;
+                        const inRange = src > 0 && out >= min && out <= max;
+                        const tooLow = src > 0 && out > 0 && out < min;
+                        const tooHigh = src > 0 && out > max;
+                        const rangeLabel = src > 0 ? `${min.toLocaleString()}~${max.toLocaleString()} 字` : '待输入原文';
+
+                        return (
+                          <>
+                            <span className="px-1.5 py-0.5 rounded border border-slate-700 bg-slate-800/80 text-slate-300">
+                              原文 {src.toLocaleString()} 字
+                            </span>
+                            <span className="px-1.5 py-0.5 rounded border border-cyan-600/40 bg-cyan-500/10 text-cyan-200">
+                              改写 {out.toLocaleString()} 字
+                            </span>
+                            {ratio && <span className="text-slate-500">({ratio}%)</span>}
+                            <span className="px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900/70 text-slate-400">
+                              目标 {rangeLabel}
+                            </span>
+                            <span className={`px-1.5 py-0.5 rounded border font-semibold ${inRange ? 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10' : tooLow ? 'text-rose-300 border-rose-500/40 bg-rose-500/10' : tooHigh ? 'text-amber-300 border-amber-500/40 bg-amber-500/10' : 'text-slate-400 border-slate-600 bg-slate-800/60'}`}>
+                              {inRange ? '字数合规' : tooLow ? '偏低' : tooHigh ? '偏高' : '待生成'}
+                            </span>
+                          </>
+                        );
+                      })()}
+                    </div>
                   </div>
                   <button
                     onClick={() => handleRegenerateSingleSegment(idx)}
@@ -4726,7 +5286,6 @@ ${segSource}
                     const val = e.target.value;
                     const next = segmentOutputs.map((v, i) => (i === idx ? val : v));
                     setSegmentOutputs(next);
-                    setMergedOutput(mergeFiveSegments(next));
                   }}
                   placeholder="该段生成结果会显示在这里..."
                   className="w-full h-40 bg-slate-950 border border-slate-800 rounded-lg p-3 text-sm text-slate-200 resize-none focus:outline-none focus:ring-1 focus:ring-emerald-500 custom-scrollbar"
@@ -4741,14 +5300,25 @@ ${segSource}
               <span className="flex items-center gap-2">
                 <span>最终合并文案（可继续编辑）</span>
                 {(() => {
-                  const completed = mergedOutput.trim().length > 0 && segmentOutputs.every((s, i) => {
+                  const allSegmentsCompleted = segmentOutputs.every((s, i) => {
                     const base = (rewriteSegments[i] || '').trim();
                     const out = (s || '').trim();
-                    return out.length > 0 && out !== base;
+                    return out.length > 0 && out !== base && isTextLikelyComplete(out);
                   });
+                  const sourceLen = (inputText || '').replace(/\s+/g, '').length;
+                  const mergedLen = (mergedOutput || '').replace(/\s+/g, '').length;
+                  const policy = rewriteRangeMap[rewriteLengthMode] || rewriteRangeMap.balanced;
+                  const belowHardThreshold =
+                    mode !== ToolMode.EXPAND &&
+                    sourceLen > 0 &&
+                    mergedLen > 0 &&
+                    mergedLen < Math.round(sourceLen * policy.finalMin);
+                  const aboveSoftMax =
+                    mode !== ToolMode.EXPAND && sourceLen > 0 && mergedLen > Math.round(sourceLen * policy.finalMax);
+                  const completed = mergedOutput.trim().length > 0 && allSegmentsCompleted && !belowHardThreshold;
                   return (
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded border ${completed ? 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10' : 'text-slate-400 border-slate-600 bg-slate-800/60'}`}>
-                      {completed ? '已完成' : '原始'}
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded border ${belowHardThreshold ? 'text-rose-300 border-rose-500/40 bg-rose-500/10' : aboveSoftMax ? 'text-amber-200 border-amber-400/50 bg-amber-500/15' : completed ? 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10' : 'text-slate-400 border-slate-600 bg-slate-800/60'}`}>
+                      {belowHardThreshold ? '未完成（低于原文）' : aboveSoftMax ? '完成（超上限，完整性优先）' : completed ? '已完成' : '原始'}
                     </span>
                   );
                 })()}
@@ -4772,7 +5342,7 @@ ${segSource}
             <textarea
               value={mergedOutput}
               onChange={(e) => setMergedOutput(e.target.value)}
-              placeholder="点击「合并最终文案」后在这里查看并编辑最终成稿..."
+              placeholder={mergedOutput.trim() ? "可继续编辑最终成稿..." : "当前为空。请先完成5段生成并点击「合并最终文案」，系统会抓取各分段结果并清洗后显示最终文案。"}
               className="w-full min-h-[220px] bg-slate-950 border border-slate-800 rounded-xl p-4 text-slate-200 resize-y focus:outline-none focus:ring-1 focus:ring-emerald-500 custom-scrollbar"
             />
           </div>
