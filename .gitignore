@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+# Vendor directories
+_vendor_jimeng_free_api_all/
+vendor/

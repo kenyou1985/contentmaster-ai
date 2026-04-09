@@ -4,13 +4,15 @@ import { Generator } from './components/Generator';
 import { Tools } from './components/Tools';
 import { MediaGenerator } from './components/MediaGenerator';
 import { CoverDesign } from './components/CoverDesign';
+import { YouTubeMonitor } from './components/YouTubeMonitor';
 import { QueueTaskViewer } from './components/QueueTaskViewer';
 import { initializeGemini } from './services/geminiService';
 import { ApiProvider } from './types';
 import { ToastContainer, useToast } from './components/Toast';
+import { Rss } from 'lucide-react';
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'generate' | 'tools' | 'media' | 'cover'>('generate');
+  const [activeTab, setActiveTab] = useState<'generate' | 'tools' | 'media' | 'cover' | 'monitor'>('generate');
   const toast = useToast();
   
   // 调试：检查 toast 状态
@@ -198,6 +200,8 @@ const App: React.FC = () => {
             runningHubApiKey={runningHubApiKey}
             setRunningHubApiKey={setRunningHubApiKey}
           />
+        ) : activeTab === 'monitor' ? (
+          <YouTubeMonitor />
         ) : (
           <CoverDesign apiKey={apiKey} provider={provider} toast={toast} />
         )}

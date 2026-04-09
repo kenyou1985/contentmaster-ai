@@ -1,11 +1,11 @@
 import React from 'react';
-import { Settings, Cpu, PenTool, Layout as LayoutIcon, ExternalLink, Zap, Video, ImagePlus } from 'lucide-react';
+import { Settings, Cpu, PenTool, Layout as LayoutIcon, ExternalLink, Zap, Video, ImagePlus, Rss } from 'lucide-react';
 import { ApiProvider } from '../types';
 
 interface LayoutProps {
   children: React.ReactNode;
-  activeTab: 'generate' | 'tools' | 'media' | 'cover';
-  setActiveTab: (tab: 'generate' | 'tools' | 'media' | 'cover') => void;
+  activeTab: 'generate' | 'tools' | 'media' | 'cover' | 'monitor';
+  setActiveTab: (tab: 'generate' | 'tools' | 'media' | 'cover' | 'monitor') => void;
   apiKey: string;
   setApiKey: (key: string) => void;
   provider: ApiProvider;
@@ -59,7 +59,7 @@ export const Layout: React.FC<LayoutProps> = ({
               >
                 <div className="flex items-center gap-2">
                     <LayoutIcon size={14} />
-                    自动生成
+                    原创爆款
                 </div>
               </button>
               <button
@@ -93,6 +93,17 @@ export const Layout: React.FC<LayoutProps> = ({
                 <div className="flex items-center gap-2">
                     <ImagePlus size={14} />
                     封面设计
+                </div>
+              </button>
+              <button
+                onClick={() => setActiveTab('monitor')}
+                className={`px-3 sm:px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200 ${
+                  activeTab === 'monitor' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                    <Rss size={14} />
+                    频道监控
                 </div>
               </button>
             </nav>
