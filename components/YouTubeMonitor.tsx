@@ -92,8 +92,23 @@ function invidiousProxyUrl(path: string, query: Record<string, string> = {}): st
   return `${origin}/api/invidious?${params.toString()}`;
 }
 
-/** 通过 fetch + Blob 方式强制下载文件（解决跨域 download 属性失效问题） */
+/**
+ * 触发文件下载：优先在用户点击瞬间同步打开新标签（即时反馈，避免误以为无响应）；
+ * 若弹窗被拦截或新窗口失败，再回退 fetch+Blob 以尽量指定文件名。
+ */
 async function forceDownloadFile(url: string, filename?: string) {
+  let opened = false;
+  try {
+    const w = window.open(url, '_blank', 'noopener,noreferrer');
+    opened = !!w;
+  } catch {
+    opened = false;
+  }
+
+  if (opened) {
+    return;
+  }
+
   try {
     const res = await fetch(url);
     if (!res.ok) {
@@ -110,7 +125,11 @@ async function forceDownloadFile(url: string, filename?: string) {
     URL.revokeObjectURL(blobUrl);
   } catch (e) {
     console.error('下载失败:', e);
-    window.open(url, '_blank');
+    try {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -1260,10 +1279,23 @@ export const YouTubeMonitor: React.FC = () => {
     const isError = dlState?.status === 'error';
     const ext = extensionForMetubeDownload(kind, metubeCaptionFormat, metubeAudioFormat);
     const baseName = sanitizeDownloadBasename(`${label}_${videoUrl.split('v=')[1] || 'video'}`);
+    const doneLabel =
+      kind === 'video'
+        ? '下载视频'
+        : kind === 'thumbnail'
+          ? '下载封面'
+          : kind === 'captions'
+            ? '下载字幕'
+            : kind === 'audio'
+              ? '下载音频'
+              : '下载文件';
 
     const handleClick = () => {
       if (isDone && dlState?.fileHref) {
-        forceDownloadFile(dlState.fileHref, `${baseName}.${ext}`);
+        setInfoMsg(
+          '正在打开下载：已尝试在新标签页打开；若浏览器询问弹出窗口请点「允许」。若弹窗被拦截，将自动改为本页保存（大文件可能需等待片刻），请勿重复点击。'
+        );
+        void forceDownloadFile(dlState.fileHref, `${baseName}.${ext}`);
       } else if (!isActive && !isDone) {
         queueMetubeDownload(videoUrl, kind);
       }
@@ -1291,7 +1323,7 @@ export const YouTubeMonitor: React.FC = () => {
         ) : (
           icon
         )}
-        {isDone ? '下载文件' : isError ? '失败' : isActive ? '下载中…' : label}
+        {isDone ? doneLabel : isError ? '失败' : isActive ? '下载中…' : label}
       </button>
     );
   };
@@ -2095,12 +2127,15 @@ export const YouTubeMonitor: React.FC = () => {
                             {fileHref && (
                               <button
                                 type="button"
-                                onClick={() =>
-                                  forceDownloadFile(
+                                onClick={() => {
+                                  setInfoMsg(
+                                    '正在打开下载：已尝试在新标签页打开；若被拦截将自动改用本页保存。大文件请稍候，勿重复点击。'
+                                  );
+                                  void forceDownloadFile(
                                     fileHref,
                                     metubeHistoryItemDownloadName(item as Record<string, unknown>)
-                                  )
-                                }
+                                  );
+                                }}
                                 className="text-amber-400 hover:text-amber-300"
                                 title="直接下载"
                               >
