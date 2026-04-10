@@ -1054,6 +1054,47 @@ export const generateAudio = async (
   }
 };
 
+/** 自动重试次数（不含首次请求），共 1 + TTS_AUTO_RETRY_COUNT 次 */
+export const TTS_AUTO_RETRY_COUNT = 2;
+
+export type GenerateAudioRetryHooks = {
+  onRetry?: (info: {
+    /** 即将执行的第几次请求（2 表示第 2 次尝试） */
+    attemptNumber: number;
+    maxAttempts: number;
+    error: string;
+    delayMs: number;
+  }) => void;
+};
+
+/**
+ * 与 {@link generateAudio} 相同，但在 success===false 时自动重试，缓解网络抖动与服务器显存/队列瞬时失败。
+ */
+export const generateAudioWithRetry = async (
+  apiKey: string,
+  options: RunningHubAudioOptions,
+  hooks?: GenerateAudioRetryHooks
+): Promise<RunningHubResult> => {
+  const maxAttempts = 1 + TTS_AUTO_RETRY_COUNT;
+  let last: RunningHubResult = { success: false, error: 'TTS 未知错误' };
+  for (let i = 0; i < maxAttempts; i++) {
+    last = await generateAudio(apiKey, options);
+    if (last.success) return last;
+    if (i < maxAttempts - 1) {
+      const delayMs = 700 * (i + 1) * (i + 1);
+      const errStr = (last.error || '失败').slice(0, 160);
+      hooks?.onRetry?.({
+        attemptNumber: i + 2,
+        maxAttempts,
+        error: errStr,
+        delayMs,
+      });
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  return last;
+};
+
 /**
  * 查询任务状态：优先 POST /openapi/v2/query（Comfy 任务完成后 get-outputs 常返回业务 404，统一 query 可拿到 results[].url）
  * 失败时再回退 /task/openapi/get-outputs + get-status

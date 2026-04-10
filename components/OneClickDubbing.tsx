@@ -13,12 +13,20 @@ import {
   CheckCircle2,
   Terminal,
   Trash2,
+  History,
+  X,
 } from 'lucide-react';
 import { useToast } from './Toast';
 import { VoiceLibrary } from './VoiceLibrary';
 import { DUBBING_STYLE_TRACKS, getDubbingTrackById } from '../services/dubbingStylePresets';
 import { runOneClickTts, type OneClickTtsProgressStage } from '../services/oneClickTtsService';
 import { getSelectedVoice } from '../services/voiceLibraryService';
+import {
+  loadDubbingHistory,
+  removeDubbingHistoryIds,
+  saveDubbingHistoryRecord,
+  type DubbingHistoryRecord,
+} from '../services/dubbingHistoryService';
 
 /** 与口播区 UI 一致；输入在 onChange 内截断 */
 const SCRIPT_MAX_LEN = 5000;
@@ -182,6 +190,8 @@ export const OneClickDubbing: React.FC<OneClickDubbingProps> = ({
   const [dubLogLines, setDubLogLines] = useState<string[]>([]);
 
   const [showVoiceLibrary, setShowVoiceLibrary] = useState(false);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [historyEntries, setHistoryEntries] = useState<DubbingHistoryRecord[]>([]);
   const [voiceEpoch, setVoiceEpoch] = useState(0);
   const selectedVoice = useMemo(() => getSelectedVoice(), [voiceEpoch]);
 
@@ -198,6 +208,17 @@ export const OneClickDubbing: React.FC<OneClickDubbingProps> = ({
   useEffect(() => {
     dubLogEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [dubLogLines.length]);
+
+  useEffect(() => {
+    if (showHistoryModal) {
+      setHistoryEntries(loadDubbingHistory());
+    }
+  }, [showHistoryModal]);
+
+  // 组件挂载时读取历史，供「无任务时直接展示」使用
+  useEffect(() => {
+    setHistoryEntries(loadDubbingHistory());
+  }, []);
 
   const emotionParams = useMemo(() => getEmotionTtsParams(emotion), [emotion]);
 
@@ -298,6 +319,7 @@ export const OneClickDubbing: React.FC<OneClickDubbingProps> = ({
       setPlayingTaskId(null);
     }
     toRemove.forEach((id) => audioRefs.current.delete(id));
+    removeDubbingHistoryIds([...toRemove]);
     toast.success(`已删除 ${toRemove.size} 条任务`);
   }, [selectedTaskIds, selectableTaskIds, playingTaskId, toast]);
 
@@ -308,6 +330,7 @@ export const OneClickDubbing: React.FC<OneClickDubbingProps> = ({
       ? '列表中有进行中的任务，清空后仍会尝试在后台完成已发起的合成，仅移除列表展示。确定清空？'
       : '确定清空全部配音任务？';
     if (!confirm(msg)) return;
+    removeDubbingHistoryIds(tasks.map((t) => t.id));
     setTasks([]);
     setSelectedTaskIds(new Set());
     setPlayingTaskId(null);
@@ -422,6 +445,19 @@ export const OneClickDubbing: React.FC<OneClickDubbingProps> = ({
           totalMs: tEnd - t0,
         });
 
+        saveDubbingHistoryRecord({
+          id: taskId,
+          displayName,
+          createdAt: created.getTime(),
+          scriptPreview: preview,
+          audioUrl,
+          speakText,
+          polishMs: willPolish && tTtsStart > 0 ? tTtsStart - t0 : undefined,
+          ttsMs,
+          totalMs: tEnd - t0,
+          englishWarn,
+        });
+
         if (englishWarn) {
           toast.warning(
             `「${displayName}」正文偏英文且使用默认中文参考音，听感可能不符；建议在语音库上传英文参考音。`,
@@ -449,6 +485,35 @@ export const OneClickDubbing: React.FC<OneClickDubbingProps> = ({
     if (task.phase !== 'running') return 0;
     return Date.now() - task.createdAt;
   };
+
+  const loadHistoryEntryToList = useCallback(
+    (h: DubbingHistoryRecord) => {
+      if (tasksRef.current.some((t) => t.id === h.id)) {
+        toast.error('该条已在当前列表中');
+        return;
+      }
+      const task: DubbingTask = {
+        id: h.id,
+        displayName: h.displayName,
+        createdAt: h.createdAt,
+        scriptPreview: h.scriptPreview,
+        phase: 'done',
+        uiStage: 'tts',
+        audioUrl: h.audioUrl,
+        speakText: h.speakText,
+        englishWarn: h.englishWarn,
+        polishMs: h.polishMs,
+        ttsMs: h.ttsMs,
+        totalMs: h.totalMs,
+      };
+      setTasks((prev) => [task, ...prev].slice(0, MAX_TASKS));
+      toast.success('已从最近历史加载到列表');
+      // 加载后刷新历史（避免已加载的再次出现）
+      setHistoryEntries(loadDubbingHistory());
+      if (showHistoryModal) setShowHistoryModal(false);
+    },
+    [toast, showHistoryModal]
+  );
 
   return (
     <div className="max-w-6xl mx-auto space-y-6 pb-10">
@@ -745,14 +810,55 @@ export const OneClickDubbing: React.FC<OneClickDubbingProps> = ({
                   >
                     一键清空
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowHistoryModal(true)}
+                    className="text-[11px] px-2 py-1 rounded-md border border-slate-600 text-slate-300 hover:bg-slate-800 inline-flex items-center gap-1"
+                  >
+                    <History size={12} />
+                    最近历史
+                  </button>
                 </div>
               )}
             </div>
             <div className="p-3 max-h-[min(70vh,520px)] overflow-y-auto space-y-2">
-              {tasks.length === 0 ? (
+              {tasks.length === 0 && historyEntries.length === 0 ? (
                 <p className="text-xs text-slate-500 text-center py-8 px-2">
                   暂无任务。点击「生成配音」后，任务会按时间顺序出现在此，可试听、下载，并查看各阶段耗时。
                 </p>
+              ) : tasks.length === 0 && historyEntries.length > 0 ? (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 mb-1">
+                    <History size={13} className="text-emerald-400" />
+                    <span className="text-xs font-medium text-slate-300">最近历史（直接加载，无需生成配音）</span>
+                    <span className="ml-auto text-[11px] text-slate-500 tabular-nums">{historyEntries.length} 条</span>
+                  </div>
+                  {historyEntries.map((h) => (
+                    <div
+                      key={h.id}
+                      className="rounded-lg border border-slate-700/90 bg-slate-950/40 p-3 space-y-2"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="text-sm font-medium text-slate-100 tabular-nums">{h.displayName}</span>
+                        <button
+                          type="button"
+                          onClick={() => loadHistoryEntryToList(h)}
+                          className="shrink-0 text-[11px] px-2 py-1 rounded-md bg-emerald-600/25 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-600/35"
+                        >
+                          加载到列表
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-slate-500 line-clamp-2">{h.scriptPreview}</p>
+                      {h.totalMs != null && (
+                        <p className="text-[10px] text-slate-600 tabular-nums">
+                          总耗时 {formatDurationMs(h.totalMs)}
+                          {h.polishMs != null ? ` · 优化 ${formatDurationMs(h.polishMs)}` : ''}
+                          {h.ttsMs != null ? ` · 合成 ${formatDurationMs(h.ttsMs)}` : ''}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
               ) : (
                 tasks.map((task) => (
                   <div
@@ -918,6 +1024,69 @@ export const OneClickDubbing: React.FC<OneClickDubbingProps> = ({
           onClose={() => setShowVoiceLibrary(false)}
           onVoicesChange={() => setVoiceEpoch((e) => e + 1)}
         />
+      )}
+
+      {showHistoryModal && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/70"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowHistoryModal(false);
+          }}
+        >
+          <div
+            className="w-full max-w-lg max-h-[85vh] flex flex-col rounded-xl border border-slate-700 bg-slate-900 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700">
+              <div className="flex items-center gap-2 text-slate-100 font-semibold text-sm">
+                <History size={18} className="text-emerald-400" />
+                最近历史
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowHistoryModal(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                aria-label="关闭"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <p className="px-4 py-2 text-[11px] text-slate-500 border-b border-slate-800 leading-relaxed">
+              仅保留<strong className="text-slate-400">未从列表删除</strong>的已完成配音。删除或清空列表后，对应记录不再出现在此。
+            </p>
+            <div className="flex-1 overflow-y-auto p-3 space-y-2 min-h-[200px]">
+              {historyEntries.length === 0 ? (
+                <p className="text-sm text-slate-500 text-center py-10">暂无历史记录</p>
+              ) : (
+                historyEntries.map((h) => (
+                  <div
+                    key={h.id}
+                    className="rounded-lg border border-slate-700/90 bg-slate-950/50 p-3 space-y-2"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="text-xs font-medium text-slate-200 tabular-nums">{h.displayName}</span>
+                      <button
+                        type="button"
+                        onClick={() => loadHistoryEntryToList(h)}
+                        className="shrink-0 text-[11px] px-2 py-1 rounded-md bg-emerald-600/25 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-600/35"
+                      >
+                        加载到列表
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-slate-500 line-clamp-2">{h.scriptPreview}</p>
+                    {h.totalMs != null && (
+                      <p className="text-[10px] text-slate-600 tabular-nums">
+                        总耗时 {formatDurationMs(h.totalMs)}
+                        {h.polishMs != null ? ` · 优化 ${formatDurationMs(h.polishMs)}` : ''}
+                        {h.ttsMs != null ? ` · 合成 ${formatDurationMs(h.ttsMs)}` : ''}
+                      </p>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

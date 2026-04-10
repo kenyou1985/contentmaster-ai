@@ -13,7 +13,7 @@ import {
   generateImage as generateRunningHubImage,
   generateVideo as generateRunningHubVideo,
   checkTaskStatus as checkRunningHubTaskStatus,
-  generateAudio,
+  generateAudioWithRetry,
   uploadAudioToRunningHub,
   resolveRunningHubOutputUrl,
   type RunningHubImageOptions,
@@ -2964,18 +2964,29 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       } else {
         appendTerminalLog('Voice', `镜头${shot.number}: TTS ai-app（参考音 ${refPath.slice(0, 28)}…）`);
       }
-      const r = await generateAudio(runningHubApiKey, {
-        text: speakText,
-        referenceAudioPath: refPath,
-        speed,
-        prosodyEnhance: true,
-        breath: true,
-        autoPause: true,
-        pauseStrength: 0.7,
-        emphasisStrength,
-        pitch,
-        volume: 1.0,
-      });
+      const r = await generateAudioWithRetry(
+        runningHubApiKey,
+        {
+          text: speakText,
+          referenceAudioPath: refPath,
+          speed,
+          prosodyEnhance: true,
+          breath: true,
+          autoPause: true,
+          pauseStrength: 0.7,
+          emphasisStrength,
+          pitch,
+          volume: 1.0,
+        },
+        {
+          onRetry: ({ attemptNumber, maxAttempts, error }) => {
+            appendTerminalLog(
+              'Voice',
+              `镜头${shot.number}: TTS 失败 — ${error.slice(0, 120)}${error.length > 120 ? '…' : ''} · 自动重试 ${attemptNumber}/${maxAttempts}`
+            );
+          },
+        }
+      );
       if (!r.success) throw new Error(r.error || 'TTS 请求失败');
       const audioUrl = r.url;
 

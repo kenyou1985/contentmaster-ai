@@ -189,11 +189,14 @@ const App: React.FC = () => {
         runningHubApiKey={runningHubApiKey}
         setRunningHubApiKey={setRunningHubApiKey}
       >
-        {activeTab === 'generate' ? (
+        {/* 各主模块同时挂载、用 hidden 切换，避免切页卸载导致状态丢失（进行中任务可继续跑） */}
+        <div className={activeTab === 'generate' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'generate'}>
           <Generator apiKey={apiKey} provider={provider} toast={toast} />
-        ) : activeTab === 'tools' ? (
+        </div>
+        <div className={activeTab === 'tools' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'tools'}>
           <Tools apiKey={apiKey} provider={provider} toast={toast} />
-        ) : activeTab === 'media' ? (
+        </div>
+        <div className={activeTab === 'media' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'media'}>
           <MediaGenerator
             apiKey={apiKey}
             provider={provider}
@@ -201,18 +204,21 @@ const App: React.FC = () => {
             runningHubApiKey={runningHubApiKey}
             setRunningHubApiKey={setRunningHubApiKey}
           />
-        ) : activeTab === 'dubbing' ? (
+        </div>
+        <div className={activeTab === 'dubbing' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'dubbing'}>
           <OneClickDubbing
             apiKey={apiKey}
             runningHubApiKey={runningHubApiKey}
             setRunningHubApiKey={setRunningHubApiKey}
             toast={toast}
           />
-        ) : activeTab === 'monitor' ? (
-          <YouTubeMonitor />
-        ) : (
+        </div>
+        <div className={activeTab === 'cover' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'cover'}>
           <CoverDesign apiKey={apiKey} provider={provider} toast={toast} />
-        )}
+        </div>
+        <div className={activeTab === 'monitor' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'monitor'}>
+          <YouTubeMonitor />
+        </div>
       </Layout>
       <ToastContainer toasts={toast.toasts} onClose={toast.closeToast} />
     </>

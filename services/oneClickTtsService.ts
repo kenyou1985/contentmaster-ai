@@ -3,7 +3,8 @@
  */
 
 import {
-  generateAudio,
+  generateAudioWithRetry,
+  TTS_AUTO_RETRY_COUNT,
   uploadAudioToRunningHub,
   resolveRunningHubOutputUrl,
 } from './runninghubService';
@@ -118,21 +119,31 @@ export async function runOneClickTts(
   const em = opts?.emphasisStrength ?? 0.5;
   const pi = opts?.pitch ?? 0;
   log(
-    `请求 RunningHub TTS · 语速 ${sp.toFixed(2)} · 轻重读 ${em.toFixed(2)} · 音高 ${pi.toFixed(2)} · 韵律增强 / 呼吸 / 停顿`
+    `请求 RunningHub TTS · 语速 ${sp.toFixed(2)} · 轻重读 ${em.toFixed(2)} · 音高 ${pi.toFixed(2)} · 韵律增强 / 呼吸 / 停顿（失败时最多自动重试 ${TTS_AUTO_RETRY_COUNT} 次）`
   );
 
-  const r = await generateAudio(rh, {
-    text: speakText,
-    referenceAudioPath: refPath,
-    speed: sp,
-    prosodyEnhance: true,
-    breath: true,
-    autoPause: true,
-    pauseStrength: 0.7,
-    emphasisStrength: em,
-    pitch: pi,
-    volume: 1,
-  });
+  const r = await generateAudioWithRetry(
+    rh,
+    {
+      text: speakText,
+      referenceAudioPath: refPath,
+      speed: sp,
+      prosodyEnhance: true,
+      breath: true,
+      autoPause: true,
+      pauseStrength: 0.7,
+      emphasisStrength: em,
+      pitch: pi,
+      volume: 1,
+    },
+    {
+      onRetry: ({ attemptNumber, maxAttempts, error, delayMs }) => {
+        log(
+          `TTS 失败：${error}${error.length >= 160 ? '…' : ''} · 自动重试第 ${attemptNumber}/${maxAttempts} 次（${delayMs}ms 后）`
+        );
+      },
+    }
+  );
 
   if (!r.success) throw new Error(r.error || 'TTS 请求失败');
   const url = r.url;
