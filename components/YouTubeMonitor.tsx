@@ -320,6 +320,21 @@ function normalizeInvidiousKeywords(raw: unknown): string[] {
   return [];
 }
 
+/** 官方 API 返回的频道/视频条目带 snippet；Invidious 无 snippet */
+function isOfficialYoutubeSnippetPayload(obj: unknown): boolean {
+  return !!obj && typeof obj === 'object' && (obj as { snippet?: unknown }).snippet != null;
+}
+
+/** 官方配额/限流类错误时可尝试 Invidious（需服务端配置 INVIDIOUS_UPSTREAM_URL） */
+function isYoutubeQuotaOrLimitError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (msg.includes('quota')) return true;
+  if (msg.includes('ratelimit') || msg.includes('rate limit')) return true;
+  if (msg.includes('exceeded your')) return true;
+  if (msg.includes('usage limit') || msg.includes('daily limit')) return true;
+  return false;
+}
+
 // ============================================================
 // API调用函数
 // ============================================================
@@ -483,6 +498,12 @@ export const YouTubeMonitor: React.FC = () => {
   // 使用的API
   const activeApiKey = YOUTUBE_API_KEY || userYoutubeApiKey;
   const isUsingOfficialApi = !!activeApiKey;
+  /** 配置了官方 Key，但当前会话因配额/限流已改用 Invidious 拉取元数据 */
+  const [quotaFallbackActive, setQuotaFallbackActive] = useState(false);
+
+  useEffect(() => {
+    if (!isUsingOfficialApi) setQuotaFallbackActive(false);
+  }, [isUsingOfficialApi]);
 
   // 保存用户输入的API Key
   useEffect(() => {
@@ -730,12 +751,32 @@ export const YouTubeMonitor: React.FC = () => {
     setInfoMsg(null);
     try {
       if (isUsingOfficialApi) {
-        const ch = await youtubeApi.getChannelById(channelId, activeApiKey);
-        if (!ch) {
-          setSearchError('频道不存在或 ID 无效');
-          return;
+        try {
+          const ch = await youtubeApi.getChannelById(channelId, activeApiKey);
+          if (!ch) {
+            setSearchError('频道不存在或 ID 无效');
+            return;
+          }
+          setQuotaFallbackActive(false);
+          selectChannel(ch);
+        } catch (e: unknown) {
+          if (!isYoutubeQuotaOrLimitError(e)) throw e;
+          setQuotaFallbackActive(true);
+          setInfoMsg(
+            'YouTube 官方 API 配额已满或受限，已通过 Invidious 打开频道。建议在 Google Cloud 提升配额，或保留 Vercel 的 INVIDIOUS_UPSTREAM_URL 作为备用。'
+          );
+          const raw = await invidiousApi.getChannel(channelId);
+          const normalized = {
+            type: 'channel',
+            authorId: raw.authorId || channelId,
+            author: raw.author || raw.title || channelId,
+            authorUrl: raw.authorUrl || '',
+            authorThumbnails: raw.authorThumbnails || [],
+            subscriberCount: raw.subscriberCount ?? 0,
+            videoCount: raw.videoCount ?? 0,
+          };
+          selectChannel(normalized);
         }
-        selectChannel(ch);
       } else {
         const raw = await invidiousApi.getChannel(channelId);
         const normalized = {
@@ -783,7 +824,17 @@ export const YouTubeMonitor: React.FC = () => {
       const searchTerm = handle || raw;
       let results: any[] = [];
       if (isUsingOfficialApi) {
-        results = await youtubeApi.searchChannels(searchTerm, activeApiKey);
+        try {
+          results = await youtubeApi.searchChannels(searchTerm, activeApiKey);
+          setQuotaFallbackActive(false);
+        } catch (e: unknown) {
+          if (!isYoutubeQuotaOrLimitError(e)) throw e;
+          setQuotaFallbackActive(true);
+          setInfoMsg(
+            'YouTube 官方 API 配额已满或受限，已通过 Invidious 搜索频道。'
+          );
+          results = await invidiousApi.searchChannels(searchTerm);
+        }
       } else {
         results = await invidiousApi.searchChannels(searchTerm);
       }
@@ -812,7 +863,17 @@ export const YouTubeMonitor: React.FC = () => {
       let results: any[] = [];
       
       if (isUsingOfficialApi) {
-        results = await youtubeApi.searchChannels(q, activeApiKey);
+        try {
+          results = await youtubeApi.searchChannels(q, activeApiKey);
+          setQuotaFallbackActive(false);
+        } catch (e: unknown) {
+          if (!isYoutubeQuotaOrLimitError(e)) throw e;
+          setQuotaFallbackActive(true);
+          setInfoMsg(
+            'YouTube 官方 API 配额已满或受限，已通过 Invidious 完成搜索。'
+          );
+          results = await invidiousApi.searchChannels(q);
+        }
       } else {
         results = await invidiousApi.searchChannels(q);
       }
@@ -834,9 +895,20 @@ export const YouTubeMonitor: React.FC = () => {
     setIsLoadingVideos(true);
     try {
       let videos: any[] = [];
-      
+      const cid = channel.id || channel.authorId;
+
       if (isUsingOfficialApi) {
-        videos = await youtubeApi.getChannelVideos(channel.id || channel.authorId, activeApiKey, pageSize);
+        try {
+          videos = await youtubeApi.getChannelVideos(cid, activeApiKey, pageSize);
+          setQuotaFallbackActive(false);
+        } catch (e: unknown) {
+          if (!isYoutubeQuotaOrLimitError(e)) throw e;
+          setQuotaFallbackActive(true);
+          setInfoMsg(
+            'YouTube 官方 API 配额已满或受限，已通过 Invidious 加载视频列表。'
+          );
+          videos = await invidiousApi.getChannelVideos(cid, page, pageSize);
+        }
       } else {
         videos = await invidiousApi.getChannelVideos(channel.authorId || channel.id, page, pageSize);
       }
@@ -876,52 +948,99 @@ export const YouTubeMonitor: React.FC = () => {
       let result: any = {};
       
       if (isUsingOfficialApi) {
-        const video = await youtubeApi.getVideoDetails(videoId, activeApiKey);
-        const tags = video.snippet?.tags;
-        result = {
-          title: video.snippet.title,
-          thumbnail: video.snippet.thumbnails.high?.url || video.snippet.thumbnails.medium?.url,
-          viewCount: parseViewCount(video.statistics?.viewCount || '0'),
-          likeCount: video.statistics?.likeCount
-            ? parseViewCount(String(video.statistics.likeCount))
-            : undefined,
-          commentCount: video.statistics?.commentCount
-            ? parseViewCount(String(video.statistics.commentCount))
-            : undefined,
-          duration: formatDuration(video.contentDetails?.duration || 'PT0S'),
-          channelTitle: video.snippet.channelTitle,
-          description: video.snippet.description || '',
-          tags: Array.isArray(tags) ? tags : [],
-          keywords: [] as string[],
-          captions: [] as { label: string; lang?: string }[],
-          videoId: videoId,
-          url: `https://youtube.com/watch?v=${videoId}`,
-          dataSource: 'youtube' as const,
-        };
+        let useInvidiousForParse = false;
+        let video: YouTubeVideo | null = null;
+        try {
+          video = await youtubeApi.getVideoDetails(videoId, activeApiKey);
+          setQuotaFallbackActive(false);
+        } catch (e: unknown) {
+          if (!isYoutubeQuotaOrLimitError(e)) throw e;
+          setQuotaFallbackActive(true);
+          setInfoMsg('YouTube 官方 API 配额已满或受限，已通过 Invidious 解析视频。');
+          useInvidiousForParse = true;
+        }
+
+        if (!useInvidiousForParse && video) {
+          const tags = video.snippet?.tags;
+          result = {
+            title: video.snippet.title,
+            thumbnail: video.snippet.thumbnails.high?.url || video.snippet.thumbnails.medium?.url,
+            viewCount: parseViewCount(video.statistics?.viewCount || '0'),
+            likeCount: video.statistics?.likeCount
+              ? parseViewCount(String(video.statistics.likeCount))
+              : undefined,
+            commentCount: video.statistics?.commentCount
+              ? parseViewCount(String(video.statistics.commentCount))
+              : undefined,
+            duration: formatDuration(video.contentDetails?.duration || 'PT0S'),
+            channelTitle: video.snippet.channelTitle,
+            description: video.snippet.description || '',
+            tags: Array.isArray(tags) ? tags : [],
+            keywords: [] as string[],
+            captions: [] as { label: string; lang?: string }[],
+            videoId: videoId,
+            url: `https://youtube.com/watch?v=${videoId}`,
+            dataSource: 'youtube' as const,
+          };
+        } else {
+          const ivideo = await invidiousApi.getVideoDetails(videoId);
+          let caps: { label: string; lang?: string; src?: string }[] = [];
+
+          if (Array.isArray(ivideo.captions)) {
+            caps = ivideo.captions.map((c: any) => ({
+              label: c.label || c.name || c.languageCode || 'caption',
+              lang: c.language_code || c.languageCode,
+              src: c.src || c.url,
+            }));
+          } else if (ivideo.subtitles && typeof ivideo.subtitles === 'object' && !Array.isArray(ivideo.subtitles)) {
+            const subs = ivideo.subtitles as Record<string, any>;
+            caps = Object.entries(subs).map(([lang, info]: [string, any]) => ({
+              label: info?.name || info?.label || lang,
+              lang: lang,
+              src: info?.src || info?.url,
+            }));
+          } else if (Array.isArray(ivideo.subtitles)) {
+            caps = ivideo.subtitles.map((c: any) => ({
+              label: c.label || c.name || c.lang || 'caption',
+              lang: c.lang || c.language_code,
+              src: c.src || c.url,
+            }));
+          }
+
+          result = {
+            title: ivideo.title,
+            thumbnail: ivideo.videoThumbnails?.[0]?.url,
+            viewCount: ivideo.viewCount || 0,
+            likeCount: typeof ivideo.likeCount === 'number' ? ivideo.likeCount : undefined,
+            duration: ivideo.lengthSeconds ? formatDuration(`PT${ivideo.lengthSeconds}S`) : '未知',
+            channelTitle: ivideo.author,
+            description: ivideo.description || '',
+            tags: [] as string[],
+            keywords: normalizeInvidiousKeywords(ivideo.keywords),
+            captions: caps.filter(c => c.label),
+            videoId: videoId,
+            url: `https://youtube.com/watch?v=${videoId}`,
+            dataSource: 'invidious' as const,
+          };
+        }
       } else {
         const video = await invidiousApi.getVideoDetails(videoId);
-        // 字幕数据可能在 captions（数组）或 subtitles（对象或数组）
         let caps: { label: string; lang?: string; src?: string }[] = [];
 
-        // 格式1: captions 是数组 [{label, languageCode}, ...]
         if (Array.isArray(video.captions)) {
           caps = video.captions.map((c: any) => ({
             label: c.label || c.name || c.languageCode || 'caption',
             lang: c.language_code || c.languageCode,
             src: c.src || c.url,
           }));
-        }
-        // 格式2: subtitles 是对象 {en: {...}, zh: {...}}
-        else if (video.subtitles && typeof video.subtitles === 'object' && !Array.isArray(video.subtitles)) {
+        } else if (video.subtitles && typeof video.subtitles === 'object' && !Array.isArray(video.subtitles)) {
           const subs = video.subtitles as Record<string, any>;
           caps = Object.entries(subs).map(([lang, info]: [string, any]) => ({
             label: info?.name || info?.label || lang,
             lang: lang,
             src: info?.src || info?.url,
           }));
-        }
-        // 格式3: subtitles 是数组
-        else if (Array.isArray(video.subtitles)) {
+        } else if (Array.isArray(video.subtitles)) {
           caps = video.subtitles.map((c: any) => ({
             label: c.label || c.name || c.lang || 'caption',
             lang: c.lang || c.language_code,
@@ -989,7 +1108,14 @@ export const YouTubeMonitor: React.FC = () => {
       let videos: any[] = [];
       
       if (isUsingOfficialApi) {
-        videos = await youtubeApi.getChannelVideos(channel.channelId, activeApiKey);
+        try {
+          videos = await youtubeApi.getChannelVideos(channel.channelId, activeApiKey);
+          setQuotaFallbackActive(false);
+        } catch (e: unknown) {
+          if (!isYoutubeQuotaOrLimitError(e)) throw e;
+          setQuotaFallbackActive(true);
+          videos = await invidiousApi.getChannelVideos(channel.channelId, 1, 10);
+        }
       } else {
         videos = await invidiousApi.getChannelVideos(channel.channelId);
       }
@@ -1120,7 +1246,7 @@ export const YouTubeMonitor: React.FC = () => {
 
   // 渲染视频项（兼容两种API格式）
   const renderVideoItem = (video: any, index: number) => {
-    const isOfficial = isUsingOfficialApi;
+    const isOfficial = isUsingOfficialApi && isOfficialYoutubeSnippetPayload(video);
     const title = isOfficial ? video.snippet?.title : video.title;
     const thumbnail = isOfficial 
       ? (video.snippet?.thumbnails?.high?.url || video.snippet?.thumbnails?.medium?.url)
@@ -1201,7 +1327,7 @@ export const YouTubeMonitor: React.FC = () => {
 
   // 渲染频道项（兼容两种API格式）
   const renderChannelItem = (channel: any) => {
-    const isOfficial = isUsingOfficialApi;
+    const isOfficial = isUsingOfficialApi && isOfficialYoutubeSnippetPayload(channel);
     const channelId = channel.id || channel.authorId;
     const name = isOfficial ? channel.snippet?.title : channel.author;
     const thumbnail = isOfficial 
@@ -1261,14 +1387,23 @@ export const YouTubeMonitor: React.FC = () => {
           {/* API状态指示 */}
           <div className={`px-3 py-1 rounded-full text-xs flex items-center gap-1.5 ${
             isUsingOfficialApi 
-              ? 'bg-red-500/10 text-red-400 border border-red-500/30' 
+              ? quotaFallbackActive
+                ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+                : 'bg-red-500/10 text-red-400 border border-red-500/30' 
               : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
           }`}>
             {isUsingOfficialApi ? (
-              <>
-                <Youtube className="w-3 h-3" />
-                官方 API
-              </>
+              quotaFallbackActive ? (
+                <>
+                  <Rss className="w-3 h-3" />
+                  官方 Key 已配置 · 数据经 Invidious
+                </>
+              ) : (
+                <>
+                  <Youtube className="w-3 h-3" />
+                  官方 API
+                </>
+              )
             ) : (
               <>
                 <Rss className="w-3 h-3" />
@@ -1310,6 +1445,9 @@ export const YouTubeMonitor: React.FC = () => {
               {YOUTUBE_API_KEY 
                 ? '已通过环境变量配置，所有用户共享此API'
                 : '个人专用API Key，仅自己可用'}
+            </p>
+            <p className="text-xs text-slate-500 mt-1">
+              官方配额用尽时会自动改用 Invidious（需在 Vercel 配置 <code className="text-slate-400">INVIDIOUS_UPSTREAM_URL</code>）。
             </p>
             {!YOUTUBE_API_KEY && (
               <a
