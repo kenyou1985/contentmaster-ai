@@ -15,6 +15,7 @@ import {
   validateImageFile,
   type Character as CharacterType
 } from '../services/characterLibraryService';
+import { COVER_STYLE_PRESETS, getMediaImageStylePromptEn } from '../services/coverStylePresets';
 import { generateJimengImages } from '../services/jimengService';
 import { useToast } from './Toast';
 
@@ -58,38 +59,11 @@ export const CharacterLibrary: React.FC<CharacterLibraryProps> = ({
   const editFileInputRef = useRef<HTMLInputElement>(null);
   const toast = useToast();
 
-  // 风格选项（与 MediaGenerator 保持一致）
+  // 风格选项（与 MediaGenerator / 封面设计 共用 COVER_STYLE_PRESETS）
   const STYLE_OPTIONS = [
     { id: 'none', label: '无风格（使用原提示词）' },
-    { id: 'realistic', label: '写实照片（Realistic）' },
-    { id: 'cartoon', label: '卡通 / 插画（Cartoon）' },
-    { id: 'anime', label: '动漫 / 二次元（Anime）' },
-    { id: 'chinese', label: '国潮 / 古风（Chinese Style）' },
-    { id: 'inkwash', label: '水墨风（Ink Wash）' },
-    { id: 'oilpainting', label: '油画（Oil Painting）' },
-    { id: 'watercolor', label: '水彩（Watercolor）' },
-    { id: 'cyberpunk', label: '赛博朋克（Cyberpunk）' },
-    { id: 'steampunk', label: '蒸汽朋克（Steampunk）' },
-    { id: 'pixel', label: '像素风（Pixel Art）' },
-    { id: '3d', label: '3D 建模（3D Modeling）' },
-    { id: 'flat2d', label: '二维扁平（Flat 2D）' },
+    ...COVER_STYLE_PRESETS.map((s) => ({ id: s.id, label: s.label })),
   ];
-
-  // 风格后缀提示词
-  const STYLE_PROMPTS: Record<string, string> = {
-    realistic: ', realistic photo style, high quality, 8k',
-    cartoon: ', cartoon style, illustration, vibrant colors',
-    anime: ', anime style, Japanese animation, high quality',
-    chinese: ', Chinese traditional style, Chinese art, ancient style',
-    inkwash: ', Chinese ink wash painting style, traditional art',
-    oilpainting: ', oil painting style, classical art technique',
-    watercolor: ', watercolor painting style, soft colors',
-    cyberpunk: ', cyberpunk style, neon lights, futuristic',
-    steampunk: ', steampunk style, Victorian era, mechanical',
-    pixel: ', pixel art style, retro game graphics',
-    '3d': ', 3D render, 3D modeling, CGI',
-    flat2d: ', flat 2D illustration, minimalist design',
-  };
 
   // 加载角色列表
   useEffect(() => {
@@ -166,9 +140,9 @@ export const CharacterLibrary: React.FC<CharacterLibraryProps> = ({
       return;
     }
 
-    // 应用风格后缀
-    const styleSuffix = selectedStyle !== 'none' ? (STYLE_PROMPTS[selectedStyle] || '') : '';
-    const finalPrompt = basePrompt.trim() + styleSuffix;
+    // 应用风格后缀（使用共享的风格提示词）
+    const styleSuffix = getMediaImageStylePromptEn(selectedStyle);
+    const finalPrompt = basePrompt.trim() + (styleSuffix ? `, ${styleSuffix}` : '');
 
     if (isEdit) {
       setGeneratingForEdit(true);
