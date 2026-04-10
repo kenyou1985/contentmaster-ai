@@ -107,8 +107,10 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({ onClose, onVoicesCha
 
         <div className="flex-1 overflow-y-auto p-4 space-y-2">
           <div
-            className={`flex items-center gap-2 p-2 rounded-lg border ${
-              selectedId == null ? 'border-emerald-500/60 bg-emerald-950/20' : 'border-slate-700 bg-slate-800/40'
+            className={`flex items-center gap-2 p-2 rounded-lg border transition-all ${
+              selectedId == null
+                ? 'border-emerald-500/80 bg-emerald-950/25 shadow-[0_0_0_1px_rgba(16,185,129,0.3)]'
+                : 'border-slate-700 bg-slate-800/40'
             }`}
           >
             <input
@@ -132,8 +134,10 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({ onClose, onVoicesCha
           {voices.map((v) => (
             <div
               key={v.id}
-              className={`flex items-center gap-2 p-2 rounded-lg border ${
-                selectedId === v.id ? 'border-amber-500/60 bg-amber-950/20' : 'border-slate-700 bg-slate-800/40'
+              className={`flex items-center gap-2 p-2 rounded-lg border transition-all ${
+                selectedId === v.id
+                  ? 'border-amber-500/80 bg-amber-950/25 shadow-[0_0_0_1px_rgba(245,158,11,0.3)]'
+                  : 'border-slate-700 bg-slate-800/40'
               }`}
             >
               <input

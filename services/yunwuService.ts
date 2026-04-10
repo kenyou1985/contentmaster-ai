@@ -164,24 +164,20 @@ function stripLeadingTrailingCodeFence(s: string): string {
   return t;
 }
 
-/**
- * 调用大模型将口播稿优化为更适合 TTS 的断句与节奏（自然停顿、去时间戳/赘词，保持原意与语种）。
- * 失败或未配置 key 时返回原文，不抛错。
- */
-export async function polishTextForTtsSpeech(apiKey: string, rawText: string): Promise<string> {
-  const text = rawText.trim();
-  if (!text || !apiKey?.trim()) return text;
-  if (text.length < 8) return text;
-
-  const system = `You are a professional dubbing script editor for neural TTS.
+const TTS_POLISH_BASE_SYSTEM = `You are a professional dubbing script editor for neural TTS.
 Optimize the user's lines for natural, fluent speech: improve punctuation and phrase breaks for breathing, remove timestamps/meta noise, keep emotional tone and facts intact.
 Rules:
 - Output ONLY the final text to be spoken. Same language as input (do not translate).
 - Do NOT add role names, shot labels, markdown, or quotes wrapping the entire output.
-- Keep the content complete; do not summarize away substantive lines.`;
+- Keep the content complete; do not summarize away substantive lines.
+- Input is expected to stay within about 5000 characters; keep the output in the same ballpark—no gratuitous lengthening or filler.`;
 
-  const user = `以下是一段需要配音朗读的口播正文，请只做「导演级切行与朗读友好化」优化后输出：\n\n${text}`;
-
+async function runTtsPolishChat(
+  apiKey: string,
+  system: string,
+  user: string,
+  fallback: string
+): Promise<string> {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 55_000);
   try {
@@ -208,15 +204,59 @@ Rules:
     }
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content;
-    if (typeof content !== 'string' || !content.trim()) return text;
+    if (typeof content !== 'string' || !content.trim()) return fallback;
     const out = stripLeadingTrailingCodeFence(content).trim();
-    return out.length >= 2 ? out : text;
+    return out.length >= 2 ? out : fallback;
   } catch (e) {
-    console.warn('[YunwuService] polishTextForTtsSpeech failed, using raw text:', e);
-    return text;
+    console.warn('[YunwuService] TTS polish request failed, using raw text:', e);
+    return fallback;
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * 调用大模型将口播稿优化为更适合 TTS 的断句与节奏（自然停顿、去时间戳/赘词，保持原意与语种）。
+ * 失败或未配置 key 时返回原文，不抛错。
+ */
+export async function polishTextForTtsSpeech(apiKey: string, rawText: string): Promise<string> {
+  const text = rawText.trim();
+  if (!text || !apiKey?.trim()) return text;
+  if (text.length < 8) return text;
+
+  const user = `以下是一段需要配音朗读的口播正文，请只做「导演级切行与朗读友好化」优化后输出：\n\n${text}`;
+  return runTtsPolishChat(apiKey, TTS_POLISH_BASE_SYSTEM, user, text);
+}
+
+/**
+ * 在默认口播润色规则上叠加「赛道人设」与/或用户自定义说明（仍用 gpt-5.4-mini）。
+ * 二者皆空时等价于 {@link polishTextForTtsSpeech}。
+ */
+export async function polishTextForTtsSpeechWithStyle(
+  apiKey: string,
+  rawText: string,
+  opts?: { trackPersona?: string; customHint?: string }
+): Promise<string> {
+  const text = rawText.trim();
+  if (!text || !apiKey?.trim()) return text;
+  if (text.length < 8) return text;
+
+  const persona = opts?.trackPersona?.trim();
+  const hint = opts?.customHint?.trim();
+  if (!persona && !hint) {
+    return polishTextForTtsSpeech(apiKey, rawText);
+  }
+
+  const styleBlock = persona
+    ? `\n\n【演绎风格 / 人设】\n${persona}\n请在此风格下做断句与语气调整，使口播更贴人设，但不歪曲事实、不删减关键信息。`
+    : '';
+  const system = TTS_POLISH_BASE_SYSTEM + styleBlock;
+
+  let user = `以下是一段需要配音朗读的口播正文，请只做「导演级切行与朗读友好化」优化后输出：\n\n${text}`;
+  if (hint) {
+    user += `\n\n【用户额外说明】\n${hint}`;
+  }
+  return runTtsPolishChat(apiKey, system, user, text);
 }
 
 export async function normalizeReferenceDataUrls(urls: string[]): Promise<string[]> {

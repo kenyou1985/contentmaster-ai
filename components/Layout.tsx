@@ -1,11 +1,11 @@
 import React from 'react';
-import { Settings, Cpu, PenTool, Layout as LayoutIcon, ExternalLink, Zap, Video, ImagePlus, Rss } from 'lucide-react';
+import { Settings, Cpu, PenTool, Layout as LayoutIcon, ExternalLink, Zap, Video, ImagePlus, Rss, Mic } from 'lucide-react';
 import { ApiProvider } from '../types';
 
 interface LayoutProps {
   children: React.ReactNode;
-  activeTab: 'generate' | 'tools' | 'media' | 'cover' | 'monitor';
-  setActiveTab: (tab: 'generate' | 'tools' | 'media' | 'cover' | 'monitor') => void;
+  activeTab: 'generate' | 'tools' | 'media' | 'dubbing' | 'cover' | 'monitor';
+  setActiveTab: (tab: 'generate' | 'tools' | 'media' | 'dubbing' | 'cover' | 'monitor') => void;
   apiKey: string;
   setApiKey: (key: string) => void;
   provider: ApiProvider;
@@ -82,6 +82,17 @@ export const Layout: React.FC<LayoutProps> = ({
                 <div className="flex items-center gap-2">
                     <Video size={14} />
                     一键成片
+                </div>
+              </button>
+              <button
+                onClick={() => setActiveTab('dubbing')}
+                className={`px-3 sm:px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200 ${
+                  activeTab === 'dubbing' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                    <Mic size={14} />
+                    一键配音
                 </div>
               </button>
               <button

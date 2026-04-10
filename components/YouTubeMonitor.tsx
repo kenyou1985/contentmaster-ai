@@ -93,22 +93,13 @@ function invidiousProxyUrl(path: string, query: Record<string, string> = {}): st
 }
 
 /**
- * 触发文件下载：优先在用户点击瞬间同步打开新标签（即时反馈，避免误以为无响应）；
- * 若弹窗被拦截或新窗口失败，再回退 fetch+Blob 以尽量指定文件名。
+ * 本页触发下载：不使用新窗口。fetch + Blob + 程序化点击保存（可尽量带上文件名）。
+ * 跨域资源若未放行 CORS，fetch 会失败，需用户到 MeTube 页面手动下载。
  */
-async function forceDownloadFile(url: string, filename?: string) {
-  let opened = false;
-  try {
-    const w = window.open(url, '_blank', 'noopener,noreferrer');
-    opened = !!w;
-  } catch {
-    opened = false;
-  }
-
-  if (opened) {
-    return;
-  }
-
+async function forceDownloadFile(
+  url: string,
+  filename?: string
+): Promise<{ ok: boolean; error?: string }> {
   try {
     const res = await fetch(url);
     if (!res.ok) {
@@ -122,14 +113,12 @@ async function forceDownloadFile(url: string, filename?: string) {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(blobUrl);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 3000);
+    return { ok: true };
   } catch (e) {
     console.error('下载失败:', e);
-    try {
-      window.open(url, '_blank', 'noopener,noreferrer');
-    } catch {
-      /* ignore */
-    }
+    const msg = e instanceof Error ? e.message : '未知错误';
+    return { ok: false, error: msg };
   }
 }
 
@@ -1293,9 +1282,19 @@ export const YouTubeMonitor: React.FC = () => {
     const handleClick = () => {
       if (isDone && dlState?.fileHref) {
         setInfoMsg(
-          '正在打开下载：已尝试在新标签页打开；若浏览器询问弹出窗口请点「允许」。若弹窗被拦截，将自动改为本页保存（大文件可能需等待片刻），请勿重复点击。'
+          kind === 'video'
+            ? '请稍等，视频正在下载中'
+            : '请稍等，正在下载中'
         );
-        void forceDownloadFile(dlState.fileHref, `${baseName}.${ext}`);
+        void forceDownloadFile(dlState.fileHref, `${baseName}.${ext}`).then((r) => {
+          if (r.ok) {
+            setInfoMsg('文件已开始下载，请查看浏览器下载栏或文件夹。大文件请稍候，勿重复点击。');
+          } else {
+            setInfoMsg(
+              `本页下载未成功（${r.error || '网络或跨域限制'}）。请到 MeTube 界面手动下载该文件。`
+            );
+          }
+        });
       } else if (!isActive && !isDone) {
         queueMetubeDownload(videoUrl, kind);
       }
@@ -2128,13 +2127,21 @@ export const YouTubeMonitor: React.FC = () => {
                               <button
                                 type="button"
                                 onClick={() => {
-                                  setInfoMsg(
-                                    '正在打开下载：已尝试在新标签页打开；若被拦截将自动改用本页保存。大文件请稍候，勿重复点击。'
-                                  );
+                                  setInfoMsg('请稍等，视频正在下载中');
                                   void forceDownloadFile(
                                     fileHref,
                                     metubeHistoryItemDownloadName(item as Record<string, unknown>)
-                                  );
+                                  ).then((r) => {
+                                    if (r.ok) {
+                                      setInfoMsg(
+                                        '文件已开始下载，请查看浏览器下载栏或文件夹。大文件请稍候，勿重复点击。'
+                                      );
+                                    } else {
+                                      setInfoMsg(
+                                        `本页下载未成功（${r.error || '网络或跨域限制'}）。请到 MeTube 界面手动下载该文件。`
+                                      );
+                                    }
+                                  });
                                 }}
                                 className="text-amber-400 hover:text-amber-300"
                                 title="直接下载"

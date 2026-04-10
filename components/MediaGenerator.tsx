@@ -6,6 +6,7 @@ import {
   ImageGenerationOptions,
   openAiImageDataItemToUrl,
   polishTextForTtsSpeech,
+  polishTextForTtsSpeechWithStyle,
 } from '../services/yunwuService';
 import { cacheVideo, getCachedVideoUrl, downloadVideo } from '../services/videoCacheService';
 import {
@@ -525,8 +526,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   /** 语音库选中项变化时递增，驱动主界面显示当前音色名 */
   const [voiceLibraryEpoch, setVoiceLibraryEpoch] = useState(0);
   const selectedVoiceForUi = useMemo(() => getSelectedVoice(), [voiceLibraryEpoch]);
-  
-  
+
   useEffect(() => {
     if (jimengSessionId) {
       localStorage.setItem('JIMENG_SESSION_ID', jimengSessionId);
@@ -1351,8 +1351,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     
     const handleDownload = async (e: React.MouseEvent) => {
       e.stopPropagation();
+      toast.info('请稍等，视频正在下载中', 4000);
       try {
-        await downloadVideo(videoUrl, `video_${Date.now()}.mp4`);
+        await downloadVideo(currentVideoUrl, `video_${Date.now()}.mp4`);
         toast.success('视频下载成功', 3000);
       } catch (error: any) {
         toast.error(`下载失败: ${error.message}`, 5000);
@@ -2878,15 +2879,27 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
   /**
    * 输入/输出：镜头文案/语音分镜 → 写入 voiceAudioUrl；仅 opts.playAfter===true 时自动播放（默认不播）
+   * 配置云雾 Key 时默认先经 gpt-5.4-mini 口播润色，与一键配音面板共用 RunningHub TTS。
    */
   const synthesizeVoiceForShot = async (
     shot: Shot,
-    opts?: { playAfter?: boolean }
+    opts?: {
+      playAfter?: boolean;
+      /** 覆盖朗读正文（一键配音编辑框） */
+      textOverride?: string;
+      /** 跳过 LLM，正文直送 TTS */
+      skipLlmPolish?: boolean;
+      /** 赛道人设（与默认润色叠加） */
+      trackPersona?: string;
+      customHint?: string;
+      speed?: number;
+      emphasisStrength?: number;
+      pitch?: number;
+    }
   ): Promise<string> => {
     const playAfter = opts?.playAfter === true;
-    let text = getTtsSpeakText(shot).trim();
-    if (!text) throw new Error('没有可朗读的文案');
-    const rawTextForTts = text;
+    const sourcePreview = (opts?.textOverride ?? getTtsSpeakText(shot)).trim();
+    if (!sourcePreview) throw new Error('没有可朗读的文案');
     if (!runningHubApiKey?.trim()) {
       appendTerminalLog('Voice', `镜头${shot.number}: 已中止 — 未配置 RunningHub API Key`);
       throw new Error('请先配置 RunningHub API Key（上方输入框）');
@@ -2894,7 +2907,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
     const selected = getSelectedVoice();
     const usingDefaultRef = !selected?.runningHubAudioPath?.trim() && !selected?.audioDataUrl?.trim();
-    const textIsEnglish = isTextPrimarilyEnglish(text);
+    const textIsEnglish = isTextPrimarilyEnglish(sourcePreview);
     if (usingDefaultRef && textIsEnglish) {
       appendTerminalLog(
         'Voice',
@@ -2905,17 +2918,40 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         5000
       );
     }
-    if (apiKey?.trim()) {
-      appendTerminalLog('Voice', `镜头${shot.number}: 已禁用口播重写，直接使用当前文案生成配音`);
+
+    let text = sourcePreview;
+    if (!opts?.skipLlmPolish && apiKey?.trim()) {
+      appendTerminalLog('Voice', `镜头${shot.number}: 使用 gpt-5.4-mini 优化口播…`);
+      try {
+        if (opts?.trackPersona?.trim() || opts?.customHint?.trim()) {
+          text = await polishTextForTtsSpeechWithStyle(apiKey, text, {
+            trackPersona: opts?.trackPersona,
+            customHint: opts?.customHint,
+          });
+        } else {
+          text = await polishTextForTtsSpeech(apiKey, text);
+        }
+        appendTerminalLog('Voice', `镜头${shot.number}: 口播优化完成`);
+      } catch (e) {
+        console.warn('[MediaGenerator] 口播优化异常，使用当前正文:', e);
+      }
+    } else if (opts?.skipLlmPolish) {
+      appendTerminalLog('Voice', `镜头${shot.number}: 已跳过口播优化，正文直送 RunningHub TTS`);
     } else {
-      appendTerminalLog('Voice', `镜头${shot.number}: 未配置云雾 API Key，直接使用当前文案生成配音`);
+      appendTerminalLog('Voice', `镜头${shot.number}: 未配置云雾 API Key，口播不经过大模型优化`);
     }
 
-    // 严格保持原文：提交给 TTS 的文本必须与镜头文案一字不差
-    appendTerminalLog('Voice', `镜头${shot.number}: 已锁定原文直送 TTS（不改字），并启用韵律/呼吸/停顿优化参数`);
-    appendTerminalLog('Voice', `镜头${shot.number}: 开始生成配音（${rawTextForTts.slice(0, 40)}${rawTextForTts.length > 40 ? '…' : ''}）`);
+    const speakText = text.trim();
+    if (!speakText) throw new Error('没有可送 TTS 的有效正文');
+
+    appendTerminalLog(
+      'Voice',
+      `镜头${shot.number}: 开始生成配音（${speakText.slice(0, 40)}${speakText.length > 40 ? '…' : ''}）`
+    );
     updateShot(shot.id, { voiceGenerating: true });
-    const originalText = rawTextForTts;
+    const speed = opts?.speed ?? 1.0;
+    const emphasisStrength = opts?.emphasisStrength ?? 0.5;
+    const pitch = opts?.pitch ?? 0;
     try {
       let refPath: string | undefined = selected?.runningHubAudioPath?.trim();
       if (selected && !refPath && selected.audioDataUrl?.trim()) {
@@ -2929,15 +2965,15 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         appendTerminalLog('Voice', `镜头${shot.number}: TTS ai-app（参考音 ${refPath.slice(0, 28)}…）`);
       }
       const r = await generateAudio(runningHubApiKey, {
-        text: rawTextForTts,
+        text: speakText,
         referenceAudioPath: refPath,
-        speed: 1.0,
+        speed,
         prosodyEnhance: true,
         breath: true,
         autoPause: true,
         pauseStrength: 0.7,
-        emphasisStrength: 0.5,
-        pitch: 0,
+        emphasisStrength,
+        pitch,
         volume: 1.0,
       });
       if (!r.success) throw new Error(r.error || 'TTS 请求失败');
@@ -2946,10 +2982,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       if (!audioUrl) throw new Error('未获取到音频地址');
       const playableUrl = resolveRunningHubOutputUrl(audioUrl);
       const probedSec = await probeAudioDurationSec(playableUrl);
-      // 估算仅作兜底：文案节奏与 TTS 实测差很多时，勿让大估算再与 ffprobe 取 max（已在 Python 侧改为以文件为准）
       const estimatedSec = Math.max(
         3,
-        Math.round(originalText.length / 5 + (originalText.split(/\s+/).length - 1) / 2.5)
+        Math.round(speakText.length / 5 + (speakText.split(/\s+/).length - 1) / 2.5)
       );
       const audioDurationSec =
         probedSec != null && Number.isFinite(probedSec) && probedSec > 0
@@ -2958,7 +2993,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       updateShot(shot.id, {
         voiceAudioUrl: playableUrl,
         audioDurationSec,
-        voiceSourceText: rawTextForTts,
+        voiceSourceText: speakText,
         voiceGenerating: false,
       });
       appendTerminalLog(
@@ -4825,15 +4860,24 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               className="max-w-full max-h-[90vh] rounded-lg border-2 border-slate-700"
               onClick={(e) => e.stopPropagation()}
             />
-            <a
-              href={enlargedVideoUrl}
-              download
+            <button
+              type="button"
               className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium rounded transition-all"
-              onClick={(e) => e.stopPropagation()}
+              onClick={async (e) => {
+                e.stopPropagation();
+                if (!enlargedVideoUrl) return;
+                toast.info('请稍等，视频正在下载中', 4000);
+                try {
+                  await downloadVideo(enlargedVideoUrl, `video_${Date.now()}.mp4`);
+                  toast.success('视频下载成功', 3000);
+                } catch (err: any) {
+                  toast.error(`下载失败: ${err?.message || '未知错误'}`, 5000);
+                }
+              }}
             >
               <Download size={16} />
               下载视频
-            </a>
+            </button>
           </div>
         </div>
       )}

@@ -30,6 +30,13 @@ function stripMindfulPawsSummarizePreamble(text: string): string {
   return text;
 }
 
+/** 工具条赛道下拉：去掉括号内英文名并限制字数，避免与按钮挤版 */
+function compactNicheToolbarLabel(name: string, maxChars = 7): string {
+  const base = name.split('(')[0].trim() || name;
+  if (base.length <= maxChars) return base;
+  return `${base.slice(0, maxChars - 1)}…`;
+}
+
 /** 与生成 prompt 一致：判断口播稿主体语言（用于摘要 system 指令与模板） */
 function detectToolsInputLanguage(text: string): string {
   const hasChinese = /[\u4e00-\u9fff]/.test(text);
@@ -4771,30 +4778,33 @@ ${finalText}`;
   return (
     <div className="max-w-5xl mx-auto space-y-6">
        {/* Settings Bar */}
-       <div className="bg-slate-800/50 p-3 rounded-xl border border-slate-800">
-         <div className="flex flex-wrap lg:flex-nowrap items-center gap-2">
-           <div className="flex flex-wrap lg:flex-nowrap items-center gap-1.5 min-w-0">
-             {/* Tool Modes */}
+       <div className="bg-slate-800/50 p-2.5 sm:p-3 rounded-xl border border-slate-800">
+         {/* 从左到右顺排，不用 ml-auto，避免中间大块留白 */}
+         <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center lg:flex-nowrap gap-3 sm:gap-3.5">
+           <div className="flex flex-wrap items-center gap-2 sm:gap-2 min-w-0 shrink-0">
+             {/* Tool Modes：短标签，悬停可看全称 */}
             {[
-              { id: ToolMode.REWRITE, label: '深度洗稿', icon: <RefreshCw size={15} /> },
-              { id: ToolMode.EXPAND, label: '深度扩写', icon: <Maximize2 size={15} /> },
-              { id: ToolMode.SUMMARIZE, label: '摘要总结', icon: <Scissors size={15} /> },
-              { id: ToolMode.POLISH, label: '润色优化', icon: <FileText size={15} /> },
-              { id: ToolMode.SCRIPT, label: '脚本输出', icon: <Video size={15} /> },
+              { id: ToolMode.REWRITE, short: '洗稿', full: '深度洗稿', icon: <RefreshCw size={14} strokeWidth={2.25} /> },
+              { id: ToolMode.EXPAND, short: '扩写', full: '深度扩写', icon: <Maximize2 size={14} strokeWidth={2.25} /> },
+              { id: ToolMode.SUMMARIZE, short: '摘要', full: '摘要总结', icon: <Scissors size={14} strokeWidth={2.25} /> },
+              { id: ToolMode.POLISH, short: '润色', full: '润色优化', icon: <FileText size={14} strokeWidth={2.25} /> },
+              { id: ToolMode.SCRIPT, short: '脚本', full: '脚本输出', icon: <Video size={14} strokeWidth={2.25} /> },
             ].map((tool) => {
               const hasHistory = getHistory('tools', getToolsHistoryKey(tool.id as ToolMode, niche)).length > 0;
               return (
                 <button
                   key={tool.id}
+                  type="button"
+                  title={tool.full}
                   onClick={() => handleModeChange(tool.id as ToolMode)}
-                  className={`px-3 py-1.5 rounded-lg border flex items-center gap-1.5 transition-all text-[13px] font-semibold whitespace-nowrap ${
+                  className={`px-2.5 py-1.5 rounded-md border flex items-center gap-1.5 transition-all text-xs sm:text-[13px] font-semibold whitespace-nowrap ${
                     mode === tool.id
                       ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm'
                       : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
                   }`}
                 >
                   {tool.icon}
-                  <span>{tool.label}</span>
+                  <span>{tool.short}</span>
                   {hasHistory && (
                     <span
                       onClick={(e) => handleManualModeHistoryClick(e as unknown as React.MouseEvent, tool.id as ToolMode)}
@@ -4804,12 +4814,12 @@ ${finalText}`;
                           handleManualModeHistoryClick(e as unknown as React.MouseEvent, tool.id as ToolMode);
                         }
                       }}
-                      className="p-0.5 rounded hover:bg-slate-600/50 transition-colors inline-flex cursor-pointer"
-                      title="点击查看历史记录"
+                      className="p-0.5 rounded hover:bg-slate-600/50 transition-colors inline-flex cursor-pointer -mr-0.5"
+                      title="历史记录"
                       role="button"
                       tabIndex={0}
                     >
-                      <History size={13} className="text-emerald-300 hover:text-emerald-200" />
+                      <History size={12} className="text-emerald-300 hover:text-emerald-200" />
                     </span>
                   )}
                 </button>
@@ -4817,55 +4827,69 @@ ${finalText}`;
             })}
            </div>
 
-           <div className="flex items-center gap-2 lg:ml-auto w-full lg:w-auto">
+           {/* 与左侧模式按钮区分隔 */}
+           <div
+             className="hidden sm:block w-px shrink-0 self-stretch min-h-[1.75rem] bg-slate-600/50 mx-0.5 sm:mx-1"
+             aria-hidden
+           />
+
+           <div className="flex flex-wrap items-center gap-3 sm:gap-3 min-w-0 shrink-0">
              {/* Niche Context Selector */}
             {mode !== ToolMode.SCRIPT && (
-              <div className="flex items-center gap-2 w-full sm:w-auto">
-                <div className="relative group w-full sm:w-[220px]">
+              <div className="flex flex-wrap items-center gap-2.5 sm:gap-3 min-w-0 max-w-full">
+                <div className="relative group w-[10rem] sm:w-[11rem] max-w-[min(100%,12rem)] shrink-0">
                   <select
                     value={niche}
                     onChange={(e) => handleNicheChange(e.target.value as NicheType)}
-                    className="w-full appearance-none bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-200 font-semibold focus:outline-none focus:border-emerald-500 cursor-pointer pr-8"
+                    className="w-full max-w-full appearance-none bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs sm:text-sm text-slate-200 font-medium focus:outline-none focus:border-emerald-500 cursor-pointer pr-7"
+                    title={`${NICHES[niche]?.icon ?? ''} ${NICHES[niche]?.name ?? ''}`.trim()}
                   >
-                    {Object.values(NICHES).map(n => (
-                      <option key={n.id} value={n.id}>{n.icon} {n.name}</option>
+                    {Object.values(NICHES).map((n) => (
+                      <option key={n.id} value={n.id}>
+                        {n.icon} {compactNicheToolbarLabel(n.name)}
+                      </option>
                     ))}
                   </select>
-                  <ChevronDown className="absolute right-3 top-2.5 text-slate-500 pointer-events-none" size={14} />
+                  <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none shrink-0" size={14} />
                 </div>
                 {(() => {
                   const hasNicheHistory = getHistory('tools', getToolsHistoryKey(mode, niche)).length > 0;
                   return hasNicheHistory ? (
                     <button
+                      type="button"
                       onClick={(e) => handleManualNicheHistoryClick(e, niche)}
-                      className="p-1.5 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 transition-colors"
-                      title="点击查看历史记录"
+                      className="p-1.5 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 transition-colors shrink-0"
+                      title="赛道历史"
                     >
-                      <History size={15} className="text-emerald-300" />
+                      <History size={14} className="text-emerald-300" />
                     </button>
                   ) : null;
                 })()}
-                <label className="hidden sm:flex items-center gap-1 text-xs text-slate-400 whitespace-nowrap">
+                <label
+                  className="flex items-center gap-1.5 text-xs text-slate-400 whitespace-nowrap shrink-0"
+                  title="自动匹配赛道"
+                >
                   <input
                     type="checkbox"
+                    className="shrink-0 rounded border-slate-600"
                     checked={autoSwitchNicheEnabled}
                     onChange={(e) => setAutoSwitchNicheEnabled(e.target.checked)}
                   />
-                  自动匹配赛道
+                  <span>自动匹配</span>
                 </label>
               </div>
             )}
 
              {mode === ToolMode.SCRIPT && (
-               <div className="flex items-center gap-2 w-full sm:w-auto">
-                 <label className="text-sm font-bold text-emerald-300 whitespace-nowrap">镜头数</label>
+               <div className="flex flex-wrap items-center gap-2.5 sm:gap-3 min-w-0">
+                 <label className="text-xs sm:text-sm font-semibold text-emerald-300 whitespace-nowrap shrink-0">镜头</label>
                  <select
                    value={scriptShotMode}
                    onChange={(e) => updateActiveTask({ scriptShotMode: e.target.value as 'auto' | 'custom' })}
-                   className="w-[110px] bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-sm text-slate-200 font-semibold focus:outline-none focus:border-emerald-500 cursor-pointer"
+                   className="w-[96px] bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs sm:text-sm text-slate-200 font-medium focus:outline-none focus:border-emerald-500 cursor-pointer"
                  >
                    <option value="auto">自动</option>
-                   <option value="custom">自定义</option>
+                   <option value="custom">自定</option>
                  </select>
                  <input
                    type="number"
@@ -4891,18 +4915,19 @@ ${finalText}`;
                      const clamped = Math.min(100, Math.max(10, Number(nextValue)));
                      updateActiveTask({ scriptShotCount: clamped });
                    }}
-                   className="w-[92px] bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-sm text-slate-200 font-semibold focus:outline-none focus:border-emerald-500 disabled:opacity-50"
+                   className="w-[84px] bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs sm:text-sm text-slate-200 font-medium focus:outline-none focus:border-emerald-500 disabled:opacity-50"
                  />
                </div>
              )}
 
              {/* Generate Button */}
              <button
+               type="button"
                onClick={handleAction}
                disabled={isGenerating || !inputText}
-               className="flex items-center justify-center gap-2 px-5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-lg shadow-lg shadow-emerald-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all hover:scale-105 active:scale-95 whitespace-nowrap"
+               className="flex items-center justify-center gap-2 px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs sm:text-sm font-semibold rounded-lg shadow-md shadow-emerald-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all hover:scale-[1.02] active:scale-[0.98] whitespace-nowrap shrink-0"
              >
-               <ArrowRight size={17} />
+               <ArrowRight size={16} strokeWidth={2.5} />
                <span>生成</span>
              </button>
            </div>

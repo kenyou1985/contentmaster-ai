@@ -8,10 +8,13 @@ export interface Character {
   type: 'character' | 'scene'; // 类型：角色 或 场景
   name: string; // 名字
   aliases?: string[]; // 别名列表
-  imageUrl: string; // 图片URL（base64或blob URL）
+  /** 图片 URL（可为空：仅名字无图时列表不显示破图） */
+  imageUrl: string;
   imageFile?: File; // 原始图片文件（可选，用于上传）
   prompt?: string; // 自定义提示词（用于生成图片）
   description?: string; // 描述信息（用于场景）
+  /** 生图风格 id（与 COVER_STYLE_PRESETS / MediaGenerator 一致） */
+  imageStyleId?: string;
   createdAt: number; // 创建时间戳
   updatedAt: number; // 更新时间戳
 }

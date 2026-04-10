@@ -3,6 +3,7 @@ import { Layout } from './components/Layout';
 import { Generator } from './components/Generator';
 import { Tools } from './components/Tools';
 import { MediaGenerator } from './components/MediaGenerator';
+import { OneClickDubbing } from './components/OneClickDubbing';
 import { CoverDesign } from './components/CoverDesign';
 import { YouTubeMonitor } from './components/YouTubeMonitor';
 import { QueueTaskViewer } from './components/QueueTaskViewer';
@@ -12,7 +13,7 @@ import { ToastContainer, useToast } from './components/Toast';
 import { Rss } from 'lucide-react';
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'generate' | 'tools' | 'media' | 'cover' | 'monitor'>('generate');
+  const [activeTab, setActiveTab] = useState<'generate' | 'tools' | 'media' | 'dubbing' | 'cover' | 'monitor'>('generate');
   const toast = useToast();
   
   // 调试：检查 toast 状态
@@ -199,6 +200,13 @@ const App: React.FC = () => {
             toast={toast}
             runningHubApiKey={runningHubApiKey}
             setRunningHubApiKey={setRunningHubApiKey}
+          />
+        ) : activeTab === 'dubbing' ? (
+          <OneClickDubbing
+            apiKey={apiKey}
+            runningHubApiKey={runningHubApiKey}
+            setRunningHubApiKey={setRunningHubApiKey}
+            toast={toast}
           />
         ) : activeTab === 'monitor' ? (
           <YouTubeMonitor />
