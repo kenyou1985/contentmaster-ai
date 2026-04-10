@@ -15,6 +15,7 @@ import {
   Plus,
   Copy,
   Check,
+  CheckCircle,
   AlertCircle,
   Youtube,
   ThumbsUp,
@@ -23,6 +24,9 @@ import {
   ChevronDown,
   ChevronUp,
   FileText,
+  Music,
+  Image,
+  Subtitles,
 } from 'lucide-react';
 
 // ============================================================
@@ -430,6 +434,10 @@ export const YouTubeMonitor: React.FC = () => {
   const [metubeHistory, setMetubeHistory] = useState<any[]>([]);
   const [metubeHistoryLoading, setMetubeHistoryLoading] = useState(false);
   
+  // 下载进度跟踪：key = url+kind, value = 状态
+  type DownloadStatus = 'queued' | 'downloading' | 'completed' | 'error';
+  const [activeDownloads, setActiveDownloads] = useState<Record<string, { status: DownloadStatus; progress?: number; error?: string; uid?: string }>>({});
+  
   // 频道详情
   const [selectedChannel, setSelectedChannel] = useState<any>(null);
   const [channelVideos, setChannelVideos] = useState<any[]>([]);
@@ -478,10 +486,122 @@ export const YouTubeMonitor: React.FC = () => {
     localStorage.setItem('YOUTUBE_MONITORED_CHANNELS', JSON.stringify(monitoredChannels));
   }, [monitoredChannels]);
 
-  const buildMetubePayload = (videoUrl: string): Record<string, unknown> => {
-    const u = videoUrl.trim();
+  /** 获取下载唯一标识（url + kind） */
+  const getDownloadKey = (url: string, kind?: MetubeDownloadKind) => {
+    const k = kind || metubeKind;
+    return `${url}::${k}`;
+  };
+
+  /** 轮询下载状态的轮询器引用 */
+  let historyPoller: ReturnType<typeof setTimeout> | null = null;
+
+  /** 清理历史轮询器 */
+  const clearHistoryPoller = () => {
+    if (historyPoller) {
+      clearTimeout(historyPoller);
+      historyPoller = null;
+    }
+  };
+
+  /** 轮询下载历史并更新状态 */
+  const pollDownloadStatus = async (url: string, kind: MetubeDownloadKind, maxAttempts = 60) => {
+    const dlKey = getDownloadKey(url, kind);
+    let attempts = 0;
+
+    const poll = async () => {
+      attempts++;
+      const hist = await fetchMetubeHistory();
+      setMetubeHistory(hist.slice(0, 20));
+
+      // 查找匹配的下载项
+      const item = hist.find((h: any) => {
+        const hUrl = h.url || '';
+        const normalizedUrl = hUrl.replace(/^https?:\/\/(www\.)?youtu\.be\//, 'https://youtube.com/watch?v=');
+        return normalizedUrl === url || hUrl.includes(url.split('v=')[1]?.split('&')[0] || '');
+      });
+
+      if (item) {
+        const status = String(item.status || item.state || '').toLowerCase();
+        if (['completed', 'done', 'finished'].includes(status)) {
+          setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'completed', progress: 100 } }));
+          clearHistoryPoller();
+          return;
+        } else if (['error', 'failed'].includes(status) || item.error) {
+          setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'error', error: item.error || '下载失败' } }));
+          clearHistoryPoller();
+          return;
+        } else {
+          // 下载中，根据进度估算
+          const progress = Math.min(95, Math.round((attempts / maxAttempts) * 100));
+          setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'downloading', progress, uid: item.uid } }));
+        }
+      } else {
+        // 未找到（可能还在队列中）
+        setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'queued', progress: Math.min(20, attempts * 2) } }));
+      }
+
+      if (attempts < maxAttempts) {
+        historyPoller = setTimeout(poll, 3000);
+      } else {
+        // 超时，假设已完成或需要手动检查
+        setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'error', error: '下载超时，请到 MeTube 检查' } }));
+        clearHistoryPoller();
+      }
+    };
+
+    clearHistoryPoller();
+    poll();
+  };
+
+  /** 提交到 MeTube 下载队列（支持指定类型） */
+  const queueMetubeDownload = async (url: string, kind?: MetubeDownloadKind) => {
+    const dlKind = kind || metubeKind;
+    const dlKey = getDownloadKey(url, dlKind);
+
+    // 设置初始状态
+    setActiveDownloads(prev => ({
+      ...prev,
+      [dlKey]: { status: 'downloading', progress: 5 }
+    }));
+
+    setMetubeSubmittingUrl(url);
+    setInfoMsg(null);
+    setSearchError(null);
+
+    try {
+      // 根据类型构建不同的 payload
+      const payload = buildMetubePayloadWithKind(url, dlKind);
+      await metubePostAdd(payload);
+
+      setInfoMsg(`已提交「${getKindLabel(dlKind)}」到 MeTube 队列，开始轮询状态...`);
+
+      // 开始轮询下载状态
+      pollDownloadStatus(url, dlKind);
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : 'MeTube 提交失败';
+      setSearchError(errMsg);
+      setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'error', error: errMsg } }));
+    } finally {
+      setMetubeSubmittingUrl(null);
+    }
+  };
+
+  /** 获取下载类型标签 */
+  const getKindLabel = (kind: MetubeDownloadKind): string => {
+    switch (kind) {
+      case 'video': return '视频';
+      case 'audio': return '音频';
+      case 'captions': return '字幕';
+      case 'thumbnail': return '封面图';
+      default: return '文件';
+    }
+  };
+
+  /** 根据类型构建 MeTube payload */
+  const buildMetubePayloadWithKind = (url: string, kind: MetubeDownloadKind): Record<string, unknown> => {
+    const u = url.trim();
     const base: Record<string, unknown> = { url: u, auto_start: true };
-    switch (metubeKind) {
+    switch (kind) {
       case 'video':
         return {
           ...base,
@@ -517,27 +637,6 @@ export const YouTubeMonitor: React.FC = () => {
         };
       default:
         return { ...base, download_type: 'video', quality: 'best', format: 'any', codec: 'auto' };
-    }
-  };
-
-  const queueMetubeDownload = async (url: string) => {
-    setMetubeSubmittingUrl(url);
-    setInfoMsg(null);
-    setSearchError(null);
-    try {
-      await metubePostAdd(buildMetubePayload(url));
-      // 延迟 1.5s 后轮询历史，展示最新下载项
-      setTimeout(async () => {
-        const hist = await fetchMetubeHistory();
-        setMetubeHistory(hist.slice(0, 10));
-      }, 1500);
-      setInfoMsg(
-        '已提交到 MeTube 下载队列。页面将自动刷新下载历史状态（首次可能需等待 5-10 秒）。'
-      );
-    } catch (e: unknown) {
-      setSearchError(e instanceof Error ? e.message : 'MeTube 提交失败');
-    } finally {
-      setMetubeSubmittingUrl(null);
     }
   };
 
@@ -869,6 +968,84 @@ export const YouTubeMonitor: React.FC = () => {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
+  /** 渲染下载按钮（用于解析结果区域） */
+  const renderDownloadButton = (
+    videoUrl: string,
+    kind: MetubeDownloadKind,
+    label: string,
+    icon: React.ReactNode
+  ) => {
+    const dlKey = getDownloadKey(videoUrl, kind);
+    const dlState = activeDownloads[dlKey];
+    const isActive = dlState?.status === 'downloading' || dlState?.status === 'queued';
+    const isDone = dlState?.status === 'completed';
+    const isError = dlState?.status === 'error';
+
+    return (
+      <button
+        key={kind}
+        type="button"
+        disabled={isActive}
+        onClick={() => queueMetubeDownload(videoUrl, kind)}
+        className={`px-2 py-1.5 rounded-md text-xs flex items-center justify-center gap-1 transition-colors disabled:opacity-50 ${
+          isDone
+            ? 'bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30'
+            : isError
+            ? 'bg-red-500/20 text-red-300 hover:bg-red-500/30'
+            : 'bg-amber-500/10 text-amber-300 hover:bg-amber-500/20'
+        }`}
+        title={isError ? dlState.error : undefined}
+      >
+        {isActive ? (
+          <Loader2 className="w-3 h-3 animate-spin" />
+        ) : isDone ? (
+          <CheckCircle className="w-3 h-3" />
+        ) : (
+          icon
+        )}
+        {isDone ? '完成' : isError ? '失败' : label}
+      </button>
+    );
+  };
+
+  /** 渲染下载进度条 */
+  const renderDownloadProgress = (videoUrl: string, displayUrl: string) => {
+    // 收集所有类型的下载状态
+    const kinds: MetubeDownloadKind[] = ['video', 'audio', 'captions', 'thumbnail'];
+    const activeStates = kinds
+      .map(kind => ({ kind, state: activeDownloads[getDownloadKey(videoUrl, kind)] }))
+      .filter(s => s.state && s.state.status !== 'error' && s.state.status !== 'completed');
+
+    if (activeStates.length === 0) return null;
+
+    return (
+      <div className="mt-2 space-y-1.5">
+        {activeStates.map(({ kind, state }) => (
+          <div key={kind} className="bg-slate-900/80 rounded-lg p-2">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[10px] text-slate-400 flex items-center gap-1">
+                {kind === 'video' && <Video className="w-3 h-3" />}
+                {kind === 'audio' && <Music className="w-3 h-3" />}
+                {kind === 'captions' && <Subtitles className="w-3 h-3" />}
+                {kind === 'thumbnail' && <Image className="w-3 h-3" />}
+                下载{getKindLabel(kind)}
+                {state?.status === 'queued' && <span className="text-amber-400/70">(排队中...)</span>}
+                {state?.status === 'downloading' && <span className="text-cyan-400/70">(处理中...)</span>}
+              </span>
+              <span className="text-[10px] text-slate-500">{state?.progress || 0}%</span>
+            </div>
+            <div className="h-1.5 bg-slate-700 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-amber-500 to-amber-400 transition-all duration-500"
+                style={{ width: `${state?.progress || 0}%` }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   // 渲染视频项（兼容两种API格式）
   const renderVideoItem = (video: any, index: number) => {
     const isOfficial = isUsingOfficialApi;
@@ -917,7 +1094,7 @@ export const YouTubeMonitor: React.FC = () => {
             <button
               type="button"
               disabled={metubeSubmittingUrl === url}
-              onClick={() => queueMetubeDownload(url)}
+              onClick={() => queueMetubeDownload(url, 'video')}
               className="px-3 py-1 text-xs bg-amber-500/10 text-amber-400 rounded-md hover:bg-amber-500/20 transition-colors disabled:opacity-50"
             >
               {metubeSubmittingUrl === url ? '提交中…' : 'MeTube 下载'}
@@ -1586,35 +1763,47 @@ export const YouTubeMonitor: React.FC = () => {
                     </p>
                   </div>
                 ) : null}
-                {parsedVideo.dataSource === 'invidious' &&
-                  parsedVideo.captions?.length > 0 && (
-                    <div className="mb-3">
-                      <p className="text-[10px] uppercase text-slate-500 mb-1">字幕（经本站代理拉取 WebVTT）</p>
-                      <div className="flex flex-wrap gap-1">
-                        {parsedVideo.captions.map((c: { label: string; lang?: string }, i: number) => (
-                          <button
-                            type="button"
-                            key={`${c.label}-${i}`}
-                            onClick={() => {
-                              const href = invidiousCaptionHref(parsedVideo.videoId, c.label, c.lang);
-                              const filename = `${parsedVideo.title}_${c.label}${c.lang ? '_' + c.lang : ''}.vtt`;
-                              forceDownloadFile(href, filename);
-                            }}
-                            className="text-[10px] px-2 py-0.5 rounded bg-blue-500/10 text-blue-300 hover:bg-blue-500/20"
-                          >
-                            {c.label}
-                            {c.lang ? ` (${c.lang})` : ''}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                {parsedVideo.dataSource === 'youtube' && (
-                  <p className="text-[10px] text-slate-600 mb-3">
-                    官方 API 不返回可下载字幕流；需要字幕文件时请清空 Key 用 Invidious 解析，或到 YouTube 站内查看。
-                  </p>
-                )}
-                <div className="flex flex-wrap gap-2">
+                {/* 解析结果下载按钮（多类型） */}
+                <div className="mt-3 pt-3 border-t border-slate-700/50">
+                  <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-2">MeTube 下载</p>
+                  <div className="grid grid-cols-2 gap-2 mb-2">
+                    {/* 视频下载 */}
+                    {renderDownloadButton(parsedVideo.url, 'video', '视频', <Video className="w-3 h-3" />)}
+                    {/* 音频下载 */}
+                    {renderDownloadButton(parsedVideo.url, 'audio', '音频', <Music className="w-3 h-3" />)}
+                    {/* 字幕下载（需有字幕数据） */}
+                    {parsedVideo.captions?.length > 0 ? (
+                      parsedVideo.captions.slice(0, 2).map((c: { label: string; lang?: string }, i: number) => (
+                        <button
+                          key={`cap-${i}`}
+                          type="button"
+                          disabled={metubeSubmittingUrl === parsedVideo.url + '_captions_' + c.label}
+                          onClick={() => {
+                            // 直接使用 MeTube 下载字幕
+                            queueMetubeDownload(parsedVideo.url, 'captions');
+                          }}
+                          className="px-2 py-1.5 bg-blue-500/10 text-blue-300 rounded-md text-xs hover:bg-blue-500/20 transition-colors flex items-center justify-center gap-1 disabled:opacity-50"
+                        >
+                          {metubeSubmittingUrl === parsedVideo.url + '_captions_' + c.label ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Subtitles className="w-3 h-3" />
+                          )}
+                          {c.label}
+                        </button>
+                      ))
+                    ) : (
+                      <span className="px-2 py-1.5 text-[10px] text-slate-600 col-span-1">无字幕</span>
+                    )}
+                    {/* 封面图下载 */}
+                    {renderDownloadButton(parsedVideo.url, 'thumbnail', '封面', <Image className="w-3 h-3" />)}
+                  </div>
+                  {/* 下载进度条 */}
+                  {renderDownloadProgress(parsedVideo.url, parsedVideo.url)}
+                </div>
+
+                {/* 操作按钮 */}
+                <div className="flex flex-wrap gap-2 mt-3">
                   <a
                     href={parsedVideo.url}
                     target="_blank"
@@ -1622,23 +1811,15 @@ export const YouTubeMonitor: React.FC = () => {
                     className="px-3 py-1.5 bg-emerald-500/10 text-emerald-400 rounded-md text-xs hover:bg-emerald-500/20 transition-colors flex items-center gap-1"
                   >
                     <ExternalLink className="w-3 h-3" />
-                    观看视频
+                    观看
                   </a>
-                  <button
-                    type="button"
-                    disabled={metubeSubmittingUrl === parsedVideo.url}
-                    onClick={() => queueMetubeDownload(parsedVideo.url)}
-                    className="px-3 py-1.5 bg-amber-500/10 text-amber-400 rounded-md text-xs hover:bg-amber-500/20 transition-colors flex items-center gap-1 disabled:opacity-50"
-                  >
-                    {metubeSubmittingUrl === parsedVideo.url ? '提交中…' : 'MeTube 下载'}
-                  </button>
                   <button
                     type="button"
                     onClick={() => copyToClipboard(parsedVideo.url, 'url')}
                     className="px-3 py-1.5 bg-slate-700/50 text-slate-300 rounded-md text-xs hover:bg-slate-700 transition-colors flex items-center gap-1"
                   >
                     {copiedId === 'url' ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                    复制链接
+                    复制
                   </button>
                 </div>
               </div>
@@ -1753,7 +1934,7 @@ export const YouTubeMonitor: React.FC = () => {
                             <button
                               type="button"
                               disabled={metubeSubmittingUrl === watchUrl}
-                              onClick={() => void queueMetubeDownload(watchUrl)}
+                              onClick={() => void queueMetubeDownload(watchUrl, metubeKind)}
                               className="inline-flex px-2 py-0.5 rounded bg-slate-700/60 text-slate-300 hover:bg-slate-600 text-[10px] disabled:opacity-50"
                             >
                               {metubeSubmittingUrl === watchUrl ? '提交中…' : '按当前选项重下'}
