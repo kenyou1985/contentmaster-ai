@@ -1,8 +1,39 @@
 /**
  * 剪映草稿导出服务（前端调用层）
- * 通过 Vite proxy → HTTP 服务 → Python 脚本
+ * 本地开发：Vite proxy `/api/jianying` → 本机 18091，Python 直接写入剪映草稿目录。
+ * 线上（Vercel）：`VITE_JIANYING_API_BASE` 指向 Railway，Linux 侧生成 ZIP 供下载。
  */
-const BASE = (import.meta.env.VITE_JIANYING_API_BASE || '/api/jianying').replace(/\/$/, '');
+
+/** 是否为本机/局域网访问（应走本机剪映服务，不强制 Railway ZIP） */
+export function isJianyingLocalSiteOrigin(): boolean {
+  if (typeof window === 'undefined') return false;
+  const h = window.location.hostname;
+  if (h === 'localhost' || h === '127.0.0.1' || h === '[::1]') return true;
+  if (/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(h)) return true;
+  return false;
+}
+
+/**
+ * 是否使用远程打包 ZIP 并展示下载链接（典型：Vercel 部署访问线上 API）。
+ * 本地站点为 false：直接导出到本机剪映草稿目录，不经 Railway 中转。
+ */
+export function shouldUseJianyingZipDownload(): boolean {
+  if (import.meta.env.VITE_JIANYING_FORCE_ZIP === 'true') return true;
+  if (import.meta.env.VITE_JIANYING_FORCE_ZIP === 'false') return false;
+  if (isJianyingLocalSiteOrigin()) return false;
+  return true;
+}
+
+/**
+ * 剪映 HTTP API 根路径。
+ * 本地开发强制同源 `/api/jianying`，避免 `.env` 里 `VITE_JIANYING_API_BASE` 指向 Railway 时仍请求远程。
+ */
+export function getJianyingApiBase(): string {
+  if (typeof window !== 'undefined' && isJianyingLocalSiteOrigin()) {
+    return '/api/jianying';
+  }
+  return (import.meta.env.VITE_JIANYING_API_BASE || '/api/jianying').replace(/\/$/, '');
+}
 
 export interface JianyingShot {
   /** 镜头字幕文案 */
@@ -80,14 +111,14 @@ export interface JianyingHealth {
 
 /** 健康检查 */
 export async function checkJianyingHealth(): Promise<JianyingHealth> {
-  const res = await fetch(`${BASE}/health`);
+  const res = await fetch(`${getJianyingApiBase()}/health`);
   if (!res.ok) throw new Error(`服务不可用 (${res.status})`);
   return res.json();
 }
 
 /** 列出剪映所有草稿 */
 export async function listJianyingDrafts(): Promise<JianyingDraftInfo[]> {
-  const res = await fetch(`${BASE}/list`);
+  const res = await fetch(`${getJianyingApiBase()}/list`);
   if (!res.ok) throw new Error(`列表查询失败 (${res.status})`);
   const data = await res.json();
   return Array.isArray(data) ? data : [];
@@ -247,6 +278,28 @@ export async function embedAudioDataUrlsForJianyingExport(shots: JianyingShot[])
   return out;
 }
 
+/** 仅同步 `POST .../export` 的旧版本机服务（如 `server/server.mjs`），无异步 `/export/start` */
+async function legacyJianyingExportSync(
+  base: string,
+  payload: Record<string, unknown>,
+  options: JianyingExportOptions
+): Promise<JianyingExportResult> {
+  const legacyRes = await fetch(`${base}/export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const legacyText = await legacyRes.text().catch(() => '');
+  if (!legacyRes.ok) {
+    const parsed = tryParseJsonObject(legacyText);
+    const detail = parsed?.error || parsed?.message || legacyText.slice(0, 400);
+    throw new Error(`导出请求失败 (${legacyRes.status})${detail ? ': ' + detail : ''}`);
+  }
+  const parsed = tryParseJsonObject(legacyText);
+  if (parsed) return parsed;
+  return coerceExportResultFromText(legacyText, options, true);
+}
+
 /** 批量导出剪映草稿（异步任务轮询，避免长连接超时） */
 export async function exportJianyingDraft(
   options: JianyingExportOptions
@@ -272,15 +325,20 @@ export async function exportJianyingDraft(
     pathMapRoot: options.pathMapRoot || null,
     randomTransitions: !!options.randomTransitions,
     randomVideoEffects: !!options.randomVideoEffects,
-    returnZip: true,
+    returnZip: shouldUseJianyingZipDownload(),
   };
 
-  const startRes = await fetch(`${BASE}/export/start`, {
+  const base = getJianyingApiBase();
+  const startRes = await fetch(`${base}/export/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
   const startText = await startRes.text().catch(() => '');
+  // 本仓库 `server/server.mjs` 仅实现同步 POST /api/jianying/export，无 /export/start → 404
+  if (startRes.status === 404) {
+    return legacyJianyingExportSync(base, payload, options);
+  }
   if (!startRes.ok) {
     const parsed = tryParseJsonObject(startText);
     const detail = parsed?.error || parsed?.message || startText.slice(0, 400);
@@ -291,33 +349,20 @@ export async function exportJianyingDraft(
   const taskId = startObj?.taskId;
   if (!taskId) {
     // 兼容旧服务：若未返回 taskId，尝试同步接口
-    const legacyRes = await fetch(`${BASE}/export`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const legacyText = await legacyRes.text().catch(() => '');
-    if (!legacyRes.ok) {
-      const parsed = tryParseJsonObject(legacyText);
-      const detail = parsed?.error || parsed?.message || legacyText.slice(0, 400);
-      throw new Error(`导出请求失败 (${legacyRes.status})${detail ? ': ' + detail : ''}`);
-    }
-    const parsed = tryParseJsonObject(legacyText);
-    if (parsed) return parsed;
-    return coerceExportResultFromText(legacyText, options, true);
+    return legacyJianyingExportSync(base, payload, options);
   }
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const maxPoll = 240; // 最多约 8 分钟
   for (let i = 0; i < maxPoll; i++) {
     await sleep(2000);
-    const statusRes = await fetch(`${BASE}/export/status/${encodeURIComponent(taskId)}`);
+    const statusRes = await fetch(`${base}/export/status/${encodeURIComponent(taskId)}`);
     const statusText = await statusRes.text().catch(() => '');
     const statusObj = tryParseJsonObject(statusText) as any;
     const status = String(statusObj?.status || '').toLowerCase();
 
     if (status === 'success') {
-      const resultRes = await fetch(`${BASE}/export/result/${encodeURIComponent(taskId)}`);
+      const resultRes = await fetch(`${base}/export/result/${encodeURIComponent(taskId)}`);
       const resultText = await resultRes.text().catch(() => '');
       if (!resultRes.ok) {
         const parsed = tryParseJsonObject(resultText);

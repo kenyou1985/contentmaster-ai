@@ -1,7 +1,10 @@
 /**
  * 历史记录服务
  * 用于管理自动生成和改写工具的历史记录
+ * 底层存储：IndexedDB（storageService） + localStorage 兼容层
  */
+
+import { lsGetItem, lsSetItem, lsRemoveItem } from './storageService';
 
 export interface HistoryRecord {
   content: string;
@@ -46,56 +49,38 @@ export const saveHistory = (
   content: string,
   metadata?: HistoryRecord['metadata']
 ): void => {
-  try {
-    if (!content || !content.trim()) {
-      return;
-    }
-
-    const storageKey = getHistoryKey(module, key);
-    const historyStr = localStorage.getItem(storageKey);
-    let history: HistoryRecord[] = [];
-
-    if (historyStr) {
-      try {
-        history = JSON.parse(historyStr);
-        if (!Array.isArray(history)) {
-          history = [];
-        }
-      } catch {
-        history = [];
-      }
-    }
-
-    // 检查是否已存在相同内容的记录（避免重复保存）
-    const trimmedContent = content.trim();
-    const existingIndex = history.findIndex(record => 
-      record.content.trim() === trimmedContent && 
-      record.metadata?.topic === metadata?.topic
-    );
-    
-    // 如果已存在相同记录，不重复添加
-    if (existingIndex !== -1) {
-      console.log(`[HistoryService] 跳过重复记录: ${storageKey}, 主题: ${metadata?.topic}`);
-      return;
-    }
-    
-    // 添加新记录到最前面
-    history.unshift({
-      content: trimmedContent,
-      timestamp: Date.now(),
-      metadata: metadata || {},
-    });
-
-    // 只保留最近 MAX_HISTORY_COUNT 条
-    if (history.length > MAX_HISTORY_COUNT) {
-      history = history.slice(0, MAX_HISTORY_COUNT);
-    }
-
-    localStorage.setItem(storageKey, JSON.stringify(history));
-    console.log(`[HistoryService] 保存历史记录: ${storageKey}, 记录数: ${history.length}`);
-  } catch (error) {
-    console.error('[HistoryService] 保存历史记录失败:', error);
+  if (!content || !content.trim()) {
+    return;
   }
+
+  const storageKey = getHistoryKey(module, key);
+  const history = lsGetItem<HistoryRecord[]>(storageKey, []);
+
+  // 检查是否已存在相同内容的记录（避免重复保存）
+  const trimmedContent = content.trim();
+  const existingIndex = history.findIndex(record =>
+    record.content.trim() === trimmedContent &&
+    record.metadata?.topic === metadata?.topic
+  );
+
+  // 如果已存在相同记录，不重复添加
+  if (existingIndex !== -1) {
+    return;
+  }
+
+  // 添加新记录到最前面
+  history.unshift({
+    content: trimmedContent,
+    timestamp: Date.now(),
+    metadata: metadata || {},
+  });
+
+  // 只保留最近 MAX_HISTORY_COUNT 条
+  if (history.length > MAX_HISTORY_COUNT) {
+    history.length = MAX_HISTORY_COUNT;
+  }
+
+  lsSetItem(storageKey, history);
 };
 
 /**
@@ -105,30 +90,12 @@ export const getHistory = (
   module: 'generator' | 'tools',
   key: string
 ): HistoryRecord[] => {
-  try {
-    const storageKey = getHistoryKey(module, key);
-    const historyStr = localStorage.getItem(storageKey);
-
-    if (!historyStr) {
-      return [];
-    }
-
-    const history = JSON.parse(historyStr);
-    if (!Array.isArray(history)) {
-      return [];
-    }
-
-    const valid = history.filter(
-      (item: any): item is HistoryRecord =>
-        item != null &&
-        typeof item.content === 'string' &&
-        item.content.trim().length > 0
-    );
-    return valid.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-  } catch (error) {
-    console.error('[HistoryService] 获取历史记录失败:', error);
-    return [];
-  }
+  const history = lsGetItem<HistoryRecord[]>(getHistoryKey(module, key), []);
+  const valid = (Array.isArray(history) ? history : []).filter(
+    (item: any): item is HistoryRecord =>
+      item != null && typeof item.content === 'string' && item.content.trim().length > 0
+  );
+  return valid.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 };
 
 /**
@@ -139,28 +106,12 @@ export const deleteHistory = (
   key: string,
   timestamp: number
 ): void => {
-  try {
-    const storageKey = getHistoryKey(module, key);
-    const historyStr = localStorage.getItem(storageKey);
-
-    if (!historyStr) {
-      return;
-    }
-
-    const history = JSON.parse(historyStr);
-    if (!Array.isArray(history)) {
-      return;
-    }
-
-    const filtered = history.filter(record => record.timestamp !== timestamp);
-
-    if (filtered.length === 0) {
-      localStorage.removeItem(storageKey);
-    } else {
-      localStorage.setItem(storageKey, JSON.stringify(filtered));
-    }
-  } catch (error) {
-    console.error('[HistoryService] 删除历史记录失败:', error);
+  const history = lsGetItem<HistoryRecord[]>(getHistoryKey(module, key), []);
+  const filtered = history.filter(record => record.timestamp !== timestamp);
+  if (filtered.length === 0) {
+    lsRemoveItem(getHistoryKey(module, key));
+  } else {
+    lsSetItem(getHistoryKey(module, key), filtered);
   }
 };
 
@@ -171,18 +122,11 @@ export const clearHistory = (
   module: 'generator' | 'tools',
   key: string
 ): void => {
-  try {
-    const storageKey = getHistoryKey(module, key);
-    localStorage.removeItem(storageKey);
-    console.log(`[HistoryService] 清空历史记录: ${storageKey}`);
-  } catch (error) {
-    console.error('[HistoryService] 清空历史记录失败:', error);
-  }
+  lsRemoveItem(getHistoryKey(module, key));
 };
 
 /** 旧版 scriptHistory（非 history_tools_* 键） */
 export const SCRIPT_HISTORY_LEGACY_KEY = 'scriptHistory';
-
 export const LAST_GENERATED_SCRIPT_STORAGE_KEY = 'lastGeneratedScript';
 
 /**
@@ -191,43 +135,23 @@ export const LAST_GENERATED_SCRIPT_STORAGE_KEY = 'lastGeneratedScript';
 export const LAST_GENERATED_SCRIPT_TIMELINE_TS = 9_001_000_000_000;
 
 export function deleteScriptHistoryLegacyItem(timestamp: number): void {
-  try {
-    const historyStr = localStorage.getItem(SCRIPT_HISTORY_LEGACY_KEY);
-    if (!historyStr) return;
-    const history = JSON.parse(historyStr);
-    if (!Array.isArray(history)) return;
-    const ts = Number(timestamp);
-    const filtered = history.filter((item: any) => Number(item?.timestamp) !== ts);
-    if (filtered.length === 0) localStorage.removeItem(SCRIPT_HISTORY_LEGACY_KEY);
-    else localStorage.setItem(SCRIPT_HISTORY_LEGACY_KEY, JSON.stringify(filtered));
-  } catch (error) {
-    console.error('[HistoryService] 删除 scriptHistory 项失败:', error);
-  }
+  const history = lsGetItem<any[]>(SCRIPT_HISTORY_LEGACY_KEY, []);
+  const filtered = history.filter((item: any) => Number(item?.timestamp) !== Number(timestamp));
+  if (filtered.length === 0) lsRemoveItem(SCRIPT_HISTORY_LEGACY_KEY);
+  else lsSetItem(SCRIPT_HISTORY_LEGACY_KEY, filtered);
 }
 
 export function clearScriptHistoryLegacy(): void {
-  try {
-    localStorage.removeItem(SCRIPT_HISTORY_LEGACY_KEY);
-  } catch (error) {
-    console.error('[HistoryService] 清空 scriptHistory 失败:', error);
-  }
+  lsRemoveItem(SCRIPT_HISTORY_LEGACY_KEY);
 }
 
 export function removeLastGeneratedScriptIfContentEquals(content: string): void {
-  try {
-    const saved = localStorage.getItem(LAST_GENERATED_SCRIPT_STORAGE_KEY);
-    if (saved != null && saved.trim() === String(content).trim()) {
-      localStorage.removeItem(LAST_GENERATED_SCRIPT_STORAGE_KEY);
-    }
-  } catch (error) {
-    console.error('[HistoryService] 删除 lastGeneratedScript 失败:', error);
+  const saved = lsGetItem<string | null>(LAST_GENERATED_SCRIPT_STORAGE_KEY, null);
+  if (saved != null && saved.trim() === String(content).trim()) {
+    lsRemoveItem(LAST_GENERATED_SCRIPT_STORAGE_KEY);
   }
 }
 
 export function clearLastGeneratedScript(): void {
-  try {
-    localStorage.removeItem(LAST_GENERATED_SCRIPT_STORAGE_KEY);
-  } catch (error) {
-    console.error('[HistoryService] 清空 lastGeneratedScript 失败:', error);
-  }
+  lsRemoveItem(LAST_GENERATED_SCRIPT_STORAGE_KEY);
 }

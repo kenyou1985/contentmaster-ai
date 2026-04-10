@@ -1,6 +1,9 @@
 /**
  * 语音库：多音色管理，供 IndexTTS2 / RunningHub 配音参考音使用
+ * 底层存储：IndexedDB（storageService） + localStorage 兼容层
  */
+
+import { lsGetItem, lsSetItem, lsRemoveItem } from './storageService';
 
 export interface VoiceProfile {
   id: string;
@@ -17,37 +20,26 @@ const STORAGE_KEY = 'VOICE_LIBRARY';
 const SELECTED_ID_KEY = 'VOICE_LIBRARY_SELECTED_ID';
 
 export function getAllVoices(): VoiceProfile[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const list = JSON.parse(raw) as VoiceProfile[];
-    return Array.isArray(list)
-      ? list.filter((v) => v?.id && v?.name && typeof v.audioDataUrl === 'string')
-      : [];
-  } catch {
-    return [];
-  }
+  return lsGetItem<VoiceProfile[]>(STORAGE_KEY, []).filter(
+    (v) => v?.id && v?.name && typeof v.audioDataUrl === 'string'
+  );
 }
 
 function saveVoices(list: VoiceProfile[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+  lsSetItem(STORAGE_KEY, list);
 }
 
 export function getSelectedVoiceId(): string | null {
-  try {
-    const id = localStorage.getItem(SELECTED_ID_KEY);
-    return id && id.trim() ? id.trim() : null;
-  } catch {
-    return null;
-  }
+  const id = lsGetItem<string | null>(SELECTED_ID_KEY, null);
+  return id && id.trim() ? id.trim() : null;
 }
 
 export function setSelectedVoiceId(id: string | null): void {
   if (!id) {
-    localStorage.removeItem(SELECTED_ID_KEY);
+    lsRemoveItem(SELECTED_ID_KEY);
     return;
   }
-  localStorage.setItem(SELECTED_ID_KEY, id);
+  lsSetItem(SELECTED_ID_KEY, id);
 }
 
 export function getSelectedVoice(): VoiceProfile | null {

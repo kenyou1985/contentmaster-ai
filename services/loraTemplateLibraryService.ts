@@ -1,6 +1,9 @@
 /**
  * LoRA 模库：本地保存角色/场景信息模板，供角色库一键套用
+ * 底层存储：IndexedDB（storageService） + localStorage 兼容层
  */
+
+import { lsGetItem, lsSetItem } from './storageService';
 
 export interface LoraTemplate {
   id: string;
@@ -20,19 +23,12 @@ export interface LoraTemplate {
 const STORAGE_KEY = 'LORA_TEMPLATE_LIBRARY';
 
 function saveAll(templates: LoraTemplate[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(templates));
+  lsSetItem(STORAGE_KEY, templates);
 }
 
 export function getAllLoraTemplates(): LoraTemplate[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const list = JSON.parse(raw) as LoraTemplate[];
-    if (!Array.isArray(list)) return [];
-    return list.filter((t) => t && t.id && t.name);
-  } catch {
-    return [];
-  }
+  const list = lsGetItem<LoraTemplate[]>(STORAGE_KEY, []);
+  return Array.isArray(list) ? list.filter((t) => t && t.id && t.name) : [];
 }
 
 export function addLoraTemplate(

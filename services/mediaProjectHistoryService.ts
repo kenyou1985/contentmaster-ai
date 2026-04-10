@@ -1,7 +1,9 @@
 /**
  * 一键成片 — 项目历史（分镜 + 脚本 + 可持久化媒体 URL），按项目 ID 锚定
+ * 底层存储：IndexedDB（storageService） + localStorage 兼容层
  */
 
+import { lsGetItem, lsSetItem } from './storageService';
 import { getCachedVideoUrl } from './videoCacheService';
 import { resolveRunningHubOutputUrl } from './runninghubService';
 
@@ -42,21 +44,15 @@ export interface PersistedShot {
 }
 
 function readAll(): MediaProjectRecord[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const data = JSON.parse(raw);
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
+  const data = lsGetItem<MediaProjectRecord[]>(STORAGE_KEY, []);
+  return Array.isArray(data) ? data : [];
 }
 
 function writeAll(list: MediaProjectRecord[]): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+    lsSetItem(STORAGE_KEY, list);
   } catch (e) {
-    console.warn('[MediaProjectHistory] 写入失败（可能超出配额），尝试精简 data URL 后重试', e);
+    console.warn('[MediaProjectHistory] 写入失败，尝试精简 data URL 后重试', e);
     const stripped = list.map((rec) => ({
       ...rec,
       shots: rec.shots.map((s) => ({
@@ -65,7 +61,7 @@ function writeAll(list: MediaProjectRecord[]): void {
       })),
     }));
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(stripped));
+      lsSetItem(STORAGE_KEY, stripped);
     } catch (e2) {
       console.error('[MediaProjectHistory] 二次写入仍失败', e2);
     }

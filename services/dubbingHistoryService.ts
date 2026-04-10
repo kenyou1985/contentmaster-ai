@@ -1,7 +1,9 @@
 /**
- * 一键配音：已完成任务的本地历史（localStorage）。
+ * 一键配音：已完成任务的本地历史（IndexedDB + localStorage 兼容层）。
  * 从列表删除的任务会同步从历史移除，故「最近历史」仅含未删除的记录。
  */
+
+import { lsGetItem, lsSetItem } from './storageService';
 
 const STORAGE_KEY = 'dubbing_voice_history_v1';
 const MAX_ENTRIES = 200;
@@ -20,22 +22,11 @@ export interface DubbingHistoryRecord {
 }
 
 function readRaw(): DubbingHistoryRecord[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  return lsGetItem<DubbingHistoryRecord[]>(STORAGE_KEY, []);
 }
 
 function writeRaw(list: DubbingHistoryRecord[]): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(list.slice(0, MAX_ENTRIES)));
-  } catch (e) {
-    console.warn('[dubbingHistory] 写入失败', e);
-  }
+  lsSetItem(STORAGE_KEY, list.slice(0, MAX_ENTRIES));
 }
 
 /** 按时间倒序（最新在前） */

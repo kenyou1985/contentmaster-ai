@@ -1,7 +1,9 @@
 /**
  * 角色库服务
- * 用于管理角色图片和名字，支持本地存储
+ * 用于管理角色图片和名字，底层存储：IndexedDB（storageService） + localStorage 兼容层
  */
+
+import { lsGetItem, lsSetItem } from './storageService';
 
 export interface Character {
   id: string;
@@ -43,28 +45,20 @@ function normalizeCharacterRecord(c: Character): Character {
  * 获取所有角色（包括角色和场景）
  */
 export function getAllCharacters(): Character[] {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    console.log('[CharacterLibrary] localStorage.getItem(STORAGE_KEY):', stored ? '有数据' : '无数据');
-    if (!stored) return [];
-
-    const characters = JSON.parse(stored) as Character[];
-    console.log('[CharacterLibrary] JSON.parse 后数量:', characters.length);
-    const filtered = characters.filter(char => char.id && char.name);
-    console.log('[CharacterLibrary] 过滤后数量:', filtered.length);
-    const normalized = filtered.map(normalizeCharacterRecord);
-    const dirty = normalized.some((c, i) => {
-      const prev = filtered[i];
-      return c.type !== prev.type;
-    });
-    if (dirty) {
-      saveAllCharacters(normalized);
-    }
-    return normalized;
-  } catch (error) {
-    console.error('[CharacterLibrary] 读取角色库失败:', error);
-    return [];
+  const stored = lsGetItem<Character[]>(STORAGE_KEY, []);
+  if (!stored || !stored.length) return [];
+  console.log('[CharacterLibrary] 读取角色库，数量:', stored.length);
+  const filtered = stored.filter(char => char.id && char.name);
+  console.log('[CharacterLibrary] 过滤后数量:', filtered.length);
+  const normalized = filtered.map(normalizeCharacterRecord);
+  const dirty = normalized.some((c, i) => {
+    const prev = filtered[i];
+    return c.type !== prev.type;
+  });
+  if (dirty) {
+    saveAllCharacters(normalized);
   }
+  return normalized;
 }
 
 /**
@@ -85,20 +79,12 @@ export function getAllScenes(): Character[] {
  * 保存所有角色
  */
 function saveAllCharacters(characters: Character[]): void {
-  try {
-    // 移除不能序列化的字段（如File对象）
-    const serializableCharacters = characters.map(char => {
-      const { imageFile, ...rest } = char;
-      return rest;
-    });
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(serializableCharacters));
-  } catch (error) {
-    console.error('[CharacterLibrary] 保存角色库失败:', error);
-    if (error instanceof DOMException && error.name === 'QuotaExceededError') {
-      throw new Error('存储空间不足，请删除一些角色或清理浏览器缓存');
-    }
-    throw new Error('保存角色库失败，可能是存储空间不足');
-  }
+  // 移除不能序列化的字段（如File对象）
+  const serializableCharacters = characters.map(char => {
+    const { imageFile, ...rest } = char;
+    return rest;
+  });
+  lsSetItem(STORAGE_KEY, serializableCharacters);
 }
 
 /**

@@ -47,9 +47,15 @@ import {
 } from '../services/historyService';
 import { useToast } from './Toast';
 import { ProgressBar } from './ProgressBar';
-import { exportJianyingDraft, JianyingShot } from '../services/jianyingExportService';
+import {
+  exportJianyingDraft,
+  getJianyingApiBase,
+  shouldUseJianyingZipDownload,
+  JianyingShot,
+} from '../services/jianyingExportService';
 import { loadOneClickQueue, saveOneClickQueue, newQueueTaskId, newOneshotTaskId, OneClickQueueTask, OneClickTaskSnapshot } from '../services/oneClickTaskQueue';
 import { COVER_STYLE_PRESETS, MEDIA_IMAGE_STYLE_STORAGE_KEY } from '../services/coverStylePresets';
+import { lsGetItem, lsSetItem, lsRemoveItem } from '../services/storageService';
 import {
   generateMediaSnapshotId,
   listMediaProjects,
@@ -508,16 +514,16 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
   // RunningHub API Key（独立持久化，配音/视频随时可用）
   const [runningHubApiKey, setRunningHubApiKey] = useState(() => {
-    return localStorage.getItem('RUNNINGHUB_API_KEY') || externalRunningHubKey || '';
+    return lsGetItem<string>('RUNNINGHUB_API_KEY', '') || externalRunningHubKey || '';
   });
   useEffect(() => {
-    if (runningHubApiKey) localStorage.setItem('RUNNINGHUB_API_KEY', runningHubApiKey);
+    if (runningHubApiKey) lsSetItem('RUNNINGHUB_API_KEY', runningHubApiKey);
     if (externalSetRunningHubKey) externalSetRunningHubKey(runningHubApiKey);
   }, [runningHubApiKey, externalSetRunningHubKey]);
 
   // 即梦走固定线上代理地址（services/jimengService.ts 内嵌），前端仅保留 Session 配置
   const [jimengSessionId, setJimengSessionId] = useState(() => {
-    return localStorage.getItem('JIMENG_SESSION_ID') || '';
+    return lsGetItem<string>('JIMENG_SESSION_ID', '');
   });
   
   // 角色库管理
@@ -529,7 +535,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
   useEffect(() => {
     if (jimengSessionId) {
-      localStorage.setItem('JIMENG_SESSION_ID', jimengSessionId);
+      lsSetItem('JIMENG_SESSION_ID', jimengSessionId);
     }
   }, [jimengSessionId]);
 
@@ -543,7 +549,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const [selectedImageRatio, setSelectedImageRatio] = useState('16:9'); // 默认横屏 16:9
   const [selectedStyle, setSelectedStyle] = useState(() => {
     try {
-      const stored = localStorage.getItem(MEDIA_IMAGE_STYLE_STORAGE_KEY);
+      const stored = lsGetItem<string | null>(MEDIA_IMAGE_STYLE_STORAGE_KEY, null);
       if (stored && STYLE_LIBRARY.some((s) => s.id === stored)) return stored;
     } catch {
       /* ignore */
@@ -551,11 +557,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     return STYLE_LIBRARY[0].id;
   });
   useEffect(() => {
-    try {
-      localStorage.setItem(MEDIA_IMAGE_STYLE_STORAGE_KEY, selectedStyle);
-    } catch {
-      /* ignore */
-    }
+    lsSetItem(MEDIA_IMAGE_STYLE_STORAGE_KEY, selectedStyle);
   }, [selectedStyle]);
   // 视频参数设置
   const [selectedVideoSize, setSelectedVideoSize] = useState<string>(VIDEO_MODELS[0]?.defaultSize || '1080P');
@@ -608,19 +610,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   // 终端日志
   const TERMINAL_LOG_STORAGE_KEY = 'ContentMaster_TerminalLogs';
   const [terminalLogs, setTerminalLogs] = useState<Array<{ id: string; time: string; tag: string; message: string }>>(() => {
-    try {
-      const stored = localStorage.getItem(TERMINAL_LOG_STORAGE_KEY);
-      return stored ? JSON.parse(stored) : [];
-    } catch {
-      return [];
-    }
+    return lsGetItem<Array<{ id: string; time: string; tag: string; message: string }>>(TERMINAL_LOG_STORAGE_KEY, []);
   });
   const terminalScrollRef = useRef<HTMLDivElement>(null);
   const appendTerminalLog = (tag: string, message: string) => {
     const entry = { id: `${Date.now()}_${Math.random().toString(36).slice(2)}`, time: tsStr(), tag, message };
     setTerminalLogs(prev => {
       const next = [...prev, entry];
-      try { localStorage.setItem(TERMINAL_LOG_STORAGE_KEY, JSON.stringify(next)); } catch {}
+      lsSetItem(TERMINAL_LOG_STORAGE_KEY, next);
       return next;
     });
     setTimeout(() => {
@@ -798,12 +795,12 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   }, [activeWorkspaceTabId, oneClickQueueTasks, mediaProjectListVersion]);
 
   // ==================== 剪映导出相关 State ====================
-  const [jianyingOutputDir, setJianyingOutputDir] = useState(() => localStorage.getItem('JIANYING_OUTPUT_DIR') || '');
+  const [jianyingOutputDir, setJianyingOutputDir] = useState(() => lsGetItem<string>('JIANYING_OUTPUT_DIR', ''));
   const onChangeJianyingOutputDir = (value: string) => {
     setJianyingOutputDir(value);
     const next = value.trim();
-    if (next) localStorage.setItem('JIANYING_OUTPUT_DIR', next);
-    else localStorage.removeItem('JIANYING_OUTPUT_DIR');
+    if (next) lsSetItem('JIANYING_OUTPUT_DIR', next);
+    else lsRemoveItem('JIANYING_OUTPUT_DIR');
   };
   const [jyRandomEffectBundle, setJyRandomEffectBundle] = useState(false);
   const [jyRandomTransitions, setJyRandomTransitions] = useState(false);
@@ -849,10 +846,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           (settings?.randomFilters ?? jyRandomFilters),
       });
       if (result.success) {
-        const apiBase = (import.meta.env.VITE_JIANYING_API_BASE || '/api/jianying').replace(/\/$/, '');
+        const apiBase = getJianyingApiBase();
+        const wantZip = shouldUseJianyingZipDownload();
         const rawZipUrl = (result.zip_download_url || '').trim();
         let downloadUrl = '';
-        if (rawZipUrl) {
+        if (wantZip && rawZipUrl) {
           if (/^https?:\/\//i.test(rawZipUrl)) {
             downloadUrl = rawZipUrl;
           } else {
@@ -865,10 +863,20 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         }
         if (downloadUrl) {
           setLastJianyingDownloadUrl(downloadUrl);
-          appendTerminalLog('Jianying', `导出成功并生成下载链接: ${downloadUrl}`);
+          appendTerminalLog('Jianying', `导出成功并生成 ZIP 下载链接: ${downloadUrl}`);
+        } else if (!wantZip) {
+          setLastJianyingDownloadUrl('');
+          appendTerminalLog(
+            'Jianying',
+            `本机导出完成（未走远程 ZIP）${result.draft_folder ? ` · ${result.draft_folder}` : ''}`
+          );
         }
         appendTerminalLog('Jianying', `导出成功: ${exportDraftName} → ${result.draft_folder || jianyingOutputDir}`);
-        toast.success(`剪映草稿导出成功: ${result.draft_folder || exportDraftName}`);
+        toast.success(
+          wantZip
+            ? `剪映草稿导出成功: ${result.draft_folder || exportDraftName}`
+            : `剪映草稿已写入本机: ${result.draft_folder || exportDraftName}`
+        );
         return true;
       } else {
         appendTerminalLog('Jianying', `导出失败: ${result.error}`);
@@ -4157,7 +4165,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               onChange={(e) => onChangeJianyingOutputDir(e.target.value)}
               placeholder="本机剪映草稿根目录（路径映射），例如 /Users/kenyou/Downloads/JianyingPro Drafts"
               className="w-[360px] px-3 py-1.5 bg-slate-900/70 border border-slate-600 focus:border-purple-500 outline-none text-slate-100 text-xs rounded-lg"
-              title="用于把 Railway 容器路径映射为你本机绝对路径；请填你的剪映草稿根目录"
+              title="本机导出时：剪映草稿将直接写入该目录（或映射路径）。线上 Vercel 时由 Railway 打包 ZIP，此项用于解压后路径对照。"
             />
             <button
               onClick={() => handleOneClickPipeline()}
@@ -4191,13 +4199,13 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               {isExportingToJianying ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
               导出剪映
             </button>
-            {lastJianyingDownloadUrl && (
+            {lastJianyingDownloadUrl && shouldUseJianyingZipDownload() && (
               <a
                 href={lastJianyingDownloadUrl}
                 target="_blank"
                 rel="noreferrer"
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-lg transition-all"
-                title="下载导出的剪映草稿 ZIP"
+                title="线上环境：下载 Railway 打包的剪映草稿 ZIP"
               >
                 <Download size={14} />
                 下载草稿ZIP
@@ -4327,7 +4335,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             </h3>
             <button
               type="button"
-              onClick={() => { setTerminalLogs([]); try { localStorage.removeItem(TERMINAL_LOG_STORAGE_KEY); } catch {} }}
+              onClick={() => { setTerminalLogs([]); lsRemoveItem(TERMINAL_LOG_STORAGE_KEY); }}
               className="text-[10px] text-slate-500 hover:text-slate-300 px-2 py-0.5 rounded border border-slate-600"
             >
               清空

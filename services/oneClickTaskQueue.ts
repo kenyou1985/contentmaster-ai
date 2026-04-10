@@ -1,7 +1,10 @@
 /**
  * 一键成片挂机队列：本地持久化，避免误关页面丢失任务列表。
  * 单任务执行时仍会暂时将分镜切换为该任务快照（执行完恢复），请勿在执行中编辑当前分镜。
+ * 底层存储：IndexedDB（storageService） + localStorage 兼容层
  */
+
+import { lsGetItem, lsSetItem } from './storageService';
 
 const STORAGE_KEY = 'contentmaster_one_click_queue_v1';
 
@@ -93,23 +96,21 @@ function normalizeTask(t: OneClickQueueTask): OneClickQueueTask {
 }
 
 export function loadOneClickQueue(): OneClickQueueTask[] {
-  if (typeof localStorage === 'undefined') return [];
-  const p = safeParse(localStorage.getItem(STORAGE_KEY));
+  const p = safeParse(lsGetItem<string | null>(STORAGE_KEY, null));
   const raw = p?.tasks ?? [];
   return raw.map((x) => normalizeTask(x as OneClickQueueTask));
 }
 
 export function saveOneClickQueue(tasks: OneClickQueueTask[]): boolean {
-  if (typeof localStorage === 'undefined') return false;
   const payload: OneClickQueuePersisted = {
     tasks,
     updatedAt: Date.now(),
   };
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    lsSetItem(STORAGE_KEY, payload);
     return true;
   } catch (e) {
-    console.warn('[oneClickTaskQueue] 保存队列失败（可能超出配额）', e);
+    console.warn('[oneClickTaskQueue] 保存队列失败', e);
     return false;
   }
 }

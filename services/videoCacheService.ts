@@ -1,10 +1,13 @@
 /**
  * 视频缓存服务
  * 用于将视频下载到本地缓存，提升播放性能
+ * - 每个视频 URL 的缓存数据（blob URL）：localStorage（会话级，刷新后失效）
+ * - 元数据表（CACHE_META_KEY）：IndexedDB（storageService） + localStorage 兼容层
  */
 
-const CACHE_PREFIX = 'VIDEO_CACHE_';
-const CACHE_META_KEY = 'VIDEO_CACHE_METADATA';
+import { lsGetItem, lsSetItem } from './storageService';
+
+const CACHE_META_KEY = 'VIDEO_CACHE_META_V1';
 
 interface VideoCacheMetadata {
   url: string;
@@ -143,14 +146,9 @@ export async function cacheVideo(videoUrl: string): Promise<string> {
  * 更新缓存元数据列表
  */
 function updateCacheMetadata(videoUrl: string, metadata: VideoCacheMetadata): void {
-  try {
-    const existing = localStorage.getItem(CACHE_META_KEY);
-    const metadataList: Record<string, VideoCacheMetadata> = existing ? JSON.parse(existing) : {};
-    metadataList[videoUrl] = metadata;
-    localStorage.setItem(CACHE_META_KEY, JSON.stringify(metadataList));
-  } catch (error) {
-    console.error('[VideoCache] 更新缓存元数据失败:', error);
-  }
+  const meta = lsGetItem<Record<string, VideoCacheMetadata>>(CACHE_META_KEY, {});
+  meta[videoUrl] = metadata;
+  lsSetItem(CACHE_META_KEY, meta);
 }
 
 /**
@@ -158,51 +156,29 @@ function updateCacheMetadata(videoUrl: string, metadata: VideoCacheMetadata): vo
  */
 export function clearVideoCache(videoUrl: string): void {
   const cacheKey = getCacheKey(videoUrl);
-  const cachedData = localStorage.getItem(cacheKey);
-  
-  if (cachedData) {
+  if (typeof localStorage !== 'undefined') {
     try {
-      const metadata: VideoCacheMetadata = JSON.parse(cachedData);
-      // 释放 Blob URL
-      if (metadata.blobUrl) {
-        URL.revokeObjectURL(metadata.blobUrl);
+      const raw = localStorage.getItem(cacheKey);
+      if (raw) {
+        const meta = JSON.parse(raw) as VideoCacheMetadata;
+        if (meta.blobUrl) URL.revokeObjectURL(meta.blobUrl);
       }
-    } catch (error) {
-      console.error('[VideoCache] 释放 Blob URL 失败:', error);
-    }
+    } catch { /* ignore */ }
+    try { localStorage.removeItem(cacheKey); } catch { /* ignore */ }
   }
-  
-  localStorage.removeItem(cacheKey);
-  
-  // 从元数据列表中移除
-  try {
-    const existing = localStorage.getItem(CACHE_META_KEY);
-    if (existing) {
-      const metadataList: Record<string, VideoCacheMetadata> = JSON.parse(existing);
-      delete metadataList[videoUrl];
-      localStorage.setItem(CACHE_META_KEY, JSON.stringify(metadataList));
-    }
-  } catch (error) {
-    console.error('[VideoCache] 清除缓存元数据失败:', error);
-  }
+
+  // 从元数据表中移除
+  const meta = lsGetItem<Record<string, VideoCacheMetadata>>(CACHE_META_KEY, {});
+  delete meta[videoUrl];
+  lsSetItem(CACHE_META_KEY, meta);
 }
 
 /**
  * 获取所有缓存的视频列表
  */
 export function getAllCachedVideos(): VideoCacheMetadata[] {
-  try {
-    const existing = localStorage.getItem(CACHE_META_KEY);
-    if (!existing) {
-      return [];
-    }
-    
-    const metadataList: Record<string, VideoCacheMetadata> = JSON.parse(existing);
-    return Object.values(metadataList);
-  } catch (error) {
-    console.error('[VideoCache] 获取缓存列表失败:', error);
-    return [];
-  }
+  const meta = lsGetItem<Record<string, VideoCacheMetadata>>(CACHE_META_KEY, {});
+  return Object.values(meta);
 }
 
 /**

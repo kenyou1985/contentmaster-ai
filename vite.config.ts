@@ -271,23 +271,46 @@ function invidiousProxyDevPlugin(opts: {
               res.end(JSON.stringify({ error: 'missing url' }));
               return;
             }
-            const downloadType = body.download_type;
-            const payload: Record<string, unknown> =
-              downloadType === 'audio'
-                ? {
-                    url: body.url,
-                    download_type: 'audio',
-                    format: typeof body.format === 'string' ? body.format : 'm4a',
-                    quality: typeof body.quality === 'string' ? body.quality : 'best',
-                    auto_start: body.auto_start !== false,
-                  }
-                : {
-                    url: body.url,
-                    quality: typeof body.quality === 'string' ? body.quality : 'best',
-                    format: typeof body.format === 'string' ? body.format : 'any',
-                    auto_start: body.auto_start !== false,
-                    playlist_strict_mode: false,
-                  };
+            const dt = String(body.download_type || 'video');
+            const urlStr = body.url as string;
+            let payload: Record<string, unknown>;
+
+            if (dt === 'audio') {
+              payload = {
+                url: urlStr,
+                download_type: 'audio',
+                format: typeof body.format === 'string' ? body.format : 'm4a',
+                quality: typeof body.quality === 'string' ? body.quality : 'best',
+                auto_start: body.auto_start !== false,
+              };
+            } else if (dt === 'video') {
+              const allowedFmt = ['any', 'ios', 'mp4'] as const;
+              const fmt =
+                typeof body.format === 'string' && (allowedFmt as readonly string[]).includes(body.format)
+                  ? body.format
+                  : 'any';
+              payload = {
+                url: urlStr,
+                download_type: 'video',
+                quality: typeof body.quality === 'string' ? body.quality : 'best',
+                format: fmt,
+                auto_start: body.auto_start !== false,
+                playlist_strict_mode: false,
+              };
+            } else {
+              // captions / thumbnail / 等：与前端 download_type 一致转发，避免把 jpg 等当成视频 format 触发 MeTube 校验错误
+              payload = {
+                url: urlStr,
+                download_type: dt,
+                auto_start: body.auto_start !== false,
+              };
+              if (typeof body.format === 'string') payload.format = body.format;
+              if (typeof body.quality === 'string') payload.quality = body.quality;
+              if (typeof body.codec === 'string') payload.codec = body.codec;
+              if (typeof body.subtitle_mode === 'string') payload.subtitle_mode = body.subtitle_mode;
+              if (typeof body.subtitle_language === 'string') payload.subtitle_language = body.subtitle_language;
+              if (body.playlist_strict_mode === true) payload.playlist_strict_mode = true;
+            }
             const overridesRaw = metubeYtdlOverridesJson?.trim();
             if (overridesRaw) {
               try {
