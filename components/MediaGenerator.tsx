@@ -122,6 +122,43 @@ function stripOuterQuotes(s: string): string {
   return t;
 }
 
+/** 批量 ZIP：相对路径 / RunningHub 输出路径 → 可 fetch 的绝对 URL */
+function resolveMediaUrlForZipFetch(raw: string): string {
+  const t = raw.trim();
+  if (/^https?:|^blob:|^data:/i.test(t)) return t;
+  return resolveRunningHubOutputUrl(t);
+}
+
+function guessAudioExtension(contentType: string | null, url: string): string {
+  const c = (contentType || '').toLowerCase();
+  if (c.includes('mpeg') || c.includes('mp3')) return 'mp3';
+  if (c.includes('wav')) return 'wav';
+  if (c.includes('aac')) return 'aac';
+  if (c.includes('ogg') || c.includes('opus')) return 'ogg';
+  if (c.includes('m4a') || c.includes('x-m4a')) return 'm4a';
+  const path = url.split('?')[0] || '';
+  const m = path.match(/\.([a-zA-Z0-9]+)$/);
+  if (m) {
+    const e = m[1].toLowerCase();
+    if (['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac', 'webm'].includes(e)) return e;
+  }
+  return 'wav';
+}
+
+function guessVideoExtension(contentType: string | null, url: string): string {
+  const c = (contentType || '').toLowerCase();
+  if (c.includes('webm')) return 'webm';
+  if (c.includes('mp4') || c.includes('mpeg')) return 'mp4';
+  if (c.includes('quicktime')) return 'mov';
+  const path = url.split('?')[0] || '';
+  const m = path.match(/\.([a-zA-Z0-9]+)$/);
+  if (m) {
+    const e = m[1].toLowerCase();
+    if (['mp4', 'webm', 'mov', 'mkv'].includes(e)) return e;
+  }
+  return 'mp4';
+}
+
 /** 从镜头文案前缀解析角色名 */
 function getCaptionRolePrefix(caption: string): string {
   const c = (caption || '').trim();
@@ -773,6 +810,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const [jyRandomFilters, setJyRandomFilters] = useState(false);
   const [isExportingToJianying, setIsExportingToJianying] = useState(false);
   const [lastJianyingDownloadUrl, setLastJianyingDownloadUrl] = useState<string>('');
+  /** 批量打包 ZIP（图片 / 音频 / 视频）进行中，避免重复点击 */
+  const [batchZipBusy, setBatchZipBusy] = useState(false);
 
   // shots 转 JianyingShot[]
   const shotsToJianying = (sList: Shot[]): JianyingShot[] =>
@@ -1994,13 +2033,15 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
   // 批量导出图片为 ZIP
   const handleExportImagesAsZip = async () => {
-    const selectedShots = shots.filter(s => s.selected && s.imageUrls && s.imageUrls.length > 0);
+    if (batchZipBusy) return;
+    const selectedShots = tableShots.filter(s => s.selected && s.imageUrls && s.imageUrls.length > 0);
     
     if (selectedShots.length === 0) {
       toast.warning('请先选择包含图片的镜头');
       return;
     }
     
+    setBatchZipBusy(true);
     try {
       const zip = new JSZip();
       let imageCount = 0;
@@ -2081,6 +2122,120 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     } catch (error: any) {
       console.error('导出 ZIP 失败:', error);
       toast.error(`导出失败: ${error.message || '未知错误'}`);
+    } finally {
+      setBatchZipBusy(false);
+    }
+  };
+
+  /** 批量导出选中镜头的配音音频为 ZIP（每个镜头最多一个音频文件） */
+  const handleExportAudioAsZip = async () => {
+    if (batchZipBusy) return;
+    const selectedShots = tableShots.filter(s => s.selected && s.voiceAudioUrl?.trim());
+    if (selectedShots.length === 0) {
+      toast.warning('请先选择已生成配音的镜头');
+      return;
+    }
+    setBatchZipBusy(true);
+    try {
+      const zip = new JSZip();
+      let fileCount = 0;
+      for (const shot of selectedShots) {
+        const raw = shot.voiceAudioUrl!.trim();
+        const fetchUrl = resolveMediaUrlForZipFetch(raw);
+        try {
+          const response = await fetch(fetchUrl);
+          if (!response.ok) {
+            console.warn(`无法下载音频 镜头${shot.number}:`, response.status);
+            continue;
+          }
+          const blob = await response.blob();
+          const ext = guessAudioExtension(response.headers.get('content-type'), fetchUrl);
+          zip.file(`镜头${shot.number}_音频.${ext}`, blob);
+          fileCount++;
+        } catch (e) {
+          console.error(`音频打包失败 镜头${shot.number}:`, e);
+        }
+      }
+      if (fileCount === 0) {
+        toast.warning('没有成功打包的音频（请检查网络或跨域）');
+        return;
+      }
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `镜头音频_${new Date().toISOString().slice(0, 10)}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success(`已打包 ${fileCount} 个镜头的配音音频为 ZIP`);
+    } catch (error: any) {
+      console.error('音频 ZIP 失败:', error);
+      toast.error(`打包失败: ${error.message || '未知错误'}`);
+    } finally {
+      setBatchZipBusy(false);
+    }
+  };
+
+  /** 批量导出选中镜头的视频为 ZIP（多视频镜头会包含多条） */
+  const handleExportVideoAsZip = async () => {
+    if (batchZipBusy) return;
+    const selectedShots = tableShots.filter(s => {
+      if (!s.selected) return false;
+      const list = s.videoUrls?.length ? s.videoUrls : s.videoUrl ? [s.videoUrl] : [];
+      return list.some(u => u?.trim());
+    });
+    if (selectedShots.length === 0) {
+      toast.warning('请先选择已生成视频的镜头');
+      return;
+    }
+    setBatchZipBusy(true);
+    try {
+      const zip = new JSZip();
+      let fileCount = 0;
+      for (const shot of selectedShots) {
+        const list = (shot.videoUrls?.length ? shot.videoUrls : shot.videoUrl ? [shot.videoUrl] : []).filter(
+          (u): u is string => !!u?.trim()
+        );
+        for (let i = 0; i < list.length; i++) {
+          const fetchUrl = resolveMediaUrlForZipFetch(list[i].trim());
+          try {
+            const response = await fetch(fetchUrl);
+            if (!response.ok) {
+              console.warn(`无法下载视频 镜头${shot.number}:`, response.status);
+              continue;
+            }
+            const blob = await response.blob();
+            const ext = guessVideoExtension(response.headers.get('content-type'), fetchUrl);
+            const name =
+              list.length > 1 ? `镜头${shot.number}_视频${i + 1}.${ext}` : `镜头${shot.number}_视频.${ext}`;
+            zip.file(name, blob);
+            fileCount++;
+          } catch (e) {
+            console.error(`视频打包失败 镜头${shot.number}:`, e);
+          }
+        }
+      }
+      if (fileCount === 0) {
+        toast.warning('没有成功打包的视频（请检查网络或跨域）');
+        return;
+      }
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `镜头视频_${new Date().toISOString().slice(0, 10)}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success(`已打包 ${fileCount} 个视频文件为 ZIP`);
+    } catch (error: any) {
+      console.error('视频 ZIP 失败:', error);
+      toast.error(`打包失败: ${error.message || '未知错误'}`);
+    } finally {
+      setBatchZipBusy(false);
     }
   };
 
@@ -3870,12 +4025,46 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             </button>
             <button
               onClick={handleExportImagesAsZip}
-              disabled={selectedCount === 0 || shots.filter(s => s.selected && s.imageUrls?.length).length === 0}
+              disabled={
+                selectedCount === 0 ||
+                batchZipBusy ||
+                !tableShots.some((s) => s.selected && s.imageUrls?.length)
+              }
               className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
               title="导出选中镜头的所有图片为 ZIP 文件"
             >
               <Download size={14} />
               图片ZIP
+            </button>
+            <button
+              onClick={handleExportAudioAsZip}
+              disabled={
+                selectedCount === 0 ||
+                batchZipBusy ||
+                !tableShots.some((s) => s.selected && s.voiceAudioUrl?.trim())
+              }
+              className="flex items-center gap-1 px-3 py-1.5 bg-teal-600 hover:bg-teal-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
+              title="将选中镜头已生成的配音各打包为一个文件，下载为 ZIP"
+            >
+              <Download size={14} />
+              音频ZIP
+            </button>
+            <button
+              onClick={handleExportVideoAsZip}
+              disabled={
+                selectedCount === 0 ||
+                batchZipBusy ||
+                !tableShots.some((s) => {
+                  if (!s.selected) return false;
+                  const list = s.videoUrls?.length ? s.videoUrls : s.videoUrl ? [s.videoUrl] : [];
+                  return list.some((u) => u?.trim());
+                })
+              }
+              className="flex items-center gap-1 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
+              title="将选中镜头已生成的视频打包为 ZIP（多视频镜头会包含多条）"
+            >
+              <Download size={14} />
+              视频ZIP
             </button>
 
             {/* 批量操作 */}
@@ -4571,9 +4760,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                           ? 'bg-orange-600 hover:bg-orange-500 text-white border-2 border-orange-400' 
                           : 'bg-slate-700 hover:bg-slate-600 text-white'
                       }`}
-                      title="镜头设置"
+                      title="镜头编辑"
                     >
-                      镜头设置
+                      镜头编辑
                     </button>
                   </div>
                 </div>
