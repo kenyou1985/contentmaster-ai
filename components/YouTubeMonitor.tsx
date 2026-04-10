@@ -27,6 +27,9 @@ import {
   Music,
   Image,
   Subtitles,
+  MessageCircle,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 
 // ============================================================
@@ -340,9 +343,9 @@ const youtubeApi = {
     return details.items || [];
   },
 
-  getChannelVideos: async (channelId: string, apiKey: string): Promise<YouTubeVideo[]> => {
+  getChannelVideos: async (channelId: string, apiKey: string, maxResults: number = 10): Promise<YouTubeVideo[]> => {
     const searchRes = await fetch(
-      `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&maxResults=20&order=date&type=video&key=${apiKey}`
+      `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&maxResults=${maxResults}&order=date&type=video&key=${apiKey}`
     );
     const searchData = await searchRes.json();
     if (searchData.error) throw new Error(searchData.error.message);
@@ -392,12 +395,14 @@ const invidiousApi = {
     return data.slice(0, 10).filter((i: any) => i.type === 'channel');
   },
 
-  getChannelVideos: async (channelId: string): Promise<InvidiousVideo[]> => {
+  getChannelVideos: async (channelId: string, page: number = 1, pageSize: number = 10): Promise<InvidiousVideo[]> => {
+    // Invidious API 支持 page 参数
     const data = await fetchInvidiousJson<{ videos?: InvidiousVideo[] }>(
       `channels/${channelId}/videos`,
-      {}
+      { page: String(page) }
     );
-    return data.videos?.slice(0, 20) || [];
+    const videos = data.videos || [];
+    return videos.slice(0, pageSize);
   },
 
   getVideoDetails: async (videoId: string): Promise<any> => {
@@ -436,12 +441,17 @@ export const YouTubeMonitor: React.FC = () => {
   
   // 下载进度跟踪：key = url+kind, value = 状态
   type DownloadStatus = 'queued' | 'downloading' | 'completed' | 'error';
-  const [activeDownloads, setActiveDownloads] = useState<Record<string, { status: DownloadStatus; progress?: number; error?: string; uid?: string }>>({});
+  const [activeDownloads, setActiveDownloads] = useState<Record<string, { status: DownloadStatus; progress?: number; error?: string; uid?: string; fileHref?: string }>>({});
   
   // 频道详情
   const [selectedChannel, setSelectedChannel] = useState<any>(null);
   const [channelVideos, setChannelVideos] = useState<any[]>([]);
   const [isLoadingVideos, setIsLoadingVideos] = useState(false);
+  
+  // 分页
+  const [videoPage, setVideoPage] = useState(1);
+  const [videoPageSize, setVideoPageSize] = useState(10);
+  const [hasMoreVideos, setHasMoreVideos] = useState(false);
   
   // 视频解析
   const [videoUrl, setVideoUrl] = useState('');
@@ -523,7 +533,14 @@ export const YouTubeMonitor: React.FC = () => {
       if (item) {
         const status = String(item.status || item.state || '').toLowerCase();
         if (['completed', 'done', 'finished'].includes(status)) {
-          setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'completed', progress: 100 } }));
+          // 下载完成，获取文件链接
+          const fileHref = VITE_METUBE_PUBLIC_URL
+            ? metubePublicFileHref(VITE_METUBE_PUBLIC_URL, item)
+            : null;
+          setActiveDownloads(prev => ({
+            ...prev,
+            [dlKey]: { status: 'completed', progress: 100, uid: item.uid, fileHref }
+          }));
           clearHistoryPoller();
           return;
         } else if (['error', 'failed'].includes(status) || item.error) {
@@ -689,7 +706,22 @@ export const YouTubeMonitor: React.FC = () => {
 
   const selectChannel = (channel: any) => {
     setSelectedChannel(channel);
-    fetchChannelVideos(channel);
+    setVideoPage(1);
+    fetchChannelVideos(channel, 1, videoPageSize);
+  };
+
+  /** 加载更多视频（下一页） */
+  const loadMoreVideos = () => {
+    const nextPage = videoPage + 1;
+    setVideoPage(nextPage);
+    fetchChannelVideos(selectedChannel, nextPage, videoPageSize, true);
+  };
+
+  /** 切换每页显示数量 */
+  const changePageSize = (size: number) => {
+    setVideoPageSize(size);
+    setVideoPage(1);
+    fetchChannelVideos(selectedChannel, 1, size);
   };
 
   /** 用频道 ID 拉取元数据并打开视频列表（监控列表 / 直链解析共用） */
@@ -798,18 +830,24 @@ export const YouTubeMonitor: React.FC = () => {
   };
 
   // 获取频道视频
-  const fetchChannelVideos = async (channel: any) => {
+  const fetchChannelVideos = async (channel: any, page: number = 1, pageSize: number = 10, append: boolean = false) => {
     setIsLoadingVideos(true);
     try {
       let videos: any[] = [];
       
       if (isUsingOfficialApi) {
-        videos = await youtubeApi.getChannelVideos(channel.id || channel.authorId, activeApiKey);
+        videos = await youtubeApi.getChannelVideos(channel.id || channel.authorId, activeApiKey, pageSize);
       } else {
-        videos = await invidiousApi.getChannelVideos(channel.authorId || channel.id);
+        videos = await invidiousApi.getChannelVideos(channel.authorId || channel.id, page, pageSize);
       }
       
-      setChannelVideos(videos);
+      if (append) {
+        setChannelVideos(prev => [...prev, ...videos]);
+      } else {
+        setChannelVideos(videos);
+      }
+      
+      setHasMoreVideos(videos.length >= pageSize);
     } catch (error: any) {
       console.error('获取视频失败:', error);
       setSearchError(`获取视频失败: ${error.message}`);
@@ -862,7 +900,35 @@ export const YouTubeMonitor: React.FC = () => {
         };
       } else {
         const video = await invidiousApi.getVideoDetails(videoId);
-        const caps = Array.isArray(video.captions) ? video.captions : [];
+        // 字幕数据可能在 captions（数组）或 subtitles（对象或数组）
+        let caps: { label: string; lang?: string; src?: string }[] = [];
+
+        // 格式1: captions 是数组 [{label, languageCode}, ...]
+        if (Array.isArray(video.captions)) {
+          caps = video.captions.map((c: any) => ({
+            label: c.label || c.name || c.languageCode || 'caption',
+            lang: c.language_code || c.languageCode,
+            src: c.src || c.url,
+          }));
+        }
+        // 格式2: subtitles 是对象 {en: {...}, zh: {...}}
+        else if (video.subtitles && typeof video.subtitles === 'object' && !Array.isArray(video.subtitles)) {
+          const subs = video.subtitles as Record<string, any>;
+          caps = Object.entries(subs).map(([lang, info]: [string, any]) => ({
+            label: info?.name || info?.label || lang,
+            lang: lang,
+            src: info?.src || info?.url,
+          }));
+        }
+        // 格式3: subtitles 是数组
+        else if (Array.isArray(video.subtitles)) {
+          caps = video.subtitles.map((c: any) => ({
+            label: c.label || c.name || c.lang || 'caption',
+            lang: c.lang || c.language_code,
+            src: c.src || c.url,
+          }));
+        }
+
         result = {
           title: video.title,
           thumbnail: video.videoThumbnails?.[0]?.url,
@@ -873,10 +939,7 @@ export const YouTubeMonitor: React.FC = () => {
           description: video.description || '',
           tags: [] as string[],
           keywords: normalizeInvidiousKeywords(video.keywords),
-          captions: caps.map((c: any) => ({
-            label: c.label || c.name || 'caption',
-            lang: c.language_code || c.languageCode,
-          })),
+          captions: caps.filter(c => c.label),
           videoId: videoId,
           url: `https://youtube.com/watch?v=${videoId}`,
           dataSource: 'invidious' as const,
@@ -981,12 +1044,21 @@ export const YouTubeMonitor: React.FC = () => {
     const isDone = dlState?.status === 'completed';
     const isError = dlState?.status === 'error';
 
+    const handleClick = () => {
+      if (isDone && dlState?.fileHref) {
+        // 下载文件
+        forceDownloadFile(dlState.fileHref, `${label}_${videoUrl.split('v=')[1] || 'video'}.${kind === 'audio' ? 'm4a' : kind === 'captions' ? 'srt' : 'mp4'}`);
+      } else if (!isActive && !isDone) {
+        queueMetubeDownload(videoUrl, kind);
+      }
+    };
+
     return (
       <button
         key={kind}
         type="button"
         disabled={isActive}
-        onClick={() => queueMetubeDownload(videoUrl, kind)}
+        onClick={handleClick}
         className={`px-2 py-1.5 rounded-md text-xs flex items-center justify-center gap-1 transition-colors disabled:opacity-50 ${
           isDone
             ? 'bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30'
@@ -999,11 +1071,11 @@ export const YouTubeMonitor: React.FC = () => {
         {isActive ? (
           <Loader2 className="w-3 h-3 animate-spin" />
         ) : isDone ? (
-          <CheckCircle className="w-3 h-3" />
+          <Download className="w-3 h-3" />
         ) : (
           icon
         )}
-        {isDone ? '完成' : isError ? '失败' : label}
+        {isDone ? '下载文件' : isError ? '失败' : label}
       </button>
     );
   };
@@ -1056,6 +1128,8 @@ export const YouTubeMonitor: React.FC = () => {
     const videoId = isOfficial ? video.id?.videoId : video.videoId;
     const duration = isOfficial ? formatDuration(video.contentDetails?.duration || 'PT0S') : (video.lengthSeconds ? formatDuration(`PT${video.lengthSeconds}S`) : '未知');
     const viewCount = isOfficial ? video.statistics?.viewCount : video.viewCount;
+    const likeCount = isOfficial ? video.statistics?.likeCount : video.likeCount;
+    const commentCount = isOfficial ? video.statistics?.commentCount : undefined; // Invidious 列表不返回评论数
     const publishedText = isOfficial 
       ? new Date(video.snippet?.publishedAt).toLocaleDateString('zh-CN')
       : video.publishedText;
@@ -1082,6 +1156,18 @@ export const YouTubeMonitor: React.FC = () => {
               <Eye className="w-3 h-3" />
               {formatNumber(parseViewCount(viewCount || '0'))}
             </span>
+            {likeCount && (
+              <span className="flex items-center gap-1">
+                <ThumbsUp className="w-3 h-3" />
+                {formatNumber(parseViewCount(String(likeCount)))}
+              </span>
+            )}
+            {commentCount && (
+              <span className="flex items-center gap-1">
+                <MessageCircle className="w-3 h-3" />
+                {formatNumber(parseViewCount(String(commentCount)))}
+              </span>
+            )}
           </div>
           <div className="mt-2 flex flex-wrap gap-2">
             <button
@@ -1201,162 +1287,41 @@ export const YouTubeMonitor: React.FC = () => {
 
       {/* 设置面板 */}
       {showSettings && (
-        <div className="bg-slate-900/50 border border-slate-700/50 rounded-xl p-4 space-y-4">
-          <div className="flex items-center gap-2 text-emerald-400">
+        <div className="bg-slate-900/50 border border-slate-700/50 rounded-xl p-4">
+          <div className="flex items-center gap-2 text-emerald-400 mb-4">
             <Settings className="w-4 h-4" />
-            <span className="text-sm font-medium">API 配置</span>
+            <span className="text-sm font-medium">YouTube API 配置</span>
           </div>
           
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* 官方 API Key 配置 */}
-            <div className="space-y-2">
-              <label className="block text-xs text-slate-400 mb-1.5 flex items-center gap-2">
-                <Youtube className="w-4 h-4 text-red-400" />
-                YouTube Data API v3 Key
-                {!YOUTUBE_API_KEY && <span className="text-amber-400">(可选填)</span>}
-              </label>
-              <input
-                type="password"
-                value={userYoutubeApiKey}
-                onChange={(e) => setUserYoutubeApiKey(e.target.value)}
-                placeholder={YOUTUBE_API_KEY ? '已配置环境变量' : '输入你的 YouTube API Key'}
-                className="w-full bg-slate-800/50 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-red-500/50"
-              />
-              <p className="text-xs text-slate-500">
-                {YOUTUBE_API_KEY 
-                  ? '已通过环境变量配置，所有用户共享此API'
-                  : '个人专用API Key，仅自己可用'}
-              </p>
-              {!YOUTUBE_API_KEY && (
-                <a
-                  href="https://console.cloud.google.com/apis/credentials"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1"
-                >
-                  <ExternalLink className="w-3 h-3" />
-                  申请 YouTube API Key
-                </a>
-              )}
-            </div>
-
-            {/* Invidious 代理 + MeTube 说明 */}
-            <div className="space-y-2">
-              <label className="block text-xs text-slate-400 mb-1.5 flex items-center gap-2">
-                <Rss className="w-4 h-4 text-amber-400" />
-                无 Key 时的数据与下载
-              </label>
-              <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-3 text-xs text-slate-400 space-y-2">
-                <p>
-                  <span className="text-slate-300">搜索 / 频道 / 解析</span>：走本站{' '}
-                  <code className="text-amber-300/90">/api/invidious</code> 代理到 Invidious（Vercel
-                  环境变量 <code className="text-slate-300">INVIDIOUS_UPSTREAM_URL</code>）。
-                </p>
-                <p className="text-slate-500">
-                  MeTube <strong className="text-slate-400">没有</strong> Invidious 的{' '}
-                  <code>/api/v1</code> 接口，不能把 MeTube 域名填进 Invidious 上游。
-                </p>
-                <p>
-                  <span className="text-slate-300">加入下载队列</span>：走{' '}
-                  <code className="text-amber-300/90">/api/metube/add</code>，需在 Vercel 配置{' '}
-                  <code className="text-slate-300">METUBE_URL</code>（你的 Railway MeTube 根地址）。
-                </p>
-                <a
-                  href="https://railway.app/deploy/metube-1"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-amber-400 hover:text-amber-300 flex items-center gap-1"
-                >
-                  <ExternalLink className="w-3 h-3" />
-                  Railway 部署 MeTube
-                </a>
-              </div>
-            </div>
-          </div>
-
-          <div className="border-t border-slate-700/50 pt-4 space-y-3">
-            <div className="flex items-center gap-2 text-amber-400">
-              <Download className="w-4 h-4" />
-              <span className="text-sm font-medium">MeTube 下载失败（YouTube 机器人检测）</span>
-            </div>
-            <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-3 text-xs text-slate-400 space-y-2">
-              <p>
-                本站页面<strong className="text-slate-300">无法</strong>嵌入「YouTube
-                官方登录」并自动读取登录 Cookie：YouTube 的会话 Cookie 多为 HttpOnly，浏览器禁止任意第三方页面读取（安全策略）。可行做法是：在你本机浏览器登录
-                YouTube 后，按 yt-dlp 文档导出 Netscape 格式的{' '}
-                <code className="text-slate-300">cookies.txt</code>，再粘贴到下方上传到 Railway 上的 MeTube。
-              </p>
+          <div className="space-y-2 max-w-md">
+            <label className="block text-xs text-slate-400 mb-1.5 flex items-center gap-2">
+              <Youtube className="w-4 h-4 text-red-400" />
+              YouTube Data API v3 Key
+              {!YOUTUBE_API_KEY && <span className="text-amber-400">(可选填)</span>}
+            </label>
+            <input
+              type="password"
+              value={userYoutubeApiKey}
+              onChange={(e) => setUserYoutubeApiKey(e.target.value)}
+              placeholder={YOUTUBE_API_KEY ? '已配置环境变量' : '输入你的 YouTube API Key'}
+              className="w-full bg-slate-800/50 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-red-500/50"
+            />
+            <p className="text-xs text-slate-500">
+              {YOUTUBE_API_KEY 
+                ? '已通过环境变量配置，所有用户共享此API'
+                : '个人专用API Key，仅自己可用'}
+            </p>
+            {!YOUTUBE_API_KEY && (
               <a
-                href="https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies"
+                href="https://console.cloud.google.com/apis/credentials"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-amber-400 hover:text-amber-300 inline-flex items-center gap-1"
+                className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1"
               >
                 <ExternalLink className="w-3 h-3" />
-                yt-dlp：导出 YouTube cookies 说明
+                申请 YouTube API Key
               </a>
-              {VITE_METUBE_PUBLIC_URL ? (
-                <p>
-                  <a
-                    href={VITE_METUBE_PUBLIC_URL.replace(/\/$/, '')}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-emerald-400 hover:text-emerald-300 inline-flex items-center gap-1"
-                  >
-                    <ExternalLink className="w-3 h-3" />
-                    打开 MeTube（VITE_METUBE_PUBLIC_URL）
-                  </a>
-                </p>
-              ) : (
-                <p className="text-slate-500">
-                  可选：在前端环境变量中配置 <code className="text-slate-400">VITE_METUBE_PUBLIC_URL</code> 为你的 MeTube
-                  公网地址，此处会显示直达链接。
-                </p>
-              )}
-              <p className="text-slate-500">
-                <strong className="text-slate-400">方案 B（服务端）</strong>：在 Vercel 设置{' '}
-                <code className="text-slate-300">METUBE_YTDL_OVERRIDES_JSON</code>（需 Railway MeTube 开启{' '}
-                <code className="text-slate-300">ALLOW_YTDL_OPTIONS_OVERRIDES=true</code>
-                ），例如{' '}
-                <code className="text-slate-300 break-all">
-                  {`{"extractor_args":{"youtube":{"player_client":["android"]}}}`}
-                </code>
-                ；或在 MeTube 容器环境变量 <code className="text-slate-300">YTDL_OPTIONS</code> 中配置同等参数 / 代理。
-              </p>
-            </div>
-            <div>
-              <label className="block text-xs text-slate-400 mb-1">粘贴 cookies.txt（Netscape 格式）</label>
-              <textarea
-                value={cookiesPaste}
-                onChange={(e) => setCookiesPaste(e.target.value)}
-                placeholder="# Netscape HTTP Cookie File&#10;.youtube.com	TRUE	/	TRUE	0	CONSENT	..."
-                rows={5}
-                className="w-full bg-slate-800/50 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 placeholder-slate-600 font-mono focus:outline-none focus:border-amber-500/50"
-              />
-              <div className="mt-2 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => void uploadCookiesToMetube()}
-                  disabled={cookiesUploading}
-                  className="px-3 py-1.5 rounded-lg text-xs bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white"
-                >
-                  {cookiesUploading ? '上传中…' : '上传到 MeTube'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void refreshCookieStatus()}
-                  className="px-3 py-1.5 rounded-lg text-xs bg-slate-700 hover:bg-slate-600 text-slate-200"
-                >
-                  查询 cookie 状态
-                </button>
-              </div>
-              {cookiesHint && <p className="mt-2 text-xs text-amber-300/90">{cookiesHint}</p>}
-              {cookieStatusText && (
-                <pre className="mt-2 p-2 rounded bg-slate-950/80 text-[10px] text-slate-400 overflow-x-auto max-h-40 whitespace-pre-wrap break-all">
-                  {cookieStatusText}
-                </pre>
-              )}
-            </div>
+            )}
           </div>
         </div>
       )}
@@ -1477,14 +1442,52 @@ export const YouTubeMonitor: React.FC = () => {
                 </button>
               </div>
 
-              {isLoadingVideos ? (
+              {isLoadingVideos && channelVideos.length === 0 ? (
                 <div className="flex items-center justify-center py-8">
                   <Loader2 className="w-6 h-6 text-emerald-400 animate-spin" />
                 </div>
               ) : channelVideos.length > 0 ? (
-                <div className="space-y-2 max-h-96 overflow-y-auto">
-                  {channelVideos.map(renderVideoItem)}
-                </div>
+                <>
+                  <div className="space-y-2">
+                    {channelVideos.map(renderVideoItem)}
+                  </div>
+                  {/* 分页控件 */}
+                  <div className="flex items-center justify-between mt-4 pt-3 border-t border-slate-700/50">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-500">每页</span>
+                      <select
+                        value={videoPageSize}
+                        onChange={(e) => changePageSize(Number(e.target.value))}
+                        className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300"
+                      >
+                        <option value={10}>10</option>
+                        <option value={20}>20</option>
+                        <option value={50}>50</option>
+                      </select>
+                      <span className="text-xs text-slate-500">条</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-500">第 {videoPage} 页</span>
+                      <button
+                        onClick={() => {
+                          setVideoPage(p => Math.max(1, p - 1));
+                          fetchChannelVideos(selectedChannel, videoPage - 1, videoPageSize);
+                        }}
+                        disabled={videoPage <= 1}
+                        className="p-1 rounded bg-slate-800 text-slate-400 hover:text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={loadMoreVideos}
+                        disabled={isLoadingVideos || !hasMoreVideos}
+                        className="p-1 rounded bg-slate-800 text-slate-400 hover:text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                </>
               ) : (
                 <div className="text-center py-8 text-slate-500 text-sm">
                   暂无视频数据
@@ -1822,129 +1825,65 @@ export const YouTubeMonitor: React.FC = () => {
                     复制
                   </button>
                 </div>
-              </div>
-            )}
-          </div>
 
-          {/* MeTube 下载历史 */}
-          <div className="bg-slate-900/50 border border-slate-700/50 rounded-xl p-4">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <Download className="w-4 h-4 text-amber-400" />
-                <h2 className="text-sm font-medium text-slate-200">MeTube 下载记录</h2>
-              </div>
-              <div className="flex items-center gap-1.5">
-                {VITE_METUBE_PUBLIC_URL ? (
-                  <a
-                    href={VITE_METUBE_PUBLIC_URL.replace(/\/$/, '')}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[10px] text-amber-400/90 hover:text-amber-300"
-                  >
-                    打开 MeTube
-                  </a>
-                ) : (
-                  <span className="text-[10px] text-slate-600" title="配置 VITE_METUBE_PUBLIC_URL 后可显示「下载文件」直链">
-                    未配公网地址
-                  </span>
-                )}
-                <span className="text-[10px] text-slate-500">自动轮询</span>
-                <button
-                  type="button"
-                  onClick={() => void refreshMetubeHistory()}
-                  disabled={metubeHistoryLoading}
-                  className="p-1 rounded text-slate-500 hover:text-amber-400 transition-colors"
-                  title="手动刷新"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${metubeHistoryLoading ? 'animate-spin' : ''}`} />
-                </button>
-              </div>
-            </div>
-
-            {metubeHistoryLoading && metubeHistory.length === 0 ? (
-              <div className="flex items-center justify-center py-4">
-                <Loader2 className="w-4 h-4 text-amber-400 animate-spin" />
-              </div>
-            ) : metubeHistory.length === 0 ? (
-              <p className="text-xs text-slate-500 text-center py-2">
-                暂无下载记录。提交后会自动刷新（首次约需 5-10 秒）。
-              </p>
-            ) : (
-              <div className="space-y-1.5 max-h-64 overflow-y-auto">
-                {metubeHistory.map((item: any, idx: number) => {
-                  const title = item.title || item.name || `下载 #${idx + 1}`;
-                  const status: string = String(item.status || item.state || 'unknown');
-                  const errMsg = item.error ? String(item.error) : '';
-                  const isError =
-                    !!errMsg ||
-                    /error|fail|No video formats/i.test(status) ||
-                    ['error', 'failed'].includes(status);
-                  const isDone = ['completed', 'done', 'finished'].includes(status);
-                  const fileHref =
-                    isDone && VITE_METUBE_PUBLIC_URL
-                      ? metubePublicFileHref(VITE_METUBE_PUBLIC_URL, item as Record<string, unknown>)
-                      : null;
-                  const watchUrl = typeof item.url === 'string' ? item.url : '';
-                  return (
-                    <div
-                      key={item.uid || item.id || idx}
-                      className={`flex items-start gap-2 p-2 rounded-lg text-xs ${
-                        isError
-                          ? 'bg-red-500/10 border border-red-500/20'
-                          : isDone
-                          ? 'bg-emerald-500/10 border border-emerald-500/20'
-                          : 'bg-slate-800/30 border border-slate-700/30'
-                      }`}
-                    >
-                      <div className="flex-1 min-w-0">
-                        <p className="text-slate-200 font-medium truncate">{title}</p>
-                        {watchUrl && (
+                {/* MeTube 下载历史（放在解析结果下方） */}
+                {metubeHistory.length > 0 && (
+                  <div className="mt-4 pt-3 border-t border-slate-700/50">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <Download className="w-3 h-3 text-amber-400" />
+                        <h3 className="text-xs font-medium text-slate-300">下载记录</h3>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {VITE_METUBE_PUBLIC_URL && (
                           <a
-                            href={watchUrl}
+                            href={VITE_METUBE_PUBLIC_URL.replace(/\/$/, '')}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-slate-500 hover:text-amber-400 truncate block mt-0.5"
+                            className="text-[10px] text-amber-400/90 hover:text-amber-300"
                           >
-                            {watchUrl}
+                            MeTube
                           </a>
                         )}
-                        {item.error && (
-                          <p className="text-red-400 mt-0.5 break-all">
-                            错误：{item.error.slice(0, 120)}
-                          </p>
-                        )}
-                        <p className={`mt-0.5 ${isError ? 'text-red-400' : isDone ? 'text-emerald-400' : 'text-slate-500'}`}>
-                          状态：{status}
-                        </p>
-                        <div className="mt-1.5 flex flex-wrap gap-1.5">
-                          {fileHref && (
-                            <button
-                              type="button"
-                              onClick={() => forceDownloadFile(fileHref, title as string + '.mp4')}
-                              className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded bg-amber-600/20 text-amber-300 hover:bg-amber-600/35 text-[10px]"
-                            >
-                              <Download className="w-3 h-3" />
-                              下载文件
-                            </button>
-                          )}
-                          {isDone && !fileHref && VITE_METUBE_PUBLIC_URL && (
-                            <span className="text-[10px] text-slate-600">无本地路径，请到 MeTube 页下载</span>
-                          )}
-                          {watchUrl && (
-                            <button
-                              type="button"
-                              disabled={metubeSubmittingUrl === watchUrl}
-                              onClick={() => void queueMetubeDownload(watchUrl, metubeKind)}
-                              className="inline-flex px-2 py-0.5 rounded bg-slate-700/60 text-slate-300 hover:bg-slate-600 text-[10px] disabled:opacity-50"
-                            >
-                              {metubeSubmittingUrl === watchUrl ? '提交中…' : '按当前选项重下'}
-                            </button>
-                          )}
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void refreshMetubeHistory()}
+                          disabled={metubeHistoryLoading}
+                          className="p-0.5 rounded text-slate-500 hover:text-amber-400 transition-colors"
+                          title="刷新"
+                        >
+                          <RefreshCw className={`w-3 h-3 ${metubeHistoryLoading ? 'animate-spin' : ''}`} />
+                        </button>
                       </div>
                     </div>
-                  );
-                })}
+                    <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                      {metubeHistory.slice(0, 5).map((item: any, idx: number) => {
+                        const title = item.title || item.name || `下载 #${idx + 1}`;
+                        const status: string = String(item.status || item.state || 'unknown');
+                        const isDone = ['completed', 'done', 'finished'].includes(status);
+                        const fileHref = isDone && VITE_METUBE_PUBLIC_URL
+                          ? metubePublicFileHref(VITE_METUBE_PUBLIC_URL, item as Record<string, unknown>)
+                          : null;
+                        return (
+                          <div key={item.uid || item.id || idx} className="flex items-center gap-2 p-1.5 rounded bg-slate-800/30 text-[10px]">
+                            <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isDone ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                            <span className="flex-1 truncate text-slate-300">{title}</span>
+                            <span className="text-slate-500">{status}</span>
+                            {fileHref && (
+                              <button
+                                type="button"
+                                onClick={() => forceDownloadFile(fileHref, title + '.mp4')}
+                                className="text-amber-400 hover:text-amber-300"
+                              >
+                                <Download className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>

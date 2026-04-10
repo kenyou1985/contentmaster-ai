@@ -5,32 +5,77 @@
 
 export interface Character {
   id: string;
-  name: string; // 角色名字
+  type: 'character' | 'scene'; // 类型：角色 或 场景
+  name: string; // 名字
   aliases?: string[]; // 别名列表
-  imageUrl: string; // 角色图片URL（base64或blob URL）
+  imageUrl: string; // 图片URL（base64或blob URL）
   imageFile?: File; // 原始图片文件（可选，用于上传）
-  prompt?: string; // 自定义提示词（用于生成角色图片）
+  prompt?: string; // 自定义提示词（用于生成图片）
+  description?: string; // 描述信息（用于场景）
   createdAt: number; // 创建时间戳
   updatedAt: number; // 更新时间戳
 }
 
 const STORAGE_KEY = 'CHARACTER_LIBRARY';
 
+/** 名称以「场景-」「场景：」等开头时视为场景（修正误记在角色块下的条目） */
+export function inferSceneTypeFromName(name: string): 'character' | 'scene' {
+  const t = (name || '').trim();
+  if (/^场景[-：:]/.test(t) || t.startsWith('场景-')) return 'scene';
+  return 'character';
+}
+
+function normalizeCharacterRecord(c: Character): Character {
+  const looks = inferSceneTypeFromName(c.name);
+  if (!c.type) {
+    return { ...c, type: looks };
+  }
+  if (looks === 'scene' && c.type === 'character') {
+    return { ...c, type: 'scene' };
+  }
+  return c;
+}
+
 /**
- * 获取所有角色
+ * 获取所有角色（包括角色和场景）
  */
 export function getAllCharacters(): Character[] {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
+    console.log('[CharacterLibrary] localStorage.getItem(STORAGE_KEY):', stored ? '有数据' : '无数据');
     if (!stored) return [];
-    
+
     const characters = JSON.parse(stored) as Character[];
-    // 过滤掉无效的角色（缺少必要字段）
-    return characters.filter(char => char.id && char.name && char.imageUrl);
+    console.log('[CharacterLibrary] JSON.parse 后数量:', characters.length);
+    const filtered = characters.filter(char => char.id && char.name);
+    console.log('[CharacterLibrary] 过滤后数量:', filtered.length);
+    const normalized = filtered.map(normalizeCharacterRecord);
+    const dirty = normalized.some((c, i) => {
+      const prev = filtered[i];
+      return c.type !== prev.type;
+    });
+    if (dirty) {
+      saveAllCharacters(normalized);
+    }
+    return normalized;
   } catch (error) {
     console.error('[CharacterLibrary] 读取角色库失败:', error);
     return [];
   }
+}
+
+/**
+ * 获取所有角色（仅角色类型）
+ */
+export function getAllCharactersOnly(): Character[] {
+  return getAllCharacters().filter(char => char.type === 'character');
+}
+
+/**
+ * 获取所有场景（仅场景类型）
+ */
+export function getAllScenes(): Character[] {
+  return getAllCharacters().filter(char => char.type === 'scene');
 }
 
 /**
@@ -54,29 +99,41 @@ function saveAllCharacters(characters: Character[]): void {
 }
 
 /**
- * 添加角色
+ * 添加角色或场景
  */
 export function addCharacter(character: Omit<Character, 'id' | 'createdAt' | 'updatedAt'>): Character {
   const characters = getAllCharacters();
-  
-  // 检查名字是否已存在
+
+  // 检查名字是否已存在（不区分大小写）
   const existing = characters.find(
     char => char.name.toLowerCase() === character.name.toLowerCase()
   );
   if (existing) {
-    throw new Error(`角色 "${character.name}" 已存在`);
+    throw new Error(`"${character.name}" 已存在`);
   }
-  
+
+  // 检查别名是否已存在
+  if (character.aliases && character.aliases.length > 0) {
+    for (const alias of character.aliases) {
+      const aliasExists = characters.find(
+        char => char.aliases?.some(a => a.toLowerCase() === alias.toLowerCase())
+      );
+      if (aliasExists) {
+        throw new Error(`别名 "${alias}" 已被 "${aliasExists.name}" 使用`);
+      }
+    }
+  }
+
   const newCharacter: Character = {
     ...character,
     id: `char_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
-  
+
   characters.push(newCharacter);
   saveAllCharacters(characters);
-  
+
   return newCharacter;
 }
 

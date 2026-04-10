@@ -21,7 +21,13 @@ import {
 import { getSelectedVoice, updateVoice } from '../services/voiceLibraryService';
 import { LTX2_WORKFLOW_TEMPLATE } from '../services/ltx2WorkflowTemplate';
 import { generateJimengImages, generateJimengVideoAsync, queryJimengVideoTask } from '../services/jimengService';
-import { detectCharactersInPrompt, pickPrimaryCharacterForPrompt } from '../services/characterLibraryService';
+import {
+  detectCharactersInPrompt,
+  pickPrimaryCharacterForPrompt,
+  addCharacter,
+  getAllCharacters,
+  inferSceneTypeFromName,
+} from '../services/characterLibraryService';
 import { CharacterLibrary } from './CharacterLibrary';
 import { VoiceLibrary } from './VoiceLibrary';
 import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, FolderOpen, Rocket, Copy, Check, CheckSquare, Square, Users, HardDrive, ListOrdered, ArrowUp, Terminal } from 'lucide-react';
@@ -1520,6 +1526,163 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     return parsedShots.map(normalizeShotVoiceOver);
   };
 
+  // 解析脚本中的角色和场景信息，自动导入到角色库
+  const parseAndImportCharactersFromScript = (scriptText: string) => {
+    console.log('[MediaGenerator] 开始解析角色和场景信息...');
+
+    // 检查是否包含角色或场景信息标记（支持带方括号和不带方括号的格式）
+    const hasRoleInfo = /\[角色信息\]|角色信息(?!\w)/.test(scriptText);
+    const hasSceneInfo = /\[场景信息\]|场景信息(?!\w)/.test(scriptText);
+
+    if (!hasRoleInfo && !hasSceneInfo) {
+      console.log('[MediaGenerator] 未找到角色或场景信息标记');
+      return;
+    }
+
+    console.log('[MediaGenerator] 检测到角色信息:', hasRoleInfo, '场景信息:', hasSceneInfo);
+
+    const existingItems = getAllCharacters();
+    const existingNames = new Set(existingItems.map(item => item.name.toLowerCase()));
+    const importedRoles: string[] = [];
+    const importedScenes: string[] = [];
+    const skippedRoles: string[] = [];
+    const skippedScenes: string[] = [];
+
+    // 解析角色信息块
+    let roleBlock = '';
+    if (hasRoleInfo) {
+      // 找到 [角色信息] 或 角色信息 标记的位置
+      const roleMatch = scriptText.match(/\[角色信息\]|角色信息(?!\w)/);
+      if (roleMatch) {
+        const roleStart = scriptText.indexOf(roleMatch[0]);
+        // 找到 [场景信息] 或 场景信息 标记（如果有）
+        const sceneMatch = scriptText.match(/\[场景信息\]|场景信息(?!\w)/);
+        const sceneStart = sceneMatch ? scriptText.indexOf(sceneMatch[0]) : -1;
+
+        if (sceneStart > roleStart) {
+          roleBlock = scriptText.substring(roleStart + roleMatch[0].length, sceneStart);
+        } else {
+          roleBlock = scriptText.substring(roleStart + roleMatch[0].length);
+        }
+      }
+      console.log('[MediaGenerator] 角色信息块:', roleBlock.substring(0, 300));
+    }
+
+    // 解析场景信息块
+    let sceneBlock = '';
+    if (hasSceneInfo) {
+      const sceneMatch = scriptText.match(/\[场景信息\]|场景信息(?!\w)/);
+      if (sceneMatch) {
+        const sceneStart = scriptText.indexOf(sceneMatch[0]);
+        sceneBlock = scriptText.substring(sceneStart + sceneMatch[0].length);
+      }
+      console.log('[MediaGenerator] 场景信息块:', sceneBlock.substring(0, 300));
+    }
+
+    // 解析角色条目
+    if (roleBlock) {
+      // 匹配 [名称]内容 或 名称:内容 格式（支持跨行）
+      const namePattern = /\[名称\]\s*([^\[\n]+)|名称\s*[：:]\s*([^\n]+)/gi;
+      let nameMatch;
+      while ((nameMatch = namePattern.exec(roleBlock)) !== null) {
+        const name = (nameMatch[1] || nameMatch[2])?.trim();
+        if (!name || name === '场景-') continue; // 跳过无效名称
+
+        const itemType = inferSceneTypeFromName(name);
+
+        // 检查是否已存在
+        if (existingNames.has(name.toLowerCase())) {
+          if (itemType === 'scene') skippedScenes.push(name);
+          else skippedRoles.push(name);
+          continue;
+        }
+
+        // 获取该 [名称] 之后的上下文，提取别名和描述
+        const afterName = roleBlock.substring(nameMatch.index);
+        const aliasMatch = afterName.match(/\[别名\]\s*([^\[\n]+)|别名\s*[：:]\s*([^\n]+)/i);
+        const descMatch = afterName.match(/\[描述\]\s*([^\[\n]+)|描述\s*[：:]\s*([^\n]+)/i);
+
+        const aliasStr = (aliasMatch?.[1] || aliasMatch?.[2])?.trim() || '';
+        const description = (descMatch?.[1] || descMatch?.[2])?.trim() || '';
+        const aliases = aliasStr.split(/[,，]/).map(a => a.trim()).filter(Boolean);
+
+        try {
+          addCharacter({
+            type: itemType,
+            name: name,
+            aliases: aliases.length > 0 ? aliases : undefined,
+            description: description || undefined,
+            prompt: description || undefined,
+            imageUrl: '',
+          });
+          if (itemType === 'scene') importedScenes.push(name);
+          else importedRoles.push(name);
+          existingNames.add(name.toLowerCase());
+        } catch (e: any) {
+          console.warn(`[MediaGenerator] 导入角色块条目失败: ${name}`, e.message);
+          if (itemType === 'scene') skippedScenes.push(name);
+          else skippedRoles.push(name);
+        }
+      }
+    }
+
+    // 解析场景条目
+    if (sceneBlock) {
+      const namePattern = /\[名称\]\s*([^\[\n]+)|名称\s*[：:]\s*([^\n]+)/gi;
+      let nameMatch;
+      while ((nameMatch = namePattern.exec(sceneBlock)) !== null) {
+        const name = (nameMatch[1] || nameMatch[2])?.trim();
+        if (!name) continue;
+
+        // 检查是否已存在
+        if (existingNames.has(name.toLowerCase())) {
+          skippedScenes.push(name);
+          continue;
+        }
+
+        // 获取该 [名称] 之后的上下文，提取别名和描述
+        const afterName = sceneBlock.substring(nameMatch.index);
+        const aliasMatch = afterName.match(/\[别名\]\s*([^\[\n]+)|别名\s*[：:]\s*([^\n]+)/i);
+        const descMatch = afterName.match(/\[描述\]\s*([^\[\n]+)|描述\s*[：:]\s*([^\n]+)/i);
+
+        const aliasStr = (aliasMatch?.[1] || aliasMatch?.[2])?.trim() || '';
+        const description = (descMatch?.[1] || descMatch?.[2])?.trim() || '';
+        const aliases = aliasStr.split(/[,，]/).map(a => a.trim()).filter(Boolean);
+
+        try {
+          addCharacter({
+            type: 'scene',
+            name: name,
+            aliases: aliases.length > 0 ? aliases : undefined,
+            description: description || undefined,
+            prompt: description || undefined,
+            imageUrl: '',
+          });
+          importedScenes.push(name);
+          existingNames.add(name.toLowerCase());
+        } catch (e: any) {
+          console.warn(`[MediaGenerator] 导入场景失败: ${name}`, e.message);
+          skippedScenes.push(name);
+        }
+      }
+    }
+
+    // 显示导入结果
+    if (importedRoles.length > 0 || importedScenes.length > 0) {
+      const parts: string[] = [];
+      if (importedRoles.length > 0) parts.push(`角色: ${importedRoles.join(', ')}`);
+      if (importedScenes.length > 0) parts.push(`场景: ${importedScenes.join(', ')}`);
+      console.log('[MediaGenerator] 导入成功:', parts.join(' | '));
+      toast.success(`自动导入角色/场景库: ${parts.join(' | ')}`);
+    }
+    if (skippedRoles.length > 0 || skippedScenes.length > 0) {
+      const parts: string[] = [];
+      if (skippedRoles.length > 0) parts.push(`角色「${skippedRoles.join(', ')}」已存在`);
+      if (skippedScenes.length > 0) parts.push(`场景「${skippedScenes.join(', ')}」已存在`);
+      console.log(`[MediaGenerator] 跳过已存在的项目: ${parts.join(' | ')}`);
+    }
+  };
+
   // 处理脚本输入
   const handleScriptInput = (text: string) => {
     setScriptText(text);
@@ -1529,6 +1692,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       const parsed = parseScript(text);
       setShots(parsed);
       shotsRef.current = parsed;
+      // 自动解析并导入角色/场景
+      parseAndImportCharactersFromScript(text);
     } else {
       setShots([]);
       shotsRef.current = [];
@@ -4533,6 +4698,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       {/* 角色库管理 */}
       {showCharacterLibrary && (
         <CharacterLibrary
+          key={`char-lib-${showCharacterLibrary}`}
           onClose={() => setShowCharacterLibrary(false)}
         />
       )}
