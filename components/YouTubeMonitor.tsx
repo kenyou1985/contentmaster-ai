@@ -78,11 +78,47 @@ async function metubePostAdd(body: Record<string, unknown>): Promise<void> {
   }
 }
 
-/** 同源 Invidious 代理（Vercel: api/invidious；开发: vite 中间件）。勿把 MeTube 当作 Invidious。 */
+  /** 同源 Invidious 代理（Vercel: api/invidious；开发: vite 中间件）。勿把 MeTube 当作 Invidious。 */
 function invidiousProxyUrl(path: string, query: Record<string, string> = {}): string {
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
   const params = new URLSearchParams({ path, ...query });
   return `${origin}/api/invidious?${params.toString()}`;
+}
+
+/** 通过 fetch + Blob 方式强制下载文件（解决跨域 download 属性失效问题） */
+async function forceDownloadFile(url: string, filename?: string) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`下载失败: ${res.status} ${res.statusText}`);
+    }
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename || getFilenameFromUrl(url) || 'download';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(blobUrl);
+  } catch (e) {
+    console.error('下载失败:', e);
+    window.open(url, '_blank');
+  }
+}
+
+/** 从 URL 中提取文件名 */
+function getFilenameFromUrl(url: string): string | null {
+  try {
+    const u = new URL(url);
+    const pathname = u.pathname;
+    const parts = pathname.split('/');
+    const last = parts[parts.length - 1];
+    if (last && last.includes('.')) {
+      return decodeURIComponent(last);
+    }
+  } catch { /* ignore */ }
+  return null;
 }
 
 async function fetchInvidiousJson<T>(path: string, query: Record<string, string> = {}): Promise<T> {
@@ -94,9 +130,22 @@ async function fetchInvidiousJson<T>(path: string, query: Record<string, string>
   } catch {
     throw new Error(text.slice(0, 240) || `HTTP ${res.status}`);
   }
+  const errObj = data as { error?: string; detail?: string };
   if (!res.ok) {
-    const err = (data as { error?: string })?.error;
-    throw new Error(err || `HTTP ${res.status}`);
+    const err = errObj?.error;
+    const detail = errObj?.detail;
+    throw new Error(
+      [err || `HTTP ${res.status}`, detail].filter(Boolean).join(' — ')
+    );
+  }
+  if (
+    data &&
+    typeof data === 'object' &&
+    !Array.isArray(data) &&
+    typeof errObj.error === 'string' &&
+    errObj.error.trim()
+  ) {
+    throw new Error([errObj.error.trim(), errObj.detail].filter(Boolean).join(' — '));
   }
   return data as T;
 }
@@ -1543,16 +1592,19 @@ export const YouTubeMonitor: React.FC = () => {
                       <p className="text-[10px] uppercase text-slate-500 mb-1">字幕（经本站代理拉取 WebVTT）</p>
                       <div className="flex flex-wrap gap-1">
                         {parsedVideo.captions.map((c: { label: string; lang?: string }, i: number) => (
-                          <a
+                          <button
+                            type="button"
                             key={`${c.label}-${i}`}
-                            href={invidiousCaptionHref(parsedVideo.videoId, c.label, c.lang)}
-                            target="_blank"
-                            rel="noopener noreferrer"
+                            onClick={() => {
+                              const href = invidiousCaptionHref(parsedVideo.videoId, c.label, c.lang);
+                              const filename = `${parsedVideo.title}_${c.label}${c.lang ? '_' + c.lang : ''}.vtt`;
+                              forceDownloadFile(href, filename);
+                            }}
                             className="text-[10px] px-2 py-0.5 rounded bg-blue-500/10 text-blue-300 hover:bg-blue-500/20"
                           >
                             {c.label}
                             {c.lang ? ` (${c.lang})` : ''}
-                          </a>
+                          </button>
                         ))}
                       </div>
                     </div>
@@ -1685,16 +1737,14 @@ export const YouTubeMonitor: React.FC = () => {
                         </p>
                         <div className="mt-1.5 flex flex-wrap gap-1.5">
                           {fileHref && (
-                            <a
-                              href={fileHref}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              download
+                            <button
+                              type="button"
+                              onClick={() => forceDownloadFile(fileHref, title as string + '.mp4')}
                               className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded bg-amber-600/20 text-amber-300 hover:bg-amber-600/35 text-[10px]"
                             >
                               <Download className="w-3 h-3" />
                               下载文件
-                            </a>
+                            </button>
                           )}
                           {isDone && !fileHref && VITE_METUBE_PUBLIC_URL && (
                             <span className="text-[10px] text-slate-600">无本地路径，请到 MeTube 页下载</span>
