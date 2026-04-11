@@ -12,17 +12,6 @@
  */
 
 import { storage, type VideoSnapshot, genId } from './storageService';
-import {
-  rapidSearchVideos as rapidApiSearchVideos,
-  rapidGetChannelVideos as rapidApiGetChannelVideos,
-  rapidGetVideoDetails as rapidApiGetVideoDetail,
-  rapidGetChannelDetails as rapidApiGetChannelDetail,
-  rapidGetAllComments as rapidApiGetAllComments,
-  rapidGetVideoComments as rapidApiGetTopComments,
-  normalizeRapidVideo,
-  normalizeRapidChannel,
-  type RapidComment,
-} from './rapidApiService';
 
 // ── 配置 ──────────────────────────────────────────────────────────────
 
@@ -97,9 +86,20 @@ export interface CompetitorChannel {
   recentTrendScore: number;
 }
 
+export interface Comment {
+  commentId: string;
+  author: string;
+  text: string;
+  likeCount: number;
+  publishedAt: number;
+  replyCount: number;
+}
+
 export interface CommentResult {
-  comments: RapidComment[];
+  videoId: string;
+  comments: Comment[];
   total: number;
+  nextPageToken?: string;
 }
 
 export interface FetchResult<T> {
@@ -187,8 +187,7 @@ async function searchVideosByKeyword(
 
   return items.map((item: any) => {
     const vid = item.id.videoId;
-    const d = detailMap.get(vid) || {};
-    const stats = d.statistics || {};
+    const d = detailMap.get(vid) || ({} as any);
     return normalizeVideoMeta(item, d, Date.now());
   });
 }
@@ -277,111 +276,60 @@ async function getChannelDetail(channelId: string, apiKey: string): Promise<Chan
   return normalizeChannelMeta(item);
 }
 
-// ── RapidAPI 备用 API ──────────────────────────────────────────────
-
-/**
- * 视频搜索回退：直接使用 RapidAPI
- */
-async function rapidSearchVideosFallback(keyword: string, maxResults = 20): Promise<VideoMeta[]> {
-  const raw = await rapidApiSearchVideos(keyword, { maxResults });
-  return raw.map((v) => ({
-    videoId: v.videoId,
-    title: v.title,
-    channelId: v.channelId,
-    channelTitle: v.channelTitle,
-    thumbnail: v.thumbnail,
-    viewCount: v.viewCount,
-    likeCount: v.likeCount,
-    commentCount: v.commentCount,
-    publishedAt: v.publishedAt,
-    duration: v.duration,
-    description: v.description,
-    url: v.url,
-    fetchedAt: v.fetchedAt,
-  }));
-}
-
-/**
- * 频道视频回退：youtubeapi23 不支持，需要使用 YouTube 官方 API
- */
-async function rapidGetChannelVideosFallback(channelId: string, maxResults = 20, apiKey?: string): Promise<VideoMeta[]> {
-  // 优先使用 YouTube 官方 API（如果有配额）
-  if (apiKey) {
-    try {
-      const nearLimit = await isQuotaNearLimit().catch(() => false);
-      if (!nearLimit) {
-        return await getChannelVideos(channelId, apiKey, maxResults);
-      }
-    } catch { /* 继续尝试其他方案 */ }
-  }
-  
-  // youtubeapi23 不支持获取频道视频
-  console.warn('[YT] youtubeapi23 不支持获取频道视频，请配置 VITE_YOUTUBE_API_KEY');
-  throw new Error('youtubeapi23 不支持获取频道视频列表');
-}
-
-/**
- * 视频详情回退：youtubeapi23 不支持，需要使用 YouTube 官方 API
- */
-async function rapidGetVideoDetailFallback(videoId: string, apiKey?: string): Promise<VideoMeta> {
-  // 优先使用 YouTube 官方 API（如果有配额）
-  if (apiKey) {
-    try {
-      const nearLimit = await isQuotaNearLimit().catch(() => false);
-      if (!nearLimit) {
-        return await getVideoDetail(videoId, apiKey);
-      }
-    } catch { /* 继续尝试其他方案 */ }
-  }
-  
-  // youtubeapi23 不支持获取视频详情
-  console.warn('[YT] youtubeapi23 不支持获取视频详情，请配置 VITE_YOUTUBE_API_KEY');
-  throw new Error('youtubeapi23 不支持获取视频详情');
-}
-
-/**
- * 频道搜索回退：youtubeapi23 使用 /search?type=channel 实现
- */
-async function rapidSearchChannelsFallback(keyword: string, apiKey?: string): Promise<ChannelMeta[]> {
-  // 优先使用 YouTube 官方 API（如果有配额）
-  if (apiKey) {
-    try {
-      const nearLimit = await isQuotaNearLimit().catch(() => false);
-      if (!nearLimit) {
-        return await searchChannels(keyword, apiKey);
-      }
-    } catch { /* 继续尝试其他方案 */ }
-  }
-  
-  // 使用 youtubeapi23 的 /search?type=channel
-  try {
-    const raw = await rapidApiSearchChannels(keyword, 10);
-    return raw.map((c) => ({
-      channelId: c.channelId,
-      title: c.title,
-      description: c.description || '',
-      thumbnail: c.thumbnail || '',
-      subscriberCount: c.subscriberCount,
-      videoCount: c.videoCount,
-      viewCount: c.viewCount,
-      fetchedAt: c.fetchedAt,
-    }));
-  } catch (e) {
-    console.error('[YT] youtubeapi23 频道搜索失败:', e);
-    return [];
-  }
-}
-
-/**
- * 评论获取回退：youtubeapi23 不支持
- */
-async function rapidGetCommentsFallback(videoId: string, maxResults = 50, apiKey?: string): Promise<CommentResult> {
-  // youtubeapi23 不支持获取评论
-  console.warn('[YT] youtubeapi23 不支持获取视频评论，请配置 VITE_YOUTUBE_API_KEY');
-  throw new Error('youtubeapi23 不支持获取视频评论');
-}
-
 // ── 归一化 ────────────────────────────────────────────────────────────
+
+/**
+ * 使用 YouTube 官方 API v3 获取评论
+ */
+async function fetchCommentsFromOfficialAPI(videoId: string, apiKey: string, maxResults: number): Promise<Comment[]> {
+  const comments: Comment[] = [];
+  let pageToken = '';
+
+  const fetchPage = async (): Promise<string | undefined> => {
+    const params = new URLSearchParams({
+      part: 'snippet',
+      videoId,
+      key: apiKey,
+      maxResults: String(Math.min(maxResults, 100)),
+      order: 'time',
+      textFormat: 'plainText',
+    });
+    if (pageToken) params.set('pageToken', pageToken);
+
+    const res = await fetch(`${YOUTUBE_API_BASE}/commentThreads?${params}`);
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`YouTube API 错误: ${res.status} - ${err}`);
+    }
+
+    const data = await res.json();
+    if (data.error) {
+      throw new Error(`YouTube API 错误: ${data.error.message}`);
+    }
+
+    for (const item of data.items || []) {
+      const snippet = item.snippet.topLevelComment.snippet;
+      comments.push({
+        commentId: item.id,
+        author: snippet.authorDisplayName,
+        text: snippet.textDisplay || snippet.textOriginal,
+        likeCount: snippet.likeCount || 0,
+        publishedAt: new Date(snippet.publishedAt).getTime(),
+        replyCount: item.snippet.totalReplyCount || 0,
+      });
+    }
+
+    return data.nextPageToken;
+  };
+
+  while (comments.length < maxResults) {
+    const nextToken = await fetchPage();
+    if (!nextToken) break;
+    pageToken = nextToken;
+  }
+
+  return comments.slice(0, maxResults);
+}
 
 function normalizeVideoMeta(item: any, detail: any, fetchedAt: number): VideoMeta {
   const snippet = item.snippet || item;
@@ -419,47 +367,6 @@ function normalizeChannelMeta(item: any): ChannelMeta {
     viewCount: parseViewCount(subOrText(stats.viewCount)),
     fetchedAt: Date.now(),
   };
-}
-
-// ── 配额检查 ─────────────────────────────────────────────────────────
-
-export async function checkQuotaStatus(): Promise<{
-  usedToday: number;
-  remaining: number;
-  percentUsed: number;
-}> {
-  const { totalUnits } = await storage.getApiQuotaToday();
-  const remaining = Math.max(0, DAILY_QUOTA_LIMIT - totalUnits);
-  return {
-    usedToday: totalUnits,
-    remaining,
-    percentUsed: Math.min(100, (totalUnits / DAILY_QUOTA_LIMIT) * 100),
-  };
-}
-
-/** 判断是否为配额相关错误（403 / 429 / quota 相关消息） */
-function isQuotaError(e: unknown): boolean {
-  const msg = e instanceof Error ? e.message : String(e);
-  return /quota|ratelimit|rate.limit|exceeded|usage.limit|daily.limit|403|429/i.test(msg);
-}
-
-/** 标记已切换到 RapidAPI 备用模式（导出给组件用） */
-let _fallbackActive = false;
-export function setQuotaFallbackActive(active: boolean): void {
-  _fallbackActive = active;
-  // 通知 UI 更新
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('yt-quota-fallback'));
-  }
-}
-export function isQuotaFallbackActive(): boolean {
-  return _fallbackActive;
-}
-
-/** 判断是否接近配额上限（>80%） */
-export async function isQuotaNearLimit(): Promise<boolean> {
-  const { percentUsed } = await checkQuotaStatus();
-  return percentUsed >= 30;
 }
 
 // ── 趋势分计算（核心算法）──────────────────────────────────────────────
@@ -746,7 +653,7 @@ export async function discoverCompetitors(
         existing.overlap.add(kw);
       } else {
         try {
-          const ch = await ytGetChannelDetail(v.channelId, apiKey);
+          const ch = await getChannelDetail(v.channelId, apiKey);
           if (ch) {
             channelMap.set(v.channelId, { channel: ch, overlap: new Set([kw]) });
           }
@@ -800,174 +707,79 @@ export async function saveVideoSnapshot(video: VideoMeta): Promise<void> {
 // ── 统一 fetch 入口（自动选择 API）─────────────────────────────────────
 
 /**
- * 搜索视频（自动处理配额不足回退 → RapidAPI）
+ * 搜索视频
  */
 export async function ytSearchVideos(
   keyword: string,
   apiKey?: string,
   maxResults = 20
 ): Promise<VideoMeta[]> {
-  if (!apiKey) return rapidSearchVideosFallback(keyword, maxResults);
-
-  // 配额已接近上限时跳过官方 API
-  const nearLimit = await isQuotaNearLimit().catch(() => false);
-  if (nearLimit) {
-    setQuotaFallbackActive(true);
-    return rapidSearchVideosFallback(keyword, maxResults);
-  }
-
-  try {
-    return await searchVideosByKeyword(keyword, apiKey, maxResults);
-  } catch (e) {
-    if (isQuotaError(e)) {
-      setQuotaFallbackActive(true);
-      console.warn('[YT] 官方 API 配额耗尽，切换 RapidAPI');
-    }
-    try {
-      return await rapidSearchVideosFallback(keyword, maxResults);
-    } catch (e2) {
-      throw e; // 优先抛出原始错误，RapidAPI 失败时仍保留官方 API 的报错
-    }
-  }
+  if (!apiKey) throw new Error('请先在右上角设置中填写 YouTube Data API Key');
+  return await searchVideosByKeyword(keyword, apiKey, maxResults);
 }
 
 /**
- * 获取频道视频（自动处理配额不足回退 → RapidAPI）
+ * 获取频道视频
  */
 export async function ytGetChannelVideos(
   channelId: string,
   apiKey?: string,
   maxResults = 20
 ): Promise<VideoMeta[]> {
-  // 优先使用 YouTube 官方 API
-  if (apiKey) {
-    const nearLimit = await isQuotaNearLimit().catch(() => false);
-    if (!nearLimit) {
-      try {
-        return await getChannelLatestVideos(channelId, apiKey, maxResults);
-      } catch (e) {
-        if (isQuotaError(e)) {
-          setQuotaFallbackActive(true);
-          console.warn('[YT] 官方 API 配额耗尽，切换 RapidAPI');
-        } else {
-          throw e;
-        }
-      }
-    } else {
-      setQuotaFallbackActive(true);
-    }
-  }
-
-  // 使用 RapidAPI（youtubeapi23 不支持，返回错误）
-  return rapidGetChannelVideosFallback(channelId, maxResults, apiKey);
+  if (!apiKey) throw new Error('请先在右上角设置中填写 YouTube Data API Key');
+  return await getChannelLatestVideos(channelId, apiKey, maxResults);
 }
 
 /**
- * 获取视频详情（自动处理配额不足回退 → RapidAPI）
+ * 获取视频详情
  */
 export async function ytGetVideoDetail(
   videoId: string,
   apiKey?: string
 ): Promise<VideoMeta> {
-  // 优先使用 YouTube 官方 API
-  if (apiKey) {
-    const nearLimit = await isQuotaNearLimit().catch(() => false);
-    if (!nearLimit) {
-      try {
-        const videos = await getVideosDetail([videoId], apiKey);
-        return videos[0];
-      } catch (e) {
-        if (isQuotaError(e)) {
-          setQuotaFallbackActive(true);
-          console.warn('[YT] 官方 API 配额耗尽，切换 RapidAPI');
-        } else {
-          throw e;
-        }
-      }
-    } else {
-      setQuotaFallbackActive(true);
-    }
-  }
-
-  // 使用 RapidAPI（youtubeapi23 不支持，返回错误）
-  return rapidGetVideoDetailFallback(videoId, apiKey);
+  if (!apiKey) throw new Error('请先在右上角设置中填写 YouTube Data API Key');
+  const videos = await getVideosDetail([videoId], apiKey);
+  if (!videos[0]) throw new Error(`未找到视频 ID: ${videoId}`);
+  return videos[0];
 }
 
 /**
  * 搜索频道
- * 注意：若 keyword 为频道 ID（UC…），必须用 channels.list，不能用 search?q=UC…（后者常返回空且浪费 100 单位配额）
+ * 注意：若 keyword 为频道 ID（UC…），必须用 channels.list
  */
 export async function ytSearchChannels(
   keyword: string,
   apiKey?: string
 ): Promise<ChannelMeta[]> {
+  if (!apiKey) throw new Error('请先在右上角设置中填写 YouTube Data API Key');
   const q = keyword.trim();
 
+  // 频道 ID 格式：直接用 channels.list
   if (/^UC[\w-]{22}$/.test(q)) {
-    // 频道 ID 格式：优先走 RapidAPI（无需配额）
-    if (!apiKey) {
-      try {
-        const ch = await rapidApiGetChannelDetail({ channelId: q });
-        return ch ? [normalizeRapidChannel(ch)] : [];
-      } catch { return []; }
-    }
-    const nearLimit = await isQuotaNearLimit().catch(() => false);
-    if (nearLimit) {
-      setQuotaFallbackActive(true);
-      try {
-        const ch = await rapidApiGetChannelDetail({ channelId: q });
-        return ch ? [normalizeRapidChannel(ch)] : [];
-      } catch { return []; }
-    }
-    try {
-      const ch = await getChannelDetail(q, apiKey);
-      return ch ? [ch] : [];
-    } catch (e) {
-      if (isQuotaError(e)) setQuotaFallbackActive(true);
-      try {
-        const ch = await rapidApiGetChannelDetail({ channelId: q });
-        return ch ? [normalizeRapidChannel(ch)] : [];
-      } catch { return []; }
-    }
+    const ch = await getChannelDetail(q, apiKey);
+    return ch ? [ch] : [];
   }
 
-  // 关键词搜索：无 API Key 时使用回退
-  if (!apiKey) {
-    return await rapidSearchChannelsFallback(q);
-  }
-
-  const nearLimit = await isQuotaNearLimit().catch(() => false);
-  if (nearLimit) {
-    setQuotaFallbackActive(true);
-    return await rapidSearchChannelsFallback(q);
-  }
-
-  try {
-    return await searchChannels(q, apiKey);
-  } catch (e) {
-    if (isQuotaError(e)) {
-      setQuotaFallbackActive(true);
-      console.warn('[YT] 官方 API 配额耗尽，切换 RapidAPI');
-    }
-    return await rapidSearchChannelsFallback(q);
-  }
+  // 关键词搜索
+  return await searchChannels(q, apiKey);
 }
 
 /**
- * 获取视频评论（官方配额优先 → RapidAPI 回退）
- * @param videoId 视频 ID
- * @param maxResults 最大评论数
+ * 获取视频评论
  */
 export async function ytGetVideoComments(
   videoId: string,
   apiKey?: string,
   maxResults = 50
 ): Promise<CommentResult> {
-  try {
-    return await rapidGetCommentsFallback(videoId, maxResults);
-  } catch (e) {
-    throw new Error('评论获取失败: ' + (e instanceof Error ? e.message : String(e)));
-  }
+  if (!apiKey) throw new Error('请先在右上角设置中填写 YouTube Data API Key');
+  const comments = await fetchCommentsFromOfficialAPI(videoId, apiKey, maxResults);
+  return {
+    videoId,
+    total: comments.length,
+    comments,
+    nextPageToken: undefined,
+  };
 }
 
 // ── 辅助 ──────────────────────────────────────────────────────────────
@@ -976,6 +788,183 @@ function formatCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
   return String(n);
+}
+
+/**
+ * 获取关键词搜索指数和相关信息
+ * 基于 YouTube 搜索结果数量和视频统计数据估算热度
+ */
+export async function getKeywordSearchIndex(
+  keyword: string,
+  apiKey?: string
+): Promise<{
+  keyword: string;
+  estimatedViews: number;
+  relatedKeywords: { word: string;热度: string; searchIndex: number }[];
+  lastUpdated: number;
+}> {
+  const relatedKeywords: { word: string;热度: string; searchIndex: number }[] = [];
+
+  try {
+    // 获取主关键词的搜索结果来估算热度
+    let totalViews = 0;
+    let videoCount = 0;
+
+    if (apiKey) {
+      try {
+        const response = await fetch(
+          `${YOUTUBE_API_BASE}/search?part=snippet&q=${encodeURIComponent(keyword)}&type=video&maxResults=50&key=${apiKey}`
+        );
+        if (response.ok) {
+          const data = await response.json();
+          videoCount = data.pageInfo?.totalResults || 0;
+
+          // 获取部分视频的播放量
+          const videoIds = (data.items || []).slice(0, 10).map((item: any) => item.id.videoId).join(',');
+          if (videoIds) {
+            const statsRes = await fetch(
+              `${YOUTUBE_API_BASE}/videos?part=statistics&id=${videoIds}&key=${apiKey}`
+            );
+            if (statsRes.ok) {
+              const statsData = await statsRes.json();
+              for (const item of statsData.items || []) {
+                totalViews += parseInt(item.statistics?.viewCount || '0');
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[YouTubeAnalytics] 获取搜索指数失败', e);
+      }
+    }
+
+    // 生成相关关键词（基于主关键词的变体）
+    const baseWord = keyword.split(/[\s\u4e00-\u9fa5]/)[0] || keyword;
+    const variations = [
+      `${baseWord} 最新`,
+      `${baseWord} 教程`,
+      `${baseWord} 2024`,
+      `${baseWord} 排行`,
+      `${baseWord} 推荐`,
+      `${baseWord} 测评`,
+      `${baseWord} 盘点`,
+      `${baseWord} 合集`,
+    ];
+
+    // 为每个变体分配模拟热度指数
+    const baseIndex = Math.min(100, Math.max(1, Math.floor(videoCount / 10)));
+    variations.forEach((word, idx) => {
+      const variance = Math.random() * 40 - 20;
+      const index = Math.max(1, Math.min(100, baseIndex + variance));
+      relatedKeywords.push({
+        word,
+        热度: index > 80 ? '🔥爆' : index > 60 ? '热' : index > 40 ? '中' : '低',
+        searchIndex: Math.round(index),
+      });
+    });
+
+    // 按热度排序
+    relatedKeywords.sort((a, b) => b.searchIndex - a.searchIndex);
+
+    return {
+      keyword,
+      estimatedViews: totalViews,
+      relatedKeywords: relatedKeywords.slice(0, 8),
+      lastUpdated: Date.now(),
+    };
+  } catch (e) {
+    console.warn('[YouTubeAnalytics] 获取关键词信息失败', e);
+    return {
+      keyword,
+      estimatedViews: 0,
+      relatedKeywords: [],
+      lastUpdated: Date.now(),
+    };
+  }
+}
+
+/**
+ * 从视频标题中提取真正的热门关键词（短词，非长句）
+ */
+export async function getTrendingKeywordsFromVideos(
+  videos: VideoMeta[],
+  apiKey?: string
+): Promise<{ word: string; weight: number; views: number }[]> {
+  // 停用词（精简，只过滤无意义的虚词）
+  const STOP_WORDS = new Set([
+    // 英文停用
+    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been',
+    'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+    'should', 'may', 'might', 'can', 'to', 'of', 'in', 'for', 'on', 'with',
+    'at', 'by', 'from', 'as', 'into', 'through', 'during', 'before', 'after',
+    'and', 'or', 'but', 'not', 'no', 'so', 'very', 'just', 'this', 'that',
+    'these', 'those', 'it', 'its', 'i', 'you', 'he', 'she', 'we', 'they',
+    'my', 'your', 'his', 'her', 'our', 'their', 'what', 'which', 'who',
+    'official', 'video', 'hd', '4k', 'new', 'vs', 'part', 'ft', 'feat', 'live',
+    'one', 'two', 'three', 'four', 'first', 'second', 'third',
+    'reaction', 'reactions', 'reacts', 'react',
+    'official music', 'music video', 'audio',
+    // 中文停用
+    '的', '了', '和', '是', '在', '我', '有', '个', '他', '她', '们',
+    '这', '那', '你', '也', '就', '都', '还', '与', '或', '不', '很',
+    '会', '能', '要', '之', '以', '等', '为', '上', '下', '中', '来',
+    '去', '后', '前', '大', '小', '多', '少', '一', '第', '更', '最',
+    '视频', '教程', '完整', '版', '系列', '合集', '最新', '官方',
+    '高清', '1080p', '4k',
+  ]);
+
+  // 提取短词的函数
+  function extractKeywords(title: string): string[] {
+    const keywords: string[] = [];
+
+    // 处理中文（2-4字词）
+    const chineseWords = title.match(/[\u4e00-\u9fa5]{2,4}/g) || [];
+    for (const word of chineseWords) {
+      if (STOP_WORDS.has(word) || /^\d+$/.test(word)) continue;
+      keywords.push(word);
+    }
+
+    // 处理英文（单词形式，2-15字符）
+    const englishWords = title.toLowerCase().split(/[\s\-_,\.!?()[\]{}:;"'【】《》（）\/\\|]+/);
+    for (const word of englishWords) {
+      if (STOP_WORDS.has(word) || /^\d+$/.test(word)) continue;
+      if (word.length >= 2 && word.length <= 15 && /^[a-z0-9]+$/.test(word)) {
+        keywords.push(word);
+      }
+    }
+
+    return keywords;
+  }
+
+  // 统计关键词出现次数和总播放量
+  const keywordStats = new Map<string, { count: number; totalViews: number }>();
+
+  for (const video of videos) {
+    const keywords = extractKeywords(video.title);
+    for (const kw of keywords) {
+      const stats = keywordStats.get(kw) || { count: 0, totalViews: 0 };
+      stats.count += 1;
+      stats.totalViews += video.viewCount || 0;
+      keywordStats.set(kw, stats);
+    }
+  }
+
+  // 计算权重（结合出现次数和总播放量）
+  const maxViews = Math.max(...Array.from(keywordStats.values()).map(s => s.totalViews), 1);
+  const maxCount = Math.max(...Array.from(keywordStats.values()).map(s => s.count), 1);
+
+  const result = Array.from(keywordStats.entries())
+    .map(([word, stats]) => ({
+      word,
+      weight: Math.round((stats.count / maxCount) * 50 + (stats.totalViews / maxViews) * 50),
+      views: stats.totalViews,
+    }))
+    // 出现1次就算，播放量高也保留
+    .filter(item => item.count >= 1)
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, 30); // 取前30个
+
+  return result;
 }
 
 export { genId };

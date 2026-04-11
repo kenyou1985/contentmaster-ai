@@ -92,6 +92,8 @@ export interface JianyingExportResult {
   total_duration?: number;
   zip_path?: string;
   zip_download_url?: string;
+  /** 是否使用了 railway 远程服务（用于构建正确的下载链接） */
+  usedRailway?: boolean;
   message: string;
   error?: string;
   download_issue_count?: number;
@@ -329,11 +331,27 @@ export async function exportJianyingDraft(
   };
 
   const base = getJianyingApiBase();
-  const startRes = await fetch(`${base}/export/start`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+
+  // railway API 地址（从环境变量获取）
+  const railwayBase = (import.meta.env.VITE_JIANYING_API_BASE || '').replace(/\/$/, '');
+
+  // 本地开发时检测服务是否可用，500 错误则自动切换 railway
+  const tryExport = async (apiBase: string, payload: object): Promise<Response> => {
+    return fetch(`${apiBase}/export/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  };
+
+  let startRes = await tryExport(base, payload);
+
+  // 本地服务返回 500 时，自动切换 railway 打包下载
+  if (startRes.status === 500 && isJianyingLocalSiteOrigin() && railwayBase) {
+    console.warn('[JianyingExport] 本地服务返回 500，尝试切换 railway 打包下载…');
+    startRes = await tryExport(railwayBase, { ...payload, returnZip: true });
+  }
+
   const startText = await startRes.text().catch(() => '');
   // 本仓库 `server/server.mjs` 仅实现同步 POST /api/jianying/export，无 /export/start → 404
   if (startRes.status === 404) {
@@ -354,15 +372,17 @@ export async function exportJianyingDraft(
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const maxPoll = 240; // 最多约 8 分钟
+  const usedRailway = startRes.url?.includes(railwayBase);
+  const pollBase = usedRailway ? railwayBase : base;
   for (let i = 0; i < maxPoll; i++) {
     await sleep(2000);
-    const statusRes = await fetch(`${base}/export/status/${encodeURIComponent(taskId)}`);
+    const statusRes = await fetch(`${pollBase}/export/status/${encodeURIComponent(taskId)}`);
     const statusText = await statusRes.text().catch(() => '');
     const statusObj = tryParseJsonObject(statusText) as any;
     const status = String(statusObj?.status || '').toLowerCase();
 
     if (status === 'success') {
-      const resultRes = await fetch(`${base}/export/result/${encodeURIComponent(taskId)}`);
+      const resultRes = await fetch(`${pollBase}/export/result/${encodeURIComponent(taskId)}`);
       const resultText = await resultRes.text().catch(() => '');
       if (!resultRes.ok) {
         const parsed = tryParseJsonObject(resultText);
@@ -370,8 +390,8 @@ export async function exportJianyingDraft(
         throw new Error(`导出结果获取失败 (${resultRes.status})${detail ? ': ' + detail : ''}`);
       }
       const parsed = tryParseJsonObject(resultText);
-      if (parsed) return parsed;
-      return coerceExportResultFromText(resultText, options, true);
+      if (parsed) return { ...parsed, usedRailway };
+      return { ...coerceExportResultFromText(resultText, options, true), usedRailway };
     }
 
     if (status === 'failed') {

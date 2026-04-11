@@ -31,9 +31,10 @@ import {
 } from '../services/characterLibraryService';
 import { CharacterLibrary } from './CharacterLibrary';
 import { VoiceLibrary } from './VoiceLibrary';
-import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, FolderOpen, Rocket, Copy, Check, CheckSquare, Square, Users, HardDrive, ListOrdered, ArrowUp, Terminal } from 'lucide-react';
+import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, FolderOpen, Rocket, Copy, Check, CheckSquare, Square, Users, HardDrive, ListOrdered, ArrowUp, Terminal, Gauge } from 'lucide-react';
 import JSZip from 'jszip';
 import { HistorySelector } from './HistorySelector';
+import { getRunningHubMaxConcurrent, setRunningHubMaxConcurrent, initRunningHubConcurrency, MAX_CONCURRENT } from '../services/runningHubConcurrency';
 import {
   getHistory,
   HistoryRecord,
@@ -50,7 +51,6 @@ import { ProgressBar } from './ProgressBar';
 import {
   exportJianyingDraft,
   getJianyingApiBase,
-  shouldUseJianyingZipDownload,
   JianyingShot,
 } from '../services/jianyingExportService';
 import { loadOneClickQueue, saveOneClickQueue, newQueueTaskId, newOneshotTaskId, OneClickQueueTask, OneClickTaskSnapshot } from '../services/oneClickTaskQueue';
@@ -521,6 +521,15 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     if (externalSetRunningHubKey) externalSetRunningHubKey(runningHubApiKey);
   }, [runningHubApiKey, externalSetRunningHubKey]);
 
+  // RunningHub 并发数设置（默认 1，最大 20）
+  const [runningHubConcurrency, setRunningHubConcurrency] = useState(() => {
+    initRunningHubConcurrency();
+    return getRunningHubMaxConcurrent();
+  });
+  useEffect(() => {
+    setRunningHubMaxConcurrent(runningHubConcurrency);
+  }, [runningHubConcurrency]);
+
   // 即梦走固定线上代理地址（services/jimengService.ts 内嵌），前端仅保留 Session 配置
   const [jimengSessionId, setJimengSessionId] = useState(() => {
     return lsGetItem<string>('JIMENG_SESSION_ID', '');
@@ -846,16 +855,19 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           (settings?.randomFilters ?? jyRandomFilters),
       });
       if (result.success) {
-        const apiBase = getJianyingApiBase();
-        const wantZip = shouldUseJianyingZipDownload();
         const rawZipUrl = (result.zip_download_url || '').trim();
         let downloadUrl = '';
-        if (wantZip && rawZipUrl) {
+        // 如果服务器返回了 ZIP 下载链接，使用正确的 API 基础地址构建完整 URL
+        if (rawZipUrl) {
+          // 根据是否使用 railway 确定 API 基础地址
+          const baseForDownload = result.usedRailway
+            ? (import.meta.env.VITE_JIANYING_API_BASE || '').replace(/\/$/, '')
+            : getJianyingApiBase();
           if (/^https?:\/\//i.test(rawZipUrl)) {
             downloadUrl = rawZipUrl;
           } else {
-            const baseOrigin = /^https?:\/\//i.test(apiBase)
-              ? new URL(apiBase).origin
+            const baseOrigin = /^https?:\/\//i.test(baseForDownload)
+              ? new URL(baseForDownload).origin
               : window.location.origin;
             const normalizedPath = rawZipUrl.startsWith('/') ? rawZipUrl : `/${rawZipUrl}`;
             downloadUrl = `${baseOrigin}${normalizedPath}`;
@@ -864,16 +876,16 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         if (downloadUrl) {
           setLastJianyingDownloadUrl(downloadUrl);
           appendTerminalLog('Jianying', `导出成功并生成 ZIP 下载链接: ${downloadUrl}`);
-        } else if (!wantZip) {
+        } else {
           setLastJianyingDownloadUrl('');
           appendTerminalLog(
             'Jianying',
-            `本机导出完成（未走远程 ZIP）${result.draft_folder ? ` · ${result.draft_folder}` : ''}`
+            `导出完成（未返回 ZIP 下载链接）${result.draft_folder ? ` · ${result.draft_folder}` : ''}`
           );
         }
         appendTerminalLog('Jianying', `导出成功: ${exportDraftName} → ${result.draft_folder || jianyingOutputDir}`);
         toast.success(
-          wantZip
+          result.usedRailway
             ? `剪映草稿导出成功: ${result.draft_folder || exportDraftName}`
             : `剪映草稿已写入本机: ${result.draft_folder || exportDraftName}`
         );
@@ -976,19 +988,22 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
     patchTaskProgress(1, '启动…');
 
-    // Step 1+2 合并：每个镜头内「图片生成」与「配音」Promise.all 并行，镜与镜仍顺序执行（控并发）
-    let idx = 0;
-    for (const shot of targetShots) {
-      idx++;
+    // Step 1+2 合并：所有镜头的图片并行生成，配音也并行生成（高并发 Yunwu API）
+
+    // 收集所有需要生成的图片任务和配音任务
+    const imageTasks: { shot: Shot; snap: Shot; idx: number }[] = [];
+    const voiceTasks: { shot: Shot; snap: Shot; idx: number }[] = [];
+
+    targetShots.forEach((shot, idx) => {
       const snap = getLiveShot(shot.id);
-      if (!snap) continue;
+      if (!snap) return;
 
       const needImage = !shotHasExportableVisual(snap) && !!snap.imagePrompt?.trim();
       const voiceText = getTtsSpeakText(snap).trim();
       const needVoice = !!voiceText && !snap.voiceAudioUrl;
 
       if (shotHasExportableVisual(snap)) {
-        appendTerminalLog('Pipeline', `镜头${snap.number}: 已有视频，跳过图片生成（强制重新生图）`);
+        appendTerminalLog('Pipeline', `镜头${snap.number}: 已有视频，跳过图片生成`);
       } else if (!snap.imagePrompt?.trim()) {
         appendTerminalLog('ImageGen', `镜头${snap.number}: 无图片提示词，跳过`);
       }
@@ -998,59 +1013,67 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         appendTerminalLog('Voice', `镜头${snap.number}: 已有配音音频，跳过`);
       }
 
-      if (!needImage && !needVoice) continue;
+      if (needImage) imageTasks.push({ shot, snap, idx });
+      if (needVoice) voiceTasks.push({ shot, snap, idx });
+    });
 
-      appendTerminalLog(
-        'Pipeline',
-        `镜头${snap.number}: 并行 — ${needImage ? '生成图' : '图跳过'} · ${needVoice ? '生成音' : '音跳过'}`
-      );
-
-      const runImage = async () => {
-        if (!needImage) return;
-        const num = snap.number;
-        setOneClickPipelineProgress(`并行图片 ${idx}/${targetShots.length} (镜头${num})`);
-        appendTerminalLog('ImageGen', `镜头${num}: 开始生成图片`);
-        let retries = 3;
-        while (retries > 0) {
-          try {
-            // 使用返回布尔值判定成功，避免 React setState 闭包延迟导致误判
-            const ok = await handleGenerateImage(snap, false);
-            if (ok) {
-              appendTerminalLog('ImageGen', `镜头${num}: 图片生成完成`);
-              break;
-            }
-            throw new Error('图片生成失败');
-          } catch (err: any) {
-            retries--;
-            appendTerminalLog('ImageGen', `镜头${num}: 生成失败 (${err.message}), 剩余${retries}次`);
-            if (retries === 0) {
-              updateShot(shot.id, { imageGenerating: false });
-              toast.error(`镜头${num}图片生成失败`);
-            } else {
+    // 图片和配音真正并行执行（走不同模型/服务，互不干扰）
+    // 图片并发 100，配音并发用 runningHubConcurrency
+    const imageGenPromise = (async () => {
+      if (imageTasks.length > 0) {
+        appendTerminalLog('Pipeline', `开始生成 ${imageTasks.length} 个镜头的图片（并发 100）…`);
+        const tasks = imageTasks.map(({ snap, idx }) => async () => {
+          const num = snap.number;
+          setOneClickPipelineProgress(`图片 ${idx + 1}/${targetShots.length} (镜头${num})`);
+          appendTerminalLog('ImageGen', `镜头${num}: 开始生成图片`);
+          let retries = 3;
+          while (retries > 0) {
+            try {
+              const ok = await handleGenerateImage(snap, false);
+              if (ok) {
+                appendTerminalLog('ImageGen', `镜头${num}: 图片生成完成`);
+                return true;
+              }
+              throw new Error('图片生成失败');
+            } catch (err: any) {
+              retries--;
+              appendTerminalLog('ImageGen', `镜头${num}: 生成失败 (${err.message}), 剩余${retries}次`);
+              if (retries === 0) {
+                updateShot(snap.id, { imageGenerating: false });
+                toast.error(`镜头${num}图片生成失败`);
+                return false;
+              }
               await new Promise(r => setTimeout(r, 3000));
             }
           }
-        }
-      };
+          return false;
+        });
+        await runConcurrentTasks(tasks, 100, () => {});
+      }
+    })();
 
-      const runVoice = async () => {
-        if (!needVoice) return;
-        const live = getLiveShot(shot.id);
-        if (!live) return;
-        const num = live.number;
-        setOneClickPipelineProgress(`并行配音 ${idx}/${targetShots.length} (镜头${num})`);
-        appendTerminalLog('Voice', `镜头${num}: 生成配音中`);
-        try {
-          await synthesizeVoiceForShot(live, { playAfter: false });
-          appendTerminalLog('Voice', `镜头${num}: 配音生成完成`);
-        } catch (e: any) {
-          appendTerminalLog('Voice', `镜头${num}: 配音失败 ${e.message || e}`);
-        }
-      };
+    const voiceGenPromise = (async () => {
+      if (voiceTasks.length > 0) {
+        appendTerminalLog('Pipeline', `开始生成 ${voiceTasks.length} 个镜头的配音（并发 ${runningHubConcurrency}）…`);
+        const tasks = voiceTasks.map(({ snap, idx }) => async () => {
+          const num = snap.number;
+          setOneClickPipelineProgress(`配音 ${idx + 1}/${targetShots.length} (镜头${num})`);
+          appendTerminalLog('Voice', `镜头${num}: 生成配音中`);
+          try {
+            await synthesizeVoiceForShot(snap, { playAfter: false });
+            appendTerminalLog('Voice', `镜头${num}: 配音生成完成`);
+          } catch (e: any) {
+            appendTerminalLog('Voice', `镜头${num}: 配音失败 ${e.message || e}`);
+          }
+        });
+        await runConcurrentTasks(tasks, runningHubConcurrency, () => {});
+      }
+    })();
 
-      await Promise.all([runImage(), runVoice()]);
-      patchTaskProgress(2 + (idx / N) * 38, `图/音 ${idx}/${N}`);
-    }
+    // 图片和配音同时执行，互不等待
+    await Promise.all([imageGenPromise, voiceGenPromise]);
+
+    patchTaskProgress(40, '图片/配音完成');
 
     // Step 3: 视频（与单镜头相同逻辑 + RunningHub 轮询）
     if (oneClickPipelineMode === 'image_audio_only') {
@@ -1180,6 +1203,19 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     if (oneClickRunning) { toast.warning('正在执行中，请稍候'); return; }
     const selected = shots.filter(s => s.selected);
     if (selected.length === 0) { toast.error('请先选择要处理的镜头'); return; }
+
+    // 检查必要参数
+    const isJimengImageModel = selectedImageModel.startsWith('jimeng');
+    if (isJimengImageModel && !jimengSessionId?.trim()) {
+      toast.error('即梦图片模型需要填写 SESSION_ID 才能生成图片');
+      return;
+    }
+    const isJimengVideoModel = selectedVideoModel.startsWith('jimeng');
+    if (isJimengVideoModel && !jimengSessionId?.trim()) {
+      toast.error('即梦视频模型需要填写 SESSION_ID 才能生成视频');
+      return;
+    }
+
     const taskId = newOneshotTaskId();
     const draftName = buildPipelineDraftName();
     setOneClickRunning(true);
@@ -3448,8 +3484,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         }
       );
       
-      // 并发执行，最多同时5个请求（图片生成相对快速，可以设置更高的并发数）
-      const concurrency = 5;
+      // 并发执行，Yunwu API 支持高并发，最多 100 个并行任务
+      const concurrency = 100;
       const results = await runConcurrentTasks(
         tasks,
         concurrency,
@@ -3553,7 +3589,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       
       // 并发执行：即梦视频并发更保守，降低被限流概率
       const selectedVideoModelCfg = VIDEO_MODELS.find(m => m.id === selectedVideoModel);
-      const concurrency = selectedVideoModelCfg?.isJimengVideo ? 2 : 3;
+      const concurrency = selectedVideoModelCfg?.isJimengVideo ? 2 : runningHubConcurrency;
       const results = await runConcurrentTasks(
         tasks,
         concurrency,
@@ -3601,8 +3637,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         await synthesizeVoiceForShot(shot, { playAfter: false });
         return { shot };
       });
-      const concurrency = 2;
-      const results = await runConcurrentTasks(tasks, concurrency, (done, total) => {
+      const results = await runConcurrentTasks(tasks, runningHubConcurrency, (done, total) => {
         setBatchProgress(prev => (prev ? { ...prev, current: done } : null));
       });
       const ok = results.success.length;
@@ -3730,6 +3765,23 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             />
           </div>
 
+          {/* RunningHub 并发数设置 */}
+          <div className="w-full min-w-0">
+            <label className="text-[10px] text-slate-500 mb-0.5 block flex items-center gap-1">
+              <Gauge size={10} className="text-purple-400" />
+              并发数
+              <span className="text-slate-600 text-[9px]">(1-{MAX_CONCURRENT})</span>
+            </label>
+            <select
+              value={runningHubConcurrency}
+              onChange={(e) => setRunningHubConcurrency(Number(e.target.value))}
+              className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
+            >
+              {Array.from({ length: MAX_CONCURRENT }, (_, i) => i + 1).map(n => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+          </div>
 
           {selectedImageModel.startsWith('jimeng') && (
             <div className="w-full min-w-0">
@@ -4040,6 +4092,37 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         {/* 操作栏 */}
         <div className="flex items-center justify-between bg-slate-800/50 border border-slate-700 rounded-xl p-3">
           <div className="flex items-center gap-2 flex-wrap">
+            {/* 批量操作 */}
+            <div className="flex items-center gap-1 border-r border-slate-700 pr-2 mr-1">
+              <button
+                onClick={handleBatchGenerateImages}
+                disabled={generatingCount > 0}
+                className="flex items-center gap-1 px-2 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
+                title="批量生成图片"
+              >
+                <Rocket size={13} />
+                批量圖片
+              </button>
+              <button
+                onClick={handleBatchGenerateVideos}
+                disabled={generatingCount > 0}
+                className="flex items-center gap-1 px-2 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
+                title="批量生成视频"
+              >
+                <Rocket size={13} />
+                批量视频
+              </button>
+              <button
+                onClick={handleBatchGenerateVoice}
+                disabled={generatingCount > 0}
+                className="flex items-center gap-1 px-2 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
+                title="批量生成语音"
+              >
+                <Rocket size={13} />
+                批量語音
+              </button>
+            </div>
+
             {/* 批量选择按钮 */}
             <div className="flex items-center gap-1 border-r border-slate-700 pr-2 mr-1">
               <button
@@ -4121,37 +4204,6 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               视频ZIP
             </button>
 
-            {/* 批量操作 */}
-            <div className="flex items-center gap-1 border-l border-slate-700 pl-2 ml-1">
-              <button
-                onClick={handleBatchGenerateImages}
-                disabled={generatingCount > 0}
-                className="flex items-center gap-1 px-2 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
-                title="批量生成图片"
-              >
-                <Rocket size={13} />
-                批量圖片
-              </button>
-              <button
-                onClick={handleBatchGenerateVideos}
-                disabled={generatingCount > 0}
-                className="flex items-center gap-1 px-2 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
-                title="批量生成视频"
-              >
-                <Rocket size={13} />
-                批量视频
-              </button>
-              <button
-                onClick={handleBatchGenerateVoice}
-                disabled={generatingCount > 0}
-                className="flex items-center gap-1 px-2 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
-                title="批量生成语音"
-              >
-                <Rocket size={13} />
-                批量語音
-              </button>
-            </div>
-
             <span className="text-xs text-slate-500 ml-1">
               {generatingCount > 0 ? `生成中: ${generatingCount} 個任務...` : '就緒'}
             </span>
@@ -4163,8 +4215,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               type="text"
               value={jianyingOutputDir}
               onChange={(e) => onChangeJianyingOutputDir(e.target.value)}
-              placeholder="本机剪映草稿根目录（路径映射），例如 /Users/kenyou/Downloads/JianyingPro Drafts"
-              className="w-[360px] px-3 py-1.5 bg-slate-900/70 border border-slate-600 focus:border-purple-500 outline-none text-slate-100 text-xs rounded-lg"
+              placeholder="剪映草稿根目录"
+              className="w-[180px] px-3 py-1.5 bg-slate-900/70 border border-slate-600 focus:border-purple-500 outline-none text-slate-100 text-xs rounded-lg"
               title="本机导出时：剪映草稿将直接写入该目录（或映射路径）。线上 Vercel 时由 Railway 打包 ZIP，此项用于解压后路径对照。"
             />
             <button
@@ -4199,13 +4251,13 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               {isExportingToJianying ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
               导出剪映
             </button>
-            {lastJianyingDownloadUrl && shouldUseJianyingZipDownload() && (
+            {lastJianyingDownloadUrl && (
               <a
                 href={lastJianyingDownloadUrl}
                 target="_blank"
                 rel="noreferrer"
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-lg transition-all"
-                title="线上环境：下载 Railway 打包的剪映草稿 ZIP"
+                title="下载 Railway 打包的剪映草稿 ZIP"
               >
                 <Download size={14} />
                 下载草稿ZIP

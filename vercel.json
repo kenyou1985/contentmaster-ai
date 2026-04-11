@@ -1,10 +1,5 @@
 {
   "rewrites": [
     { "source": "/((?!api/).*)", "destination": "/index.html" }
-  ],
-  "functions": {
-    "api/invidious.ts": {
-      "maxDuration": 10
-    }
-  }
+  ]
 }

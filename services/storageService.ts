@@ -11,7 +11,7 @@
 
 const DB_NAME = 'ContentMasterDB';
 /** 版本变更会触发 onupgradeneeded，重建全部 object store（修复旧版仅有 kvstore、无 appData 等脏库） */
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 interface StoreSchema {
   [storeName: string]: {
@@ -67,6 +67,11 @@ const STORE_SCHEMAS: StoreSchema = {
     indexes: [
       { name: 'by_date', keyPath: 'date', unique: true },
     ],
+  },
+
+  /** 频道元数据（channelId -> 元数据） */
+  channelMetaMap: {
+    keyPath: 'channelId',
   },
 };
 
@@ -351,6 +356,55 @@ export const storage = {
     }
   },
 
+  // ── 频道元数据 Map ──────────────────────────────────────────────────
+
+  async getChannelMetaMap(): Promise<Record<string, {
+    channelId: string;
+    title: string;
+    description?: string;
+    thumbnail?: string;
+    subscriberCount: number;
+    videoCount: number;
+    viewCount: number;
+    fetchedAt: number;
+  }>> {
+    const entries = await getAll<{
+      channelId: string;
+      title: string;
+      description?: string;
+      thumbnail?: string;
+      subscriberCount: number;
+      videoCount: number;
+      viewCount: number;
+      fetchedAt: number;
+    }>('channelMetaMap');
+    const map: Record<string, {
+      channelId: string;
+      title: string;
+      description?: string;
+      thumbnail?: string;
+      subscriberCount: number;
+      videoCount: number;
+      viewCount: number;
+      fetchedAt: number;
+    }> = {};
+    for (const e of entries) map[e.channelId] = e;
+    return map;
+  },
+
+  async saveChannelMeta(meta: {
+    channelId: string;
+    title: string;
+    description?: string;
+    thumbnail?: string;
+    subscriberCount: number;
+    videoCount: number;
+    viewCount: number;
+    fetchedAt: number;
+  }): Promise<void> {
+    return put('channelMetaMap', meta);
+  },
+
   // ── 关键词监控 ──────────────────────────────────────────────────────
 
   async getKeywordMonitors(): Promise<KeywordMonitor[]> {
@@ -398,6 +452,48 @@ export const storage = {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
+  },
+
+  // ── 频道视频缓存 ────────────────────────────────────────────────────
+
+  /** 缓存频道视频列表 */
+  async cacheChannelVideos(channelId: string, videos: any[]): Promise<void> {
+    const key = `channelVideos_${channelId}`;
+    return put('appData', {
+      k: key,
+      v: {
+        videos,
+        cachedAt: Date.now(),
+        channelId,
+      },
+      updatedAt: Date.now(),
+    });
+  },
+
+  /** 获取频道视频缓存 */
+  async getCachedChannelVideos(channelId: string): Promise<{ videos: any[]; cachedAt: number } | null> {
+    const key = `channelVideos_${channelId}`;
+    const entry = await get<{ k: string; v: { videos: any[]; cachedAt: number; channelId: string } }>('appData', key);
+    return entry?.v || null;
+  },
+
+  /** 检查是否需要刷新（超过指定分钟数） */
+  needsRefresh(cachedAt: number, intervalMinutes: number): boolean {
+    const ageMs = Date.now() - cachedAt;
+    return ageMs > intervalMinutes * 60 * 1000;
+  },
+
+  /** 清理过期频道缓存 */
+  async pruneChannelCache(maxAgeMs = 2 * 60 * 60 * 1000): Promise<void> {
+    const keys = await this.keys();
+    const channelKeys = keys.filter(k => k.startsWith('channelVideos_'));
+    const cutoff = Date.now() - maxAgeMs;
+    for (const key of channelKeys) {
+      const entry = await get<any>('appData', key);
+      if (entry?.v?.cachedAt && entry.v.cachedAt < cutoff) {
+        await this.delete(key);
+      }
+    }
   },
 
   // ── 频道快照 ────────────────────────────────────────────────────────
@@ -471,7 +567,7 @@ export const storage = {
     const result: Record<string, unknown[]> = {};
     const storeNames = db.objectStoreNames;
     for (const name of storeNames) {
-      result[name] = await getAll(storeName(name));
+      result[name] = await getAll(name);
     }
     return result;
   },
