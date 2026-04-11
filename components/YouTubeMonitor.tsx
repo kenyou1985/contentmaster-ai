@@ -61,6 +61,8 @@ import {
   saveVideoSnapshot,
   isQuotaFallbackActive,
   setQuotaFallbackActive as setYtQuotaFallback,
+  ytGetVideoComments,
+  type CommentResult,
 } from '../services/youtubeAnalyticsService';
 
 // ── 配置 ──────────────────────────────────────────────────────────────
@@ -136,7 +138,7 @@ export const YouTubeMonitor: React.FC = () => {
   const isUsingOfficial = !!activeApiKey;
 
   // ── Tab 状态 ──────────────────────────────────────────────────
-  type MainTab = 'monitor' | 'rankings' | 'keywords' | 'analysis' | 'compare';
+  type MainTab = 'monitor' | 'rankings' | 'keywords' | 'analysis' | 'compare' | 'comments';
   const [activeTab, setActiveTab] = useState<MainTab>('monitor');
 
   // ── 频道分组状态 ────────────────────────────────────────────────
@@ -179,6 +181,14 @@ export const YouTubeMonitor: React.FC = () => {
 
   // ── 视频对比状态 ────────────────────────────────────────────────
   const [compareVideos, setCompareVideos] = useState<VideoMeta[]>([]);
+
+  // ── 评论提取状态 ───────────────────────────────────────────────
+  const [commentVideoUrl, setCommentVideoUrl] = useState('');
+  const [commentVideoId, setCommentVideoId] = useState('');
+  const [commentResult, setCommentResult] = useState<CommentResult | null>(null);
+  const [isLoadingComments, setIsLoadingComments] = useState(false);
+  const [commentPage, setCommentPage] = useState(0);
+  const COMMENT_PAGE_SIZE = 30;
 
   // ── 搜索状态 ──────────────────────────────────────────────────
   const [searchQuery, setSearchQuery] = useState('');
@@ -640,19 +650,49 @@ export const YouTubeMonitor: React.FC = () => {
     if (!res.ok) {
       let msg = text;
       try { const j = JSON.parse(text) as { error?: string }; if (j.error) msg = j.error; } catch { /* ignore */ }
+      // 区分不同错误类型，给出更友好的提示
+      const errLower = msg.toLowerCase();
+      if (errLower.includes('403') || errLower.includes('forbidden')) {
+        throw new Error(`MeTube 下载被拒绝 (403)：该视频可能受地区限制、版权保护或已下架。建议：1) 在 MeTube 后台上传 cookies；2) 尝试下载其他视频。`);
+      } else if (errLower.includes('404') || errLower.includes('not found')) {
+        throw new Error(`MeTube 未找到视频 (404)：视频可能已被删除或链接无效。`);
+      } else if (errLower.includes('429') || errLower.includes('rate limit')) {
+        throw new Error(`MeTube 请求过于频繁 (429)：请稍后再试。`);
+      }
       throw new Error(msg || `MeTube ${res.status}`);
     }
+    // 尝试解析响应，检测 MeTube 内部的错误
+    try {
+      const json = JSON.parse(text);
+      if (json?.error || json?.message) {
+        const me = json.error || json.message;
+        const meLower = me.toLowerCase();
+        if (meLower.includes('403') || meLower.includes('forbidden') || meLower.includes('http error')) {
+          throw new Error(`MeTube 下载失败 (403)：该视频在 MeTube 服务器 IP 下被拒绝。可能原因：地区限制、版权保护、需登录。建议在 MeTube 后台上传 YouTube cookies。`);
+        }
+        throw new Error(me);
+      }
+    } catch (e) {
+      if (e instanceof Error) throw e;
+    }
+    return text;
   }
 
   async function fetchMetubeHistory(): Promise<any[]> {
-    const origin = window.location.origin;
-    const res = await fetch(`${origin}/api/metube/history`);
-    if (!res.ok) return [];
     try {
+      const origin = window.location.origin;
+      const res = await fetch(`${origin}/api/metube/history`);
+      if (!res.ok) {
+        console.warn('[YouTubeMonitor] MeTube history fetch failed:', res.status, res.statusText);
+        return [];
+      }
       const text = await res.text();
       const data = JSON.parse(text);
       return Array.isArray(data) ? data : [];
-    } catch { return []; }
+    } catch (e) {
+      console.warn('[YouTubeMonitor] MeTube history fetch error:', e);
+      return [];
+    }
   }
 
   function getDownloadKey(url: string, kind: MetubeDownloadKind) { return `${url}::${kind}`; }
@@ -660,33 +700,74 @@ export const YouTubeMonitor: React.FC = () => {
   async function pollDownloadStatus(url: string, kind: MetubeDownloadKind, maxAttempts = 60) {
     const dlKey = getDownloadKey(url, kind);
     let attempts = 0;
+    console.log('[YouTubeMonitor] 开始轮询下载状态:', url, kind);
+
     const poll = async () => {
       attempts++;
-      const hist = await fetchMetubeHistory();
-      const vid = url.split('v=')[1]?.split('&')[0] || '';
-      const item = (hist as any[]).find((h: any) => {
-        const hUrl = String(h.url || '');
-        return hUrl.includes(vid) || hUrl.replace(/^https?:\/\/(www\.)?youtu\.be\//, 'https://youtube.com/watch?v=') === url;
-      });
-      if (item) {
-        const status = String(item.status || item.state || '').toLowerCase();
-        if (['completed', 'done', 'finished'].includes(status)) {
-          const fileHref = VITE_METUBE_PUBLIC_URL && item.entry ? `${VITE_METUBE_PUBLIC_URL}/download/${encodeURIComponent(String(item.entry).split('/').pop() || '')}` : null;
-          setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'completed', progress: 100, fileHref } }));
-          return;
-        } else if (['error', 'failed'].includes(status) || item.error) {
-          setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'error', error: item.error || '下载失败' } }));
-          return;
+      try {
+        const hist = await fetchMetubeHistory();
+        console.log(`[YouTubeMonitor] 轮询 #${attempts} - 历史记录数量:`, hist.length);
+
+        const vid = url.split('v=')[1]?.split('&')[0] || '';
+        // 尝试多种 URL 格式匹配
+        const item = (hist as any[]).find((h: any) => {
+          const hUrl = String(h.url || '');
+          const normalizedHUrl = hUrl
+            .replace(/^https?:\/\/(www\.)?youtu\.be\//, 'https://youtube.com/watch?v=')
+            .replace(/^https?:\/\/(www\.)?youtube\.com\/watch\?v=/, 'https://youtube.com/watch?v=');
+          return normalizedHUrl === url || hUrl.includes(vid) || hUrl.includes(`v=${vid}`);
+        });
+
+        if (item) {
+          console.log('[YouTubeMonitor] 找到下载项:', item.title, '状态:', item.status);
+          const status = String(item.status || item.state || '').toLowerCase();
+          const errorMsg = String(item.error || item.error_message || item.friendly_error || '').toLowerCase();
+          if (['completed', 'done', 'finished', 'finished'].includes(status)) {
+            const fileHref = VITE_METUBE_PUBLIC_URL && item.entry ? `${VITE_METUBE_PUBLIC_URL}/download/${encodeURIComponent(String(item.entry).split('/').pop() || '')}` : null;
+            console.log('[YouTubeMonitor] 下载完成:', fileHref);
+            setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'completed', progress: 100, fileHref } }));
+            setInfoMsg('下载完成！点击下载链接获取文件');
+            return;
+          } else if (['error', 'failed', 'error_ffmpeg', 'error_ytdl'].includes(status) || item.error || errorMsg) {
+            // 区分 403 等服务端错误
+            if (errorMsg.includes('403') || errorMsg.includes('forbidden') || errorMsg.includes('http error') || errorMsg.includes('geo') || errorMsg.includes('region') || errorMsg.includes('copyright') || errorMsg.includes('cookies')) {
+              const friendlyError = `下载失败 (403)：该视频受地区限制或需登录。解决方案：在 MeTube 后台上传 YouTube cookies 后重试。`;
+              console.error('[YouTubeMonitor] Cookies 失效或地区限制:', errorMsg);
+              setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'error', error: friendlyError } }));
+              setErrorMsg(friendlyError);
+            } else if (errorMsg.includes('not found') || errorMsg.includes('404')) {
+              setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'error', error: '视频未找到，可能已被删除' } }));
+            } else {
+              console.error('[YouTubeMonitor] 下载错误:', item.error || errorMsg);
+              setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'error', error: item.error || '下载失败' } }));
+            }
+            return;
+          } else {
+            setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'downloading', progress: Math.min(95, Math.round((attempts / maxAttempts) * 100)) } }));
+          }
         } else {
-          setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'downloading', progress: Math.min(95, Math.round((attempts / maxAttempts) * 100)) } }));
+          console.log('[YouTubeMonitor] 未找到匹配的下载项，vid:', vid);
+          // 打印所有历史记录帮助调试
+          if (hist.length > 0) {
+            console.log('[YouTubeMonitor] 历史记录示例:', hist.slice(0, 3).map(h => ({ url: h.url, status: h.status, title: h.title })));
+          }
+          setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'queued', progress: Math.min(20, attempts * 2) } }));
         }
-      } else {
-        setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'queued', progress: Math.min(20, attempts * 2) } }));
-      }
-      if (attempts < maxAttempts) {
-        setTimeout(poll, 3000);
-      } else {
-        setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'error', error: '下载超时，请到 MeTube 检查' } }));
+        if (attempts < maxAttempts) {
+          setTimeout(poll, 3000);
+        } else {
+          const timeoutMsg = '下载超时未完成，请到 MeTube 后台检查状态';
+          console.warn('[YouTubeMonitor]', timeoutMsg);
+          setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'error', error: timeoutMsg } }));
+          setErrorMsg(timeoutMsg);
+        }
+      } catch (e) {
+        console.error('[YouTubeMonitor] 轮询异常:', e);
+        if (attempts < maxAttempts) {
+          setTimeout(poll, 3000);
+        } else {
+          setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'error', error: '轮询出错，请刷新页面重试' } }));
+        }
       }
     };
     poll();
@@ -694,17 +775,22 @@ export const YouTubeMonitor: React.FC = () => {
 
   async function queueMetubeDownload(url: string, kind: MetubeDownloadKind) {
     const dlKey = getDownloadKey(url, kind);
+    console.log('[YouTubeMonitor] 开始下载:', url, kind);
     setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'downloading', progress: 5 } }));
     setInfoMsg(null);
     setErrorMsg(null);
     try {
       const payload = buildMetubePayload(url, kind);
-      await metubePostAdd(payload);
+      console.log('[YouTubeMonitor] 提交 payload:', payload);
+      const result = await metubePostAdd(payload);
+      console.log('[YouTubeMonitor] MeTube 响应:', result);
       setInfoMsg(`已提交「${kind}」到 MeTube 队列`);
       void pollDownloadStatus(url, kind);
     } catch (e: unknown) {
-      setErrorMsg(e instanceof Error ? e.message : 'MeTube 提交失败');
-      setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'error', error: String(e) } }));
+      console.error('[YouTubeMonitor] 下载失败:', e);
+      const errMsg = e instanceof Error ? e.message : 'MeTube 提交失败';
+      setErrorMsg(errMsg);
+      setActiveDownloads(prev => ({ ...prev, [dlKey]: { status: 'error', error: errMsg } }));
     }
   }
 
@@ -724,15 +810,21 @@ export const YouTubeMonitor: React.FC = () => {
   }
 
   async function parseVideo() {
-    if (!videoUrl.trim()) return;
-    const patterns = [/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/, /^([a-zA-Z0-9_-]{11})$/];
-    let videoId = '';
-    for (const p of patterns) { const m = videoUrl.match(p); if (m) { videoId = m[1]; break; } }
-    if (!videoId) {
-      setErrorMsg('无效的 YouTube 链接');
-      requestAnimationFrame(() => parseSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }));
+    const url = videoUrl.trim();
+    if (!url) {
+      setErrorMsg('请先输入 YouTube 视频链接');
+      console.warn('[YouTubeMonitor] 解析失败: 链接为空');
       return;
     }
+    const patterns = [/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/, /^([a-zA-Z0-9_-]{11})$/];
+    let videoId = '';
+    for (const p of patterns) { const m = url.match(p); if (m) { videoId = m[1]; break; } }
+    if (!videoId) {
+      setErrorMsg('无效的 YouTube 链接，请检查格式');
+      console.warn('[YouTubeMonitor] 解析失败: 无效链接', url);
+      return;
+    }
+    console.log('[YouTubeMonitor] 开始解析视频:', videoId);
     setIsParsing(true);
     setErrorMsg(null);
     setInfoMsg(null);
@@ -740,10 +832,12 @@ export const YouTubeMonitor: React.FC = () => {
     setDescExpanded(false);
     try {
       const detail = await ytGetVideoDetail(videoId, activeApiKey || undefined);
+      console.log('[YouTubeMonitor] 解析成功:', detail.title);
       setParsedVideo(detail);
       setInfoMsg('解析成功，下方已显示视频信息');
     } catch (e) {
       const raw = e instanceof Error ? e.message : String(e);
+      console.error('[YouTubeMonitor] 解析失败:', raw);
       const hint =
         !activeApiKey && /401|403|Unauthorized|Authorization/i.test(raw)
           ? '（未配置 API Key 时依赖 Invidious；请在设置中填写 YouTube API Key 或检查本地 /api/invidious 代理）'
@@ -774,6 +868,40 @@ export const YouTubeMonitor: React.FC = () => {
 
   function exportJSON(data: unknown, filename: string) {
     downloadBlob(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), `${filename}.json`);
+  }
+
+  /** 从 URL 或纯 ID 提取视频 ID */
+  function extractVideoIdFromUrl(input: string): string {
+    const trimmed = input.trim();
+    const patterns = [
+      /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/,
+      /^([a-zA-Z0-9_-]{11})$/,
+    ];
+    for (const p of patterns) { const m = trimmed.match(p); if (m) return m[1]; }
+    return '';
+  }
+
+  /** 加载视频评论 */
+  async function loadComments(videoId: string) {
+    if (!videoId) return;
+    setIsLoadingComments(true);
+    setErrorMsg(null);
+    setInfoMsg(null);
+    setCommentResult(null);
+    setCommentPage(0);
+    try {
+      const result = await ytGetVideoComments(videoId, activeApiKey || undefined, 50);
+      setCommentResult(result);
+      if (result.comments.length === 0) {
+        setInfoMsg('该视频暂无评论或评论已关闭');
+      } else {
+        setInfoMsg(`评论加载成功，共 ${result.total} 条`);
+      }
+    } catch (e) {
+      setErrorMsg('评论加载失败: ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setIsLoadingComments(false);
+    }
   }
 
   function downloadBlob(blob: Blob, filename: string) {
@@ -1465,6 +1593,7 @@ export const YouTubeMonitor: React.FC = () => {
               { id: 'keywords', label: '关键词结果', icon: Search },
               { id: 'analysis', label: '趋势分析', icon: TrendingUp },
               { id: 'compare', label: '视频对比', icon: GitCompare },
+              { id: 'comments', label: '评论提取', icon: MessageCircle },
             ] as const).map(tab => (
               <button
                 key={tab.id}
@@ -1761,7 +1890,13 @@ export const YouTubeMonitor: React.FC = () => {
                 </div>
                 <div className="flex gap-2">
                   <input value={videoUrl} onChange={e => setVideoUrl(e.target.value)} onKeyDown={e => e.key === 'Enter' && void parseVideo()} placeholder="粘贴 YouTube 视频链接..." className="flex-1 bg-slate-800/50 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500/50" />
-                  <button onClick={() => void parseVideo()} disabled={isParsing || !videoUrl.trim()} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
+                  <button onClick={() => {
+                    if (!videoUrl.trim()) {
+                      setErrorMsg('请先输入 YouTube 视频链接');
+                      return;
+                    }
+                    void parseVideo();
+                  }} disabled={isParsing} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
                     {isParsing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
                     解析
                   </button>
@@ -1797,6 +1932,118 @@ export const YouTubeMonitor: React.FC = () => {
           )}
 
           {activeTab === 'compare' && renderCompareView()}
+
+          {/* ── 评论提取 ── */}
+          {activeTab === 'comments' && (
+            <div className="space-y-4">
+              <div className="bg-slate-900/50 border border-slate-700/50 rounded-xl p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <MessageCircle className="w-4 h-4 text-blue-400" />
+                  <h2 className="text-sm font-medium text-slate-200">视频评论提取</h2>
+                  <span className="ml-auto text-xs text-slate-500">Powered by YouTubeAPI23 · 大陆直连</span>
+                </div>
+                <div className="flex gap-2 mb-3">
+                  <input
+                    value={commentVideoUrl}
+                    onChange={e => setCommentVideoUrl(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        const vid = extractVideoIdFromUrl(e.currentTarget.value);
+                        setCommentVideoId(vid);
+                        if (vid) void loadComments(vid);
+                      }
+                    }}
+                    placeholder="粘贴 YouTube 视频链接或视频 ID..."
+                    className="flex-1 bg-slate-800/50 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500/50"
+                  />
+                  <button
+                    onClick={() => {
+                      const vid = extractVideoIdFromUrl(commentVideoUrl);
+                      setCommentVideoId(vid);
+                      if (vid) void loadComments(vid);
+                      else setErrorMsg('无效的 YouTube 链接');
+                    }}
+                    disabled={isLoadingComments}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                  >
+                    {isLoadingComments ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                    {isLoadingComments ? '加载中...' : '提取评论'}
+                  </button>
+                </div>
+                {commentVideoId && !isLoadingComments && (
+                  <p className="text-xs text-slate-500 mb-3">
+                    视频ID：<span className="font-mono text-slate-400">{commentVideoId}</span>
+                    {commentResult && (
+                      <span className="ml-3">共 {commentResult.total} 条评论（显示 {commentResult.comments.length} 条）</span>
+                    )}
+                  </p>
+                )}
+                {isLoadingComments && (
+                  <div className="text-center py-8 text-slate-500 text-sm flex items-center justify-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin" />正在通过 RapidAPI 拉取评论，请稍候…
+                  </div>
+                )}
+                {commentResult && commentResult.comments.length > 0 && !isLoadingComments && (
+                  <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
+                    {commentResult.comments.slice(0, (commentPage + 1) * COMMENT_PAGE_SIZE).map(c => (
+                      <div key={c.commentId} className="p-3 rounded-xl bg-slate-800/40 border border-slate-700/30 hover:border-slate-600/50 transition-colors">
+                        <div className="flex items-start gap-3">
+                          {c.authorThumbnail && (
+                            <img src={c.authorThumbnail} alt={c.author} className="w-8 h-8 rounded-full flex-shrink-0 mt-0.5" />
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-xs font-medium text-slate-200">{c.author}</span>
+                              {c.replyCount > 0 && (
+                                <span className="text-[10px] text-cyan-400 bg-cyan-500/10 px-1.5 py-0.5 rounded-full">
+                                  {c.replyCount} 条回复
+                                </span>
+                              )}
+                              <span className="text-[10px] text-slate-600 ml-auto flex-shrink-0">
+                                {formatAgo(c.publishedAt)}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-300 mt-1 leading-relaxed whitespace-pre-wrap">{c.text}</p>
+                            <div className="flex items-center gap-3 mt-1.5 text-[10px] text-slate-600">
+                              <span className="flex items-center gap-1"><ThumbsUp className="w-3 h-3" />{formatNumber(c.likeCount)}</span>
+                              <a href={`https://youtube.com/watch?v=${commentVideoId}&lc=${c.commentId}`} target="_blank" rel="noopener noreferrer" className="hover:text-slate-400 flex items-center gap-1">
+                                <ExternalLink className="w-3 h-3" />查看原评论
+                              </a>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    {commentPage * COMMENT_PAGE_SIZE + COMMENT_PAGE_SIZE < commentResult.comments.length && (
+                      <button
+                        onClick={() => setCommentPage(p => p + 1)}
+                        className="w-full py-2 text-xs text-slate-500 hover:text-slate-300 border border-dashed border-slate-700/50 rounded-lg hover:border-slate-600 transition-colors"
+                      >
+                        加载更多（{commentResult.comments.length - (commentPage + 1) * COMMENT_PAGE_SIZE} 条剩余）
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        const txt = commentResult.comments.map(c =>
+                          `【${c.author}】${formatAgo(c.publishedAt)} | 👍${formatNumber(c.likeCount)}${c.replyCount > 0 ? ` | 💬${c.replyCount}回复` : ''}\n${c.text}`
+                        ).join('\n\n');
+                        downloadBlob(new Blob(['\ufeff' + txt], { type: 'text/plain;charset=utf-8' }), `comments_${commentVideoId}_${Date.now()}.txt`);
+                        setInfoMsg('评论已导出为 TXT 文件');
+                      }}
+                      className="w-full py-2 text-xs bg-slate-800/50 text-slate-400 hover:text-slate-200 rounded-lg hover:bg-slate-800 transition-colors flex items-center justify-center gap-1"
+                    >
+                      <DownloadCloud className="w-3 h-3" />导出全部评论（TXT）
+                    </button>
+                  </div>
+                )}
+                {commentResult && commentResult.comments.length === 0 && !isLoadingComments && (
+                  <div className="text-center py-8 text-slate-500 text-sm">
+                    该视频暂无评论或评论已关闭
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -442,6 +442,40 @@ function invidiousProxyDevPlugin(opts: {
           res.end(JSON.stringify({ error: msg }));
         }
       });
+
+      // 下载历史轮询代理
+      server.middlewares.use('/api/metube/history', async (req, res) => {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 204;
+          res.end();
+          return;
+        }
+        if (req.method !== 'GET') {
+          res.statusCode = 405;
+          res.end('Method Not Allowed');
+          return;
+        }
+        const metube = metubeUrl.trim().replace(/\/$/, '');
+        if (!metube) {
+          res.statusCode = 503;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'Set METUBE_URL in .env for local MeTube proxy' }));
+          return;
+        }
+        try {
+          const r = await fetch(`${metube}/history`);
+          const text = await r.text();
+          res.statusCode = r.status;
+          res.setHeader('Content-Type', r.headers.get('content-type') || 'application/json');
+          res.end(text);
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          res.statusCode = 502;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: msg }));
+        }
+      });
     },
   };
 }
