@@ -7,13 +7,14 @@ import { OneClickDubbing } from './components/OneClickDubbing';
 import { CoverDesign } from './components/CoverDesign';
 import { YouTubeMonitor } from './components/YouTubeMonitor';
 import { QueueTaskViewer } from './components/QueueTaskViewer';
+import { ChannelGenerator } from './components/ChannelGenerator';
 import { initializeGemini } from './services/geminiService';
 import { ApiProvider } from './types';
 import { ToastContainer, useToast } from './components/Toast';
 import { Rss } from 'lucide-react';
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'generate' | 'tools' | 'media' | 'dubbing' | 'cover' | 'monitor'>('generate');
+  const [activeTab, setActiveTab] = useState<'generate' | 'tools' | 'media' | 'dubbing' | 'cover' | 'monitor' | 'channel'>('generate');
   const toast = useToast();
   
   // 调试：检查 toast 状态
@@ -218,6 +219,9 @@ const App: React.FC = () => {
         </div>
         <div className={activeTab === 'monitor' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'monitor'}>
           <YouTubeMonitor />
+        </div>
+        <div className={activeTab === 'channel' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'channel'}>
+          <ChannelGenerator apiKey={apiKey} provider={provider} toast={toast} />
         </div>
       </Layout>
       <ToastContainer toasts={toast.toasts} onClose={toast.closeToast} />

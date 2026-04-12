@@ -1,11 +1,11 @@
 import React from 'react';
-import { Settings, Cpu, PenTool, Layout as LayoutIcon, ExternalLink, Zap, Video, ImagePlus, Rss, Mic } from 'lucide-react';
+import { Settings, Cpu, PenTool, Layout as LayoutIcon, ExternalLink, Zap, Video, ImagePlus, Rss, Mic, Youtube } from 'lucide-react';
 import { ApiProvider } from '../types';
 
 interface LayoutProps {
   children: React.ReactNode;
-  activeTab: 'generate' | 'tools' | 'media' | 'dubbing' | 'cover' | 'monitor';
-  setActiveTab: (tab: 'generate' | 'tools' | 'media' | 'dubbing' | 'cover' | 'monitor') => void;
+  activeTab: 'generate' | 'tools' | 'media' | 'dubbing' | 'cover' | 'monitor' | 'channel';
+  setActiveTab: (tab: 'generate' | 'tools' | 'media' | 'dubbing' | 'cover' | 'monitor' | 'channel') => void;
   apiKey: string;
   setApiKey: (key: string) => void;
   provider: ApiProvider;
@@ -115,6 +115,17 @@ export const Layout: React.FC<LayoutProps> = ({
                 <div className="flex items-center gap-2">
                     <Rss size={14} />
                     频道监控
+                </div>
+              </button>
+              <button
+                onClick={() => setActiveTab('channel')}
+                className={`px-3 sm:px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200 ${
+                  activeTab === 'channel' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                    <Youtube size={14} />
+                    频道生成
                 </div>
               </button>
             </nav>

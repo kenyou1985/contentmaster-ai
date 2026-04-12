@@ -1,14 +1,16 @@
 import React, { useState, useRef } from 'react';
 import { ToolMode, NicheType, ApiProvider } from '../types';
-import { NICHES } from '../constants';
+import { NICHES, SCRIPT_MODE_SYSTEM } from '../constants';
 import {
   streamContentGeneration,
   initializeGemini,
   type StreamContentOptions,
 } from '../services/geminiService';
 import { fetchYouTubeTranscript, extractYouTubeVideoId, isYouTubeLink } from '../services/youtubeService';
-import { FileText, Maximize2, RefreshCw, Scissors, ArrowRight, Copy, ChevronDown, Video, Download, Plus, X, History } from 'lucide-react';
+import { ytGetVideoComments, type CommentResult } from '../services/youtubeAnalyticsService';
+import { FileText, Maximize2, RefreshCw, Scissors, ArrowRight, Copy, ChevronDown, Video, Download, Plus, X, History, Brain, Loader2, Youtube, Image, Wand2 } from 'lucide-react';
 import { saveHistory, getHistory, deleteHistory, clearHistory, HistoryRecord } from '../services/historyService';
+import { storage } from '../services/storageService';
 import { HistorySelector } from './HistorySelector';
 import { useToast } from './Toast';
 import { ProgressBar } from './ProgressBar';
@@ -268,6 +270,45 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   const [mergedOutput, setMergedOutput] = useState<string>('');
   const [painPointText, setPainPointText] = useState<string>('');
   const [terminalLog, setTerminalLog] = useState<string>('等待任务...');
+
+  // ── 评论区痛点提取状态 ──────────────────────────────
+  const [commentResult, setCommentResult] = useState<CommentResult | null>(null);
+  const [isExtractingComments, setIsExtractingComments] = useState(false);
+  const [isAnalyzingPainPoints, setIsAnalyzingPainPoints] = useState(false);
+  const [youtubeApiKey, setYoutubeApiKey] = useState<string>('');
+
+  // ── 频道生成器状态 ──────────────────────────────────
+  const [channelTopic, setChannelTopic] = useState('');
+  const [channelTargetAudience, setChannelTargetAudience] = useState('');
+  const [channelContentType, setChannelContentType] = useState('');
+  const [channelBrandPositioning, setChannelBrandPositioning] = useState('');
+  const [channelOutput, setChannelOutput] = useState<{
+    names: string[];
+    avatarPrompts: string[];
+    bannerPrompts: string[];
+    description: string;
+    keywords: string[];
+  } | null>(null);
+  const [isGeneratingChannel, setIsGeneratingChannel] = useState(false);
+  const [generatedAvatarImages, setGeneratedAvatarImages] = useState<string[]>([]);
+  const [generatedBannerImages, setGeneratedBannerImages] = useState<string[]>([]);
+  const [isGeneratingAvatar, setIsGeneratingAvatar] = useState(false);
+  const [isGeneratingBanner, setIsGeneratingBanner] = useState(false);
+  const [channelNameLang, setChannelNameLang] = useState<'zh' | 'en' | 'both'>('both');
+
+  // 初始化时加载 YouTube API Key
+  React.useEffect(() => {
+    const loadKey = async () => {
+      const envKey = (import.meta as any).env?.VITE_YOUTUBE_API_KEY as string | undefined;
+      if (envKey) {
+        setYoutubeApiKey(envKey);
+      } else {
+        const savedKey = await storage.get<string>('YOUTUBE_API_KEY');
+        if (savedKey) setYoutubeApiKey(savedKey);
+      }
+    };
+    void loadKey();
+  }, []);
   const [rewriteOutputLanguage, setRewriteOutputLanguage] = useState<'source' | 'zh' | 'en' | 'ja' | 'ko' | 'es' | 'de' | 'hi'>('source');
   const [allSegmentsDoneNotified, setAllSegmentsDoneNotified] = useState(false);
   const [autoMatchedNiche, setAutoMatchedNiche] = useState<{ niche: NicheType; score: number; reason: string } | null>(null);
@@ -487,7 +528,36 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   };
 
   const mergeFiveSegments = (segs: string[]): string => {
-    return segs.map(s => s.trim()).filter(Boolean).join('\n\n');
+    // 合并前清洗：去除每段开头重复的固定开头语（中医玄学赛道特有）
+    const FIXED_PATTERNS = [
+      /^各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。\s*/,
+      /^各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦!\s*/,
+      /^各位老友们好，欢迎来到我的频道，我是倪海厦。\s*/,
+      /^各位老友们好，欢迎来到我的频道，我是倪海厦!\s*/,
+      /^好了，我们开始上课。\s*/,
+      /^好了，我們開始上課。\s*/,
+      /^第一节课[:：]?\s*/,
+      /^第二节课[:：]?\s*/,
+      /^第三节课[:：]?\s*/,
+      /^第四节课[:：]?\s*/,
+      /^第五节课[:：]?\s*/,
+      /^第六节课[:：]?\s*/,
+      /^第七节课[:：]?\s*/,
+      /^第八节课[:：]?\s*/,
+      /^第九节课[:：]?\s*/,
+      /^第[一二三四五六七八九十]节课[:：]?\s*/,
+      /^第[一二三四五六七八九十]節課[:：]?\s*/,
+    ];
+
+    const cleaned = segs.map(seg => {
+      let result = seg.trim();
+      FIXED_PATTERNS.forEach(pattern => {
+        result = result.replace(pattern, '');
+      });
+      return result;
+    });
+
+    return cleaned.filter(Boolean).join('\n\n');
   };
 
   const calcSimilarityRough = (a: string, b: string): number => {
@@ -1809,29 +1879,14 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     }
     
     // Inject Niche Persona into the system instruction, enforce Chinese
-    // 脚本输出模式：使用通用系统指令，不关联赛道，不进行任何改写或洗稿
+    // 脚本输出模式：使用全领域万能短视频分镜生成器系统
     let systemInstruction = '';
-    let minChars = 0;
-    let maxChars = 0;
     if (taskMode === ToolMode.SCRIPT) {
-      if (!nicheConfig) {
-        setIsGenerating(false);
-        setOutputText('错误：找不到赛道配置');
-        return;
+      // 使用全领域万能分镜系统指令
+      systemInstruction = SCRIPT_MODE_SYSTEM;
+      if (taskMode === ToolMode.SCRIPT) {
+        originalScriptInputRef.current = taskInputText;
       }
-      const isChinese = /[\u4e00-\u9fff]/.test(taskInputText);
-      const originalLength = taskInputText.length;
-    if (taskMode === ToolMode.SCRIPT) {
-      originalScriptInputRef.current = taskInputText;
-    }
-      const targetShots = scriptShotMode === 'custom'
-        ? Math.min(100, Math.max(10, scriptShotCount))
-        : Math.min(60, Math.ceil(originalLength / 250));
-      const avgChars = Math.max(150, Math.round(originalLength / targetShots));
-      minChars = isChinese ? Math.max(120, Math.round(avgChars * 0.8)) : Math.max(240, Math.round(avgChars * 0.8));
-      maxChars = isChinese ? Math.max(minChars + 20, Math.round(avgChars * 1.2)) : Math.max(minChars + 40, Math.round(avgChars * 1.2));
-      // 脚本模式：赛道人设 + 严格原文搬运规则（复仇赛道与金融赛道共用同一镜头模板流程）
-      systemInstruction = `${nicheConfig.systemInstruction}\n你也是一位专业的视频脚本生成助手。你的任务是：\n1. 将原文内容按照指定格式转换为视频脚本\n2. **绝对铁律：镜头文案必须100%按照原文输出，禁止任何改写、润色、扩写、缩写或修改**\n3. **只进行格式转换，不进行任何内容改写**\n4. **续写时同样适用：所有镜头（包括镜头14、镜头15、镜头16...）都必须100%原文还原，且每镜头字数需符合${minChars}-${maxChars}字范围**\n5. 请务必使用简体中文输出（包括镜头文案、角色和场景描述部分）。如原文为繁体，请先转换为简体再输出`;
     } else {
       // 其他模式：使用赛道配置
       if (!nicheConfig) {
@@ -2295,405 +2350,33 @@ ${inputSection}
 ## Output Format
 请直接输出润色後的纯净最終版本（使用 ${inputLanguage} 输出），保持簡潔連貫流暢，無需標註修改痕跡或解釋。严禁使用「## 」「### 」「修改说明：」「（）」「**」等任何标记。`;
         case ToolMode.SCRIPT:
-                // 检测语言（简单判断：如果包含中文字符，认为是中文）
-                const isChinese = /[\u4e00-\u9fff]/.test(inputText);
-                const targetShots = scriptShotMode === 'custom'
-                  ? Math.min(100, Math.max(10, scriptShotCount))
-                  : Math.min(60, Math.ceil(originalLength / 250));
-                // 每镜头字数基于原文字数均分，允许一定浮动
-                const avgChars = Math.max(150, Math.round(originalLength / targetShots));
-                const minChars = isChinese ? Math.max(120, Math.round(avgChars * 0.8)) : Math.max(240, Math.round(avgChars * 0.8));
-                const maxChars = isChinese ? Math.max(minChars + 20, Math.round(avgChars * 1.2)) : Math.max(minChars + 40, Math.round(avgChars * 1.2));
-                
-                const scriptPrompt = `### 任务指令：视频脚本生成
+                const scriptPrompt = `### 任务指令：视频分镜生成
 
 ${inputSection}
 
-## 原文字数统计
-原文共 ${originalLength} 字
-
-## 原文结尾片段（必须出现在最后一个镜头文案中，原样复制，禁止改写）
-${taskInputText.slice(-300)}
-
-${scriptShotMode === 'custom' && shotSegmentsRef.current?.length ? `## 预切分镜头文案（严格按序号一一对应，禁止拆分/合并/改写/跳过）
-${shotSegmentsRef.current.map((seg, i) => `镜头${i + 1}文案段落：${seg}`).join('\n')}
-` : ''}
-## 镜头数量设置
-当前模式：${scriptShotMode === 'custom' ? `自定义（${scriptShotCount} 镜头）` : '自动（根据原文长度自动估算）'}
-
-## ⚠️⚠️⚠️ 格式铁律（CRITICAL - 最高优先级 - 违反即失败 - 已写死，禁止任何变动、修改、调整、优化）⚠️⚠️⚠️
-
-### ⚠️⚠️⚠️ 角色信息和场景信息格式 - 写死格式，100%模板复刻，禁止任何修改、变动、调整、优化、创新 ⚠️⚠️⚠️
-
-**⚠️⚠️⚠️ 此格式已写死，禁止任何形式的变动，包括但不限于：**
-- ❌ 禁止修改字段名称（如改为"角色名"、"场景名"等）
-- ❌ 禁止增加或减少字段
-- ❌ 禁止修改字段顺序
-- ❌ 禁止修改字段格式（如添加空格、符号等）
-- ❌ 禁止将所有字段放在同一行
-- ❌ 禁止使用其他格式（如【脚本角色清单】、角色1:等）
-- ❌ 禁止任何"优化"、"改进"、"创新"格式的行为
-- ✅ **唯一允许的操作：严格按照模板输出，一个字、一个符号都不能改**
-
-**⚠️⚠️⚠️ 每个字段必须独占一行，禁止放在同一行！⚠️⚠️⚠️**
-
-**角色信息正确格式（写死，不可更改，禁止任何变动）：**
-
-[角色信息]
-[名称]医生
-[别名]倪医生，主播
-[描述]一位55岁中年男性，身高175cm，一头整齐的黑白相间短发，身材适中，穿着一身深灰色的传统长衫（或中山装），面容清癯，眼神深邃且坚定，有一种看透世事的智慧感。
-
-[名称]助手
-[别名]小李，助理
-[描述]一位30岁左右的年轻女性，身着白色工作服，表情专注认真。
-
-**场景信息正确格式（写死，不可更改）：**
-
-[场景信息]
-[名称]场景-室内
-[别名]无
-[描述]古色古香的书房或诊室，背景有书架、医学经络图、毛笔字画，光线柔和庄重。
-
-[名称]场景-户外
-[别名]无
-[描述]自然风光，山水画卷般的场景，展现天人合一的理念。
-
-**❌❌❌ 绝对禁止的错误格式（违反即失败）：**
-
-错误示例1（字段在同一行）：
-❌ [名称]医生[别名]倪医生，主播[描述]一位55岁...
-
-错误示例2（使用其他标题）：
-❌ 【脚本角色清单】
-❌ 角色1:、角色2:
-
-错误示例3（使用其他字段）：
-❌ 性别:、年龄:、外貌特征:、性格特征:、语言风格:
-
-错误示例4（字段不完整）：
-❌ [名称]医生
-❌ [别名]倪医生
-❌ （缺少[描述]字段）
-
-**✅✅✅ 必须遵守的规则（写死，不可违反）：**
-1. ✅ 第一行必须是 [角色信息] 或 [场景信息]
-2. ✅ 每个角色/场景必须包含三个字段：[名称]、[别名]、[描述]
-3. ✅ **每个字段必须独占一行**（[名称]一行、[别名]一行、[描述]一行）
-4. ✅ 字段格式：[字段名]内容（字段名用方括号，后面直接跟内容，不换行）
-5. ✅ 每个角色/场景之间用空行分隔
-6. ✅ [描述]字段必须详细（角色至少50字，场景至少30字）
-7. ✅ 禁止增加或减少字段
-8. ✅ 禁止使用任何其他格式
-
-## Goals
-将上述文本内容转换为适合语音视频制作的脚本模板，包含镜头分镜、图片提示词、视频提示词、语音分镜和音效设计。
-
-## 输出要求（CRITICAL）
-
-### 镜头数量限制
-- 默认自动估算镜头数量（基于原文长度）
-- 若启用自定义镜头数：必须严格输出指定镜头数量
-- 自定义镜头数范围：10-100
-- 每个镜头对应一段连续的文本内容
-
-### 镜头格式（每个镜头必须包含以下所有字段，严格按照此格式）
-
-镜头[序号]
-镜头文案: [角色名]-[语气词]："[⚠️ 这里必须填入原文的连续长段落，100%原文还原，一个字都不能改，${minChars}-${maxChars}字，无动作描述，纯净文本]"
-图片提示词: [景别], [画面描述], [环境描述]
-视频提示词: [秒数]s: [画面描述], [运镜方式]
-景别: [全景/中景/特写]
-语音分镜: [角色名]
-音效: [具体的音效名]
-
-⚠️ **格式要求**：
-- 每个字段独占一行
-- 字段名后使用冒号+空格（如：镜头文案: ）
-- 镜头之间用空行分隔
-
-
-## 详细要求
-
-### 镜头文案（CRITICAL - 100%原文还原，绝对禁止修改）
-⚠️ **绝对铁律：镜头文案必须100%按照原文输出，禁止任何修改、增加或缩减**
-
-**这是最重要的规则，违反即失败：**
-- 必须是原文的连续长段落，一个字都不能改
-- 禁止任何改写、润色、扩写、缩写
-- 禁止添加任何新内容
-- 禁止删除任何原文内容
-- 禁止修改任何标点符号
-- 禁止修改任何字词
-- 禁止替换任何同义词
-- 禁止改变任何句式
-- 禁止调整任何语序
-- **必须从原文中直接复制粘贴，不能有任何改动**
-
-**格式要求：**
-- 每个镜头文案必须：${minChars}-${maxChars}字（严格控制字数）
-- 无动作描述，纯净文本，适合 TTS 语音合成
-- 格式：[角色名]-[语气词]："[原文文本内容，100%还原]"
-- 语气词限定：只能使用以下六种之一：高兴、愤怒、悲伤、害怕、惊讶、平静
-- ⚠️ **字数铁律**：每个镜头文案必须在${minChars}-${maxChars}字之间（约${avgChars}字/镜头），不能过短或过长
-
-### 图片提示词
-- 必须适合 AI 绘图工具（Midjourney/Stable Diffusion/DALL-E）
-- 包含：景别（全景/中景/特写）、画面描述、环境描述
-- 描述要具体、视觉化，包含色彩、构图、光线等元素
-- 根据原文内容和场景特点设计视觉风格
-- **镜头1-3可用于交代主体人物；从镜头4开始，图片提示词必须优先依据该镜头文案推理具体场景与物件，不要始终围绕人物肖像**
-- **后续镜头必须以“场景/物件/空间关系”为主（如电梯内部结构、按钮面板、雨夜走廊、门厅灯光、地面积水、通风扇、荧光灯、衣料细节、手与金属的距离等），人物只允许作为边缘点缀**
-- **至少每2个镜头中包含1个非人物主导画面；禁止连续两个镜头都以人物特写为主**
-- **图片提示词必须与镜头文案语义一一对应，强调环境叙事而非人物肖像**
-
-### 视频提示词
-- 格式：[秒数]s: [画面描述], [运镜方式]
-- 秒数：根据文案长度合理分配（通常 5-15 秒）
-- 运镜方式：推拉摇移、固定机位、跟随、环绕等
-- 画面描述：简洁描述该时段的视觉重点
-
-### 景别
-- 必须是：全景、中景、特写 三者之一
-- 根据内容重点选择合适的景别
-
-### 语音分镜
-- 标注该镜头的主要说话角色
-- 如果没有明确角色，使用"旁白"或"解说"
-
-### 音效
-- 具体的音效名称，如：背景音乐、键盘敲击声、脚步声、环境音等
-- 如果不需要音效，标注"无"或"背景音乐"
-
-## 完整输出格式示例（必须严格遵守）
-
-镜头1
-镜头文案: 医生-平静："[${minChars}-${maxChars}字的原文文本，100%还原，一个字都不能改]"
-图片提示词: 中景, 一位中年男性医生坐在古色古香的书房中, 背景有书架和医学图谱, 柔和的光线
-视频提示词: 8s: 医生平静讲述, 固定机位
-景别: 中景
-语音分镜: 医生
-音效: 背景音乐
-
-镜头2
-镜头文案: 医生-平静："[200-300字的原文文本，100%还原，一个字都不能改]"
-图片提示词: 中景, 医生讲解医学知识, 手指指向经络图, 书房环境
-视频提示词: 10s: 医生讲解示范, 缓慢推近
-景别: 中景
-语音分镜: 医生
-音效: 背景音乐
-
-... (继续输出所有镜头，直到原文全部转换完毕，镜头数必须严格等于设定值) ...
-
-⚠️ **镜头文案字数铁律**：每个镜头文案必须严格控制在${minChars}-${maxChars}字之间（约${avgChars}字/镜头）！
-
-[角色信息]
-[名称]医生
-[别名]倪医生，主播
-[描述]一位55岁中年男性，身高175cm，一头整齐的黑白相间短发，身材适中，穿着一身深灰色的传统长衫（或中山装），面容清癯，眼神深邃且坚定，有一种看透世事的智慧感。
-
-[名称]助手
-[别名]小李，助理
-[描述]一位30岁左右的年轻女性，身着白色工作服，表情专注认真。
-
-[场景信息]
-[名称]场景-室内
-[别名]无
-[描述]古色古香的书房或诊室，背景有书架、医学经络图、毛笔字画，光线柔和庄重。
-
-[名称]场景-户外
-[别名]无
-[描述]自然风光，山水画卷般的场景，展现天人合一的理念。
-
-⚠️ **格式铁律（再次强调 - 写死格式）**：
-- ✅ 必须使用 [角色信息] 和 [场景信息] 作为标题
-- ✅ 必须使用 [名称]、[别名]、[描述] 三个字段
-- ✅ **每个字段必须独占一行**（不能写成 [名称]医生[别名]倪医生[描述]...）
-- ✅ 字段格式：[字段名]内容（方括号+字段名+内容，不换行）
-- ✅ 每个角色/场景之间用空行分隔
-- ✅ 禁止使用任何其他格式
-
-❌ **错误示例（绝对禁止）**：
-[名称]医生[别名]倪医生，主播[描述]一位55岁...  ← 这是错误的！所有字段挤在一行！
-
-✅ **正确示例**：
-[名称]医生
-[别名]倪医生，主播
-[描述]一位55岁...  ← 这是正确的！每个字段独占一行！
-
-## Output Format（输出格式 - CRITICAL - 写死格式）
-
-**必须严格按照以下顺序和格式输出：**
-
-1. **镜头信息**（按序号从1开始）
-   - 镜头[序号]
-   - 镜头文案: [角色名]-[语气词]："[原文内容100%还原]"
-   - 图片提示词: [内容]
-   - 视频提示词: [内容]
-   - 景别: [全景/中景/特写]
-   - 语音分镜: [角色名]
-   - 音效: [音效名]
-   - （空行分隔）
-
-2. **角色信息**（所有镜头完成后 - 写死格式）
-   [角色信息]
-   [名称]角色名
-   [别名]别名1，别名2
-   [描述]详细描述（至少50字）
-   （空行）
-   [名称]下一个角色名
-   [别名]别名
-   [描述]详细描述
-   
-   ⚠️ **每个字段必须独占一行！不能写成：[名称]角色名[别名]别名[描述]描述**
-
-3. **场景信息**（角色信息完成后 - 写死格式）
-   [场景信息]
-   [名称]场景名
-   [别名]别名或"无"
-   [描述]详细描述（至少30字）
-   （空行）
-   [名称]下一个场景名
-   [别名]别名或"无"
-   [描述]详细描述
-   
-   ⚠️ **每个字段必须独占一行！不能写成：[名称]场景名[别名]无[描述]描述**
-
-**⚠️⚠️⚠️ 格式铁律（违反即失败 - 已写死，不可更改，禁止任何变动、修改、调整、优化、创新）⚠️⚠️⚠️**
-
-**此格式已永久写死，禁止任何形式的变动，包括但不限于：**
-- ❌ 禁止修改字段名称（如改为"角色名"、"场景名"、"角色名称"、"场景名称"等）
-- ❌ 禁止增加或减少字段
-- ❌ 禁止修改字段顺序
-- ❌ 禁止修改字段格式（如添加空格、符号、换行等）
-- ❌ 禁止将所有字段放在同一行
-- ❌ 禁止使用其他格式（如【脚本角色清单】、角色1:、性别:、年龄:等）
-- ❌ 禁止任何"优化"、"改进"、"创新"格式的行为
-- ❌ 禁止使用 Markdown 特殊符号（**、*、__、~~等）
-- ✅ **唯一允许的操作：严格按照模板输出，一个字、一个符号、一个空格都不能改**
-
-**格式要求（写死，不可更改）：**
-- ✅ 角色信息必须用 [角色信息] 开头，不是【脚本角色清单】
-- ✅ 场景信息必须用 [场景信息] 开头，不是【脚本场景清单】
-- ✅ 必须用 [名称]、[别名]、[描述] 三个字段，不是"角色1:"、"性别:"、"年龄:"
-- ✅ **每个字段必须独占一行**（这是最容易犯的错误！）
-- ✅ 字段格式：[字段名]内容（方括号+字段名+方括号+内容，字段名和内容之间无空格，无换行）
-- ✅ 每个角色/场景之间用空行分隔
-- ✅ 使用简体中文输出（包含镜头文案、角色和场景描述）
-- ❌ 严禁使用 **、*、__、~~ 等 Markdown 特殊符号
-- ❌ 严禁使用任何不在模板中的格式
-- ❌ **严禁将所有字段挤在一行**
-
-## 续写规则
-- 如果一次性无法完成全部脚本，在最后一个完整镜头后输出「----」（4个横线），系统会自动续写
-- 续写时从「----」下一行开始，继续输出下一个镜头
-- **续写时同样适用：所有镜头都必须100%原文还原，禁止任何改写、润色、扩写、缩写**
-- 必须完成所有镜头、角色信息和场景信息才算完整
-
-## 角色信息和场景信息（在所有镜头完成后输出）
-
-⚠️⚠️⚠️ **输出时机（绝对铁律）**：只有在所有镜头都输出完成后，才能输出角色信息和场景信息。⚠️⚠️⚠️
-
-### 角色信息格式（CRITICAL - 严格按照此格式，禁止使用其他格式 - 违反即失败）
-
-⚠️⚠️⚠️ **绝对禁止（违反即失败）**：
-- ❌ 禁止使用【脚本角色清单】、角色1:、角色2:、性别:、年龄:、外貌特征:、性格特征:、语言风格: 等格式
-- ❌ 禁止使用任何不在模板中的格式
-- ❌ 禁止修改字段名称（如改为"角色名"、"角色别名"等）
-- ❌ 禁止增加或减少字段
-- ❌ 禁止将所有字段放在同一行
-- ❌ 禁止省略任何字段
-- ❌ 禁止在字段名称前后添加空格或符号
-- **只能使用以下模板格式，一个字、一个符号都不能改**
-
-**✅ 唯一正确的格式（写死，不可更改）：**
-
-[角色信息]
-[名称]医生
-[别名]倪医生，主播
-[描述]一位55岁中年男性，身高175cm，一头整齐的黑白相间短发，身材适中，穿着一身深灰色的传统长衫（或中山装），面容清癯，眼神深邃且坚定，有一种看透世事的智慧感。
-
-[名称]助手
-[别名]小李，助理
-[描述]一位30岁左右的年轻女性，身着白色工作服，表情专注认真。
-
-⚠️⚠️⚠️ **格式要求（绝对铁律 - 写死格式 - 违反即失败）**：
-1. ✅ **第一行必须是 [角色信息]（方括号+角色信息+方括号，无空格，无其他字符）**
-2. ✅ **每个角色必须且只能包含三个字段：[名称]、[别名]、[描述]**
-3. ✅ **每个字段必须独占一行（这是最容易犯的错误！）**
-   - ❌ 错误示例：[名称]医生[别名]倪医生[描述]一位55岁...（所有字段在一行）
-   - ✅ 正确格式：
-     [名称]医生
-     [别名]倪医生，主播
-     [描述]一位55岁中年男性...
-4. ✅ **字段格式：[字段名]内容**（方括号+字段名+方括号+内容，字段名和内容之间无空格，无换行）
-5. ✅ **字段名称必须完全一致**：[名称]、[别名]、[描述]（不能改为"角色名称"、"角色别名"等）
-6. ✅ **[描述] 字段必须输出详细内容**：包含年龄、性别、身高、外貌、穿着、性格等（至少50字）
-7. ✅ **每个角色之间用空行分隔**
-8. ✅ **内容必须根据原文提取或合理推断**
-9. ❌ **禁止输出任何其他格式的角色信息**
-10. ❌ **禁止省略 [描述] 字段或输出空内容**
-11. ❌ **禁止将所有字段挤在一行**
-12. ❌ **禁止在字段名称中添加或删除任何字符**
-
-### 场景信息格式（CRITICAL - 严格按照此格式，禁止使用其他格式 - 违反即失败）
-
-⚠️⚠️⚠️ **绝对禁止（违反即失败）**：
-- ❌ 禁止使用【脚本场景清单】、场景1:、场景2:、描述: 等格式
-- ❌ 禁止使用任何不在模板中的格式
-- ❌ 禁止修改字段名称（如改为"场景名"、"场景别名"等）
-- ❌ 禁止增加或减少字段
-- ❌ 禁止将所有字段放在同一行
-- ❌ 禁止省略任何字段
-- ❌ 禁止在字段名称前后添加空格或符号
-- **只能使用以下模板格式，一个字、一个符号都不能改**
-
-**✅ 唯一正确的格式（写死，不可更改）：**
-
-[场景信息]
-[名称]场景-室内
-[别名]无
-[描述]古色古香的书房或诊室，背景有书架、医学经络图、毛笔字画，光线柔和庄重。
-
-[名称]场景-户外
-[别名]无
-[描述]自然风光，山水画卷般的场景，展现天人合一的理念。
-
-⚠️⚠️⚠️ **格式要求（绝对铁律 - 写死格式 - 违反即失败）**：
-1. ✅ **第一行必须是 [场景信息]（方括号+场景信息+方括号，无空格，无其他字符）**
-2. ✅ **每个场景必须且只能包含三个字段：[名称]、[别名]、[描述]**
-3. ✅ **每个字段必须独占一行（这是最容易犯的错误！）**
-   - ❌ 错误示例：[名称]场景-室内[别名]无[描述]古色古香...（所有字段在一行）
-   - ✅ 正确格式：
-     [名称]场景-室内
-     [别名]无
-     [描述]古色古香的书房或诊室...
-4. ✅ **字段格式：[字段名]内容**（方括号+字段名+方括号+内容，字段名和内容之间无空格，无换行）
-5. ✅ **字段名称必须完全一致**：[名称]、[别名]、[描述]（不能改为"场景名称"、"场景别名"等）
-6. ✅ **[描述] 字段必须输出详细内容**：包含场景类型、环境特点、视觉元素、氛围等（至少30字）
-7. ✅ **每个场景之间用空行分隔**
-8. ✅ **内容必须根据原文提取或合理推断**
-9. ❌ **禁止输出任何其他格式的场景信息**
-10. ❌ **禁止省略 [描述] 字段或输出空内容**
-11. ❌ **禁止将所有字段挤在一行**
-12. ❌ **禁止在字段名称中添加或删除任何字符**
-
-## 输出要求（CRITICAL - 绝对禁止违反）
-- **严禁重复输出已完成的镜头，每个镜头编号只能出现一次**
-- **严格按照上述模板格式输出，禁止使用其他格式**
-- **绝对禁止输出以下格式**：
-  - 【脚本角色清单】
-  - 角色1:、性别:、年龄:、外貌特征:、性格特征:、语言风格:
-  - 【脚本场景清单】
-  - 场景1:、场景2:
-  - 或任何其他不在模板中的格式
-- **只能输出模板中定义的格式**：
-  - 镜头信息：镜头[序号] + 6个字段
-  - 角色信息：[角色信息] + [名称][别名][描述]
-  - 场景信息：[场景信息] + [名称][别名][描述]
-- 不要输出任何额外的说明、标题或解释
-- 所有镜头、角色信息、场景信息输出完成后，立即结束，不要输出任何其他内容`;
-                return buildTwoStagePrompt(scriptPrompt, stagedSegments);
+## 格式要求
+
+按以下格式输出所有分镜，禁止输出任何分析过程：
+
+镜头N
+镜头文案:[必须包含该分镜对应的所有原文句子，严格按原文输出]
+图片提示词:图片背景为[主要场景]，[时间段]，[环境简述]。[构图描述]
+视频提示词:[运镜或动态趋势的描述]
+景别:[特写/近景/中景/全景/微观/宏观]
+语音分镜:[旁白/主讲人（标注语气）]
+音效:[环境音或特殊音效]
+
+## 角色信息格式（紧接最后一个分镜条目之后输出）
+
+角色信息
+[名称]主讲人
+[别名]讲述者/专家
+[描述][根据识别出的赛道，自动生成符合该领域权威人设的外貌描述]
+
+[名称]场景-[核心场景名称]
+[别名]场景-[核心场景名称]
+[描述][描述该场景的视觉基调与色彩风格]`;
+                return scriptPrompt;
             default:
                 return '';
         }
@@ -4252,7 +3935,23 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
     setOutlineText('');
     setOutlineItems(['', '', '', '', '']);
     setOutputText('');
+    // 清空评论区提取状态
+    setCommentResult(null);
+    setIsExtractingComments(false);
+    setIsAnalyzingPainPoints(false);
     toast.success('面板已清空');
+  };
+
+  // 频道生成器清理函数
+  const handleClearChannelPanel = () => {
+    setChannelTopic('');
+    setChannelTargetAudience('');
+    setChannelContentType('');
+    setChannelBrandPositioning('');
+    setChannelOutput(null);
+    setGeneratedAvatarImages([]);
+    setGeneratedBannerImages([]);
+    toast.success('频道生成器已清空');
   };
 
   const getRewriteTargetLanguageInstruction = (sampleText: string) => {
@@ -4271,6 +3970,101 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
     if (/English/i.test(detected)) return 'English';
     return '与原文保持同语言输出（原文中文就输出中文，原文英文就输出英文，其他语言同理）';
   };
+
+  // ── 评论区痛点提取 ──────────────────────────────────────
+  /** 从左侧原始文案输入框的 YouTube 链接提取评论并自动分析痛点 */
+  async function extractCommentsAndPainPoints() {
+    const videoId = extractYouTubeVideoId(inputText.trim());
+    if (!videoId) {
+      toast.error('无法识别的 YouTube 链接，请确保左侧输入框包含有效的 YouTube 链接');
+      return;
+    }
+
+    setIsExtractingComments(true);
+    setCommentResult(null);
+    setIsAnalyzingPainPoints(false);
+    appendTerminal(`[评论提取] 开始提取视频 ${videoId} 的评论...`);
+
+    try {
+      const result = await ytGetVideoComments(videoId, youtubeApiKey || undefined, 50);
+      setCommentResult(result);
+
+      if (result.comments.length === 0) {
+        appendTerminal(`[评论提取] 该视频暂无评论或评论已关闭`);
+        toast.warning('该视频暂无评论或评论已关闭');
+        setIsExtractingComments(false);
+        return;
+      }
+
+      appendTerminal(`[评论提取] 成功提取 ${result.comments.length} 条评论，开始分析用户痛点...`);
+
+      // 自动调用 Gemini 分析痛点
+      await analyzePainPointsFromComments(result);
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      appendTerminal(`[评论提取] 提取失败: ${errMsg}`);
+      toast.error(`评论提取失败: ${errMsg}`);
+    } finally {
+      setIsExtractingComments(false);
+    }
+  }
+
+  /** 分析评论提取痛点 */
+  async function analyzePainPointsFromComments(result: CommentResult) {
+    setIsAnalyzingPainPoints(true);
+    appendTerminal(`[痛点分析] 正在调用 Gemini 模型分析评论...`);
+
+    const commentsText = result.comments
+      .map((c, i) => `${i + 1}. ${c.text}`)
+      .join('\n');
+
+    const systemInstruction = `你是一个用户评论分析助手。
+
+【你的任务】
+从评论中提炼出用户的核心痛点需求。
+
+【清洗规则】
+过滤掉以下无效评论：
+- 广告、推广信息
+- 刷屏内容（"沙发"、"前排"、"哈哈"、"666"等无意义内容）
+- 纯表情、符号
+- 与视频内容无关的评论
+
+【输出要求】
+- 只输出 3-5 条用户痛点，每条一行
+- 格式：1. 痛点内容
+- 不要有任何解释、前言、总结
+- 不要说"根据评论分析"之类的话
+- 直接输出纯痛点列表`;
+
+    const prompt = `评论内容：\n${commentsText}\n\n请直接输出用户痛点列表。`;
+
+    let rawResult = '';
+    try {
+      await streamContentGeneration(
+        prompt,
+        systemInstruction,
+        (chunk) => {
+          rawResult += chunk;
+          let cleaned = rawResult
+            .replace(/^(以下是|根据评论|用户痛点[:：]?|分析结果[:：]?|用户反馈[:：]?)\s*/gim, '')
+            .replace(/^[-—–_=*~`#]+$/gm, '')
+            .trim();
+          setPainPointText(cleaned);
+        },
+        'gpt-5.4-mini',
+        { temperature: 0.3, maxTokens: 1024 }
+      );
+      appendTerminal(`[痛点分析] 分析完成`);
+      toast.success('用户痛点已提取并填入评论区输入框');
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      appendTerminal(`[痛点分析] 分析失败: ${errMsg}`);
+      toast.error(`痛点分析失败: ${errMsg}`);
+    } finally {
+      setIsAnalyzingPainPoints(false);
+    }
+  }
 
   const handleRegenerateSingleSegment = async (idx: number, forcedSource?: string): Promise<string> => {
     const source = (forcedSource ?? rewriteSegments[idx] ?? '').trim();
@@ -4317,12 +4111,49 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
 【输出语言】${targetLang}
 【分段大纲】${segmentOutline}
 【评论区痛点/关键词】${painPointText || '无'}
+【本段序号】第${idx + 1}段（共5段）
+${idx > 0 ? `【前段结尾】（仅作衔接参考，不可照抄）\n${(segmentOutputs[idx - 1] || '').trim().slice(-100)}` : '【前段结尾】无'}
 
 【原文分段】
 ${segSource}
 
 【硬性约束】
-- 不得照抄原句，不得只换同义词
+${niche === NicheType.TCM_METAPHYSICS ? (idx === 0
+? `【中医玄学赛道·第1课约束·必须严格遵守】
+【强制禁止输出以下内容】
+- 禁止输出"第一课"、"第二课"等课程序号
+- 禁止输出"各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。"
+- 禁止输出"好了，我们开始上课。"
+- 禁止输出任何固定开场白
+【只输出纯正文】开头第一句就是正文，不要任何引导语`
+: idx === 1
+? `【中医玄学赛道·第2课约束·必须严格遵守】
+【强制禁止】
+- 禁止输出任何开头语、过渡语、引导语
+- 禁止输出"第二课"、"第一课"、"第三课"等课程序号
+- 禁止输出"好了，我们开始上课"
+- 只输出纯正文内容，开头第一句就是正文`
+: idx === 2
+? `【中医玄学赛道·第3课约束·必须严格遵守】
+【强制禁止】
+- 禁止输出任何开头语、过渡语、引导语
+- 禁止输出任何课程序号
+- 禁止输出"好了，我们开始上课"
+- 只输出纯正文内容，开头第一句就是正文`
+: idx === 3
+? `【中医玄学赛道·第4课约束·必须严格遵守】
+【强制禁止】
+- 禁止输出任何开头语、过渡语、引导语
+- 禁止输出任何课程序号
+- 禁止输出"好了，我们开始上课"
+- 只输出纯正文内容，开头第一句就是正文`
+: `【中医玄学赛道·第5课约束·必须严格遵守】
+【强制禁止】
+- 禁止输出任何开头语、过渡语、引导语
+- 禁止输出任何课程序号
+- 禁止输出"好了，我们开始上课"
+- 只输出纯正文内容，开头第一句就是正文（引向全文收尾升华）`)
+: `- 不得照抄原句，不得只换同义词`}
 - 保留核心中心思想，但表达必须重构
 - ${
         mode === ToolMode.EXPAND
@@ -4330,8 +4161,7 @@ ${segSource}
           : `输出字数（去空白计字）控制在 ${rewriteTargetMin} ~ ${rewriteTargetMax} 字（${modeText}，按当前洗稿字数策略执行）`
       }
 - 必须完整收尾，结尾句闭环
-- 只输出正文，不要解释，不要标题
-`;
+- 只输出正文，不要解释，不要标题`;
       await streamContentGeneration(
         prompt,
         '你是资深多语种内容总编，必须深度重写并满足长度与维度约束。',
@@ -4458,6 +4288,36 @@ ${finalOut}`;
         if (!inRange || !complete) {
           appendTerminal(`⚠️ 第 ${idx + 1} 段仍未完全达标（字数 ${segLen}，目标 ${segMin}~${segMax}；${complete ? '收尾完整' : '收尾不完整'}），请手动点“重新生成该部分”。`);
         }
+      }
+
+      // 中医玄学赛道：第2-5段生成后清洗所有固定开场语（段首+段中）
+      if (niche === NicheType.TCM_METAPHYSICS && idx > 0) {
+        const TCM_FIXED_PATTERNS = [
+          /^各位老友们好，欢迎来到我的频道，我是(你们的老朋友)?倪海厦[。!！]\s*/,
+          /^各位老友们好，欢迎来到我的频道，我是(你们的老朋友)?祝海霞[。!！]\s*/,
+          /^各位老友们好，欢迎来到我的频道，我是(你们的老朋友)?[^\s，,。!！]+[。!！]\s*/,
+        ];
+        TCM_FIXED_PATTERNS.forEach(p => {
+          finalOut = finalOut.replace(p, '');
+        });
+        // 清洗段中任何位置的"好了，我们开始上课"（包括前后有换行、空格的情况）
+        finalOut = finalOut.replace(/[\n\s]*好了，我们开始上课[。]\s*/g, '\n');
+        finalOut = finalOut.replace(/\s*好了，我们开始上课[。.。]\s*/g, '\n');
+        finalOut = finalOut.replace(/好了[\s\S]*們開始上課[。.。]/g, '');
+        // 清洗"第X节课"开头（段首）
+        finalOut = finalOut.replace(/^第[一二三四五六七八九十\d]+节课[:：]?\s*/g, '');
+        // 清洗段中的"第X节课"
+        finalOut = finalOut.replace(/\n第[一二三四五六七八九十\d]+节课[:：]?\s*/g, '\n');
+        // 清洗段中的"第X课"
+        finalOut = finalOut.replace(/\n第一课\s*/g, '\n');
+        finalOut = finalOut.replace(/\n第二课\s*/g, '\n');
+        finalOut = finalOut.replace(/\n第三课\s*/g, '\n');
+        finalOut = finalOut.replace(/\n第四课\s*/g, '\n');
+        finalOut = finalOut.replace(/\n第五课\s*/g, '\n');
+        finalOut = finalOut.replace(/\n第[一二三四五六七八九十\d]+课\s*/g, '\n');
+        // 清理连续空行
+        finalOut = finalOut.replace(/\n{3,}/g, '\n\n');
+        finalOut = finalOut.trim();
       }
 
       setSegmentOutputs(prev => prev.map((v, i) => (i === idx ? finalOut : v)));
@@ -4594,12 +4454,75 @@ ${finalOut}`;
         appendTerminal(r.note);
       });
 
+      // 合并前再次清洗固定模式（防止衔接清洗后重新出现）
+      cleanedSegmentsForMerge = cleanedSegmentsForMerge.map((seg, segIdx) => {
+        let result = (seg || '').trim();
+        const patterns = [
+          /^各位老友们好，欢迎来到我的频道，我是(你们的老朋友)?倪海厦[。!！]\s*/,
+          /^各位老友们好，欢迎来到我的频道，我是(你们的老朋友)?祝海霞[。!！]\s*/,
+          /^各位老友们好，欢迎来到我的频道，我是(你们的老朋友)?[^\s，,。!！]+[。!！]\s*/,
+          /^好了，我们开始上课[。]\s*/,
+          /^好了，我們開始上課[。]\s*/,
+          /^第[一二三四五六七八九十]节课[:：]?\s*/,
+          /^第[一二三四五六七八九十]節課[:：]?\s*/,
+          /^第[一二三四五六七八九十\d]+节课[:：]?\s*/,
+        ];
+        patterns.forEach(p => { result = result.replace(p, ''); });
+        // 段中清洗"好了，我们开始上课"
+        if (segIdx > 0) {
+          result = result.replace(/\n\s*好了，我们开始上课[。.。]\s*/g, '\n');
+          result = result.replace(/\s*好了，我们开始上课[。.。]\s*/g, '\n');
+          result = result.replace(/[\s\S]*我們開始上課[。.。]/g, '');
+          result = result.replace(/\n各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦[。!！]\s*/g, '\n');
+          result = result.replace(/\n各位老友们好，欢迎来到我的频道，我是[^\s，,。!！]+[。!！]\s*/g, '\n');
+          result = result.replace(/\n第一课\s*/g, '\n');
+          result = result.replace(/\n第二课\s*/g, '\n');
+          result = result.replace(/\n第三课\s*/g, '\n');
+          result = result.replace(/\n第四课\s*/g, '\n');
+          result = result.replace(/\n第五课\s*/g, '\n');
+          result = result.replace(/\n第[一二三四五六七八九十\d]+节课[:：]?\s*/g, '\n');
+        }
+        result = result.replace(/\n{3,}/g, '\n\n');
+        return result.trim();
+      });
+
+      const mergeInstruction = niche === NicheType.TCM_METAPHYSICS
+        ? `【中医玄学赛道·合并输出格式·必须逐字执行】
+【必须严格遵循的输出格式】
+第一课
+各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。
+好了，我们开始上课。
+[第1课正文]
+
+第二课
+[在段首写一句承上启下的话，然后进入第2课正文]
+
+第三课
+[在段首写一句承上启下的话，然后进入第3课正文]
+
+第四课
+[在段首写一句承上启下的话，然后进入第4课正文]
+
+第五课
+[在段首写一句承上启下的话引向总结，然后进入第5课正文，最后做全文收尾升华]
+
+【硬性规则·违反则输出无效】
+1. 第1段：开头必须是"第一课"，然后是"各位老友们好..."，然后是"好了，我们开始上课。"
+2. 第2段：开头必须是"第二课"
+3. 第3段：开头必须是"第三课"
+4. 第4段：开头必须是"第四课"
+5. 第5段：开头必须是"第五课"
+6. 第2-5段禁止出现"各位老友们好..."
+7. 第2-5段禁止出现"好了，我们开始上课。"
+8. 只输出正文，不要任何解释`
+        : '';
+
       const cleanedMerged = mergeFiveSegments(cleanedSegmentsForMerge);
       const expandMergeRule =
         mode === ToolMode.EXPAND
           ? `最终成稿（去空白计字）控制在 ${minFinalLen}~${maxFinalLen} 字，对应扩写强度策略约 ${expandRange.min}~${expandRange.max} 倍全文原文（约 ${Math.round(expandRange.min * 100)}%~${Math.round(expandRange.max * 100)}% 体量），必须长于原文，并增强扩写维度（场景/情绪/细节/逻辑/对比/故事/金句/数据）`
           : '';
-      const prompt = `你将收到5段“已清洗优化”结果，请执行“无缝衔接合并”。\n\n要求：\n1) 保留每段核心信息，不丢观点\n2) 在段间补上承上启下过渡句，让全文连贯自然\n3) 统一口吻与时态\n4) 输出语言：${targetLang}\n5) ${mode === ToolMode.EXPAND ? expandMergeRule : mergeRewriteLenRule}\n6) 只做衔接清洗与必要删改，不得推翻5段结构重写\n7) 只输出最终正文，不要解释\n\n【评论区痛点/关键词】\n${painPointText || '无'}\n\n【5段清洗结果】\n${cleanedSegmentsForMerge.map((s, idx) => `第${idx + 1}段：\n${(s || '').trim() || '（空）'}`).join('\n\n')}`;
+      const prompt = `你将收到5段“已清洗优化”结果，请执行“无缝衔接合并”。\n\n要求：\n1) 保留每段核心信息，不丢观点\n2) 在段间补上承上启下过渡句，让全文连贯自然\n3) 统一口吻与时态\n4) 输出语言：${targetLang}\n5) ${mode === ToolMode.EXPAND ? expandMergeRule : mergeRewriteLenRule}\n6) 只做衔接清洗与必要删改，不得推翻5段结构重写\n7) 只输出最终正文，不要解释\n\n【评论区痛点/关键词】\n${painPointText || '无'}\n\n【5段清洗结果】\n${cleanedSegmentsForMerge.map((s, idx) => `第${idx + 1}段：\n${(s || '').trim() || '（空）'}`).join('\n\n')}\n${mergeInstruction}`;
 
       await streamContentGeneration(
         prompt,
@@ -4688,6 +4611,58 @@ ${finalText}`;
           }
         }
 
+        // 中医玄学赛道：最终输出前再次清洗"好了，我们开始上课"（只保留第1段的）
+        if (niche === NicheType.TCM_METAPHYSICS) {
+          // 先找到第一段之后的所有"好了，我们开始上课"，全部删除
+          const firstOccurrence = finalText.indexOf('好了，我们开始上课。');
+          if (firstOccurrence !== -1) {
+            // 保留第一段的开场白，删除后面的
+            const beforeFirst = finalText.substring(0, firstOccurrence + '好了，我们开始上课。'.length);
+            const afterFirst = finalText.substring(firstOccurrence + '好了，我们开始上课。'.length);
+            const cleanedAfter = afterFirst
+              .replace(/\n好了，我们开始上课。[。]\s*/g, '\n')
+              .replace(/\s*好了，我们开始上课。[。]\s*/g, '\n')
+              .replace(/\n好了，我們開始上課。[。]\s*/g, '\n')
+              .replace(/好了，我們開始上課。[。]/g, '');
+            finalText = beforeFirst + cleanedAfter;
+          }
+        }
+
+        // 中医玄学赛道：强制添加第X课课程序号和固定开场白
+        if (niche === NicheType.TCM_METAPHYSICS) {
+          const sectionHeaders = ['第一课', '第二课', '第三课', '第四课', '第五课'];
+          // 先找到每段的位置
+          const paragraphs = finalText.split(/\n\n+/);
+          const result: string[] = [];
+          
+          for (let i = 0; i < paragraphs.length; i++) {
+            let para = paragraphs[i].trim();
+            if (!para) continue;
+            
+            if (i === 0) {
+              // 第1段：添加第一课标题 + 开场白
+              result.push('第一课');
+              result.push('各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。');
+              result.push('好了，我们开始上课。');
+              // 移除可能残留的开场白
+              para = para.replace(/^各位老友们好，欢迎来到我的频道，我是[^\n]+。\n?/g, '');
+              para = para.replace(/^好了，我们开始上课。\n?/g, '');
+              result.push(para.trim());
+            } else if (i >= 1 && i <= 4) {
+              // 第2-5段：添加课程序号
+              result.push(sectionHeaders[i]);
+              // 移除可能残留的开场白
+              para = para.replace(/^各位老友们好，欢迎来到我的频道，[^\n]+。\n?/g, '');
+              para = para.replace(/^好了，我们开始上课。\n?/g, '');
+              result.push(para.trim());
+            } else {
+              // 超过5段的内容归入第5段
+              result.push(para.trim());
+            }
+          }
+          finalText = result.join('\n\n');
+        }
+        
         setMergedOutput(finalText);
         appendTerminal('合并文案衔接优化完成。');
 
@@ -4754,6 +4729,240 @@ ${finalText}`;
     }
   };
 
+  // ═══════════════════════════════════════════════════════════════════
+  // 频道生成器功能
+  // ═══════════════════════════════════════════════════════════════════
+  
+  const generateChannelAssets = async () => {
+    if (!apiKey?.trim()) {
+      toast.error('请先配置 API Key');
+      return;
+    }
+    if (!channelTopic.trim()) {
+      toast.warning('请输入频道主题');
+      return;
+    }
+
+    setIsGeneratingChannel(true);
+    setChannelOutput(null);
+    appendTerminal('开始生成频道资产...');
+
+    try {
+      initializeGemini(apiKey, { provider });
+
+      const input = [
+        `【频道主题】${channelTopic}`,
+        `【目标观众】${channelTargetAudience || '未指定'}`,
+        `【内容类型】${channelContentType || '未指定'}`,
+        `【品牌定位】${channelBrandPositioning || '未指定'}`,
+      ].join('\n');
+
+      // 根据语言选择构建频道名称要求
+      const nameLangReq = channelNameLang === 'zh'
+        ? '频道名称必须是中文、清晰、专业、10个中文字符以内'
+        : channelNameLang === 'en'
+        ? '频道名称必须是英文、专业、30个英文字符以内'
+        : '方案1-2中文频道名称（10字符以内），方案3英文频道名称（30字符以内）';
+
+      const prompt = `你是 YouTube Channel Setup Co-Pilot。请根据以下信息生成完整的频道资产。
+
+【输入信息】
+${input}
+
+【输出要求】
+请严格按以下格式输出，包含所有字段：
+
+## 频道名称（3个备选方案）
+${channelNameLang === 'zh' ? '- 必须为中文、清晰、专业、10个中文字符以内' : channelNameLang === 'en' ? '- 必须为英文、专业、30个英文字符以内' : '- 方案1-2为中文（10字符以内），方案3为英文（30字符以内）'}
+1. [名称1]
+2. [名称2]
+3. [名称3]
+
+## 头像提示词（3个备选方案，英文，可直接用于AI生成头像）
+1. [英文提示词1，描述要专业、清晰、可直接用于AI绘图]
+2. [英文提示词2]
+3. [英文提示词3]
+
+## 横幅提示词（3个备选方案，英文，可直接用于AI生成横幅）
+1. [英文提示词1，包含2560x1440px尺寸要求、品牌元素、安全区等]
+2. [英文提示词2]
+3. [英文提示词3]
+
+## 频道说明文本（${channelNameLang === 'zh' ? '中文' : channelNameLang === 'en' ? '英文' : '中英双语（先中文后英文）'}，包含价值主张、发布频率、CTA和关键词，950字符内）
+[完整的频道说明文本]
+
+## 关键词字段（3个方案：中文/英文/混合，每方案5-10个关键词，用逗号分隔）
+方案1（中文）：[关键词1]，[关键词2]，[关键词3]...
+方案2（英文）：keyword1, keyword2, keyword3...
+方案3（混合）：[关键词1]，keyword2，[关键词3]...
+
+【重要】
+- ${nameLangReq}
+- 头像和横幅提示词必须是英文、可直接用于AI生图
+- 频道说明要包含CTA（呼吁订阅）
+- 只输出上述格式内容，不要有任何解释`;
+
+      let result = '';
+      await streamContentGeneration(
+        prompt,
+        '你是专业YouTube频道品牌策划专家。',
+        (chunk) => {
+          result += chunk;
+        },
+        'gpt-5.4-mini',
+        { temperature: 0.7 }
+      );
+
+      // 解析结果
+      const output = parseChannelOutput(result);
+      if (output) {
+        setChannelOutput(output);
+        appendTerminal('频道资产生成完成');
+        toast.success('频道资产生成完成！');
+      } else {
+        throw new Error('解析生成结果失败');
+      }
+    } catch (e: any) {
+      appendTerminal(`生成失败：${e?.message || e}`);
+      toast.error('生成失败：' + (e?.message || e));
+    } finally {
+      setIsGeneratingChannel(false);
+    }
+  };
+
+  // 解析频道生成结果
+  const parseChannelOutput = (text: string): {
+    names: string[];
+    avatarPrompts: string[];
+    bannerPrompts: string[];
+    description: string;
+    keywords: string[];
+  } | null => {
+    try {
+      const lines = text.split('\n');
+      let section = '';
+      const names: string[] = [];
+      const avatarPrompts: string[] = [];
+      const bannerPrompts: string[] = [];
+      let description = '';
+      const keywords: string[] = [];
+      let currentList: string[] = [];
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        
+        if (trimmed.includes('频道名称') || trimmed.match(/^#+\s*频道名称/)) {
+          section = 'names';
+          currentList = names;
+        } else if (trimmed.includes('头像提示词') || trimmed.match(/^#+\s*头像/)) {
+          section = 'avatar';
+          currentList = avatarPrompts;
+        } else if (trimmed.includes('横幅提示词') || trimmed.match(/^#+\s*横幅/)) {
+          section = 'banner';
+          currentList = bannerPrompts;
+        } else if (trimmed.includes('频道说明') || trimmed.match(/^#+\s*频道说明/)) {
+          section = 'description';
+        } else if (trimmed.includes('关键词') || trimmed.match(/^#+\s*关键词/)) {
+          section = 'keywords';
+        } else if (section === 'names' || section === 'avatar' || section === 'banner') {
+          // 匹配列表项：1. xxx 或 - xxx 或 方案1：
+          const match = trimmed.match(/^\d+[\.、:：]\s*(.+)/) || trimmed.match(/^[a-z][\.、:：]\s*(.+)/i);
+          if (match) {
+            currentList.push(match[1].trim());
+          }
+        } else if (section === 'description' && trimmed.length > 20) {
+          description += (description ? '\n' : '') + trimmed;
+        } else if (section === 'keywords') {
+          const kwMatch = trimmed.match(/方案\d+[（(]?[^{}（）()]+[）)]?[:：]\s*(.+)/);
+          if (kwMatch) {
+            keywords.push(kwMatch[1].trim());
+          }
+        }
+      }
+
+      // 确保有3个方案
+      while (names.length < 3) names.push(`Channel ${names.length + 1}`);
+      while (avatarPrompts.length < 3) avatarPrompts.push('Professional channel avatar');
+      while (bannerPrompts.length < 3) bannerPrompts.push('YouTube banner 2560x1440px');
+      while (keywords.length < 3) keywords.push(keywords[0] || '');
+
+      return {
+        names: names.slice(0, 3),
+        avatarPrompts: avatarPrompts.slice(0, 3),
+        bannerPrompts: bannerPrompts.slice(0, 3),
+        description: description.slice(0, 1000),
+        keywords: keywords.slice(0, 3),
+      };
+    } catch (e) {
+      console.error('解析频道输出失败:', e);
+      return null;
+    }
+  };
+
+  // 生成头像图片
+  const generateAvatarImage = async (index: number) => {
+    if (!channelOutput?.avatarPrompts?.[index]) return;
+    
+    setIsGeneratingAvatar(true);
+    const prompt = channelOutput.avatarPrompts[index];
+    
+    try {
+      const { generateImage } = await import('../services/yunwuService');
+      const result = await generateImage(apiKey, {
+        model: 'flux',
+        prompt,
+        size: '1024x1024',
+        quality: 'standard',
+        n: 1,
+      });
+
+      if (result.success && result.url) {
+        const newImages = [...generatedAvatarImages];
+        newImages[index] = result.url;
+        setGeneratedAvatarImages(newImages);
+        toast.success('头像生成成功！');
+      } else {
+        toast.error('头像生成失败：' + (result.error || '未知错误'));
+      }
+    } catch (e: any) {
+      toast.error('生成失败：' + (e?.message || e));
+    } finally {
+      setIsGeneratingAvatar(false);
+    }
+  };
+
+  // 生成横幅图片
+  const generateBannerImage = async (index: number) => {
+    if (!channelOutput?.bannerPrompts?.[index]) return;
+    
+    setIsGeneratingBanner(true);
+    const prompt = channelOutput.bannerPrompts[index];
+    
+    try {
+      const { generateImage } = await import('../services/yunwuService');
+      const result = await generateImage(apiKey, {
+        model: 'flux',
+        prompt,
+        size: '1280x720',
+        quality: 'standard',
+        n: 1,
+      });
+
+      if (result.success && result.url) {
+        const newImages = [...generatedBannerImages];
+        newImages[index] = result.url;
+        setGeneratedBannerImages(newImages);
+        toast.success('横幅生成成功！');
+      } else {
+        toast.error('横幅生成失败：' + (result.error || '未知错误'));
+      }
+    } catch (e: any) {
+      toast.error('生成失败：' + (e?.message || e));
+    } finally {
+      setIsGeneratingBanner(false);
+    }
+  };
+
   // 导出常规输出为 txt
   const exportToTxt = () => {
     let fileName = '脚本';
@@ -4789,6 +4998,7 @@ ${finalText}`;
               { id: ToolMode.SUMMARIZE, short: '摘要', full: '摘要总结', icon: <Scissors size={14} strokeWidth={2.25} /> },
               { id: ToolMode.POLISH, short: '润色', full: '润色优化', icon: <FileText size={14} strokeWidth={2.25} /> },
               { id: ToolMode.SCRIPT, short: '脚本', full: '脚本输出', icon: <Video size={14} strokeWidth={2.25} /> },
+              { id: ToolMode.CHANNEL, short: '频道', full: '频道生成器', icon: <Youtube size={14} strokeWidth={2.25} /> },
             ].map((tool) => {
               const hasHistory = getHistory('tools', getToolsHistoryKey(tool.id as ToolMode, niche)).length > 0;
               return (
@@ -5073,12 +5283,40 @@ ${finalText}`;
             </div>
 
             <div className="xl:col-span-3 flex flex-col gap-2">
-              <label className="text-sm font-medium text-slate-400">评论区 / 用户痛点植入</label>
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium text-slate-400">评论区 / 用户痛点植入</label>
+                <button
+                  onClick={() => void extractCommentsAndPainPoints()}
+                  disabled={isExtractingComments || isAnalyzingPainPoints || !inputText.trim()}
+                  className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 disabled:bg-amber-600/50 disabled:cursor-not-allowed text-white text-xs font-medium rounded-lg transition-colors flex items-center gap-1.5"
+                >
+                  {isExtractingComments || isAnalyzingPainPoints ? (
+                    <>
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      <span>{isExtractingComments ? '提取评论中...' : '分析痛点中...'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <Brain className="w-3 h-3" />
+                      <span>提取痛点</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* 提取状态提示 */}
+              {(isExtractingComments || isAnalyzingPainPoints) && (
+                <div className="text-xs text-amber-400/70 flex items-center gap-1">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  <span>{isExtractingComments ? `正在提取评论...` : `正在分析用户痛点...`}</span>
+                </div>
+              )}
+
               <textarea
                 value={painPointText}
                 onChange={(e) => setPainPointText(e.target.value)}
-                placeholder="可输入评论区热词、用户痛点、情绪关键词..."
-                className="h-full min-h-[260px] bg-slate-800/60 border border-slate-700 rounded-xl p-3 text-slate-200 resize-none focus:outline-none focus:ring-1 focus:ring-emerald-500 custom-scrollbar"
+                placeholder="点击右侧「提取痛点」按钮自动从左侧链接提取用户痛点，或手动输入评论区热词、情绪关键词..."
+                className="flex-1 bg-slate-800/60 border border-slate-700 rounded-xl p-3 text-sm text-slate-200 resize-none focus:outline-none focus:ring-1 focus:ring-amber-500/50 custom-scrollbar"
               />
             </div>
           </div>
@@ -5204,6 +5442,18 @@ ${finalText}`;
               完整性检测：{mergedOutput.trim() ? (mergedCompleteForDashboard ? '收尾完整' : '可能未完整（建议补尾）') : '待生成'}
             </div>
           </div>
+
+          {/* 频道模式清空按钮 */}
+          {mode === ToolMode.CHANNEL && (
+            <div className="flex justify-end">
+              <button
+                onClick={handleClearChannelPanel}
+                className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-sm text-white"
+              >
+                清空面板
+              </button>
+            </div>
+          )}
 
           {/* Auto-Pilot 百分比进度 */}
           <div className="bg-slate-900/45 border border-slate-800 rounded-xl p-3 space-y-3">
@@ -5370,6 +5620,257 @@ ${finalText}`;
               placeholder={mergedOutput.trim() ? "可继续编辑最终成稿..." : "当前为空。请先完成5段生成并点击「合并最终文案」，系统会抓取各分段结果并清洗后显示最终文案。"}
               className="w-full min-h-[220px] bg-slate-950 border border-slate-800 rounded-xl p-4 text-slate-200 resize-y focus:outline-none focus:ring-1 focus:ring-emerald-500 custom-scrollbar"
             />
+          </div>
+        </div>
+      ) : mode === ToolMode.CHANNEL ? (
+        // ══════════════════════════════════════════════════════
+        // 频道生成器面板
+        // ══════════════════════════════════════════════════════
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* 左侧：输入区域 */}
+            <div className="flex flex-col gap-4">
+              <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
+                <h3 className="text-sm font-semibold text-emerald-300 mb-3 flex items-center gap-2">
+                  <Youtube size={16} />
+                  频道信息输入
+                </h3>
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-xs text-slate-400 mb-1 block">频道主题</label>
+                    <textarea
+                      value={channelTopic}
+                      onChange={(e) => setChannelTopic(e.target.value)}
+                      placeholder="例如：生物大战长视频、历史对比、奇特组合..."
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 resize-none focus:outline-none focus:border-emerald-500"
+                      rows={2}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-400 mb-1 block">目标观众</label>
+                    <textarea
+                      value={channelTargetAudience}
+                      onChange={(e) => setChannelTargetAudience(e.target.value)}
+                      placeholder="例如：喜欢历史对比、生物科普、奇特组合的观众"
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 resize-none focus:outline-none focus:border-emerald-500"
+                      rows={2}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-400 mb-1 block">内容类型</label>
+                    <textarea
+                      value={channelContentType}
+                      onChange={(e) => setChannelContentType(e.target.value)}
+                      placeholder="例如：长视频，强调时代、数量、体型、能力与规则的对比"
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 resize-none focus:outline-none focus:border-emerald-500"
+                      rows={2}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-400 mb-1 block">品牌定位</label>
+                    <textarea
+                      value={channelBrandPositioning}
+                      onChange={(e) => setChannelBrandPositioning(e.target.value)}
+                      placeholder="例如：高冲击力、专业、极具视觉张力"
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 resize-none focus:outline-none focus:border-emerald-500"
+                      rows={2}
+                    />
+                  </div>
+                </div>
+                
+                {/* 语言选择 */}
+                <div className="mt-3 pt-3 border-t border-slate-700">
+                  <label className="text-xs text-slate-400 mb-2 block">频道名称语言</label>
+                  <div className="flex gap-2">
+                    {[
+                      { value: 'both', label: '中英各半' },
+                      { value: 'zh', label: '中文' },
+                      { value: 'en', label: '英文' },
+                    ].map((opt) => (
+                      <button
+                        key={opt.value}
+                        onClick={() => setChannelNameLang(opt.value as 'zh' | 'en' | 'both')}
+                        className={`flex-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                          channelNameLang === opt.value
+                            ? 'bg-emerald-600 text-white'
+                            : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                
+                <button
+                  onClick={() => generateChannelAssets()}
+                  disabled={isGeneratingChannel || !channelTopic.trim()}
+                  className="w-full mt-4 px-4 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:from-slate-600 disabled:to-slate-600 text-white text-sm font-semibold rounded-lg transition-all flex items-center justify-center gap-2 shadow-lg disabled:shadow-none"
+                >
+                  {isGeneratingChannel ? (
+                    <>
+                      <Loader2 size={16} className="animate-spin" />
+                      生成中...
+                    </>
+                  ) : (
+                    <>
+                      <Wand2 size={16} />
+                      生成频道资产
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* 右侧：生成结果 */}
+            <div className="flex flex-col gap-4">
+              {channelOutput ? (
+                <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700 space-y-4 overflow-y-auto max-h-[500px]">
+                  {/* 频道名称 */}
+                  <div>
+                    <h4 className="text-sm font-semibold text-emerald-300 mb-2 flex items-center gap-2">
+                      <Youtube size={14} />
+                      频道名称（3个方案）
+                    </h4>
+                    <div className="space-y-2">
+                      {channelOutput.names.map((name, i) => (
+                        <div key={i} className="bg-slate-900/80 rounded-lg p-3 border border-slate-700">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-xs text-slate-500">方案 {i + 1}</span>
+                            <button
+                              onClick={() => navigator.clipboard.writeText(name)}
+                              className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
+                            >
+                              <Copy size={10} /> 复制
+                            </button>
+                          </div>
+                          <p className="text-sm text-slate-200 font-medium">{name}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 头像提示词 */}
+                  <div>
+                    <h4 className="text-sm font-semibold text-blue-300 mb-2 flex items-center gap-2">
+                      <Image size={14} />
+                      头像提示词（3个方案）
+                    </h4>
+                    <div className="space-y-2">
+                      {channelOutput.avatarPrompts.map((prompt, i) => (
+                        <div key={i} className="bg-slate-900/80 rounded-lg p-3 border border-slate-700">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-xs text-slate-500">方案 {i + 1}</span>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => navigator.clipboard.writeText(prompt)}
+                                className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
+                              >
+                                <Copy size={10} /> 复制
+                              </button>
+                              <button
+                                onClick={() => generateAvatarImage(i)}
+                                disabled={isGeneratingAvatar}
+                                className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1"
+                              >
+                                <Image size={10} /> 生图
+                              </button>
+                            </div>
+                          </div>
+                          <p className="text-xs text-slate-300 leading-relaxed">{prompt}</p>
+                          {generatedAvatarImages[i] && (
+                            <img src={generatedAvatarImages[i]} alt={`Avatar ${i + 1}`} className="mt-2 rounded-lg w-32 h-32 object-cover border border-slate-600" />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 横幅提示词 */}
+                  <div>
+                    <h4 className="text-sm font-semibold text-purple-300 mb-2 flex items-center gap-2">
+                      <Image size={14} />
+                      横幅提示词（3个方案）
+                    </h4>
+                    <div className="space-y-2">
+                      {channelOutput.bannerPrompts.map((prompt, i) => (
+                        <div key={i} className="bg-slate-900/80 rounded-lg p-3 border border-slate-700">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-xs text-slate-500">方案 {i + 1}</span>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => navigator.clipboard.writeText(prompt)}
+                                className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
+                              >
+                                <Copy size={10} /> 复制
+                              </button>
+                              <button
+                                onClick={() => generateBannerImage(i)}
+                                disabled={isGeneratingBanner}
+                                className="text-xs text-purple-400 hover:text-purple-300 flex items-center gap-1"
+                              >
+                                <Image size={10} /> 生图
+                              </button>
+                            </div>
+                          </div>
+                          <p className="text-xs text-slate-300 leading-relaxed line-clamp-3">{prompt}</p>
+                          {generatedBannerImages[i] && (
+                            <img src={generatedBannerImages[i]} alt={`Banner ${i + 1}`} className="mt-2 rounded-lg w-full h-24 object-cover border border-slate-600" />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 频道说明 */}
+                  <div>
+                    <h4 className="text-sm font-semibold text-amber-300 mb-2">频道说明</h4>
+                    <div className="bg-slate-900/80 rounded-lg p-3 border border-slate-700">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs text-slate-500">{channelOutput.description.length} 字符</span>
+                        <button
+                          onClick={() => navigator.clipboard.writeText(channelOutput.description)}
+                          className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
+                        >
+                          <Copy size={10} /> 复制
+                        </button>
+                      </div>
+                      <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap">{channelOutput.description}</p>
+                    </div>
+                  </div>
+
+                  {/* 关键词 */}
+                  <div>
+                    <h4 className="text-sm font-semibold text-rose-300 mb-2">关键词字段</h4>
+                    <div className="bg-slate-900/80 rounded-lg p-3 border border-slate-700">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs text-slate-500">3个方案（中文/英文/混合）</span>
+                        <button
+                          onClick={() => navigator.clipboard.writeText(channelOutput.keywords.join('\n'))}
+                          className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
+                        >
+                          <Copy size={10} /> 复制全部
+                        </button>
+                      </div>
+                      <div className="space-y-2">
+                        {channelOutput.keywords.map((kw, i) => (
+                          <div key={i} className="flex items-start gap-2">
+                            <span className="text-xs text-slate-500 shrink-0">方案{i + 1}：</span>
+                            <p className="text-xs text-slate-300">{kw}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-slate-800/50 p-8 rounded-xl border border-slate-700 flex flex-col items-center justify-center text-center h-full min-h-[300px]">
+                  <Youtube size={48} className="text-slate-600 mb-4" />
+                  <p className="text-slate-400 text-sm">填写左侧频道信息，点击"生成频道资产"开始</p>
+                  <p className="text-slate-500 text-xs mt-2">将为你生成频道名称、头像提示词、横幅提示词、频道说明和关键词</p>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       ) : (

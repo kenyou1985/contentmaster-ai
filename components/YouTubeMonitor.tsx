@@ -26,6 +26,7 @@ import {
   X, Edit2, GripVertical, Bell, BellOff, Play, LayoutGrid,
   DownloadCloud, TrendingDown, Crown, Sparkles, BarChart, GitCompare,
   PieChart, StarHalf, ArrowUp, ArrowDown, Minus, Filter, Heart,
+  Brain, AlertTriangle,
 } from 'lucide-react';
 
 // ── 导入服务 ─────────────────────────────────────────────────────────
@@ -63,6 +64,7 @@ import {
   getTrendingKeywordsFromVideos,
   type CommentResult,
 } from '../services/youtubeAnalyticsService';
+import { streamContentGeneration } from '../services/geminiService';
 
 // ── 配置 ──────────────────────────────────────────────────────────────
 const YOUTUBE_API_KEY = (import.meta as any).env?.VITE_YOUTUBE_API_KEY || '';
@@ -314,6 +316,10 @@ export const YouTubeMonitor: React.FC = () => {
   const [isLoadingComments, setIsLoadingComments] = useState(false);
   const [commentPage, setCommentPage] = useState(0);
   const COMMENT_PAGE_SIZE = 30;
+
+  // ── 评论痛点分析状态 ──────────────────────────────────────────
+  const [isAnalyzingPainPoints, setIsAnalyzingPainPoints] = useState(false);
+  const [painPointsResult, setPainPointsResult] = useState<string | null>(null);
 
   // ── 搜索状态 ──────────────────────────────────────────────────
   const [searchQuery, setSearchQuery] = useState('');
@@ -1498,6 +1504,7 @@ export const YouTubeMonitor: React.FC = () => {
     setInfoMsg(null);
     setCommentResult(null);
     setCommentPage(0);
+    setPainPointsResult(null);
     try {
       const result = await ytGetVideoComments(videoId, activeApiKey || undefined, 50);
       setCommentResult(result);
@@ -1510,6 +1517,66 @@ export const YouTubeMonitor: React.FC = () => {
       setErrorMsg('评论加载失败: ' + (e instanceof Error ? e.message : String(e)));
     } finally {
       setIsLoadingComments(false);
+    }
+  }
+
+  /** 提取用户痛点 */
+  async function extractPainPoints() {
+    if (!commentResult || commentResult.comments.length === 0) {
+      setErrorMsg('请先加载评论');
+      return;
+    }
+
+    setIsAnalyzingPainPoints(true);
+    setPainPointsResult(null);
+    setErrorMsg(null);
+
+    const commentsText = commentResult.comments
+      .map((c, i) => `${i + 1}. ${c.text}`)
+      .join('\n');
+
+    const systemInstruction = `你是一个用户评论分析助手。
+
+【你的任务】
+从评论中提炼出用户的核心痛点需求。
+
+【清洗规则】
+过滤掉以下无效评论：
+- 广告、推广信息
+- 刷屏内容（"沙发"、"前排"、"哈哈"、"666"等无意义内容）
+- 纯表情、符号
+- 与视频内容无关的评论
+
+【输出要求】
+- 只输出 3-5 条用户痛点，每条一行
+- 格式：1. 痛点内容
+- 不要有任何解释、前言、总结
+- 不要说"根据评论分析"之类的话
+- 直接输出纯痛点列表`;
+
+    const prompt = `评论内容：\n${commentsText}\n\n请直接输出用户痛点列表。`;
+
+    let rawResult = '';
+    try {
+      await streamContentGeneration(
+        prompt,
+        systemInstruction,
+        (chunk) => {
+          rawResult += chunk;
+          // 实时清理：去除常见的前缀文字
+          let cleaned = rawResult
+            .replace(/^(以下是|根据评论|用户痛点[:：]?|分析结果[:：]?|用户反馈[:：]?)\s*/gim, '')
+            .replace(/^[-—–_=*~`#]+$/gm, '')
+            .trim();
+          setPainPointsResult(cleaned);
+        },
+        'gpt-5.4-mini',
+        { temperature: 0.3, maxTokens: 1024 }
+      );
+    } catch (e) {
+      setErrorMsg('痛点分析失败: ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setIsAnalyzingPainPoints(false);
     }
   }
 
@@ -3269,6 +3336,30 @@ export const YouTubeMonitor: React.FC = () => {
                   <MessageCircle className="w-4 h-4 text-blue-400" />
                   <h2 className="text-sm font-medium text-slate-200">视频评论提取</h2>
                   <span className="ml-auto text-xs text-slate-500">YouTube 官方 API</span>
+                  {/* 导出按钮 - 移到顶部 */}
+                  {commentResult && commentResult.comments.length > 0 && !isLoadingComments && (
+                    <button
+                      onClick={() => {
+                        const txt = commentResult.comments.map(c =>
+                          `【${c.author}】${formatAgo(c.publishedAt)} | 👍${formatNumber(c.likeCount)}${c.replyCount > 0 ? ` | 💬${c.replyCount}回复` : ''}\n${c.text}`
+                        ).join('\n\n');
+                        downloadBlob(new Blob(['\ufeff' + txt], { type: 'text/plain;charset=utf-8' }), `comments_${commentVideoId}_${Date.now()}.txt`);
+                        setInfoMsg('评论已导出为 TXT 文件');
+                      }}
+                      className="px-3 py-1.5 text-xs bg-slate-700/50 hover:bg-slate-600 text-slate-300 rounded-lg transition-colors flex items-center gap-1.5"
+                    >
+                      <DownloadCloud className="w-3 h-3" />导出（TXT）
+                    </button>
+                  )}
+                  {/* 提取痛点按钮 */}
+                  {commentResult && commentResult.comments.length > 0 && !isLoadingComments && (
+                    <button
+                      onClick={() => void extractPainPoints()}
+                      className="px-3 py-1.5 text-xs bg-amber-600/80 hover:bg-amber-500 text-white rounded-lg transition-colors flex items-center gap-1.5"
+                    >
+                      <Brain className="w-3 h-3" />提取痛点
+                    </button>
+                  )}
                 </div>
                 <div className="flex gap-2 mb-3">
                   <input
@@ -3350,18 +3441,38 @@ export const YouTubeMonitor: React.FC = () => {
                         加载更多（{commentResult.comments.length - (commentPage + 1) * COMMENT_PAGE_SIZE} 条剩余）
                       </button>
                     )}
-                    <button
-                      onClick={() => {
-                        const txt = commentResult.comments.map(c =>
-                          `【${c.author}】${formatAgo(c.publishedAt)} | 👍${formatNumber(c.likeCount)}${c.replyCount > 0 ? ` | 💬${c.replyCount}回复` : ''}\n${c.text}`
-                        ).join('\n\n');
-                        downloadBlob(new Blob(['\ufeff' + txt], { type: 'text/plain;charset=utf-8' }), `comments_${commentVideoId}_${Date.now()}.txt`);
-                        setInfoMsg('评论已导出为 TXT 文件');
-                      }}
-                      className="w-full py-2 text-xs bg-slate-800/50 text-slate-400 hover:text-slate-200 rounded-lg hover:bg-slate-800 transition-colors flex items-center justify-center gap-1"
-                    >
-                      <DownloadCloud className="w-3 h-3" />导出全部评论（TXT）
-                    </button>
+                  </div>
+                )}
+
+                {/* ── 痛点分析结果 ── */}
+                {(isAnalyzingPainPoints || painPointsResult) && (
+                  <div className="mt-4 p-4 bg-amber-500/10 border border-amber-500/30 rounded-xl">
+                    <div className="flex items-center gap-2 mb-2">
+                      <AlertTriangle className="w-4 h-4 text-amber-400" />
+                      <h3 className="text-sm font-medium text-amber-300">用户痛点分析</h3>
+                      {isAnalyzingPainPoints && <Loader2 className="w-3 h-3 animate-spin text-amber-400 ml-auto" />}
+                      {painPointsResult && !isAnalyzingPainPoints && (
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(painPointsResult);
+                            setCopiedId('painpoints');
+                            setTimeout(() => setCopiedId(null), 2000);
+                          }}
+                          className="ml-auto px-2 py-1 text-xs bg-amber-600/50 hover:bg-amber-500/60 text-amber-200 rounded-md transition-colors flex items-center gap-1"
+                        >
+                          {copiedId === 'painpoints' ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                          {copiedId === 'painpoints' ? '已复制' : '复制'}
+                        </button>
+                      )}
+                    </div>
+                    {isAnalyzingPainPoints && !painPointsResult && (
+                      <p className="text-xs text-amber-400/70">正在调用 Gemini 模型分析评论，请稍候...</p>
+                    )}
+                    {painPointsResult && (
+                      <div className="text-sm text-amber-100/90 whitespace-pre-wrap leading-relaxed">
+                        {painPointsResult}
+                      </div>
+                    )}
                   </div>
                 )}
                 {commentResult && commentResult.comments.length === 0 && !isLoadingComments && (

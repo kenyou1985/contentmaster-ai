@@ -3,9 +3,9 @@
 
 const YUNWU_BASE_URL = "https://yunwu.ai";
 const GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com";
-const DEFAULT_YUNWU_MODEL = "gemini-3.1-pro-preview";
-const GOOGLE_PRIMARY_MODEL = "gemini-3.1-pro-preview";
-const GOOGLE_FALLBACK_MODEL = "gemini-3-pro-preview-thinking";
+const DEFAULT_YUNWU_MODEL = "gpt-5.4-mini";
+const GOOGLE_PRIMARY_MODEL = "gpt-5.4-mini";
+const GOOGLE_FALLBACK_MODEL = "gemini-3.1-pro-preview";
 
 /** 流式输出在首段文本出现前的最长等待；超时后 Yunwu 会改用备用模型重试一次 */
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = 120_000;

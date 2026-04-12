@@ -107,7 +107,8 @@ export enum ToolMode {
   EXPAND = 'EXPAND',
   SUMMARIZE = 'SUMMARIZE',
   POLISH = 'POLISH',
-  SCRIPT = 'SCRIPT'
+  SCRIPT = 'SCRIPT',
+  CHANNEL = 'CHANNEL'
 }
 
 export type ApiProvider = 'yunwu' | 'google' | 'runninghub';
