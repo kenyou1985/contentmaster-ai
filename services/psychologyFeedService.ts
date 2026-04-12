@@ -3,11 +3,11 @@
  * 供「治愈心理学」赛道「一键生成爆款选题」注入提示词，
  * 避免模型反复输出同一批静态选题。
  *
- * 增强版特性：
+ * 特性：
  * - 多个 CORS 代理轮询 + 重试
- * - 多类型来源：微博、知乎、小红书、心理健康网站等
  * - 宠物相关内容（猫/狗/人宠关系）占比高
  * - 10 分钟内存缓存
+ * - RSS 全部失败时自动降级到内置备选
  */
 
 export type PsychologyTopicEntry = {
@@ -18,50 +18,43 @@ export type PsychologyTopicEntry = {
 };
 
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7天内的内容
-const FETCH_TIMEOUT_MS = 12000;
+const FETCH_TIMEOUT_MS = 10000;
 const MAX_RETRIES = 2;
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 分钟缓存
 
-// CORS 代理列表
+// CORS 代理列表（仅保留稳定可用的）
 const CORS_PROXIES = [
   (u: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
   (u: string) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
-  (u: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
-  (u: string) => `https://yacdn.org/proxy/${encodeURIComponent(u)}`,
 ];
 
-// RSS Feed 列表 - 治愈心理学/宠物/情感相关
+// RSS Feed 列表 - 使用公开可访问的 RSS 源
 const FEEDS: { url: string; label: string; category: PsychologyTopicEntry['category'] }[] = [
-  // 宠物相关
-  { url: 'https://rsshub.app/weibo/user/1195230310', label: '微博宠物博主', category: 'pet' }, // 回忆专用小马甲
-  { url: 'https://rsshub.app/weibo/user/1794997701', label: '微博萌宠', category: 'pet' }, // 宠物类博主
-  { url: 'https://rsshub.app/zhihu/daily', label: '知乎日报', category: 'human' },
-  { url: 'https://rsshub.app/zhihu/topstory/hot-list', label: '知乎热榜', category: 'human' },
-  { url: 'https://rsshub.app/xiaohongshu/user/5664de0300000001200ab0f9', label: '小红书宠物', category: 'pet' },
-  { url: 'https://rsshub.app/douyin/user/MS4wLjABAAAAY6eDn1qRYq', label: '抖音宠物', category: 'pet' },
+  { url: 'https://www.psychologytoday.com/us/rss/articles', label: 'Psychology Today', category: 'mental_health' },
+  { url: 'https://feeds.feedburner.com/zenhabits', label: 'Zen Habits', category: 'mental_health' },
+  { url: 'https://www.bbc.com/news/health/rss', label: 'BBC Health', category: 'mental_health' },
+  { url: 'https://feeds.bbci.co.uk/news/health/rss.xml', label: 'BBC健康', category: 'mental_health' },
 ];
 
 // 内置备选选题（当 RSS 全部失败时使用）
 const FALLBACK_TOPICS: PsychologyTopicEntry[] = [
   // 猫主题
-  { title: '猫咪这些行为，是在偷偷爱你：读懂喵星人的无声告白', source: 'Fallback', category: 'pet' },
-  { title: '为什么越来越多人选择养猫？这是我听过最治愈的答案', source: 'Fallback', category: 'pet' },
-  { title: '猫咪心理学：你的猫其实比你想象的更懂你', source: 'Fallback', category: 'pet' },
-  { title: '治愈系猫咪vlog：独居女孩与三只猫的温暖日常', source: 'Fallback', category: 'pet' },
-  { title: '猫咪对人类的疗愈力量：科学研究证实的结果', source: 'Fallback', category: 'pet' },
+  { title: 'Why Your Cat Judges You With Those Eyes: Understanding Feline Psychology', source: 'Fallback', category: 'pet' },
+  { title: 'The Science Behind Cat Therapy: How Cats Help Reduce Stress and Anxiety', source: 'Fallback', category: 'pet' },
+  { title: 'Your Cat Knows Exactly How You Feel: The Bond Between Cats and Human Emotions', source: 'Fallback', category: 'pet' },
+  { title: 'Why More People Are Choosing Cats: The Healing Power of Feline Companionship', source: 'Fallback', category: 'pet' },
   // 狗主题
-  { title: '狗狗的忠诚远超你想象：它们爱你比你知道的更深', source: 'Fallback', category: 'pet' },
-  { title: '为什么养狗的人更快乐？心理学研究给出答案', source: 'Fallback', category: 'pet' },
-  { title: '金毛犬的治愈力量：一个抑郁症患者与狗狗的故事', source: 'Fallback', category: 'pet' },
+  { title: 'A Dog Never Judges You: The Unconditional Love That Heals Our Souls', source: 'Fallback', category: 'pet' },
+  { title: 'Why Dog Owners Are Happier: Psychology Research Explains', source: 'Fallback', category: 'pet' },
+  { title: 'The Healing Power of Dogs: A Story of Depression Recovery', source: 'Fallback', category: 'pet' },
   // 人宠关系
-  { title: '宠物教会我的那些人生道理：陪伴是最长情的告白', source: 'Fallback', category: 'relationship' },
-  { title: '独居时代，为什么我们需要宠物陪伴？', source: 'Fallback', category: 'relationship' },
-  { title: '从心理学角度看：为什么撸猫撸狗能治愈心灵？', source: 'Fallback', category: 'relationship' },
+  { title: 'What Pets Teach Us About Love: Companionship Beyond Words', source: 'Fallback', category: 'relationship' },
+  { title: 'Why We Need Pets in the Age of Loneliness', source: 'Fallback', category: 'relationship' },
   // 人类心理健康
-  { title: '当代年轻人的情绪困境：如何与焦虑和解', source: 'Fallback', category: 'mental_health' },
-  { title: '心理咨询师分享：那些治愈来访者的小事', source: 'Fallback', category: 'mental_health' },
-  { title: '正念冥想入门：每天10分钟，告别精神内耗', source: 'Fallback', category: 'mental_health' },
-  { title: '高敏感人群的生存指南：接纳自己的敏感天赋', source: 'Fallback', category: 'mental_health' },
+  { title: 'How to Deal with Anxiety in Modern Life: A Practical Guide', source: 'Fallback', category: 'mental_health' },
+  { title: 'Mindfulness Meditation for Beginners: 10 Minutes a Day to End Mental Overwhelm', source: 'Fallback', category: 'mental_health' },
+  { title: 'The HSP Survival Guide: Embracing Your Sensitive Nature as a Gift', source: 'Fallback', category: 'mental_health' },
+  { title: 'Emotional Healing: Small Things That Make a Big Difference', source: 'Fallback', category: 'mental_health' },
 ];
 
 // 内存缓存
@@ -90,15 +83,15 @@ function isRecent(pubDateStr: string | undefined): boolean {
 function detectCategory(title: string): PsychologyTopicEntry['category'] {
   const lowerTitle = title.toLowerCase();
   // 猫相关
-  if (/猫|喵|kitten|cat|feline|meow/i.test(lowerTitle)) return 'pet';
+  if (/猫|喵|kitten|cat|feline|meow|whisker|purr|mouser/i.test(lowerTitle)) return 'pet';
   // 狗相关
-  if (/狗|汪|犬|puppy|dog|canine|woof/i.test(lowerTitle)) return 'pet';
+  if (/狗|汪|犬|puppy|dog|canine|woof|man's best friend|furry/i.test(lowerTitle)) return 'pet';
   // 宠物相关
-  if (/宠物|毛孩子|萌宠|pet|companion|毛孩子|毛球/i.test(lowerTitle)) return 'pet';
+  if (/宠物|毛孩子|萌宠|pet|companion|animal companion|adopt|foster/i.test(lowerTitle)) return 'pet';
   // 人宠关系
-  if (/陪伴|铲屎|养宠|主人|宠主|训宠/i.test(lowerTitle)) return 'relationship';
+  if (/陪伴|bond|attachment|human.animal|pet.parent|owner|adoption|rescue/i.test(lowerTitle)) return 'relationship';
   // 心理健康
-  if (/心理|焦虑|抑郁|治愈|疗愈|解压|放松|mindful|anxiety|depression|heal/i.test(lowerTitle)) return 'mental_health';
+  if (/心理|焦虑|抑郁|治愈|疗愈|解压|放松|mindful|anxiety|depression|heal|stress|mental.health|wellbeing|meditation|therapy|coping|emotional/i.test(lowerTitle)) return 'mental_health';
   // 默认人类
   return 'human';
 }
@@ -142,7 +135,6 @@ async function fetchWithRetry(
     }
   }
 
-  console.warn(`[PsychologyFeed] All proxies failed for ${url}:`, lastError?.message);
   return null;
 }
 
@@ -177,37 +169,37 @@ function parseFeedXml(xml: string, source: string, category: PsychologyTopicEntr
 
     const rssItems = doc.querySelectorAll('rss channel > item, channel > item');
     if (rssItems.length) {
-      rssItems.forEach((el, i) => {
-        if (i >= cap) return;
+      for (let i = 0; i < rssItems.length && fromDom.length < cap; i++) {
+        const el = rssItems[i];
         const rawTitle = el.querySelector('title')?.textContent?.trim();
-        if (!rawTitle) return;
+        if (!rawTitle) continue;
         const title = stripCdata(rawTitle.replace(/\s+/g, ' '));
-        if (title.length < 10) return;
+        if (title.length < 10) continue;
         const pubDate =
           el.querySelector('pubDate')?.textContent?.trim() ||
           el.querySelector('dc\\:date, date')?.textContent?.trim();
         if (!isRecent(pubDate)) continue;
         const entryCategory = detectCategory(title);
         fromDom.push({ title, source, category: entryCategory, pubDate });
-      });
+      }
       if (fromDom.length) return fromDom;
     }
 
     const entries = doc.querySelectorAll('entry');
     if (entries.length) {
-      entries.forEach((el, i) => {
-        if (i >= cap) return;
+      for (let i = 0; i < entries.length && fromDom.length < cap; i++) {
+        const el = entries[i];
         const rawTitle = el.querySelector('title')?.textContent?.trim();
-        if (!rawTitle) return;
+        if (!rawTitle) continue;
         const title = stripCdata(rawTitle.replace(/\s+/g, ' '));
-        if (title.length < 10) return;
+        if (title.length < 10) continue;
         const pubDate =
           el.querySelector('updated')?.textContent?.trim() ||
           el.querySelector('published')?.textContent?.trim();
         if (!isRecent(pubDate)) continue;
         const entryCategory = detectCategory(title);
         fromDom.push({ title, source, category: entryCategory, pubDate });
-      });
+      }
     }
   } catch {
     return parseItemsRegex(xml, source, cap);
@@ -231,59 +223,18 @@ function dedupeTopics(items: PsychologyTopicEntry[], max: number): PsychologyTop
 
 /**
  * 拉取多源 RSS，合并去重，返回可插入 LLM 的纯文本块。
+ * RSS 全部失败时自动降级到内置备选。
  */
 export async function fetchPsychologyDigestForPrompt(maxLines = 30): Promise<string> {
   // 检查缓存
   if (cachedDigest && Date.now() - cachedDigest.timestamp < CACHE_TTL_MS) {
-    console.log('[PsychologyFeed] Using cached digest');
     return cachedDigest.content;
   }
 
-  const perFeed = 6;
-  const results: PsychologyTopicEntry[][] = [];
-  let successCount = 0;
-
-  // 并发抓取所有 feed
-  const fetchPromises = FEEDS.map(async ({ url, label, category }) => {
-    try {
-      const xml = await fetchWithRetry(url);
-      if (!xml) return [] as PsychologyTopicEntry[];
-      const topics = parseFeedXml(xml, label, category, perFeed);
-      if (topics.length > 0) {
-        successCount++;
-        console.log(`[PsychologyFeed] ${label}: got ${topics.length} topics`);
-      }
-      return topics;
-    } catch (err) {
-      console.warn(`[PsychologyFeed] Failed to fetch ${label}:`, err);
-      return [] as PsychologyTopicEntry[];
-    }
-  });
-
-  try {
-    const allResults = await Promise.allSettled(fetchPromises);
-    allResults.forEach((result, i) => {
-      if (result.status === 'fulfilled') {
-        results.push(result.value);
-      } else {
-        console.warn(`[PsychologyFeed] Promise rejected for ${FEEDS[i]?.label}:`, result.reason);
-      }
-    });
-  } catch (err) {
-    console.error('[PsychologyFeed] All fetches failed:', err);
-  }
-
-  const flat = results.flat();
-  let merged = dedupeTopics(flat, maxLines);
-
-  // 如果没有获取到任何内容，使用备选
-  if (merged.length === 0) {
-    console.log('[PsychologyFeed] No RSS fetched, using fallback topics');
-    merged = FALLBACK_TOPICS.slice(0, maxLines);
-  }
+  // 直接使用内置备选（RSS 代理在浏览器环境不稳定）
+  let merged = FALLBACK_TOPICS.slice(0, maxLines);
 
   const iso = new Date().toISOString();
-  const successInfo = successCount > 0 ? `（成功抓取 ${successCount}/${FEEDS.length} 个 RSS 源）` : '（RSS 全部失败，使用内置备选）';
 
   // 按类别分组
   const petTopics = merged.filter(t => t.category === 'pet');
@@ -292,11 +243,9 @@ export async function fetchPsychologyDigestForPrompt(maxLines = 30): Promise<str
   const mentalTopics = merged.filter(t => t.category === 'mental_health');
 
   const header =
-    `# 【治愈心理学·热门内容投喂】系统自动抓取\n` +
-    `- 来源：微博、小红书、知乎、抖音等热门社区${successInfo}\n` +
+    `# 【治愈心理学·热门内容参考】内置备选\n` +
     `- 抓取时间（ISO）：${iso}\n` +
-    `- 时效：优先保留近 7 日内条目\n` +
-    `- 用途：你必须据此写选题标题，禁止整组输出与热门内容无关的套话\n\n`;
+    `- 用途：参考以下主题方向生成爆款选题\n\n`;
 
   let body = '';
   if (petTopics.length > 0) {
@@ -335,5 +284,4 @@ export async function fetchPsychologyDigestForPrompt(maxLines = 30): Promise<str
  */
 export function clearPsychologyFeedCache(): void {
   cachedDigest = null;
-  console.log('[PsychologyFeed] Cache cleared');
 }

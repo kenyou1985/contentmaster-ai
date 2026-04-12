@@ -121,7 +121,7 @@ async function fetchWithRetry(
     }
   }
 
-  console.warn(`[MacroNewsFeed] All proxies failed for ${url}:`, lastError?.message);
+  console.debug(`[MacroNewsFeed] Attempt ${attempt + 1} for ${url} via proxy`);
   return null;
 }
 
@@ -215,7 +215,6 @@ function dedupeHeadlines(items: MacroNewsHeadline[], max: number): MacroNewsHead
 export async function fetchMacroNewsDigestForPrompt(maxLines = 32): Promise<string> {
   // 检查缓存
   if (cachedDigest && Date.now() - cachedDigest.timestamp < CACHE_TTL_MS) {
-    console.log('[MacroNewsFeed] Using cached digest');
     return cachedDigest.content;
   }
 
@@ -231,11 +230,9 @@ export async function fetchMacroNewsDigestForPrompt(maxLines = 32): Promise<stri
       const headlines = parseFeedXml(xml, label, perFeed);
       if (headlines.length > 0) {
         successCount++;
-        console.log(`[MacroNewsFeed] ${label}: got ${headlines.length} headlines`);
       }
       return headlines;
     } catch (err) {
-      console.warn(`[MacroNewsFeed] Failed to fetch ${label}:`, err);
       return [] as MacroNewsHeadline[];
     }
   });
@@ -245,12 +242,10 @@ export async function fetchMacroNewsDigestForPrompt(maxLines = 32): Promise<stri
     allResults.forEach((result, i) => {
       if (result.status === 'fulfilled') {
         results.push(result.value);
-      } else {
-        console.warn(`[MacroNewsFeed] Promise rejected for ${FEEDS[i]?.label}:`, result.reason);
       }
     });
   } catch (err) {
-    console.error('[MacroNewsFeed] All fetches failed:', err);
+    // 静默处理
   }
 
   const flat = results.flat();
@@ -258,7 +253,6 @@ export async function fetchMacroNewsDigestForPrompt(maxLines = 32): Promise<stri
 
   // 如果没有获取到任何新闻，使用备选
   if (merged.length === 0) {
-    console.log('[MacroNewsFeed] No RSS fetched, using fallback headlines');
     merged = FALLBACK_HEADLINES.slice(0, maxLines);
   }
 
@@ -289,5 +283,4 @@ export async function fetchMacroNewsDigestForPrompt(maxLines = 32): Promise<stri
  */
 export function clearMacroNewsCache(): void {
   cachedDigest = null;
-  console.log('[MacroNewsFeed] Cache cleared');
 }

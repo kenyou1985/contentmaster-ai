@@ -236,6 +236,8 @@ export type ParallelSegmentPromptOpts = {
    * 治愈心理学英文口播：本章按「字符」计（含空格标点），严守 min/max，禁止「宁多勿少」式膨胀
    */
   englishChapterCharStrict?: boolean;
+  /** 多语言输出时的语言，用于生成正确的结尾 CTA */
+  mindfulLanguage?: string;
 };
 
 export function buildParallelSegmentUserPrompt(
@@ -252,10 +254,11 @@ export function buildParallelSegmentUserPrompt(
   const { topic, coreTheme, logicLine, chapter, chapterIndex, totalChapters } = params;
   const isFirst = chapterIndex === 0;
   const isLast = chapterIndex === totalChapters - 1;
-  const langLine =
-    opts.outputLanguage === 'en'
-      ? '全文使用**英文**输出（与频道要求一致），不要中文正文。'
-      : '全文使用**简体中文**输出。';
+  const isEnglishOutput = opts.outputLanguage === 'en';
+
+  const langLine = isEnglishOutput
+    ? '【语言强制】全文必须使用**英文**输出，包括所有正文、金句、衔接句。禁止出现任何中文字符。'
+    : '【语言强制】全文必须使用**简体中文**输出，包括所有正文、金句、衔接句。禁止出现任何英文或其他语言的正文字符。';
 
   const charRule = opts.englishChapterCharStrict
     ? `【本章字数】英文正文有效字符（含空格与标点）**必须**落在 ${chapter.min_chars}–${chapter.max_chars} 之间；禁止低于 ${chapter.min_chars}，禁止高于 ${chapter.max_chars}；宁简勿灌。`
@@ -272,7 +275,7 @@ ${charRule}
 
 【衔接】
 ${isFirst ? '开篇直接从痛点/反常识切入，不要复述「上一章」。' : `开篇必须用 1–3 句自然承接下面语义（可改写，勿整段照抄）：\n「${chapter.opening_echo}」`}
-${isLast ? '结尾收束全文：总结金句、呼应主题，可引导互动；禁止再引出新的大话题。' : `结尾必须自然收束，并融入过渡意图（供剪辑连贯）：\n「${chapter.bridge_to_next}」`}
+${isLast ? '结尾收束全文：总结金句、呼应主题，自然收尾。' : `结尾必须自然收束，并融入过渡意图（供剪辑连贯）：\n「${chapter.bridge_to_next}」`}
 
 【写作铁律】
 ${langLine}
@@ -305,6 +308,8 @@ export type ParallelMergePromptOpts = {
   contentKind?: string;
   /** 治愈心理学英文：合并后全文字符（含空格）必须落在此闭区间内 */
   englishMergedCharClamp?: { min: number; max: number };
+  /** 多语言输出时的语言，用于生成正确的结尾 CTA */
+  mindfulLanguage?: string;
 };
 
 export function buildParallelMergeUserPrompt(
@@ -321,10 +326,11 @@ export function buildParallelMergeUserPrompt(
   const head = combinedDraft.slice(0, 12000);
   const tail = combinedDraft.length > 12000 ? combinedDraft.slice(-8000) : '';
   const kind = opts.contentKind || '正文';
-  const lang =
-    opts.outputLanguage === 'en'
-      ? '合并后全文使用**英文**，与各段语言一致。'
-      : '合并后全文使用**简体中文**。';
+  const isEnglish = opts.outputLanguage === 'en';
+
+  const lang = isEnglish
+    ? '【语言强制】合并后全文必须使用**英文**。将所有中文片段翻译为英文语义对等表达。禁止保留任何中文字符。'
+    : '【语言强制】合并后全文必须使用**简体中文**。将所有英文片段翻译为中文语义对等表达。禁止保留任何英文正文字符。';
 
   const clamp = opts.englishMergedCharClamp;
   const lengthRule = clamp
@@ -339,7 +345,7 @@ export function buildParallelMergeUserPrompt(
 4. ${lang}
 5. 禁止新增与主题无关的大段；禁止改变核心事实与论点。
 ${lengthRule}
-7. 全文仅允许**一处**自然的尾声（最后 200 字内）：可感谢与引导互动，不要在中途写收场语。
+7. 保留原文末尾的收尾语，不要修改或添加任何 CTA。
 
 【初稿】
 ${head}

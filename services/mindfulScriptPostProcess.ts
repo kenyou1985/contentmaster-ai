@@ -5,8 +5,6 @@
 export const MINDFUL_EN_SCRIPT_CHARS_MIN = 10000;
 export const MINDFUL_EN_SCRIPT_CHARS_MAX = 15000;
 
-const CTA_EN = 'Please like and subscribe to my channel.';
-
 export function clampMindfulParallelTargetChars(v: number): number {
   return Math.min(
     MINDFUL_EN_SCRIPT_CHARS_MAX,
@@ -23,21 +21,18 @@ export function mindfulMergeCharClamp(totalTarget: number): { min: number; max: 
   };
 }
 
-/** 将超长终稿截断到上限并保证文末英文订阅句 */
-export function finalizeMindfulEnglishScriptLength(raw: string, maxLen: number): string {
+/** 将超长终稿截断到上限，保留原文末尾的 CTA（不强制添加英文 CTA） */
+export function truncateMindfulScript(raw: string, maxLen: number): string {
   let body = raw.replace(/\r\n/g, '\n').trimEnd();
-  body = body.replace(/\n*please like and subscribe to my channel\.?\s*$/i, '').trimEnd();
-  const overhead = CTA_EN.length + 2;
-  const budget = Math.max(2000, maxLen - overhead);
-  if (body.length > budget) {
-    const slice = body.slice(0, budget);
-    let cut = -1;
-    for (const p of ['.', '!', '?']) {
-      const i = slice.lastIndexOf(p);
-      if (i > cut) cut = i;
-    }
-    body =
-      cut > budget * 0.65 ? body.slice(0, cut + 1).trimEnd() : slice.trimEnd();
+  if (body.length <= maxLen) {
+    return body;
   }
-  return `${body}\n\n${CTA_EN}`;
+  const budget = maxLen;
+  const slice = body.slice(0, budget);
+  let cut = -1;
+  for (const p of ['.', '!', '?']) {
+    const i = slice.lastIndexOf(p);
+    if (i > cut) cut = i;
+  }
+  return cut > budget * 0.65 ? body.slice(0, cut + 1).trimEnd() : slice.trimEnd();
 }

@@ -60,7 +60,7 @@ import {
   MINDFUL_EN_SCRIPT_CHARS_MAX,
   MINDFUL_EN_SCRIPT_CHARS_MIN,
   clampMindfulParallelTargetChars,
-  finalizeMindfulEnglishScriptLength,
+  truncateMindfulScript,
   mindfulMergeCharClamp,
 } from '../services/mindfulScriptPostProcess';
 
@@ -89,13 +89,15 @@ function getParallelPipelineBundle(
   scriptLengthMode: 'LONG' | 'SHORT',
   storyLanguage: StoryLanguage,
   storyDuration: StoryDuration,
-  nicheConfig: NicheConfig
+  nicheConfig: NicheConfig,
+  mindfulLang?: MindfulLanguage
 ) {
   const baseName = nicheConfig.name;
   const isEnRevenge =
     niche === NicheType.STORY_REVENGE && storyLanguage === StoryLanguage.ENGLISH;
   const isMindfulEnglish = niche === NicheType.MINDFUL_PSYCHOLOGY;
-  const outputLanguage: 'zh' | 'en' = isMindfulEnglish ? (mindfulLanguage === 'en' ? 'en' : 'zh') : (isEnRevenge ? 'en' : 'zh');
+  const effectiveLang = mindfulLang || 'en';
+  const outputLanguage: 'zh' | 'en' = isMindfulEnglish ? (effectiveLang === 'en' ? 'en' : 'zh') : (isEnRevenge ? 'en' : 'zh');
 
   let logicBlueprint = PARALLEL_LOGIC_GENERIC;
   let channelLabel = `「${baseName}」频道长内容`;
@@ -138,8 +140,8 @@ function getParallelPipelineBundle(
       'de': 'en', 'hi': 'en', 'ru': 'en', 'pt': 'en', 'fr': 'en',
       'id': 'en', 'th': 'en'
     };
-    const outputLang = langMap[mindfulLanguage] || 'en';
-    const isZhOutput = mindfulLanguage === 'zh';
+    const outputLang = langMap[effectiveLang] || 'en';
+    const isZhOutput = effectiveLang === 'zh';
 
     channelLabel = isZhOutput
       ? 'Mindful Paws–style 中文治愈心理学口播'
@@ -175,12 +177,14 @@ function getParallelPipelineBundle(
       outputLanguage,
       voiceRules,
       englishChapterCharStrict: mindfulEnglishLongParallel,
+      mindfulLanguage: effectiveLang,
     },
     merge: {
       channelTag: baseName,
       toneInstruction: mergeTone,
       outputLanguage,
       contentKind: contentKindMerge,
+      mindfulLanguage: effectiveLang,
     },
     mergeSystem: buildParallelMergeSystem(mergeEditorLine),
   };
@@ -323,6 +327,23 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     { id: 'id', name: 'Bahasa Indonesia', native: '印尼文' },
     { id: 'th', name: 'ภาษาไทย', native: '泰文' },
   ];
+
+  // 多语言 CTA 结尾语映射
+  const MINDFUL_LANGUAGE_CTAS: Record<MindfulLanguage, { cta: string; ctaRegex: RegExp }> = {
+    'zh': { cta: '请点赞并订阅我的频道。', ctaRegex: /请点赞并订阅我的频道/ },
+    'en': { cta: 'Please like and subscribe to my channel.', ctaRegex: /please like and subscribe to my channel/i },
+    'ko': { cta: '좋아요와 구독 부탁드립니다.', ctaRegex: /좋아요와 구독/i },
+    'ja': { cta: 'いいねと登録をお願いします。', ctaRegex: /いいね.*登録/i },
+    'es': { cta: 'Por favor, dale like y suscríbete a mi canal.', ctaRegex: /like.*suscr/i },
+    'de': { cta: 'Bitte liken und meinen Kanal abonnieren.', ctaRegex: /liken.*abonnieren/i },
+    'hi': { cta: 'कृपया लाइक करें और मेरी चैनल को सब्सक्राइब करें।', ctaRegex: /लाइक.*सब्सक्राइब/i },
+    'ru': { cta: 'Пожалуйста, поставьте лайк и подпишитесь на мой канал.', ctaRegex: /лайк.*подписк/i },
+    'pt': { cta: 'Por favor, clique em gostei e se inscreva no meu canal.', ctaRegex: /gostei.*inscrev/i },
+    'fr': { cta: 'Veuillez aimer et vous abonner à ma chaîne.', ctaRegex: /aimer.*abonn/i },
+    'id': { cta: 'Silakan like dan subscribe channel saya.', ctaRegex: /like.*subscribe/i },
+    'th': { cta: 'กรุณากดไลค์และติดตามช่องของฉันด้วยครับ', ctaRegex: /ไลค์.*ติดตาม/i },
+  };
+
   const [mindfulLanguage, setMindfulLanguage] = useState<MindfulLanguage>('en');
 
   /** 易经命理·长视频：大纲 + 分段并行 + 合并润色 */
@@ -1487,7 +1508,8 @@ ${segmentSourceText}
       scriptLengthMode,
       storyLanguage,
       storyDuration,
-      NICHES[niche]
+      NICHES[niche],
+      mindfulLanguage
     );
     const lead = getParallelOutlineLeadContext();
     setBatchProgress({
@@ -1586,7 +1608,8 @@ ${segmentSourceText}
       scriptLengthMode,
       storyLanguage,
       storyDuration,
-      config
+      config,
+      mindfulLanguage
     );
     const topicTitle = sel[0].title;
     const n = parsed.chapters.length;
@@ -1704,7 +1727,8 @@ ${segmentSourceText}
         scriptLengthMode,
         storyLanguage,
         storyDuration,
-        NICHES[niche]
+        NICHES[niche],
+        mindfulLanguage
       );
       const combined = parts.join('\n\n');
       const mindfulLong =
@@ -1715,13 +1739,14 @@ ${segmentSourceText}
           englishMergedCharClamp: mindfulLong
             ? mindfulMergeCharClamp(parallelTotalTargetChars)
             : undefined,
+          mindfulLanguage,
         }),
         bundle.mergeSystem,
         24576
       );
       let norm = normalizeYiJingBody(merged);
       if (mindfulLong) {
-        norm = finalizeMindfulEnglishScriptLength(norm, MINDFUL_EN_SCRIPT_CHARS_MAX);
+        norm = truncateMindfulScript(norm, MINDFUL_EN_SCRIPT_CHARS_MAX);
       }
       setYiJingMergedOutput(norm);
       setBatchProgress({ current: 1, total: 1, hint: '合并完成' });
@@ -1769,6 +1794,7 @@ ${segmentSourceText}
     toast,
     inputVal,
     getParallelHistorySubModeId,
+    mindfulLanguage,
   ]);
 
   const handleYiJingAutoPilot = useCallback(async (): Promise<boolean> => {
@@ -1794,7 +1820,8 @@ ${segmentSourceText}
       scriptLengthMode,
       storyLanguage,
       storyDuration,
-      NICHES[niche]
+      NICHES[niche],
+      mindfulLanguage
     );
     const outlineLead = getParallelOutlineLeadContext();
 
@@ -1910,13 +1937,14 @@ ${segmentSourceText}
             englishMergedCharClamp: mindfulLongAp
               ? mindfulMergeCharClamp(parallelTotalTargetChars)
               : undefined,
+            mindfulLanguage,
           }),
           bundle.mergeSystem,
           24576
         );
         let norm = normalizeYiJingBody(merged);
         if (mindfulLongAp) {
-          norm = finalizeMindfulEnglishScriptLength(norm, MINDFUL_EN_SCRIPT_CHARS_MAX);
+          norm = truncateMindfulScript(norm, MINDFUL_EN_SCRIPT_CHARS_MAX);
         }
 
         patchRun(topic.id, { status: 'done', stage: 'done', progress: 100 });
@@ -1995,6 +2023,7 @@ ${segmentSourceText}
     getParallelOutlineLeadContext,
     getParallelHistorySubModeId,
     generatedContents,
+    mindfulLanguage,
   ]);
 
   const handleBatchGenerate = async () => {
@@ -2099,7 +2128,8 @@ ${segmentSourceText}
             scriptLengthMode,
             storyLanguage,
             storyDuration,
-            NICHES[niche]
+            NICHES[niche],
+            mindfulLanguage
           );
           const outlineLead = getParallelOutlineLeadContext();
 
@@ -2199,13 +2229,14 @@ ${segmentSourceText}
               englishMergedCharClamp: mindfulLong
                 ? mindfulMergeCharClamp(parallelTotalTargetChars)
                 : undefined,
+              mindfulLanguage,
             }),
             bundle.mergeSystem,
             24576
           );
           let finalText = normalizeYiJingBody(merged);
           if (mindfulLong) {
-            finalText = finalizeMindfulEnglishScriptLength(finalText, MINDFUL_EN_SCRIPT_CHARS_MAX);
+            finalText = truncateMindfulScript(finalText, MINDFUL_EN_SCRIPT_CHARS_MAX);
           }
 
           setGeneratedContents((prev) => {
@@ -2844,8 +2875,10 @@ ${segmentSourceText}
             scriptTemplate = MINDFUL_PSYCHOLOGY_SCRIPT_PROMPT;
         }
 
+        // 清理选题标题：去掉【猫】【狗】【人】分类标签
+        const cleanTopicTitle = topic.title.replace(/^\s*【[^】]*】\s*/, '').trim();
         // Use the selected script prompt
-        let prompt = scriptTemplate.replace('{topic}', topic.title);
+        let prompt = scriptTemplate.replace('{topic}', cleanTopicTitle);
 
         const macroRef =
           currentNiche === NicheType.GENERAL_VIRAL
@@ -3162,39 +3195,15 @@ ${segmentSourceText}
                         console.log(`[Generator] News truncated to ${localContent.length} chars (semantic boundary)`);
                     }
                 } else if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
-                    const minC = MINDFUL_EN_SCRIPT_CHARS_MIN;
-                    const maxC = MINDFUL_EN_SCRIPT_CHARS_MAX;
-                    const mindfulCtaOk = (t: string) =>
-                      /please like and subscribe to my channel/i.test(t) ||
-                      /请点赞并订阅我的频道/.test(t);
-
-                    let len = localContent.length;
-                    if (len < minC) {
-                        console.log(`[Generator] Mindful Psychology: body ${len} < ${minC}, supplementary pass`);
-                        await streamContentGeneration(
-                            [
-                                `Continue the voice-over in **English** with the same warm, healing-psychology tone (dog–human emotional metaphors when relevant).`,
-                                `Current ~${len} characters (editor count, including spaces); hard target ${minC}–${maxC} characters.`,
-                                `Extend the body only—no closing subscribe CTA or sign-off yet.`,
-                                '',
-                                '【上文】',
-                                localContent.slice(-3000)
-                            ].join('\n'),
-                            systemInstruction,
-                            appendChunk,
-                            undefined,
-                            { maxTokens: 8192 }
-                        );
-                        localContent = maybeNormalizeLayout(localContent);
-                        len = localContent.length;
-                    }
-
-                    if (localContent.length > maxC) {
-                        localContent = finalizeMindfulEnglishScriptLength(localContent, maxC);
-                        console.log(`[Generator] Mindful Psychology capped to ${localContent.length} chars`);
-                    } else if (!mindfulCtaOk(localContent)) {
-                        console.log(`[Generator] Mindful Psychology: CTA not found, adding mandatory CTA`);
-                        localContent = `${localContent.trimEnd()}\n\nPlease like and subscribe to my channel.`;
+                    // 治愈心理学赛道：AI 已在各段末尾自行输出 CTA（根据语言），此处不做强制添加
+                    // 仅做字数截断保护
+                    if (localContent.length > maxChars) {
+                        if (mindfulLanguage === 'zh') {
+                            localContent = truncateToMax(localContent, maxChars);
+                        } else {
+                            localContent = truncateMindfulScript(localContent, maxChars);
+                        }
+                        console.log(`[Generator] Mindful Psychology (${mindfulLanguage}) truncated to ${localContent.length} chars`);
                     }
                 } else {
                     // 需要续写的情况
