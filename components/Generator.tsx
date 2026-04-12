@@ -69,13 +69,18 @@ function clampSystemSummary(raw: string, maxLen = 960): string {
   return s.length > maxLen ? `${s.slice(0, maxLen)}…` : s;
 }
 
-/** 治愈心理学选题：去掉 * / **，竖线改「：」，英文与中文之间的半角冒号改全角「：」 */
+/** 治愈心理学选题：去掉 * / **，竖线改「：」，英文与中文之间的半角冒号改全角「：」，保留【分类标签】 */
 function sanitizeMindfulPsychologyTopicLine(raw: string): string {
-  let t = raw.replace(/^\s*\d+[\.)．、]\s*/, '').trim();
+  // 提取分类标签
+  const labelMatch = raw.match(/^\s*【([^】]+)】/);
+  const label = labelMatch ? labelMatch[0] : '';
+  let t = raw.replace(/^\s*【[^】]*】\s*/, '').trim();
   t = t.replace(/\*+/g, '');
   t = t.replace(/\s*\|\s*/, '：');
   t = t.replace(/([a-zA-Z0-9\)?.!'"…])\s*:\s*([\u4e00-\u9fff])/g, '$1：$2');
-  return t.replace(/\s{2,}/g, ' ').trim();
+  t = t.replace(/\s{2,}/g, ' ').trim();
+  // 还原标签
+  return label + (label ? ' ' : '') + t;
 }
 
 /** 各赛道分段并行：大纲 / 分段 / 合并 的提示与人设 */
@@ -90,7 +95,7 @@ function getParallelPipelineBundle(
   const isEnRevenge =
     niche === NicheType.STORY_REVENGE && storyLanguage === StoryLanguage.ENGLISH;
   const isMindfulEnglish = niche === NicheType.MINDFUL_PSYCHOLOGY;
-  const outputLanguage: 'zh' | 'en' = isEnRevenge || isMindfulEnglish ? 'en' : 'zh';
+  const outputLanguage: 'zh' | 'en' = isMindfulEnglish ? (mindfulLanguage === 'en' ? 'en' : 'zh') : (isEnRevenge ? 'en' : 'zh');
 
   let logicBlueprint = PARALLEL_LOGIC_GENERIC;
   let channelLabel = `「${baseName}」频道长内容`;
@@ -127,14 +132,28 @@ function getParallelPipelineBundle(
     niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
 
   if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
-    channelLabel = 'Mindful Paws–style English healing psychology voice-over';
-    contentKindOutline =
-      scriptLengthMode === 'SHORT' ? 'short-form voice-over outline (English)' : 'long-form voice-over outline (English)';
-    contentKindMerge = 'voice-over script';
-    directorLine =
-      'You are the lead producer for a faceless YouTube healing-psychology channel (dog–human emotional metaphors). Plan and write for **English** TTS unless the user explicitly asks for Chinese in this task.';
-    mergeEditorLine =
-      'You are a senior editor merging English voice-over scripts; keep warm, spoken, therapist-like English. End with a simple subscribe line: say "my channel", never the brand name.';
+    // 根据选择的语言确定输出语言
+    const langMap: Record<MindfulLanguage, 'en' | 'zh'> = {
+      'en': 'en', 'zh': 'zh', 'ko': 'en', 'ja': 'en', 'es': 'en',
+      'de': 'en', 'hi': 'en', 'ru': 'en', 'pt': 'en', 'fr': 'en',
+      'id': 'en', 'th': 'en'
+    };
+    const outputLang = langMap[mindfulLanguage] || 'en';
+    const isZhOutput = mindfulLanguage === 'zh';
+
+    channelLabel = isZhOutput
+      ? 'Mindful Paws–style 中文治愈心理学口播'
+      : 'Mindful Paws–style English healing psychology voice-over';
+    contentKindOutline = isZhOutput
+      ? (scriptLengthMode === 'SHORT' ? '短视频口播大纲（中文）' : '长视频口播大纲（中文）')
+      : (scriptLengthMode === 'SHORT' ? 'short-form voice-over outline (English)' : 'long-form voice-over outline (English)');
+    contentKindMerge = isZhOutput ? '口播脚本（中文）' : 'voice-over script';
+    directorLine = isZhOutput
+      ? '你是治愈心理学频道的制作人，负责生成中文 TTS 口播脚本。'
+      : 'You are the lead producer for a faceless YouTube healing-psychology channel (cat/dog/human emotional metaphors). Plan and write for **English** TTS.';
+    mergeEditorLine = isZhOutput
+      ? '你是资深编辑，合并中文口播脚本，保持温暖、口语化、心理咨询师风格的表达。结尾固定为：请点赞并订阅我的频道。'
+      : 'You are a senior editor merging English voice-over scripts; keep warm, spoken, therapist-like English. End with a simple subscribe line: say "my channel", never the brand name.';
   }
 
   const voiceRules = `1. 严格遵循下列「频道创作铁律摘要」与人设。\n2. 禁止【】、[] 舞台提示、禁止「模块一/第一节」等露骨章节标、禁止 Markdown 标题层级、避免纯列表骨架。\n【频道创作铁律摘要】\n${clampSystemSummary(nicheConfig.systemInstruction)}`;
@@ -287,6 +306,24 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       /* ignore */
     }
   }, [mindfulStoryboardStyleId]);
+
+  // 治愈心理学���语言输出选项
+  type MindfulLanguage = 'en' | 'zh' | 'ko' | 'ja' | 'es' | 'de' | 'hi' | 'ru' | 'pt' | 'fr' | 'id' | 'th';
+  const mindfulLanguages: { id: MindfulLanguage; name: string; native: string }[] = [
+    { id: 'en', name: 'English', native: '英文' },
+    { id: 'zh', name: '中文', native: '中文' },
+    { id: 'ko', name: '한국어', native: '韩文' },
+    { id: 'ja', name: '日本語', native: '日文' },
+    { id: 'es', name: 'Español', native: '西班牙文' },
+    { id: 'de', name: 'Deutsch', native: '德文' },
+    { id: 'hi', name: 'हिन्दी', native: '印地文' },
+    { id: 'ru', name: 'Русский', native: '俄文' },
+    { id: 'pt', name: 'Português', native: '葡萄牙文' },
+    { id: 'fr', name: 'Français', native: '法文' },
+    { id: 'id', name: 'Bahasa Indonesia', native: '印尼文' },
+    { id: 'th', name: 'ภาษาไทย', native: '泰文' },
+  ];
+  const [mindfulLanguage, setMindfulLanguage] = useState<MindfulLanguage>('en');
 
   /** 易经命理·长视频：大纲 + 分段并行 + 合并润色 */
   /** 全文目标字数（分段并行的总目标，默认 3500，与各章 min/max 联动） */
@@ -4311,6 +4348,37 @@ ${segmentSourceText}
                         ? `长视频：英文全文约 ${MINDFUL_EN_SCRIPT_CHARS_MIN}–${MINDFUL_EN_SCRIPT_CHARS_MAX} 字符（含空格）；分段并行工作台「目标全文字数」与此一致。短视频：≤500 字。`
                         : '短视频：在选题基础上详细展开，加入排比与总结排列，输出 500 字以内短视频文案。'}
             </p>
+          </div>
+        )}
+
+        {/* 治愈心理学多语言输出选项 */}
+        {niche === NicheType.MINDFUL_PSYCHOLOGY && (
+          <div className="mb-6 animate-in fade-in duration-300 bg-gradient-to-r from-purple-900/30 to-indigo-900/30 p-4 rounded-xl border border-purple-500/30">
+            <label className="text-xs font-bold text-purple-400 flex items-center gap-1 mb-3">
+              <Globe size={14} /> 多语言全球化输出
+            </label>
+            <p className="text-[10px] text-slate-500 mb-3">选择输出语言，脚本和选题将根据目标语言和文化习惯调整风格</p>
+            <div className="flex flex-wrap gap-2">
+              {mindfulLanguages.map((lang) => (
+                <button
+                  key={lang.id}
+                  onClick={() => setMindfulLanguage(lang.id)}
+                  className={`px-3 py-1.5 rounded text-xs border transition-all flex items-center gap-1.5 ${
+                    mindfulLanguage === lang.id
+                      ? 'bg-purple-600 text-white border-purple-500'
+                      : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-purple-500 hover:text-purple-300'
+                  }`}
+                >
+                  <span>{lang.name}</span>
+                  <span className="text-[9px] opacity-60">({lang.native})</span>
+                </button>
+              ))}
+            </div>
+            {mindfulLanguage !== 'en' && (
+              <p className="text-[10px] text-purple-300/70 mt-2">
+                当前选择：{mindfulLanguages.find(l => l.id === mindfulLanguage)?.name} 输出，脚本将据此文化习惯调整
+              </p>
+            )}
           </div>
         )}
 
