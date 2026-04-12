@@ -92,19 +92,40 @@ async function runExportJob(payload) {
     }
   );
 
+  // 调试日志过滤：只记录 stderr 中的调试信息，不当作错误
   if (stderr.trim()) {
-    console.error('[jianying-server] Python stderr:\n', stderr.slice(0, 2000));
-  }
-  if (code !== 0) {
-    throw new Error(stderr || `Python exit ${code}`);
+    const debugLines = stderr.split('\n').filter(line =>
+      line.includes('[jianying_export]') || line.includes('[jianying-server]')
+    );
+    if (debugLines.length > 0) {
+      console.log('[jianying-server] Python 调试日志:\n', debugLines.join('\n').slice(0, 2000));
+    }
   }
 
+  // 处理 stdout：这是 Python 脚本的实际输出（JSON）
   const text = (stdout || '').trim();
-  if (!text) throw new Error('Python 无输出');
 
+  // 如果 stdout 为空但 stderr 有调试信息，说明可能有问题
+  if (!text) {
+    // 检查 stderr 中是否有真正的错误（不是调试日志）
+    const errorLines = stderr.split('\n').filter(line =>
+      line.trim() && !line.includes('[jianying_export]') && !line.includes('[jianying-server]')
+    );
+    if (errorLines.length > 0) {
+      throw new Error(errorLines.join(' ').slice(0, 500));
+    }
+    // 如果有调试日志但没有实际输出，说明可能有问题
+    if (stderr.includes('[jianying_export]')) {
+      throw new Error('Python 脚本执行异常：无有效输出');
+    }
+    throw new Error('Python 无输出');
+  }
+
+  // 成功情况：尝试解析 JSON
   try {
     return normalizeExportResult(JSON.parse(text), returnZip);
   } catch {
+    // JSON 解析失败，尝试提取
     const i = text.lastIndexOf('{');
     const j = text.lastIndexOf('}');
     if (i >= 0 && j > i) {
@@ -114,11 +135,12 @@ async function runExportJob(payload) {
         // ignore
       }
     }
+    // 非 JSON 响应：检查是否是成功消息
     const low = text.toLowerCase();
     if (/success|完成|草稿|draft|✅/.test(text) && !/error|失败|traceback/.test(low)) {
       return { success: true, message: text, platform: 'jianying' };
     }
-    throw new Error(text);
+    throw new Error(text.slice(0, 500));
   }
 }
 
@@ -350,16 +372,18 @@ function runPythonStdin(args, payload) {
     // 优先使用 python3
     const pyCmd = existsSync('/usr/bin/python3') ? '/usr/bin/python3' : 'python3';
     const child = spawn(pyCmd, [PYTHON_SCRIPT, ...args], {
-      // Free tier 超时：60s
-      timeout: 60_000,
+      // 处理大量镜头时需要更长的超时时间（5分钟）
+      timeout: 300_000,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
     let killed = false;
+    // 5 分钟超时（处理大量 base64 音频数据需要更长时间）
     const timer = setTimeout(() => {
       killed = true;
       child.kill('SIGKILL');
-    }, 60_000);
+      console.error('[jianying-server] Python 进程超时被杀（5分钟）');
+    }, 300_000);
 
     let stdout = '';
     let stderr = '';
