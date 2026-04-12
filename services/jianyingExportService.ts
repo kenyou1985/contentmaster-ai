@@ -118,6 +118,45 @@ export async function checkJianyingHealth(): Promise<JianyingHealth> {
   return res.json();
 }
 
+/**
+ * 预热 Railway 服务（解决免费版睡眠唤醒延迟问题）
+ * Railway 免费版 15 分钟无请求后会睡眠，唤醒需要 30-60 秒
+ * 此函数会 ping 健康检查端点，给服务时间启动
+ */
+export async function warmupJianyingService(timeoutMs: number = 60000): Promise<boolean> {
+  const base = getJianyingApiBase();
+  const startTime = Date.now();
+  const maxWait = timeoutMs;
+
+  console.log(`[JianyingExport] 开始预热 Railway 服务: ${base}`);
+
+  while (Date.now() - startTime < maxWait) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒单次超时
+
+      const res = await fetch(`${base}/health`, {
+        method: 'GET',
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (res.ok) {
+        console.log(`[JianyingExport] Railway 服务已唤醒，耗时: ${Date.now() - startTime}ms`);
+        return true;
+      }
+    } catch {
+      // 服务还在睡眠中，继续等待
+    }
+    // 等待 3 秒再试
+    await new Promise(r => setTimeout(r, 3000));
+  }
+
+  console.warn(`[JianyingExport] Railway 服务预热超时 (${maxWait}ms)，继续尝试导出...`);
+  return false;
+}
+
 /** 列出剪映所有草稿 */
 export async function listJianyingDrafts(): Promise<JianyingDraftInfo[]> {
   const res = await fetch(`${getJianyingApiBase()}/list`);
@@ -334,6 +373,14 @@ export async function exportJianyingDraft(
 
   // railway API 地址（从环境变量获取）
   const railwayBase = (import.meta.env.VITE_JIANYING_API_BASE || '').replace(/\/$/, '');
+
+  // Railway 免费版 15 分钟无请求后会睡眠，唤醒需要 30-60 秒
+  // 如果使用 Railway 且非本地开发，先预热服务
+  const isRailway = base === railwayBase && railwayBase.includes('railway');
+  if (isRailway && !isJianyingLocalSiteOrigin()) {
+    console.log('[JianyingExport] 检测到 Railway 服务，开始预热...');
+    await warmupJianyingService(60000); // 最多等待 60 秒让服务唤醒
+  }
 
   // 本地开发时检测服务是否可用，500 错误则自动切换 railway
   const tryExport = async (apiBase: string, payload: object): Promise<Response> => {

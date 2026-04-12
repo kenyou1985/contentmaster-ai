@@ -123,21 +123,58 @@ async function runExportJob(payload) {
 }
 
 // CORS：允许 Vercel 部署的前端调用
+// 本地 localhost:3000 + 各种开发服务器端口（Vite 5173/5174/5175）
+const ALLOWED_ORIGINS = [
+  /vercel\.app$/,
+  /contentmaster.*\.vercel\.app$/,
+  /\.contentmaster-ai\.vercel\.app$/,
+  'https://contentmaster-ai.vercel.app',
+  // 自定义正式域名
+  'https://contentmaster-ai.77aiai.com',
+  'https://www.contentmaster-ai.77aiai.com',
+  // Railway/Render 部署的剪映服务端自身
+  'https://contentmaster-ai-production.up.railway.app',
+  // 本地开发（支持各种端口）
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:5175',
+  'http://localhost:8080',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:5174',
+  'http://127.0.0.1:5175',
+  'http://127.0.0.1:8080',
+];
+
+function isOriginAllowed(origin) {
+  if (!origin) return false;
+  // 同源请求直接放行
+  if (origin === `http://localhost:${PORT}` || origin === `https://localhost:${PORT}`) return true;
+  for (const o of ALLOWED_ORIGINS) {
+    if (typeof o === 'string') {
+      if (origin === o) return true;
+    } else if (o instanceof RegExp) {
+      if (o.test(origin)) return true;
+    }
+  }
+  return false;
+}
+
 app.use(cors({
-  origin: [
-    /vercel\.app$/,
-    /contentmaster.*\.vercel\.app$/,
-    /\.contentmaster-ai\.vercel\.app$/,
-    'https://contentmaster-ai.vercel.app',
-    // 自定义正式域名
-    'https://contentmaster-ai.77aiai.com',
-    'https://www.contentmaster-ai.77aiai.com',
-    // 本地开发
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
-  ],
+  origin: (origin, callback) => {
+    // 同源请求或没有 origin（server-to-server）直接放行
+    if (!origin || isOriginAllowed(origin)) {
+      callback(null, true);
+    } else {
+      console.warn(`[CORS] 拒绝来源: ${origin}`);
+      callback(new Error(`CORS: origin ${origin} not allowed`));
+    }
+  },
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  credentials: false,
+  maxAge: 86400,
 }));
 
 app.use(express.json({ limit: '50mb' }));
