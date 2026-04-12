@@ -294,6 +294,8 @@ export const YouTubeMonitor: React.FC = () => {
   const [channelVideos, setChannelVideos] = useState<VideoMeta[]>([]);
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
   const [isLoadingChannelVideos, setIsLoadingChannelVideos] = useState(false);
+  const [videoPageSize, setVideoPageSize] = useState<20 | 50 | 100>(20);
+  const [videoPage, setVideoPage] = useState(0);
 
   // ── 词云缓存状态 ───────────────────────────────────────────────
   const [cachedKeywords, setCachedKeywords] = useState<Map<string, { keywords: WordCloudEntry[]; cachedAt: number }>>(new Map());
@@ -305,6 +307,9 @@ export const YouTubeMonitor: React.FC = () => {
   const [wordCloud, setWordCloud] = useState<WordCloudEntry[]>([]);
   const [competitors, setCompetitors] = useState<CompetitorChannel[]>([]);
   const [isDiscoveringCompetitors, setIsDiscoveringCompetitors] = useState(false);
+
+  // ── 趋势分析时间范围状态 ──────────────────────────────────────────
+  const [trendTimeRange, setTrendTimeRange] = useState<'24h' | '3d' | '7d' | 'all'>('all');
 
   // ── 视频对比状态 ────────────────────────────────────────────────
   const [compareVideos, setCompareVideos] = useState<VideoMeta[]>([]);
@@ -379,7 +384,7 @@ export const YouTubeMonitor: React.FC = () => {
         if (comparisons.length) setCompareVideos([]);
         const savedKey = await storage.get<string>('YOUTUBE_API_KEY');
         if (savedKey) setUserApiKey(savedKey);
-        // 初始化 allChannels（从分组中收集频道）
+        // 初始化分组
         await loadGroups();
       } catch (e) {
         console.error('[YouTubeMonitor] 本地数据加载失败', e);
@@ -390,6 +395,14 @@ export const YouTubeMonitor: React.FC = () => {
     };
     void load();
   }, []);
+
+  // ── channelGroups 更新后加载视频 ───────────────────────────────
+  useEffect(() => {
+    if (channelGroups.length === 0) return;
+    for (const group of channelGroups) {
+      void loadAllGroupChannels(group.id, false, 50);
+    }
+  }, [channelGroups.length]);
 
   // ── 启动关键词定时任务 ───────────────────────────────────────────
   useEffect(() => {
@@ -421,7 +434,7 @@ export const YouTubeMonitor: React.FC = () => {
   const DEFAULT_GROUP_ID = 'default_group';
 
   // ── 频道分组 CRUD ───────────────────────────────────────────────
-  const loadGroups = useCallback(async () => {
+  const loadGroups = useCallback(async (): Promise<ChannelGroup[]> => {
     let groups = await storage.getChannelGroups();
     
     // 确保默认分组存在
@@ -440,7 +453,8 @@ export const YouTubeMonitor: React.FC = () => {
       groups = await storage.getChannelGroups();
     }
     
-    setChannelGroups(groups.sort((a, b) => a.order - b.order));
+    const sortedGroups = groups.sort((a, b) => a.order - b.order);
+    setChannelGroups(sortedGroups);
     // 收集所有频道到 allChannels（直接从 storage 读取 channelMetaMap，确保初始化时也能获取）
     const savedMeta = await storage.getChannelMetaMap();
     const metaMap = new Map<string, ChannelMeta>();
@@ -448,7 +462,7 @@ export const YouTubeMonitor: React.FC = () => {
     // 同时更新 channelMetaMap state
     setChannelMetaMap(metaMap);
     const allChs: ChannelMeta[] = [];
-    groups.forEach(g => {
+    sortedGroups.forEach(g => {
       g.channelIds.forEach(id => {
         const ch = metaMap.get(id);
         if (ch && !allChs.some(c => c.channelId === id)) {
@@ -457,6 +471,7 @@ export const YouTubeMonitor: React.FC = () => {
       });
     });
     setAllChannels(allChs);
+    return sortedGroups;
   }, []);
 
   const createGroup = useCallback(async () => {
@@ -661,7 +676,7 @@ export const YouTubeMonitor: React.FC = () => {
   }, [channelGroups, loadGroups]);
 
   // ── 抓取分组内频道视频（带缓存和新视频检测）───────────────────────
-  const fetchGroupChannelVideos = useCallback(async (groupId: string, channelId: string, forceRefresh = false) => {
+  const fetchGroupChannelVideos = useCallback(async (groupId: string, channelId: string, forceRefresh = false, maxResults = 20) => {
     // 获取旧视频列表用于比较
     const oldVideos = groupVideos.get(`${groupId}_${channelId}`) || [];
     const oldVideoIds = new Set(oldVideos.map(v => v.videoId));
@@ -669,28 +684,35 @@ export const YouTubeMonitor: React.FC = () => {
     // 检查缓存（仅在非强制刷新时使用）
     if (!forceRefresh) {
       const cached = await storage.getCachedChannelVideos(channelId);
-      if (cached && !storage.needsRefresh(cached.cachedAt, 30)) {
-        setGroupVideos(prev => {
-          const next = new Map(prev);
-          next.set(`${groupId}_${channelId}`, cached.videos);
-          return next;
-        });
-        // 检测新视频
-        const newCount = cached.videos.filter(v => !oldVideoIds.has(v.videoId)).length;
-        if (newCount > 0) {
-          setNewVideoCounts(prev => {
+      if (cached && !storage.needsRefresh(cached.cachedAt, 30) && cached.videos.length > 0) {
+        // 如果缓存数量足够，直接使用
+        if (cached.videos.length >= maxResults) {
+          const videosToUse = cached.videos;
+          setGroupVideos(prev => {
             const next = new Map(prev);
-            next.set(channelId, (prev.get(channelId) || 0) + newCount);
+            next.set(`${groupId}_${channelId}`, videosToUse);
             return next;
           });
+          // 检测新视频
+          const newCount = videosToUse.filter(v => !oldVideoIds.has(v.videoId)).length;
+          if (newCount > 0) {
+            setNewVideoCounts(prev => {
+              const next = new Map(prev);
+              next.set(channelId, (prev.get(channelId) || 0) + newCount);
+              return next;
+            });
+          }
+          return;
         }
-        return; // 使用缓存
+        // 缓存数量不足，强制刷新获取更多数据
+        forceRefresh = true;
       }
     }
 
     setLoadingChannels(prev => new Set(prev).add(channelId));
     try {
-      const videos = await ytGetChannelVideos(channelId, activeApiKey || undefined, 20);
+      // API 抓取时使用 maxResults 限制数量
+      const videos = await ytGetChannelVideos(channelId, activeApiKey || undefined, maxResults);
 
       // 检测新增视频（通过比较 videoId）
       const newVideoIds = new Set(videos.map(v => v.videoId));
@@ -733,7 +755,7 @@ export const YouTubeMonitor: React.FC = () => {
   }, [activeApiKey, groupVideos, channelMetaMap]);
 
   // 加载分组内所有频道的视频（带缓存）
-  const loadAllGroupChannels = useCallback(async (groupId: string, forceRefresh = false) => {
+  const loadAllGroupChannels = useCallback(async (groupId: string, forceRefresh = false, maxResults = 20) => {
     const group = channelGroups.find(g => g.id === groupId);
     if (!group) return;
     // 刷新前清除该分组的新视频计数
@@ -745,7 +767,7 @@ export const YouTubeMonitor: React.FC = () => {
       });
     }
     for (const channelId of group.channelIds) {
-      void fetchGroupChannelVideos(groupId, channelId, forceRefresh);
+      void fetchGroupChannelVideos(groupId, channelId, forceRefresh, maxResults);
     }
   }, [channelGroups, fetchGroupChannelVideos]);
 
@@ -1778,7 +1800,7 @@ export const YouTubeMonitor: React.FC = () => {
     );
   };
 
-  // ── 渲染：分析面板 ───────────────────────────────────────────────
+  // ── 渲染：分析面板（趋势分析）────────────────────────────────────
   const renderAnalysisPanel = () => {
     if (!analysisVideo && !isLoadingAnalysis) return (
       <div className="text-center py-16 text-slate-500">
@@ -1796,12 +1818,38 @@ export const YouTubeMonitor: React.FC = () => {
     const score = calcTrendScore(video, analysisHistory);
     const reason = generateReason(video, analysisHistory);
 
-    // 历史趋势
+    // 历史趋势数据
     const sortedHistory = [...analysisHistory].sort((a, b) => a.fetchedAt - b.fetchedAt);
-    const maxView = Math.max(...sortedHistory.map(s => s.viewCount), video.viewCount, 1);
+    const now = Date.now();
+
+    // 根据时间范围过滤数据
+    const timeRangeMs = {
+      '24h': 24 * 60 * 60 * 1000,
+      '3d': 3 * 24 * 60 * 60 * 1000,
+      '7d': 7 * 24 * 60 * 60 * 1000,
+      'all': Infinity,
+    };
+    const filteredHistory = sortedHistory.filter(s => (now - s.fetchedAt) <= timeRangeMs[trendTimeRange]);
+
+    // 计算变化率
+    const calcChange = (current: number, previous: number) => {
+      if (previous === 0) return null;
+      const change = ((current - previous) / previous) * 100;
+      return change;
+    };
+
+    // 获取最新和最早的数据点
+    const latestData = filteredHistory.length > 0 ? filteredHistory[filteredHistory.length - 1] : null;
+    const oldestData = filteredHistory.length > 0 ? filteredHistory[0] : null;
+
+    // 计算各指标的变化
+    const viewChange = latestData && oldestData ? calcChange(latestData.viewCount, oldestData.viewCount) : null;
+    const likeChange = latestData && oldestData ? calcChange(latestData.likeCount ?? 0, oldestData.likeCount ?? 0) : null;
+    const commentChange = latestData && oldestData ? calcChange(latestData.commentCount ?? 0, oldestData.commentCount ?? 0) : null;
 
     return (
       <div className="space-y-4">
+        {/* 视频基本信息 */}
         <div className="flex items-start gap-4">
           {video.thumbnail && (
             <img src={video.thumbnail} alt={video.title} className="w-64 rounded-xl flex-shrink-0" />
@@ -1832,62 +1880,217 @@ export const YouTubeMonitor: React.FC = () => {
           <p className="text-sm text-slate-300">{reason}</p>
         </div>
 
-        {/* 播放量趋势图（纯 CSS） */}
-        {sortedHistory.length >= 2 && (
-          <div className="bg-slate-800/30 rounded-xl p-3 border border-slate-700/30">
-            <div className="flex items-center gap-2 mb-3">
-              <TrendingUp className="w-4 h-4 text-cyan-400" />
-              <span className="text-sm font-medium text-slate-300">播放量趋势</span>
-              <span className="text-xs text-slate-500 ml-auto">{sortedHistory.length} 个数据点</span>
+        {/* 时间范围选择 + 变化统计 */}
+        {filteredHistory.length >= 2 && (
+          <div className="bg-slate-800/30 rounded-xl p-4 border border-slate-700/30">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <TrendingUp className="w-4 h-4 text-cyan-400" />
+                <span className="text-sm font-medium text-slate-300">数据走势</span>
+              </div>
+              {/* 时间范围选择 */}
+              <div className="flex gap-1 bg-slate-900/50 rounded-lg p-1">
+                {(['24h', '3d', '7d', 'all'] as const).map(range => (
+                  <button
+                    key={range}
+                    onClick={() => setTrendTimeRange(range)}
+                    className={`px-2 py-1 text-xs rounded transition-colors ${
+                      trendTimeRange === range
+                        ? 'bg-cyan-500/30 text-cyan-400'
+                        : 'text-slate-500 hover:text-slate-300'
+                    }`}
+                  >
+                    {range === '24h' ? '24小时' : range === '3d' ? '3天' : range === '7d' ? '7天' : '全部'}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="flex items-end gap-1 h-20">
-              {sortedHistory.map((s, i) => {
-                const height = Math.max(2, Math.round((s.viewCount / maxView) * 72));
+
+            {/* 指标变化统计卡片 */}
+            <div className="grid grid-cols-3 gap-3 mb-4">
+              {/* 播放量变化 */}
+              <div className="bg-slate-900/50 rounded-lg p-3 border border-slate-700/30">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <Eye className="w-3.5 h-3.5 text-cyan-400" />
+                  <span className="text-xs text-slate-400">播放量</span>
+                </div>
+                <p className="text-lg font-bold text-slate-200">{formatNumber(latestData?.viewCount ?? 0)}</p>
+                {viewChange !== null && (
+                  <div className={`flex items-center gap-1 text-xs ${viewChange >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {viewChange >= 0 ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />}
+                    <span>{Math.abs(viewChange).toFixed(1)}%</span>
+                    <span className="text-slate-500">较早期</span>
+                  </div>
+                )}
+              </div>
+
+              {/* 点赞变化 */}
+              <div className="bg-slate-900/50 rounded-lg p-3 border border-slate-700/30">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <ThumbsUp className="w-3.5 h-3.5 text-rose-400" />
+                  <span className="text-xs text-slate-400">点赞</span>
+                </div>
+                <p className="text-lg font-bold text-slate-200">{formatNumber(latestData?.likeCount ?? 0)}</p>
+                {likeChange !== null && (
+                  <div className={`flex items-center gap-1 text-xs ${likeChange >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {likeChange >= 0 ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />}
+                    <span>{Math.abs(likeChange).toFixed(1)}%</span>
+                    <span className="text-slate-500">较早期</span>
+                  </div>
+                )}
+              </div>
+
+              {/* 评论变化 */}
+              <div className="bg-slate-900/50 rounded-lg p-3 border border-slate-700/30">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <MessageCircle className="w-3.5 h-3.5 text-violet-400" />
+                  <span className="text-xs text-slate-400">评论</span>
+                </div>
+                <p className="text-lg font-bold text-slate-200">{formatNumber(latestData?.commentCount ?? 0)}</p>
+                {commentChange !== null && (
+                  <div className={`flex items-center gap-1 text-xs ${commentChange >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {commentChange >= 0 ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />}
+                    <span>{Math.abs(commentChange).toFixed(1)}%</span>
+                    <span className="text-slate-500">较早期</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* 多指标走势图 */}
+            <div className="space-y-3">
+              {/* 播放量走势 */}
+              {(() => {
+                const maxVal = Math.max(...filteredHistory.map(s => s.viewCount), 1);
                 return (
-                  <div key={i} className="flex-1 bg-cyan-500/60 rounded-t hover:bg-cyan-400/80 transition-colors group relative" style={{ height }}>
-                    <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-[10px] text-slate-300 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-10">
-                      {new Date(s.fetchedAt).toLocaleDateString('zh-CN')}: {formatNumber(s.viewCount)}
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs text-slate-400">播放量走势</span>
+                      <span className="text-[10px] text-slate-500">{filteredHistory.length} 个数据点</span>
+                    </div>
+                    <div className="flex items-end gap-0.5 h-16">
+                      {filteredHistory.map((s, i) => {
+                        const height = Math.max(2, Math.round((s.viewCount / maxVal) * 56));
+                        const prevVal = i > 0 ? filteredHistory[i - 1].viewCount : s.viewCount;
+                        const isUp = s.viewCount >= prevVal;
+                        return (
+                          <div
+                            key={i}
+                            className={`flex-1 rounded-t transition-all group relative cursor-pointer ${
+                              isUp ? 'bg-cyan-500/70 hover:bg-cyan-400' : 'bg-cyan-600/40 hover:bg-cyan-500/60'
+                            }`}
+                            style={{ height }}
+                          >
+                            <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-[10px] text-slate-300 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                              <div>{new Date(s.fetchedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit' })}</div>
+                              <div className="font-medium">{formatNumber(s.viewCount)}</div>
+                              {i > 0 && (
+                                <div className={`text-[9px] ${isUp ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                  {isUp ? '+' : ''}{formatNumber(s.viewCount - filteredHistory[i - 1].viewCount)}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 );
-              })}
+              })()}
+
+              {/* 点赞走势 */}
+              {(() => {
+                const vals = filteredHistory.map(s => s.likeCount ?? 0);
+                const maxVal = Math.max(...vals, 1);
+                return (
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs text-slate-400">点赞走势</span>
+                    </div>
+                    <div className="flex items-end gap-0.5 h-12">
+                      {filteredHistory.map((s, i) => {
+                        const val = s.likeCount ?? 0;
+                        const height = Math.max(2, Math.round((val / maxVal) * 40));
+                        const prevVal = i > 0 ? (filteredHistory[i - 1].likeCount ?? 0) : val;
+                        const isUp = val >= prevVal;
+                        return (
+                          <div
+                            key={i}
+                            className={`flex-1 rounded-t transition-all group relative cursor-pointer ${
+                              isUp ? 'bg-rose-500/70 hover:bg-rose-400' : 'bg-rose-600/40 hover:bg-rose-500/60'
+                            }`}
+                            style={{ height }}
+                          >
+                            <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-[10px] text-slate-300 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                              <div>{new Date(s.fetchedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit' })}</div>
+                              <div className="font-medium">{formatNumber(val)}</div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* 评论走势 */}
+              {(() => {
+                const vals = filteredHistory.map(s => s.commentCount ?? 0);
+                const maxVal = Math.max(...vals, 1);
+                return (
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs text-slate-400">评论走势</span>
+                    </div>
+                    <div className="flex items-end gap-0.5 h-10">
+                      {filteredHistory.map((s, i) => {
+                        const val = s.commentCount ?? 0;
+                        const height = Math.max(2, Math.round((val / maxVal) * 32));
+                        const prevVal = i > 0 ? (filteredHistory[i - 1].commentCount ?? 0) : val;
+                        const isUp = val >= prevVal;
+                        return (
+                          <div
+                            key={i}
+                            className={`flex-1 rounded-t transition-all group relative cursor-pointer ${
+                              isUp ? 'bg-violet-500/70 hover:bg-violet-400' : 'bg-violet-600/40 hover:bg-violet-500/60'
+                            }`}
+                            style={{ height }}
+                          >
+                            <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-[10px] text-slate-300 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                              <div>{new Date(s.fetchedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit' })}</div>
+                              <div className="font-medium">{formatNumber(val)}</div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
-            <div className="flex justify-between text-[10px] text-slate-600 mt-1">
-              <span>{new Date(sortedHistory[0].fetchedAt).toLocaleDateString('zh-CN')}</span>
-              <span>今天</span>
+
+            {/* 时间范围说明 */}
+            <div className="flex justify-between text-[10px] text-slate-600 mt-2">
+              <span>{filteredHistory.length > 0 ? new Date(filteredHistory[0].fetchedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit' }) : '-'}</span>
+              <span>最新数据</span>
             </div>
           </div>
         )}
 
-        {/* 指标柱状对比 */}
-        {compareVideos.length >= 2 && (
-          <div className="bg-slate-800/30 rounded-xl p-3 border border-slate-700/30">
-            <div className="flex items-center gap-2 mb-3">
-              <BarChart className="w-4 h-4 text-violet-400" />
-              <span className="text-sm font-medium text-slate-300">指标对比</span>
-            </div>
-            <div className="space-y-2">
-              {[{ label: '播放量', key: 'viewCount' }, { label: '点赞', key: 'likeCount' }, { label: '评论', key: 'commentCount' }].map(m => {
-                const vals = compareVideos.map(v => {
-                  const val = m.key === 'viewCount' ? v.viewCount : m.key === 'likeCount' ? (v.likeCount ?? 0) : (v.commentCount ?? 0);
-                  return val;
-                });
-                const maxVal = Math.max(...vals, 1);
-                return (
-                  <div key={m.label} className="flex items-center gap-2 text-xs">
-                    <span className="w-12 text-slate-500">{m.label}</span>
-                    {vals.map((val, i) => (
-                      <div key={i} className="flex-1 flex items-center gap-1">
-                        <div className="flex-1 bg-slate-700 rounded-full h-2 overflow-hidden">
-                          <div className="h-full bg-emerald-500/70 rounded-full transition-all" style={{ width: `${(val / maxVal) * 100}%` }} />
-                        </div>
-                        <span className="w-16 text-right text-slate-400">{formatNumber(val)}</span>
-                      </div>
-                    ))}
-                  </div>
-                );
-              })}
-            </div>
+        {/* 无历史数据提示 */}
+        {filteredHistory.length < 2 && sortedHistory.length >= 2 && (
+          <div className="bg-slate-800/30 rounded-xl p-4 border border-slate-700/30 text-center">
+            <BarChart2 className="w-8 h-8 mx-auto mb-2 text-slate-600" />
+            <p className="text-sm text-slate-400">选择更长的时间范围查看趋势</p>
+            <p className="text-xs text-slate-500 mt-1">当前选择范围内数据点不足</p>
+          </div>
+        )}
+
+        {sortedHistory.length < 2 && (
+          <div className="bg-slate-800/30 rounded-xl p-4 border border-slate-700/30 text-center">
+            <Clock className="w-8 h-8 mx-auto mb-2 text-slate-600" />
+            <p className="text-sm text-slate-400">暂无历史数据</p>
+            <p className="text-xs text-slate-500 mt-1">系统会持续监控该视频的数据变化</p>
           </div>
         )}
       </div>
@@ -2936,6 +3139,23 @@ export const YouTubeMonitor: React.FC = () => {
                                               )}
                                             </div>
                                             <span className="text-[10px] text-slate-600">{videos.length} 条</span>
+                                            <select
+                                              value={isSelected && videos.length > 20 ? videoPageSize : 0}
+                                              onChange={e => {
+                                                const val = Number(e.target.value) as 20 | 50 | 100;
+                                                if (val > 0) {
+                                                  setVideoPageSize(val);
+                                                  setSelectedChannelId(ch.channelId);
+                                                }
+                                              }}
+                                              className="px-1.5 py-0.5 text-[10px] bg-slate-700/50 text-slate-400 rounded border border-slate-600 hover:bg-slate-600"
+                                              title="选择显示视频数量"
+                                            >
+                                              <option value={0}>显示▼</option>
+                                              <option value={20}>20条</option>
+                                              <option value={50}>50条</option>
+                                              <option value={100}>100条</option>
+                                            </select>
                                             <button
                                               onClick={() => { setSelectedChannelId(ch.channelId); void fetchGroupChannelVideos(expandedGroupId, ch.channelId); }}
                                               disabled={isLoading}
@@ -2966,24 +3186,65 @@ export const YouTubeMonitor: React.FC = () => {
                                               ) : videos.length === 0 ? (
                                                 <p className="py-2 text-xs text-slate-600">暂无视频数据</p>
                                               ) : (
-                                                <div className="space-y-1.5">
-                                                  {videos.slice(0, 10).map(v => (
-                                                    <div
-                                                      key={v.videoId}
-                                                      className="flex items-center gap-2 p-1.5 bg-slate-800/30 hover:bg-slate-800/60 rounded-lg cursor-pointer transition-colors"
-                                                      onClick={() => setAnalysisVideo(v)}
-                                                    >
-                                                      <img src={v.thumbnail || ''} alt="" className="w-16 h-10 rounded object-cover flex-shrink-0" />
-                                                      <div className="flex-1 min-w-0">
-                                                        <p className="text-[10px] text-slate-200 line-clamp-1">{v.title}</p>
-                                                        <p className="text-[10px] text-slate-500">
-                                                          {v.viewCount ? `${formatNumber(v.viewCount)} 播放` : ''}
-                                                          {v.publishedAt ? ` · ${new Date(v.publishedAt).toLocaleDateString()}` : ''}
-                                                        </p>
-                                                      </div>
+                                                <>
+                                                  {/* 分页控制 */}
+                                                  <div className="flex items-center justify-between mb-2 p-2 bg-slate-800/50 rounded-lg">
+                                                    <div className="flex items-center gap-2">
+                                                      <span className="text-[10px] text-slate-400">每页</span>
+                                                      <select
+                                                        value={videoPageSize}
+                                                        onChange={e => { setVideoPageSize(Number(e.target.value) as 20 | 50 | 100); setVideoPage(0); }}
+                                                        className="bg-slate-700 text-slate-300 text-[10px] rounded px-2 py-1 border border-slate-600"
+                                                      >
+                                                        <option value={20}>20条</option>
+                                                        <option value={50}>50条</option>
+                                                        <option value={100}>100条</option>
+                                                      </select>
                                                     </div>
-                                                  ))}
-                                                </div>
+                                                    <div className="flex items-center gap-2">
+                                                      {videos.length > videoPageSize && (
+                                                        <>
+                                                          <button
+                                                            onClick={() => setVideoPage(p => Math.max(0, p - 1))}
+                                                            disabled={videoPage === 0}
+                                                            className="px-2 py-1 text-[10px] bg-slate-700 text-slate-300 rounded hover:bg-slate-600 disabled:opacity-50"
+                                                          >
+                                                            ‹ 上一页
+                                                          </button>
+                                                          <span className="text-[10px] text-slate-400 px-2">
+                                                            {videoPage + 1} / {Math.ceil(videos.length / videoPageSize)}
+                                                          </span>
+                                                          <button
+                                                            onClick={() => setVideoPage(p => Math.min(Math.ceil(videos.length / videoPageSize) - 1, p + 1))}
+                                                            disabled={videoPage >= Math.ceil(videos.length / videoPageSize) - 1}
+                                                            className="px-2 py-1 text-[10px] bg-slate-700 text-slate-300 rounded hover:bg-slate-600 disabled:opacity-50"
+                                                          >
+                                                            下一页 ›
+                                                          </button>
+                                                        </>
+                                                      )}
+                                                      <span className="text-[10px] text-slate-500">共{videos.length}条</span>
+                                                    </div>
+                                                  </div>
+                                                  <div className="space-y-1.5">
+                                                    {videos.slice(videoPage * videoPageSize, (videoPage + 1) * videoPageSize).map(v => (
+                                                      <div
+                                                        key={v.videoId}
+                                                        className="flex items-center gap-2 p-1.5 bg-slate-800/30 hover:bg-slate-800/60 rounded-lg cursor-pointer transition-colors"
+                                                        onClick={() => setAnalysisVideo(v)}
+                                                      >
+                                                        <img src={v.thumbnail || ''} alt="" className="w-16 h-10 rounded object-cover flex-shrink-0" />
+                                                        <div className="flex-1 min-w-0">
+                                                          <p className="text-[10px] text-slate-200 line-clamp-1">{v.title}</p>
+                                                          <p className="text-[10px] text-slate-500">
+                                                            {v.viewCount ? `${formatNumber(v.viewCount)} 播放` : ''}
+                                                            {v.publishedAt ? ` · ${new Date(v.publishedAt).toLocaleDateString()}` : ''}
+                                                          </p>
+                                                        </div>
+                                                      </div>
+                                                    ))}
+                                                  </div>
+                                                </>
                                               )}
                                             </div>
                                           )}
@@ -3051,7 +3312,7 @@ export const YouTubeMonitor: React.FC = () => {
 
                       return (
                         <>
-                          {/* 排序控制 + 导出 */}
+                          {/* 排序控制 + 导出 + 分页 */}
                           <div className="flex items-center gap-3 flex-wrap">
                             <div className="flex items-center gap-2 text-xs text-slate-400">
                               <Filter className="h-3 w-3 text-slate-500" />
@@ -3066,6 +3327,37 @@ export const YouTubeMonitor: React.FC = () => {
                               </select>
                             </div>
                             <span className="text-xs text-slate-600">{sorted.length} 条视频</span>
+                            {/* 分页控制 - 只显示下一页 */}
+                            <div className="flex items-center gap-2 ml-2">
+                              <span className="text-[10px] text-slate-500">每页</span>
+                              <select
+                                value={videoPageSize}
+                                onChange={e => {
+                                  const newSize = parseInt(e.target.value, 10);
+                                  setVideoPageSize(newSize as 20 | 50 | 100);
+                                  setVideoPage(0);
+                                  // 触发重新抓取指定数量的视频
+                                  for (const ch of channels) {
+                                    void fetchGroupChannelVideos(group.id, ch.channelId, true, newSize);
+                                  }
+                                }}
+                                className="rounded border border-slate-700/80 bg-slate-800/70 px-2 py-1 text-[10px] text-slate-200 cursor-pointer hover:bg-slate-700"
+                              >
+                                <option value={20}>20</option>
+                                <option value={50}>50</option>
+                                <option value={100}>100</option>
+                              </select>
+                              <span className="text-[10px] text-slate-400 min-w-[60px] text-center">
+                                {videoPage + 1} / {Math.max(1, Math.ceil(sorted.length / videoPageSize))}
+                              </span>
+                              <button
+                                onClick={() => setVideoPage(p => Math.min(Math.ceil(sorted.length / videoPageSize) - 1, p + 1))}
+                                disabled={videoPage >= Math.ceil(sorted.length / videoPageSize) - 1}
+                                className="px-2 py-1 text-[10px] bg-cyan-500/20 text-cyan-400 rounded hover:bg-cyan-500/40 disabled:opacity-30 cursor-pointer font-medium"
+                              >
+                                下一页 ›
+                              </button>
+                            </div>
                             {/* 导出按钮 */}
                             {sorted.length > 0 && (
                               <>
@@ -3100,7 +3392,7 @@ export const YouTubeMonitor: React.FC = () => {
                           })()}
 
                           <div className="space-y-2">
-                            {sorted.map(v => renderVideoCard(v))}
+                            {sorted.slice(videoPage * videoPageSize, (videoPage + 1) * videoPageSize).map(v => renderVideoCard(v))}
                           </div>
                         </>
                       );

@@ -16,6 +16,8 @@ interface LogEntry {
 }
 
 interface ChannelHistoryRecord {
+  id: string; // 唯一标识符
+  name: string; // 项目名称（用户可编辑）
   topic: string;
   targetAudience: string;
   contentType: string;
@@ -30,7 +32,8 @@ interface ChannelHistoryRecord {
     avatarUrls?: string[][];
     bannerUrls?: string[][];
   };
-  timestamp: number;
+  timestamp: number; // 创建时间
+  updatedAt: number; // 最近修改时间
 }
 
 interface ChannelGeneratorProps {
@@ -135,51 +138,37 @@ export const ChannelGenerator: React.FC<ChannelGeneratorProps> = ({ apiKey, prov
   // 保存历史记录
   const saveChannelHistory = (record: ChannelHistoryRecord) => {
     try {
-      const updated = [record, ...channelHistory.filter(r => r.timestamp !== record.timestamp)].slice(0, 20);
+      // 确保记录有ID和更新时间
+      const finalRecord = {
+        ...record,
+        id: record.id || `channel_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+        updatedAt: record.updatedAt || Date.now(),
+      };
+      // 更新或添加记录
+      const existingIndex = channelHistory.findIndex(r => r.id === finalRecord.id);
+      let updated: ChannelHistoryRecord[];
+      if (existingIndex >= 0) {
+        updated = [
+          finalRecord,
+          ...channelHistory.filter((_, i) => i !== existingIndex)
+        ];
+      } else {
+        updated = [finalRecord, ...channelHistory].slice(0, 20);
+      }
       setChannelHistory(updated);
       localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
     } catch (e) {
       console.error('保存频道历史记录失败:', e);
+      addLog(`✗ 保存历史记录失败: ${e}`, 'error');
     }
   };
 
   // 删除单条历史记录
-  const deleteChannelHistory = (timestamp: number) => {
-    const updated = channelHistory.filter(r => r.timestamp !== timestamp);
+  const deleteChannelHistory = (id: string) => {
+    const updated = channelHistory.filter(r => r.id !== id);
     setChannelHistory(updated);
     localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
-  };
-
-  // 更新历史记录中的图片（用于后续生成的图片缓存）
-  const updateHistoryWithImages = async (
-    avatarUrls: string[][],
-    bannerUrls: string[][]
-  ) => {
-    if (channelHistory.length === 0) return;
-    
-    try {
-      // 缓存新生成的图片
-      const cached = await cacheImages(avatarUrls, bannerUrls);
-      
-      // 更新最新一条历史记录
-      const latestRecord = channelHistory[0];
-      if (latestRecord) {
-        const updatedRecord = {
-          ...latestRecord,
-          output: {
-            ...latestRecord.output,
-            avatarUrls: cached.avatarUrls,
-            bannerUrls: cached.bannerUrls,
-          },
-        };
-        
-        const updatedHistory = [updatedRecord, ...channelHistory.slice(1)];
-        setChannelHistory(updatedHistory);
-        localStorage.setItem(HISTORY_KEY, JSON.stringify(updatedHistory));
-      }
-    } catch (e) {
-      console.error('更新历史图片失败:', e);
-    }
+    addLog(`已删除项目`, 'info');
   };
 
   // 清空全部历史
@@ -291,27 +280,79 @@ ${nameLangReq}
         addLog('✓ 频道资产生成成功', 'success', `名称: ${output.names.join(', ')}`);
         toast.success('频道资产生成完成！');
         
-        // 保存历史记录（异步缓存图片）
-        const historyRecord: ChannelHistoryRecord = {
-          topic: channelTopic,
-          targetAudience: channelTargetAudience,
-          contentType: channelContentType,
-          brandPositioning: channelBrandPositioning,
-          nameLang: channelNameLang,
-          output,
-          timestamp: Date.now(),
-        };
+        // 生成项目名称（使用第一个频道名称或主题）
+        const projectName = output.names[0] || channelTopic.substring(0, 20) || '未命名项目';
         
-        // 异步缓存图片（不阻塞UI）
-        if (output.avatarUrls?.some(v => v?.length > 0) || output.bannerUrls?.some(v => v?.length > 0)) {
-          cacheImages(output.avatarUrls || [[], [], []], output.bannerUrls || [[], [], []])
-            .then(cached => {
-              historyRecord.output = { ...historyRecord.output, ...cached };
-              saveChannelHistory(historyRecord);
-            })
-            .catch(() => saveChannelHistory(historyRecord));
+        // 检查是否已存在相同的项目（基于主题+目标观众+内容类型）
+        const existingRecord = channelHistory.find(r => 
+          r.topic === channelTopic && 
+          r.targetAudience === channelTargetAudience && 
+          r.contentType === channelContentType
+        );
+        
+        if (existingRecord) {
+          // 更新现有项目：合并图片到原有记录
+          addLog(`发现已有项目 "${existingRecord.name}"，更新中...`, 'info');
+          // 更新现有记录（稍后处理）
+          const finalRecord = {
+            ...existingRecord,
+            output: {
+              ...existingRecord.output,
+              avatarUrls: output.avatarUrls || existingRecord.output.avatarUrls,
+              bannerUrls: output.bannerUrls || existingRecord.output.bannerUrls,
+            },
+            updatedAt: Date.now(),
+          };
+          
+          // 异步缓存图片
+          if (output.avatarUrls?.some(v => v?.length > 0) || output.bannerUrls?.some(v => v?.length > 0)) {
+            try {
+              const cached = await cacheImages(output.avatarUrls || [[], [], []], output.bannerUrls || [[], [], []]);
+              finalRecord.output = { ...finalRecord.output, ...cached };
+              addLog(`✓ 图片已缓存，更新项目 "${existingRecord.name}"`, 'success', `头像: ${cached.avatarUrls.flat().filter(Boolean).length} 张, 横幅: ${cached.bannerUrls.flat().filter(Boolean).length} 张`);
+            } catch (cacheErr) {
+              addLog(`⚠ 图片缓存失败，但仍更新项目记录`, 'warning');
+            }
+          }
+          
+          // 更新历史记录
+          const updatedHistory = [
+            finalRecord,
+            ...channelHistory.filter(r => r.id !== existingRecord.id)
+          ].slice(0, 20);
+          setChannelHistory(updatedHistory);
+          localStorage.setItem(HISTORY_KEY, JSON.stringify(updatedHistory));
+          addLog(`✓ 项目 "${existingRecord.name}" 已更新`, 'success');
         } else {
-          saveChannelHistory(historyRecord);
+          // 创建新项目
+          const newRecord: ChannelHistoryRecord = {
+            id: `channel_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+            name: projectName,
+            topic: channelTopic,
+            targetAudience: channelTargetAudience,
+            contentType: channelContentType,
+            brandPositioning: channelBrandPositioning,
+            nameLang: channelNameLang,
+            output,
+            timestamp: Date.now(),
+            updatedAt: Date.now(),
+          };
+          
+          // 异步缓存图片（不阻塞UI）
+          if (output.avatarUrls?.some(v => v?.length > 0) || output.bannerUrls?.some(v => v?.length > 0)) {
+            try {
+              const cached = await cacheImages(output.avatarUrls || [[], [], []], output.bannerUrls || [[], [], []]);
+              newRecord.output = { ...newRecord.output, ...cached };
+              addLog(`✓ 图片已缓存到新项目 "${projectName}"`, 'success', `头像: ${cached.avatarUrls.flat().filter(Boolean).length} 张, 横幅: ${cached.bannerUrls.flat().filter(Boolean).length} 张`);
+            } catch (cacheErr) {
+              addLog(`⚠ 图片缓存失败，项目 "${projectName}" 已创建`, 'warning');
+              saveChannelHistory(newRecord);
+            }
+            saveChannelHistory(newRecord);
+          } else {
+            saveChannelHistory(newRecord);
+            addLog(`✓ 新项目 "${projectName}" 已创建`, 'success');
+          }
         }
       } else {
         throw new Error('解析生成结果失败');
@@ -523,6 +564,40 @@ ${nameLangReq}
           newImages[index] = currentArray;
           return { ...prev, avatarUrls: newImages };
         });
+        
+        // 异步缓存图片并更新历史记录
+        const newAvatarUrls = channelOutput.avatarUrls ? [...channelOutput.avatarUrls] : [[], [], []];
+        const arr = newAvatarUrls[index] ? [...newAvatarUrls[index]] : [];
+        arr.push(result.url);
+        if (arr.length > 3) arr.shift();
+        newAvatarUrls[index] = arr;
+        
+        const currentBannerUrls = channelOutput.bannerUrls || [[], [], []];
+        
+        (async () => {
+          try {
+            const cached = await cacheImages(newAvatarUrls, currentBannerUrls);
+            // 更新历史记录
+            if (channelHistory.length > 0) {
+              const updatedRecord = {
+                ...channelHistory[0],
+                output: {
+                  ...channelHistory[0].output,
+                  avatarUrls: cached.avatarUrls,
+                  bannerUrls: cached.bannerUrls,
+                },
+                updatedAt: Date.now(),
+              };
+              const updatedHistory = [updatedRecord, ...channelHistory.slice(1)].slice(0, 20);
+              setChannelHistory(updatedHistory);
+              localStorage.setItem(HISTORY_KEY, JSON.stringify(updatedHistory));
+              addLog(`✓ 头像已缓存，更新项目 "${channelHistory[0].name}"`, 'success', `头像: ${cached.avatarUrls.flat().filter(Boolean).length} 张`);
+            }
+          } catch (cacheErr) {
+            addLog(`⚠ 图片缓存失败`, 'warning');
+          }
+        })();
+        
         addLog(`[头像] 方案${index + 1} 生成成功！(${styleDef.name}风格)`, 'success');
         toast.success(`头像生成成功！(${styleDef.name}风格)`);
       } else {
@@ -626,6 +701,39 @@ ${nameLangReq}
           newImages[index] = currentArray;
           return { ...prev, bannerUrls: newImages };
         });
+        
+        // 异步缓存图片并更新历史记录
+        const currentAvatarUrls = channelOutput.avatarUrls || [[], [], []];
+        const newBannerUrls = channelOutput.bannerUrls ? [...channelOutput.bannerUrls] : [[], [], []];
+        const arr = newBannerUrls[index] ? [...newBannerUrls[index]] : [];
+        arr.push(result.url);
+        if (arr.length > 3) arr.shift();
+        newBannerUrls[index] = arr;
+        
+        (async () => {
+          try {
+            const cached = await cacheImages(currentAvatarUrls, newBannerUrls);
+            // 更新历史记录
+            if (channelHistory.length > 0) {
+              const updatedRecord = {
+                ...channelHistory[0],
+                output: {
+                  ...channelHistory[0].output,
+                  avatarUrls: cached.avatarUrls,
+                  bannerUrls: cached.bannerUrls,
+                },
+                updatedAt: Date.now(),
+              };
+              const updatedHistory = [updatedRecord, ...channelHistory.slice(1)].slice(0, 20);
+              setChannelHistory(updatedHistory);
+              localStorage.setItem(HISTORY_KEY, JSON.stringify(updatedHistory));
+              addLog(`✓ 横幅已缓存，更新项目 "${channelHistory[0].name}"`, 'success', `横幅: ${cached.bannerUrls.flat().filter(Boolean).length} 张`);
+            }
+          } catch (cacheErr) {
+            addLog(`⚠ 图片缓存失败`, 'warning');
+          }
+        })();
+        
         addLog(`[横幅] 方案${index + 1} 生成成功！(${styleDef.name}风格)`, 'success');
         toast.success(`横幅生成成功！(${styleDef.name}风格)`);
       } else {
@@ -787,11 +895,19 @@ ${nameLangReq}
                   {channelHistory.length > 0 ? (
                     <>
                       {channelHistory.map((record, idx) => (
-                        <div key={record.timestamp} className="bg-slate-900/80 rounded-lg p-3 border border-slate-700">
+                        <div key={record.id} className="bg-slate-900/80 rounded-lg p-3 border border-slate-700">
                           <div className="flex items-center justify-between mb-1.5">
-                            <span className="text-xs text-slate-500">
-                              {new Date(record.timestamp).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                            </span>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-[10px] text-slate-500 bg-slate-800 px-1.5 py-0.5 rounded">
+                                {new Date(record.timestamp).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                              <span className="text-xs font-medium text-emerald-400">{record.name}</span>
+                              {record.timestamp !== record.updatedAt && (
+                                <span className="text-[10px] text-slate-500">
+                                  (修改于 {new Date(record.updatedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })})
+                                </span>
+                              )}
+                            </div>
                             <div className="flex gap-2">
                               <button
                                 onClick={() => loadFromHistory(record)}
@@ -800,14 +916,14 @@ ${nameLangReq}
                                 加载
                               </button>
                               <button
-                                onClick={() => deleteChannelHistory(record.timestamp)}
+                                onClick={() => deleteChannelHistory(record.id)}
                                 className="text-xs text-rose-400 hover:text-rose-300"
                               >
                                 <Trash2 size={10} />
                               </button>
                             </div>
                           </div>
-                          <p className="text-xs text-slate-300 line-clamp-1">主题：{record.topic}</p>
+                          <p className="text-xs text-slate-500 line-clamp-1">主题：{record.topic}</p>
                           <p className="text-xs text-slate-500 mt-0.5 line-clamp-1">
                             {record.output.names[0] || '未命名'}
                             {record.output.names[1] ? ` / ${record.output.names[1]}` : ''}
