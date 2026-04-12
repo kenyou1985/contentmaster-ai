@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
 剪映草稿导出服务（ContentMaster AI）
-macOS / Windows 双平台支持
+macOS / Windows / Linux (Railway) 多平台支持
 功能：
   - 自动下载图片/音频到本地草稿目录
   - 生成剪映 5.9 兼容主脚本（根目录 draft_info.json / draft_content.json：materials + tracks）
   - 自动在 Finder 中显示导出目录
+  - Railway 环境自动清理临时文件释放磁盘空间
 """
 import sys
 import os
@@ -23,6 +24,48 @@ from datetime import datetime
 from urllib.parse import urlparse
 
 # ---- 跨平台工具函数 ----
+# Railway 环境磁盘空间阈值（MB）
+RAILWAY_MIN_DISK_SPACE_MB = 100
+
+
+def check_disk_space(min_mb: int = RAILWAY_MIN_DISK_SPACE_MB) -> tuple[bool, float]:
+    """检查磁盘空间是否足够，返回 (够用, 可用空间MB)"""
+    try:
+        if platform.system() == "Windows":
+            import ctypes
+            free_bytes = ctypes.c_ulonglong(0)
+            ctypes.windll.kernel32.GetDiskFreeSpaceExW(ctypes.c_wchar_p(os.getcwd()), None, None, ctypes.pointer(free_bytes))
+            free_mb = free_bytes.value / (1024 * 1024)
+        else:
+            stat = os.statvfs(os.getcwd())
+            free_mb = (stat.f_bavail * stat.f_frsize) / (1024 * 1024)
+        return free_mb >= min_mb, free_mb
+    except Exception:
+        return True, 0  # 检查失败时默认通过
+
+
+def cleanup_temp_files(temp_dir: str = None):
+    """清理 Railway 容器中的临时文件，释放磁盘空间"""
+    try:
+        if temp_dir is None:
+            temp_dir = tempfile.gettempdir()
+        # 清理常见临时文件模式
+        patterns = ["media_*.mp3", "media_*.jpg", "media_*.png", "media_*.mp4", "draft_*"]
+        cleaned = 0
+        for p in patterns:
+            try:
+                for f in Path(temp_dir).glob(p):
+                    try:
+                        os.remove(f)
+                        cleaned += 1
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        if cleaned > 0:
+            print(f"[CLEANUP] 已清理 {cleaned} 个临时文件", file=sys.stderr, flush=True)
+    except Exception as e:
+        print(f"[CLEANUP] 清理失败: {e}", file=sys.stderr, flush=True)
 
 def get_platform() -> str:
     return platform.system()
@@ -134,6 +177,11 @@ def _download_file(url: str, dest_path: str, timeout: int = 30) -> bool:
             binary_data = base64.b64decode(data)
             with open(dest_path, 'wb') as f:
                 f.write(binary_data)
+            # Railway 环境：定期清理临时文件防止磁盘满
+            if platform.system() == "Linux":
+                disk_ok, disk_free = check_disk_space()
+                if not disk_ok:
+                    cleanup_temp_files()
             return True
 
         # HTTP/HTTPS 下载（RunningHub 等站点常校验 Referer，无则 403）
@@ -1400,6 +1448,9 @@ def create_draft_on_mac(
     # ---- 下载资源，组装剪映 5.9 主脚本所需镜头行（绝对路径）----
     prepared_shots: list[dict] = []
     timeline_cursor = 0
+    total_shots = len(shots)
+    print(f"[jianying_export] 开始处理 {total_shots} 个镜头...", file=sys.stderr, flush=True)
+
     for i, shot in enumerate(shots):
         base_dur = int(float(shot.get("duration", 5)) * 1_000_000)
         start_us = timeline_cursor
@@ -1503,6 +1554,8 @@ def create_draft_on_mac(
     # 调试：汇总每个镜头的音频信息
     for i, r in enumerate(prepared_shots):
         print(f"[jianying_export] 镜头{i} 汇总: audio_abs={r.get('audio_abs','无')} audio_dur_us={r.get('audio_duration_us','无')} timeline_dur_us={r.get('duration_us','无')}", file=sys.stderr, flush=True)
+
+    print(f"[jianying_export] 所有镜头处理完成，共 {len(prepared_shots)} 个镜头，开始生成剪映 JSON...", file=sys.stderr, flush=True)
 
     total_duration = timeline_cursor
 
@@ -1779,23 +1832,59 @@ def batch_export(
                 )
             else:
                 # Linux（Railway）：生成标准草稿目录 + ZIP，供 macOS/Windows 下载后导入剪映
+                # Railway 环境：先检查磁盘空间
+                disk_ok, disk_free = check_disk_space()
+                if not disk_ok:
+                    print(f"[jianying-server] 磁盘空间不足: {disk_free:.1f}MB < {RAILWAY_MIN_DISK_SPACE_MB}MB，尝试清理临时文件", file=sys.stderr, flush=True)
+                    cleanup_temp_files()
+                    disk_ok, disk_free = check_disk_space()
+                result["disk_space_mb"] = disk_free
+
                 zip_path = None
+                zip_error_msg = None
                 try:
+                    # Railway 环境：先清理临时文件再打包
+                    if system == "Linux":
+                        cleanup_temp_files()
+
+                    # 再次检查空间（留 50MB 余量）
+                    space_ok, _ = check_disk_space(50)
+                    if not space_ok:
+                        raise Exception(f"磁盘空间不足，无法创建 ZIP。当前可用: {disk_free:.1f}MB")
+
                     zip_base = os.path.join(os.path.dirname(draft_result["draft_folder"]), draft_result["draft_name"])
                     zip_path = shutil.make_archive(zip_base, 'zip', root_dir=draft_result["draft_folder"])
                     result["zip_path"] = zip_path
+                    result["zip_size_mb"] = os.path.getsize(zip_path) / (1024 * 1024)
+                    print(f"[jianying-server] ZIP 创建成功: {result['zip_size_mb']:.1f}MB", file=sys.stderr, flush=True)
                 except Exception as _zip_err:
-                    result["zip_error"] = str(_zip_err)
-
-                result["message"] = (
-                    f"✅ Linux 已生成剪映标准草稿目录\n"
-                    f"📁 {draft_result['draft_folder']}\n"
-                    f"📹 {draft_result['shots_count']} 个镜头\n"
-                    f"🖼 {draft_result.get('materials_count', 0)} 个媒体文件\n"
-                    f"⏱ {draft_result['total_duration']/1_000_000:.1f}s\n"
-                    + (f"📦 ZIP: {zip_path}\n" if zip_path else "")
-                    + f"💡 请下载 ZIP 后解压到本机剪映草稿目录"
-                )
+                    zip_error_msg = str(_zip_err)
+                    result["zip_error"] = zip_error_msg
+                    print(f"[jianying-server] ZIP 创建失败: {zip_error_msg}", file=sys.stderr, flush=True)
+                    # Railway 上 ZIP 失败不一定是致命错误，草稿目录已生成
+                    if draft_result.get("draft_folder"):
+                        result["message"] = (
+                            f"✅ 剪映草稿目录已生成（ZIP 打包失败: {zip_error_msg}）\n"
+                            f"📁 {draft_result['draft_folder']}\n"
+                            f"📹 {draft_result['shots_count']} 个镜头\n"
+                            f"🖼 {draft_result.get('materials_count', 0)} 个媒体文件\n"
+                            f"⏱ {draft_result['total_duration']/1_000_000:.1f}s\n"
+                            f"💡 可直接在剪映中打开草稿目录，或手动打包为 ZIP"
+                        )
+                        result["success"] = True
+                    else:
+                        result["message"] = f"❌ 磁盘空间不足：{disk_free:.1f}MB，导出终止"
+                        result["success"] = False
+                else:
+                    result["message"] = (
+                        f"✅ Linux 已生成剪映标准草稿目录\n"
+                        f"📁 {draft_result['draft_folder']}\n"
+                        f"📹 {draft_result['shots_count']} 个镜头\n"
+                        f"🖼 {draft_result.get('materials_count', 0)} 个媒体文件\n"
+                        f"⏱ {draft_result['total_duration']/1_000_000:.1f}s\n"
+                        + (f"📦 ZIP: {zip_path}\n" if zip_path else "")
+                        + f"💡 请下载 ZIP 后解压到本机剪映草稿目录"
+                    )
 
             result["success"] = True
         except Exception as e:

@@ -1,3 +1,168 @@
+// ========== 分镜文本切分工具函数 ==========
+/** 检测文本是否为英文（超过50%字符为拉丁字母） */
+const isEnglishText = (text: string): boolean => {
+  const sample = text.slice(0, Math.min(500, text.length));
+  const latinChars = (sample.match(/[A-Za-z]/g) || []).length;
+  const totalChars = sample.replace(/\s/g, '').length;
+  return totalChars > 0 && latinChars / totalChars > 0.5;
+};
+
+/**
+ * 按句子边界切割文本，保证句子/单词完整性
+ */
+const splitIntoSentences = (text: string): string[] => {
+  const cleaned = text.replace(/\s+/g, ' ').trim();
+  if (!cleaned) return [];
+
+  const sentences: string[] = [];
+  let remaining = cleaned;
+
+  while (remaining.length > 0) {
+    // 中文句子（优先）
+    const chineseMatch = remaining.match(/^([^。！？]*[。！？])/);
+    if (chineseMatch) {
+      sentences.push(chineseMatch[0].trim());
+      remaining = remaining.slice(chineseMatch[0].length).trim();
+      continue;
+    }
+
+    // 英文句子
+    const englishMatch = remaining.match(/^([^.!?]*[.!?]+[\s]?)/);
+    if (englishMatch) {
+      sentences.push(englishMatch[0].trim());
+      remaining = remaining.slice(englishMatch[0].length).trim();
+      continue;
+    }
+
+    // 没有匹配到句子，添加剩余文本
+    if (remaining.length > 0) {
+      sentences.push(remaining.trim());
+      break;
+    }
+  }
+
+  return sentences.filter(s => s.length > 0);
+};
+
+/**
+ * 智能切分文本为分镜段落
+ * - 中文：每段200-300字
+ * - 英文：每段300-450字符
+ * - 禁止句子/单词中间切割
+ */
+const segmentTextByShots = (text: string, targetShots: number): string[] => {
+  const cleaned = text.replace(/\s+/g, ' ').trim();
+  if (!cleaned) return [];
+
+  const isEnglish = isEnglishText(cleaned);
+
+  // 根据语言设置目标字数范围
+  const avgChars = isEnglish
+    ? Math.max(350, Math.round(cleaned.length / targetShots))
+    : Math.max(200, Math.round(cleaned.length / targetShots));
+  const minLen = Math.round(avgChars * 0.8);
+  const maxLen = Math.round(avgChars * 1.2);
+
+  // 按句子分割
+  const sentences = splitIntoSentences(cleaned);
+  if (sentences.length === 0) return [cleaned];
+
+  const segments: string[] = [];
+  let buffer = '';
+
+  const flushBuffer = () => {
+    if (buffer.trim()) {
+      segments.push(buffer.trim());
+      buffer = '';
+    }
+  };
+
+  for (const sentence of sentences) {
+    const trimmedSentence = sentence.trim();
+    if (!trimmedSentence) continue;
+
+    if (!buffer) {
+      buffer = trimmedSentence;
+      continue;
+    }
+
+    const tentative = `${buffer} ${trimmedSentence}`.trim();
+    if (tentative.length > maxLen && buffer.length >= minLen) {
+      flushBuffer();
+      buffer = trimmedSentence;
+    } else if (tentative.length <= maxLen) {
+      buffer = tentative;
+    } else if (buffer.length < minLen) {
+      buffer = tentative;
+    } else {
+      flushBuffer();
+      buffer = trimmedSentence;
+    }
+  }
+  flushBuffer();
+
+  // 合并段落直到达到目标
+  if (segments.length > targetShots) {
+    while (segments.length > targetShots) {
+      let minPairIdx = 0;
+      let minPairSum = Infinity;
+      for (let i = 0; i < segments.length - 1; i++) {
+        const sum = segments[i].length + segments[i + 1].length;
+        if (sum < minPairSum) {
+          minPairSum = sum;
+          minPairIdx = i;
+        }
+      }
+      const merged = `${segments[minPairIdx]} ${segments[minPairIdx + 1]}`.trim();
+      segments.splice(minPairIdx, 2, merged);
+    }
+  } else if (segments.length < targetShots && segments.length > 0) {
+    // 拆分最长的段落
+    let splitHappened = true;
+    while (segments.length < targetShots && splitHappened) {
+      splitHappened = false;
+      let maxIdx = 0;
+      let maxSegLen = 0;
+      for (let i = 0; i < segments.length; i++) {
+        if (segments[i].length > maxSegLen) {
+          maxSegLen = segments[i].length;
+          maxIdx = i;
+        }
+      }
+
+      const seg = segments[maxIdx];
+      if (seg.length <= avgChars * 0.6) break;
+
+      const mid = Math.floor(seg.length / 2);
+      let splitAt = -1;
+
+      splitAt = seg.lastIndexOf('。', mid);
+      if (splitAt === -1 || splitAt < seg.length * 0.2) splitAt = seg.lastIndexOf('！', mid);
+      if (splitAt === -1 || splitAt < seg.length * 0.2) splitAt = seg.lastIndexOf('？', mid);
+      if (splitAt === -1 || splitAt < seg.length * 0.2) splitAt = seg.lastIndexOf('. ', mid);
+      if (splitAt === -1 || splitAt < seg.length * 0.2) splitAt = seg.lastIndexOf('! ', mid);
+      if (splitAt === -1 || splitAt < seg.length * 0.2) splitAt = seg.lastIndexOf('? ', mid);
+      if (splitAt === -1 || splitAt < seg.length * 0.2) splitAt = seg.lastIndexOf('.', mid);
+
+      if (splitAt > seg.length * 0.25 && splitAt < seg.length * 0.85) {
+        const first = seg.slice(0, splitAt + 1).trim();
+        const second = seg.slice(splitAt + 1).trim();
+        if (first.length >= minLen * 0.5 && second.length >= minLen * 0.5) {
+          segments.splice(maxIdx, 1, first, second);
+          splitHappened = true;
+        } else {
+          break;
+        }
+      } else {
+        break;
+      }
+    }
+  }
+
+  return segments.slice(0, targetShots);
+};
+// ========== 分镜文本切分工具函数结束 ==========
+
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   ApiProvider,
@@ -19,6 +184,9 @@ import { generateTopics, streamContentGeneration, initializeGemini } from '../se
 import { fetchMacroNewsDigestForPrompt } from '../services/macroNewsFeedService';
 import { fetchPsychologyDigestForPrompt } from '../services/psychologyFeedService';
 import { needsParagraphNormalization, normalizeDenseChineseParagraphs } from '../services/textFormat';
+
+
+
 import { Sparkles, Calendar, Loader2, Download, Eye, Zap, AlertTriangle, Copy, Check, Globe, Clock, PlusCircle, History, ListOrdered, Film, ChevronDown, ChevronRight, Rocket, Trash2 } from 'lucide-react';
 import {
   buildParallelOutlineUserPrompt,
@@ -183,6 +351,9 @@ function getParallelPipelineBundle(
       channelTag: baseName,
       toneInstruction: mergeTone,
       outputLanguage,
+
+
+
       contentKind: contentKindMerge,
       mindfulLanguage: effectiveLang,
     },
@@ -290,6 +461,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const [mindfulScript, setMindfulScript] = useState('');
   const [storyboard, setStoryboard] = useState('');
   const [isGeneratingStoryboard, setIsGeneratingStoryboard] = useState(false);
+  /** 分镜生成进度百分比（0-100） */
+  const [storyboardProgress, setStoryboardProgress] = useState(0);
   /** 治愈心理学：一键动画分镜默认折叠，点击标题展开 */
   const [mindfulStoryboardExpanded, setMindfulStoryboardExpanded] = useState(false);
   const mindfulStoryboardAnchorRef = useRef<HTMLDivElement>(null);
@@ -950,53 +1123,109 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     const cleanOutput = (text: string): string =>
       text
         .replace(/\[TYPE:[^\]]+\]\s*/g, '')
-        // 统一视频标签：严禁 video prompt / 各语种乱码变体
-        .replace(/^\s*(?:video\s*prompt|video\s*提示词|ভিডিও\s*prompt|ভিডিও\s*提示词|ভিডিও)\s*[:：]\s*/gim, '视频提示词:')
+        // 统一视频标签：严禁 video prompt / 各语种乱码变体（含格鲁吉亚语 ვიდიო）
+        .replace(/^\s*(?:video\s*prompt|video\s*提示词|ვიდიო\s*prompt|ვიდიო\s*提示词|ვიდიო|ভিডিও\s*prompt|ভিডিও\s*提示词|ভিডিও)\s*[:：]\s*/gim, '视频提示词:')
         .replace(/\n{3,}/g, '\n\n')
         .trim();
 
     try {
-      const { MINDFUL_PSYCHOLOGY_STORYBOARD_PROMPT } = await import('../constants');
+      const { SCRIPT_MODE_SYSTEM } = await import('../constants');
 
-      // 每个镜头平均约 250 字，控制总镜头数在合理范围
-      const charsPerShot = 250;
-      const estimatedShots = Math.max(10, Math.min(50, Math.ceil(effectiveScript.length / charsPerShot)));
+      const scriptLength = effectiveScript.length;
+      
+      // 检测原文语言
+      const scriptSample = effectiveScript.slice(0, Math.min(500, effectiveScript.length));
+      const latinChars = (scriptSample.match(/[A-Za-z]/g) || []).length;
+      const totalSampleChars = scriptSample.replace(/\s/g, '').length;
+      const isEnglishScript = totalSampleChars > 0 && latinChars / totalSampleChars > 0.5;
+      
+      // 【核心逻辑】动态计算分镜数量（30-60个）和每镜头目标字数
+      // 中文：200-300字/镜头，英文：300-450字符/镜头
+      // 分镜数量 = ceil(原文字数 / 目标每镜头字数)
+      const targetCharsPerShot = isEnglishScript ? 380 : 250;  // 英文更长因为字符更多
+      let estimatedShots = Math.ceil(scriptLength / targetCharsPerShot);
+      // 限制在30-60个镜头之间
+      estimatedShots = Math.max(30, Math.min(60, estimatedShots));
+      // 重新计算每镜头字数（根据实际分镜数）
+      const charsPerShot = Math.ceil(scriptLength / estimatedShots);
 
       const systemInstruction =
-        '你是一个科普动画分镜生成器。严格按照格式输出分镜内容，不要任何前缀说明。输出时不要包含 [TYPE:...] 这样的类型标签。';
+        '你是一个全领域万能短视频分镜生成器。接收故事文本，通过"语义合并"与"抽象概念具象化"生成动画/实拍视频提示词。**严格按照格式输出分镜内容，禁止输出任何前缀说明或分析过程。**';
 
       const stylePromptEn = getMediaImageStylePromptEn(mindfulStoryboardStyleId);
       const isMinimalistStyle = mindfulStoryboardStyleId === 'minimalist';
       const isAnimeAestheticsStyle = mindfulStoryboardStyleId === 'anime_aesthetics';
+      
+      // 【预切分原文】严格按照句子边界切分，保证完整性
+      const scriptSegments = segmentTextByShots(effectiveScript, estimatedShots);
+      
+      // 构建每镜头的预切分文案提示
+      const segmentsPrompt = scriptSegments
+        .map((seg, i) => `【镜头 ${i + 1} 原文段落（约 ${seg.length} 字）】\n${seg}`)
+        .join('\n\n');
+
+      // 图片提示词语言跟随原文
+      const promptLangHint = isEnglishScript
+        ? '图片提示词和视频提示词使用英文，描述画面内容。'
+        : '图片提示词使用简体中文，禁止纯英文。用中文描写画面内容。';
       const styleDirective = isMinimalistStyle
-        ? `**【Minimalist 极简风格铁律（仅本风格生效）】**\n1) 每个镜头「图片提示词」必须以以下固定前缀开头，且原封不动保留：\n“Minimalist flat illustration, clean simple design, tidy composition, generous negative space, low detail, soft low-saturation palette, Morandi tones, unified color scheme, black outlines, simplified geometric shapes, smooth lines, refined premium look, modern internet-style illustration,”\n2) 固定前缀后面只允许追加「画面描述」。\n3) 画面描述只写画面里有什么（纯视觉元素），禁止氛围词、情绪词、叙事形容词。\n4) 画面描述必须是简易易懂的场景，极度简洁。\n5) 绝对禁止：PPT、图表、表格、数据类元素；禁止干扰性/解释性/否定性提示词；禁止复杂构图、复杂隐喻。\n6) 图片提示词仍须为纯英文，禁止汉字。`
+        ? `**【Minimalist 极简风格铁律（仅本风格生效）】**\n1) 图片提示词风格描述：极简扁平插画风、干净简洁的设计、整洁构图、大量留白、低细节、柔和低饱和度配色、莫兰迪色调、统一色系、黑色线条、简化几何形状、流畅线条、精致高级感、现代互联网插画风格。\n2) ${promptLangHint}\n3) 画面描述必须是简易易懂的场景，极度简洁。\n4) 绝对禁止：PPT、图表、表格、数据类元素；禁止干扰性/解释性/否定性提示词；禁止复杂构图、复杂隐喻。`
         : isAnimeAestheticsStyle
-          ? `**【复古动漫（anime aesthetics）铁律（仅本风格生效）】**\n1) 每个镜头「图片提示词」必须以以下固定前缀开头，且原封不动保留：\n“采用干净、柔和的勾线笔风格，角色居中，拒绝冗杂，画面清爽、简洁、有呼吸感，局部点缀淡雅水彩，现代数字插画风格，干净的米白色背景，编辑插画风格，心理学概念艺术，充满情感且柔和”\n2) 固定前缀后面只允许追加「画面描述」。\n3) 画面描述只写画面里有什么（纯视觉元素），禁止氛围词、情绪词、叙事形容词。\n4) 画面描述必须是简易易懂的场景，极度简洁。\n5) 绝对禁止：PPT、图表、表格、数据类元素；禁止干扰性/解释性/否定性提示词；禁止复杂构图、复杂隐喻。`
+          ? `**【复古动漫（anime aesthetics）铁律（仅本风格生效）】**\n1) 图片提示词风格描述：干净柔和的勾线笔风格、角色居中、拒绝冗杂、画面清爽简洁有呼吸感、局部点缀淡雅水彩、现代数字插画风格、米白色背景、编辑插画风格、心理学概念艺术、充满情感且柔和。\n2) ${promptLangHint}\n3) 画面描述必须是简易易懂的场景，极度简洁。\n4) 绝对禁止：PPT、图表、表格、数据类元素；禁止干扰性/解释性/否定性提示词；禁止复杂构图、复杂隐喻。`
           : stylePromptEn
-            ? `**【画面风格预设】**用户已选画面风格；每个镜头的「图片提示词」除满足全英文要求外，须在同一字段内自然融入以下英文风格描述（可微调语序，不得译为中文，不得省略核心语义）：\n${stylePromptEn}`
-            : '**【图片提示词语言】**每个镜头的「图片提示词」须为纯英文，禁止汉字。';
+            ? `**【画面风格预设】**用户已选画面风格；${promptLangHint}可融入英文风格关键词（如 anime aesthetics、minimalist 等风格词保留英文）。`
+            : `**【图片提示词语言】**${promptLangHint}`;
 
-      const prompt = `${MINDFUL_PSYCHOLOGY_STORYBOARD_PROMPT}
+      // 【关键Prompt】明确告诉模型：镜头文案=预切分的原文，不做任何修改
+      const prompt = `${SCRIPT_MODE_SYSTEM}
 
-# 用户脚本（共 ${effectiveScript.length} 字，预计 ${estimatedShots} 个镜头）
+# 用户脚本（共 ${scriptLength} 字，${estimatedShots} 个镜头，每镜头约 ${charsPerShot} 字）
 
-**【数量铁律】必须严格输出 ${estimatedShots} 个镜头，不许多一个也不能少一个。**
-**【序号格式】镜头序号用"镜头 1"、"镜头 2"格式，禁止用"镜头[1]"格式。**
-**【角色指称】图片提示词中如需人物与狗：用 minimalist character 与 small healing puppy（小狗），禁止 husky / Siberian husky / young woman / 哈士奇 / 年轻女性；禁止「Q版卡通卡片」类固定套话。**
-**【字段标签铁律】每个镜头字段名必须严格使用：镜头文案 / 图片提示词 / 视频提示词 / 景别 / 语音分镜 / 音效。尤其视频字段只允许“视频提示词:”，严禁输出“video prompt”“ভিডিও prompt”或任何其他语言变体。**
+**【核心逻辑 - 必须严格遵守】**
+1. 镜头数量：${estimatedShots} 个
+2. 每个镜头文案字数：约 ${charsPerShot} 字（允许±20%浮动）
+3. **镜头文案 = 上面预切分的原文段落，一字不差！禁止删减、压缩、扩写！**
+
+${segmentsPrompt}
+
+## 输出格式
+
+镜头 1
+镜头文案:（直接使用上面的【镜头 1 原文段落】原文，一字不差）
+图片提示词:（根据镜头1原文推理画面描述，语言与原文一致）
+视频提示词:（运镜描述，语言与原文一致）
+景别:全景/中景/特写
+语音分镜:${isEnglishScript ? 'Narrator' : '旁白'}
+音效:环境音或无
+
+（按同样格式输出所有 ${estimatedShots} 个镜头...）
+
 ${styleDirective}
-**【内容铁律】每个镜头的镜头文案必须 100% 包含对应的原文内容。允许将多个相邻句子合并到一个镜头文案中，以合理划分镜头边界。每个镜头文案不得删减、不得改写原文。**
-${effectiveScript}`;
+${isEnglishScript 
+  ? '**【语言一致性】英文原文的镜头文案用完整英文，图片/视频提示词用英文。**'
+  : '**【语言一致性】中文原文的镜头文案用完整中文，图片/视频提示词用中文。**'
+}
+**【禁止】不要输出赛道分类描述。图片提示词只描述画面内容本身。**`;
 
       const appendChunk = (chunk: string) => {
         localContent += chunk;
         setStoryboard(cleanOutput(localContent));
+        // 估算进度：脚本长度约 effectiveScript.length，生成内容约为 localContent.length
+        // 到达角色信息后视为基本完成
+        const raw = localContent;
+        if (/角色信息/.test(raw)) {
+          setStoryboardProgress(95);
+        } else {
+          const ratio = Math.min(90, (raw.length / (effectiveScript.length * 1.5)) * 80);
+          setStoryboardProgress(Math.round(ratio));
+        }
       };
 
       const model = 'gpt-5.4-mini';
 
       console.log(`[Storyboard] 启动，模型=${model}，预计 ${estimatedShots} 个镜头`);
       toast.info(`正在生成分镜（${estimatedShots} 个镜头）…`);
+      setStoryboardProgress(5);
 
       await streamContentGeneration(
         prompt,
@@ -1008,6 +1237,7 @@ ${effectiveScript}`;
 
       localContent = cleanOutput(localContent);
       setStoryboard(localContent);
+      setStoryboardProgress(100);
       console.log('[Storyboard] 生成完成');
 
       if (!localContent || localContent.trim().length === 0) {
@@ -1043,6 +1273,7 @@ ${effectiveScript}`;
       toast.error(errorMsg);
     } finally {
       setIsGeneratingStoryboard(false);
+      setStoryboardProgress(0);
     }
   };
 
@@ -5281,7 +5512,20 @@ ${segmentSourceText}
                     </div>
                     <div className="flex-1">
                       <div className="flex justify-between items-center mb-2 gap-2 flex-wrap">
-                        <label className="text-sm text-slate-400">分镜输出</label>
+                        <div className="flex items-center gap-2">
+                          <label className="text-sm text-slate-400">分镜输出</label>
+                          {isGeneratingStoryboard && (
+                            <div className="flex items-center gap-2 text-xs text-slate-500">
+                              <span>{storyboardProgress}%</span>
+                              <div className="w-20 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                                <div
+                                  className="h-full bg-purple-500 transition-all duration-300"
+                                  style={{ width: `${storyboardProgress}%` }}
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </div>
                         <div className="flex items-center gap-2">
                           <button
                             type="button"

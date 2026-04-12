@@ -581,18 +581,76 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     setTerminalLog(prev => `${prev}\n[${stamp}] ${msg}`.trim());
   };
 
+  /** 检测文本是否为英文（超过50%字符为拉丁字母） */
+  const isEnglishText = (text: string): boolean => {
+    const sample = text.slice(0, Math.min(500, text.length));
+    const latinChars = (sample.match(/[A-Za-z]/g) || []).length;
+    const totalChars = sample.replace(/\s/g, '').length;
+    return totalChars > 0 && latinChars / totalChars > 0.5;
+  };
+
+  /**
+   * 按句子边界切割文本，保证句子/单词完整性
+   * 中文按句号感叹号问号切割
+   * 英文按句子标点切割，并保证单词不中间断开
+   */
+  const splitIntoSentences = (text: string): string[] => {
+    const cleaned = text.replace(/\s+/g, ' ').trim();
+    if (!cleaned) return [];
+
+    const sentences: string[] = [];
+    let remaining = cleaned;
+    
+    while (remaining.length > 0) {
+      // 尝试匹配中文句子（优先）
+      const chineseMatch = remaining.match(/^([^。！？]*[。！？])/);
+      if (chineseMatch) {
+        sentences.push(chineseMatch[0].trim());
+        remaining = remaining.slice(chineseMatch[0].length).trim();
+        continue;
+      }
+      
+      // 尝试匹配英文句子（句号/感叹号/问号后跟空格或结束）
+      const englishMatch = remaining.match(/^([^.!?]*[.!?]+[\s]?)/);
+      if (englishMatch) {
+        sentences.push(englishMatch[0].trim());
+        remaining = remaining.slice(englishMatch[0].length).trim();
+        continue;
+      }
+      
+      // 没有匹配到句子，添加剩余文本
+      if (remaining.length > 0) {
+        sentences.push(remaining.trim());
+        break;
+      }
+    }
+    
+    return sentences.filter(s => s.length > 0);
+  };
+
+  /**
+   * 智能切分文本为分镜段落
+   * - 中文：每段200-300字
+   * - 英文：每段300-450字符（含空格）
+   * - 禁止句子/单词中间切割
+   */
   const segmentTextByShots = (text: string, targetShots: number): string[] => {
     const cleaned = text.replace(/\s+/g, ' ').trim();
     if (!cleaned) return [];
 
-    const sentenceSplitPattern = /(?<=[。！？.!?])\s+/;
-    const sentences = cleaned.split(sentenceSplitPattern).filter(Boolean);
-    if (sentences.length === 0) return [cleaned];
+    const isEnglish = isEnglishText(cleaned);
+    
+    // 根据语言设置目标字数范围
+    // 中文：200-300字，英文：300-450字符
+    const avgChars = isEnglish 
+      ? Math.max(350, Math.round(cleaned.length / targetShots))
+      : Math.max(200, Math.round(cleaned.length / targetShots));
+    const minLen = Math.round(avgChars * 0.8);
+    const maxLen = Math.round(avgChars * 1.2);
 
-    const totalChars = cleaned.length;
-    const avg = Math.max(150, Math.round(totalChars / targetShots));
-    const minLen = Math.max(120, Math.round(avg * 0.8));
-    const maxLen = Math.max(minLen + 20, Math.round(avg * 1.2));
+    // 按句子分割（保证完整性）
+    const sentences = splitIntoSentences(cleaned);
+    if (sentences.length === 0) return [cleaned];
 
     const segments: string[] = [];
     let buffer = '';
@@ -605,46 +663,94 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     };
 
     for (const sentence of sentences) {
+      const trimmedSentence = sentence.trim();
+      if (!trimmedSentence) continue;
+      
       if (!buffer) {
-        buffer = sentence.trim();
+        buffer = trimmedSentence;
         continue;
       }
-      const tentative = `${buffer} ${sentence}`.trim();
-      if (tentative.length <= maxLen || buffer.length < minLen) {
+      
+      const tentative = `${buffer} ${trimmedSentence}`.trim();
+      // 如果累积后超过maxLen，先flush当前buffer再处理这个句子
+      if (tentative.length > maxLen && buffer.length >= minLen) {
+        flushBuffer();
+        buffer = trimmedSentence;
+      } else if (tentative.length <= maxLen) {
+        buffer = tentative;
+      } else if (buffer.length < minLen) {
+        // buffer还不够长，继续累积
         buffer = tentative;
       } else {
+        // 超过maxLen但buffer已经够长，flush并开启新的
         flushBuffer();
-        buffer = sentence.trim();
+        buffer = trimmedSentence;
       }
     }
     flushBuffer();
 
+    // 如果分出的段落数量与目标差距太大，需要合并或拆分
     if (segments.length > targetShots) {
+      // 合并相邻段落直到达到目标（优先合并最短的相邻对）
       while (segments.length > targetShots) {
-        const last = segments.pop();
-        if (!last) break;
-        segments[segments.length - 1] = `${segments[segments.length - 1]} ${last}`.trim();
+        let minPairIdx = 0;
+        let minPairSum = Infinity;
+        for (let i = 0; i < segments.length - 1; i++) {
+          const sum = segments[i].length + segments[i + 1].length;
+          if (sum < minPairSum) {
+            minPairSum = sum;
+            minPairIdx = i;
+          }
+        }
+        const merged = `${segments[minPairIdx]} ${segments[minPairIdx + 1]}`.trim();
+        segments.splice(minPairIdx, 2, merged);
       }
-    } else if (segments.length < targetShots) {
+    } else if (segments.length < targetShots && segments.length > 0) {
+      // 拆分最长的段落（按句子边界拆分）
       let splitHappened = true;
       while (segments.length < targetShots && splitHappened) {
         splitHappened = false;
-        const idx = segments.reduce((maxIdx, seg, i, arr) => (seg.length > arr[maxIdx].length ? i : maxIdx), 0);
-        const seg = segments[idx];
-        if (seg.length <= 2) break;
+        // 找到最长的段落
+        let maxIdx = 0;
+        let maxSegLen = 0;
+        for (let i = 0; i < segments.length; i++) {
+          if (segments[i].length > maxSegLen) {
+            maxSegLen = segments[i].length;
+            maxIdx = i;
+          }
+        }
+        
+        const seg = segments[maxIdx];
+        if (seg.length <= avgChars * 0.6) break;  // 已经够短了
+        
+        // 在段落中找合适的切割点（句子边界）
         const mid = Math.floor(seg.length / 2);
-        let splitAt = seg.lastIndexOf('。', mid);
-        if (splitAt === -1) splitAt = seg.lastIndexOf('！', mid);
-        if (splitAt === -1) splitAt = seg.lastIndexOf('？', mid);
-        if (splitAt === -1) splitAt = seg.lastIndexOf('.', mid);
-        if (splitAt === -1) splitAt = seg.lastIndexOf('!', mid);
-        if (splitAt === -1) splitAt = seg.lastIndexOf('?', mid);
-        if (splitAt === -1) splitAt = mid;
-        const first = seg.slice(0, splitAt + 1).trim();
-        const second = seg.slice(splitAt + 1).trim();
-        if (!first || !second) break;
-        segments.splice(idx, 1, first, second);
-        splitHappened = true;
+        let splitAt = -1;
+        
+        // 中文标点（优先）
+        splitAt = seg.lastIndexOf('。', mid);
+        if (splitAt === -1 || splitAt < seg.length * 0.2) splitAt = seg.lastIndexOf('！', mid);
+        if (splitAt === -1 || splitAt < seg.length * 0.2) splitAt = seg.lastIndexOf('？', mid);
+        // 英文标点
+        if (splitAt === -1 || splitAt < seg.length * 0.2) splitAt = seg.lastIndexOf('. ', mid);
+        if (splitAt === -1 || splitAt < seg.length * 0.2) splitAt = seg.lastIndexOf('! ', mid);
+        if (splitAt === -1 || splitAt < seg.length * 0.2) splitAt = seg.lastIndexOf('? ', mid);
+        if (splitAt === -1 || splitAt < seg.length * 0.2) splitAt = seg.lastIndexOf('.', mid);
+        
+        // 确保切割点合理：不在开头或结尾附近
+        if (splitAt > seg.length * 0.25 && splitAt < seg.length * 0.85) {
+          const first = seg.slice(0, splitAt + 1).trim();
+          const second = seg.slice(splitAt + 1).trim();
+          // 确保两边都有足够内容
+          if (first.length >= minLen * 0.5 && second.length >= minLen * 0.5) {
+            segments.splice(maxIdx, 1, first, second);
+            splitHappened = true;
+          } else {
+            break;
+          }
+        } else {
+          break;
+        }
       }
     }
 
@@ -2517,9 +2623,12 @@ ${needsMore ?
               ? Math.min(100, Math.max(10, scriptShotCount))
               : Math.min(60, Math.ceil(originalLength / 250));
             const expectedSegments = scriptShotMode === 'custom' ? shotSegmentsRef.current : null;
+            // 【修复】对于长原文，增加每个镜头的最小字符数限制，避免内容被过度压缩
+            // minChars: 中文至少300字，英文至少400字（确保原文内容完整保留）
+            // maxChars: 中文最多为avgChars的2倍，英文最多为avgChars的2.5倍
             const avgChars = Math.max(150, Math.round(originalLength / estimatedTotalShots));
-            const minChars = isChinese ? Math.max(120, Math.round(avgChars * 0.8)) : Math.max(240, Math.round(avgChars * 0.8));
-            const maxChars = isChinese ? Math.max(minChars + 20, Math.round(avgChars * 1.2)) : Math.max(minChars + 40, Math.round(avgChars * 1.2));
+            const minChars = isChinese ? Math.max(300, Math.round(avgChars * 0.8)) : Math.max(400, Math.round(avgChars * 0.8));
+            const maxChars = isChinese ? Math.max(minChars + 80, Math.round(avgChars * 2.0)) : Math.max(minChars + 120, Math.round(avgChars * 2.5));
             const remainingShots = Math.max(0, estimatedTotalShots - shotCount);
             const nextShotNumber = Math.min(estimatedTotalShots, shotCount + 1);
             
@@ -2669,10 +2778,14 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
    - **续写时同样适用：镜头16、镜头17、镜头18...所有后续镜头都必须100%原文还原**
    - **⚠️ 最后一个镜头文案必须包含【原文结尾片段】中的句子（原样出现）**
 4. **镜头文案格式**：
-   - **字数铁律**：每个镜头文案必须严格控制在${minChars}-${maxChars}字之间（约${avgChars}字/镜头）
+   - **【原文完整性优先】字数限制仅作为参考，不要为了符合字数而删减原文！**
+   - **核心原则：100%保留原文内容，一个字都不能少；宁可超过字数限制，也要确保内容完整**
+   - **如果原文段落较长（如100-300字），直接保留完整段落，不要压缩截断**
+   - **字数参考范围：${minChars}-${maxChars}字（约${avgChars}字/镜头），但原文内容完整性是第一优先**
    - 格式：[角色名]-[语气词]："[原文文本内容，100%还原]"
    - 语气词限定：只能使用以下六种之一：高兴、愤怒、悲伤、害怕、惊讶、平静
    - 必须是原文的连续长段落，无动作描述，纯净文本
+   - ⚠️ **绝对禁止压缩原文**：不得删除、缩写、省略原文的任何部分
 4. **图片提示词**：适合 AI 绘图工具，包含景别、画面描述、环境描述
    - 镜头1-3允许以人物为主做主体交代；从镜头4开始必须更多体现文案对应的具体场景与物件，避免清一色人物特写
    - 至少每2个镜头中包含1个非人物主导画面（环境/物件/空间关系），禁止连续两个镜头都以人物特写为主

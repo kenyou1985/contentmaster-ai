@@ -44,15 +44,17 @@ import { COVER_STYLE_PRESETS, getMediaImageStylePromptEn } from '../services/cov
 import { generateJimengImages } from '../services/jimengService';
 import { useToast } from './Toast';
 
-/** 列表卡片：无图或加载失败时不显示破图图标 */
+/** 列表卡片：无图或加载失败时显示名字 */
 function CharacterPreviewBox({
   imageUrl,
   showSelectOverlay,
   onSelect,
+  fallbackName,
 }: {
   imageUrl?: string;
   showSelectOverlay?: boolean;
   onSelect?: () => void;
+  fallbackName?: string;
 }) {
   const [failed, setFailed] = useState(false);
   const url = (imageUrl || '').trim();
@@ -66,14 +68,14 @@ function CharacterPreviewBox({
       {showImg ? (
         <img
           src={url}
-          alt=""
+          alt={fallbackName || ''}
           className="w-full h-auto max-h-[200px] object-contain mx-auto block"
           style={{ maxWidth: '100%' }}
           onError={() => setFailed(true)}
         />
       ) : (
-        <div className="w-full min-h-[120px] max-h-[200px] flex items-center justify-center text-slate-600 text-xs bg-slate-950/50">
-          无预览
+        <div className="w-full min-h-[120px] max-h-[200px] flex items-center justify-center text-slate-400 text-sm bg-slate-950/50">
+          {fallbackName || '无预览'}
         </div>
       )}
       {showSelectOverlay && onSelect && (
@@ -89,22 +91,24 @@ function CharacterPreviewBox({
   );
 }
 
-/** LoRA 列表小缩略图 */
-function LoraTemplateThumb({ imageUrl }: { imageUrl?: string }) {
+/** LoRA 列表小缩略图：无图或失败时显示名字首字 */
+function LoraTemplateThumb({ imageUrl, name }: { imageUrl?: string; name?: string }) {
   const [failed, setFailed] = useState(false);
   const url = (imageUrl || '').trim();
   if (!url || failed) {
     return (
       <div
-        className="w-9 h-9 rounded border border-slate-600 bg-slate-800 shrink-0"
-        title="无预览图"
-      />
+        className="w-9 h-9 rounded border border-slate-600 bg-slate-800 shrink-0 flex items-center justify-center text-slate-400 text-[10px] font-medium"
+        title={name || '无预览图'}
+      >
+        {name ? name.charAt(0).toUpperCase() : '?'}
+      </div>
     );
   }
   return (
     <img
       src={url}
-      alt=""
+      alt={name || ''}
       className="w-9 h-9 rounded object-cover border border-slate-600 shrink-0"
       onError={() => setFailed(true)}
     />
@@ -1034,7 +1038,7 @@ export const CharacterLibrary: React.FC<CharacterLibraryProps> = ({
                     key={t.id}
                     className="flex items-center gap-2 px-2 py-1.5 rounded bg-slate-800/90 border border-slate-700 text-[11px]"
                   >
-                    <LoraTemplateThumb imageUrl={t.imageUrl} />
+                    <LoraTemplateThumb imageUrl={t.imageUrl} name={t.name} />
                     <span className="text-slate-500 shrink-0">{t.type === 'scene' ? '场景' : '角色'}</span>
                     <span className="text-slate-200 flex-1 min-w-0 truncate" title={t.name}>
                       {t.name}
@@ -1494,7 +1498,7 @@ export const CharacterLibrary: React.FC<CharacterLibraryProps> = ({
                           </div>
                         )}
                       </div>
-                      <CharacterPreviewBox imageUrl={editingImageUrl} />
+                      <CharacterPreviewBox imageUrl={editingImageUrl} fallbackName={editingName} />
                       <div className="flex gap-2">
                         <button
                           onClick={handleSaveEdit}
@@ -1518,6 +1522,7 @@ export const CharacterLibrary: React.FC<CharacterLibraryProps> = ({
                         imageUrl={character.imageUrl}
                         showSelectOverlay={!!onCharacterSelect}
                         onSelect={onCharacterSelect ? () => handleSelectCharacter(character) : undefined}
+                        fallbackName={character.name}
                       />
                       <div className="mb-2">
                         <h4 className="font-semibold text-sm text-slate-100">{character.name}</h4>

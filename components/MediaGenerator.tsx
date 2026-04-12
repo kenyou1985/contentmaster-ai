@@ -828,10 +828,17 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           ? resolveRunningHubOutputUrl(rawAudio)
           : rawAudio;
       const exportCaption = (s.voiceSourceText || getTtsSpeakText(s) || s.caption || '').trim();
+
+      // 选择主图：优先用已选图片，否则用第一张
+      const primaryImageUrl = s.imageUrls?.[s.selectedImageIndex ?? 0] || s.imageUrls?.[0];
+
       return {
         caption: exportCaption,
         imagePrompt: s.imagePrompt,
-        imageUrl: s.imageUrls?.[s.selectedImageIndex ?? 0] || s.imageUrls?.[0],
+        // 主图 URL（用于剪映视频的首帧）
+        imageUrl: primaryImageUrl,
+        // 所有图片 URL（用于更多镜头配置）
+        imageUrls: s.imageUrls || [],
         videoPrompt: s.videoPrompt,
         videoUrl: s.videoUrls?.[0] || s.videoUrl,
         audioUrl,
@@ -2374,16 +2381,27 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     
     // 以「图片提示词」匹配角色名/别名；参考图随所有生图模型传递
     const matchedCharacters = detectCharactersInPrompt(shot.imagePrompt || '');
-    const primaryChar =
-      matchedCharacters.length > 0
-        ? pickPrimaryCharacterForPrompt(finalPrompt, matchedCharacters)
-        : null;
-    const charRefYunwu: Partial<ImageGenerationOptions> = primaryChar
-      ? { referenceDataUrls: [primaryChar.imageUrl], characterName: primaryChar.name }
+
+    // 支持多角色参考图（最多3张，避免过多参考图导致API问题）
+    const maxRefImages = 3;
+    const allRefChars = matchedCharacters.length > 0
+      ? [...matchedCharacters].sort((a, b) => {
+          // 按匹配词长度排序，优先使用匹配度更高的角色
+          const aTerms = [a.name, ...(a.aliases || [])].map(t => String(t).length);
+          const bTerms = [b.name, ...(b.aliases || [])].map(t => String(t).length);
+          const aMax = Math.max(...aTerms);
+          const bMax = Math.max(...bTerms);
+          return bMax - aMax;
+        }).slice(0, maxRefImages)
+      : [];
+
+    // Yunwu API 支持多参考图
+    const charRefYunwu: Partial<ImageGenerationOptions> = allRefChars.length > 0
+      ? { referenceDataUrls: allRefChars.map(c => c.imageUrl), characterName: allRefChars.map(c => c.name).join(', ') }
       : {};
 
-    if (primaryChar) {
-      toast.info(`角色参考：${primaryChar.name}（已随当前模型参与生图）`, 5000);
+    if (allRefChars.length > 0) {
+      toast.info(`角色参考：${allRefChars.map(c => c.name).join(', ')}（${allRefChars.length} 张参考图已参与生图）`, 5000);
     }
     
     // 获取适合模型的尺寸
@@ -2397,7 +2415,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         const selectedRatio = IMAGE_RATIOS.find(r => r.id === selectedImageRatio);
         const width = selectedRatio?.width || 1024;
         const height = selectedRatio?.height || 1024;
-        
+
         // 构建生成选项
         const generationOptions: RunningHubImageOptions = {
           prompt: finalPrompt,
@@ -2406,9 +2424,10 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           height,
           num_images: generateImageCount,
         };
-        
-        if (primaryChar) {
-          generationOptions.image_url = primaryChar.imageUrl;
+
+        // RunningHub 只支持单张参考图，使用匹配度最高的角色
+        if (allRefChars.length > 0) {
+          generationOptions.image_url = allRefChars[0].imageUrl;
         }
         
         // 生成多张图片
@@ -2463,7 +2482,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         const selectedRatio = IMAGE_RATIOS.find(r => r.id === selectedImageRatio);
         const width = selectedRatio?.width || 1080;
         const height = selectedRatio?.height || 1920;
-        
+
         // 构建生成选项
         const generationOptions: any = {
           prompt: finalPrompt,
@@ -2472,9 +2491,10 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           height,
           model: selectedModel.jimengModel || 'jimeng-5.0'
         };
-        
-        if (primaryChar) {
-          generationOptions.images = [primaryChar.imageUrl];
+
+        // 即梦只支持单张参考图，使用匹配度最高的角色
+        if (allRefChars.length > 0) {
+          generationOptions.images = [allRefChars[0].imageUrl];
           generationOptions.sample_strength = 0.7;
         }
         

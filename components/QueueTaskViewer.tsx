@@ -52,6 +52,7 @@ interface OneClickQueueTask {
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
   lastError?: string;
   progressNote?: string;
+  progressPercent?: number;  // 0-100
   snapshot: OneClickTaskSnapshot;
   resultSnapshot?: OneClickTaskSnapshot;
   lastExportedDraftName?: string;
@@ -307,6 +308,24 @@ export const QueueTaskViewer: React.FC = () => {
             <h1 className="text-lg font-bold text-emerald-400">📁 {task.draftName}</h1>
             <StatusBadge status={task.status} />
           </div>
+          {task.progressPercent !== undefined && (
+            <div className="flex items-center gap-2 mb-2">
+              <div className="flex-1 h-2 bg-slate-800 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-300 ${
+                    task.status === 'failed' ? 'bg-red-500' :
+                    task.status === 'completed' ? 'bg-emerald-500' :
+                    task.status === 'running' ? 'bg-amber-500 animate-pulse' :
+                    'bg-blue-500'
+                  }`}
+                  style={{ width: `${Math.min(100, Math.max(0, Math.round(task.progressPercent)))}%` }}
+                />
+              </div>
+              <span className="text-xs text-slate-400 font-medium tabular-nums w-12 text-right">
+                {Math.min(100, Math.max(0, Math.round(task.progressPercent)))}%
+              </span>
+            </div>
+          )}
           <div className="text-xs text-slate-500 space-y-0.5">
             <div>创建时间: {new Date(task.createdAt).toLocaleString('zh-CN')}</div>
             <div>更新时间: {new Date(task.updatedAt).toLocaleString('zh-CN')}</div>
@@ -369,6 +388,31 @@ export const QueueTaskViewer: React.FC = () => {
             <div className="text-xs text-slate-500">有图片</div>
           </div>
         </div>
+        {/* 进度条（如果有） */}
+        {task.progressPercent !== undefined && (
+          <div className="bg-slate-800 rounded-lg p-3 mb-4">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs text-slate-400">生成进度</span>
+              <span className="text-sm font-bold text-emerald-400">
+                {Math.min(100, Math.max(0, Math.round(task.progressPercent)))}%
+              </span>
+            </div>
+            <div className="h-3 bg-slate-900 rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-500 ${
+                  task.status === 'failed' ? 'bg-red-500' :
+                  task.status === 'completed' ? 'bg-emerald-500' :
+                  task.status === 'running' ? 'bg-amber-500' :
+                  'bg-blue-500'
+                }`}
+                style={{ width: `${Math.min(100, Math.max(0, Math.round(task.progressPercent)))}%` }}
+              />
+            </div>
+            {task.progressNote && (
+              <div className="mt-1 text-xs text-slate-500 truncate">{task.progressNote}</div>
+            )}
+          </div>
+        )}
 
         {/* Script preview */}
         {snap?.scriptText && (
