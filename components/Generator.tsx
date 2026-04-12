@@ -17,6 +17,7 @@ import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_M
 import { NicheSelector } from './NicheSelector';
 import { generateTopics, streamContentGeneration, initializeGemini } from '../services/geminiService';
 import { fetchMacroNewsDigestForPrompt } from '../services/macroNewsFeedService';
+import { fetchPsychologyDigestForPrompt } from '../services/psychologyFeedService';
 import { needsParagraphNormalization, normalizeDenseChineseParagraphs } from '../services/textFormat';
 import { Sparkles, Calendar, Loader2, Download, Eye, Zap, AlertTriangle, Copy, Check, Globe, Clock, PlusCircle, History, ListOrdered, Film, ChevronDown, ChevronRight, Rocket, Trash2 } from 'lucide-react';
 import {
@@ -782,8 +783,27 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
     if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
       const n = resolvedPlanTopicCount;
-      const dogMin = n >= 2 ? 2 : 1;
-      prompt += `\n\n【狗主题铁律·最高优先级】本次须恰好输出 ${n} 条标题，其中**至少 ${dogMin} 条**必须显式包含狗/宠物元素（英文标题须含 dog、puppy、paw、canine、man's best friend、furry、pet、companion 等关键词之一；中文标题须含"狗""汪星人""毛孩子"等）。其余选题也须围绕宠物/动物与心理健康的交叉主题。若不足 ${dogMin} 条满足狗主题要求，整组作废重写。`;
+      const catMin = n >= 2 ? 2 : 1;  // 猫主题至少
+      const humanMin = n >= 2 ? 1 : 1;  // 人类主题至少1条
+      const dogMin = n >= 2 ? 1 : 1;  // 狗主题至少1条（保留）
+
+      // 抓取热门内容 RSS
+      toast.info('正在抓取治愈心理学热门内容（微博/小红书/知乎等）…');
+      try {
+        const digest = await fetchPsychologyDigestForPrompt();
+        prompt = `${digest}\n\n---\n\n` + prompt;
+      } catch (e) {
+        console.error('[Generator] 治愈心理学 RSS 抓取失败', e);
+        toast.warning('热门内容抓取失败，使用内置备选。');
+      }
+
+      prompt += `\n\n【猫主题铁律·最高优先级】本次须恰好输出 ${n} 条标题，其中**至少 ${catMin} 条**必须显式包含猫/喵星人元素（英文标题须含 cat、kitten、meow、feline、whisker、purr 等关键词之一；中文标题须含"猫""喵星人""喵主子""毛孩子""猫咪"等）。`;
+
+      prompt += `\n\n【人类心理健康铁律·最高优先级】本次须恰���输出 ${n} 条标题，其中**至少 ${humanMin} 条**必须围绕人类情感/心理健康/人际关系主题（如：情绪管理、焦虑疗愈、人与人的关系、亲密关系、自我成长等），不得出现猫狗宠物元素。`;
+
+      prompt += `\n\n【狗主题补充·次优先级】本次须恰好输出 ${n} 条标题，其中**至少 ${dogMin} 条**可包含狗/宠物元素（英文标题须含 dog、puppy、paw、canine、man's best friend、furry、pet、companion 等关键词之一；中文标题须含"狗""汪星人""毛孩子"等）。`;
+
+      prompt += `\n\n【综合要求】其余选题可围绕人宠关系、宠物对人类心理的治愈作用等交叉主题。总计 ${n} 条选题须确保：猫主题≥${catMin}条、人类主题≥${humanMin}条。若任一类别不满足要求，整组结果作废重写。`;
     }
 
     if (
