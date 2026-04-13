@@ -563,20 +563,20 @@ app.post('/api/jianying/export', (req, res) => {
     'Transfer-Encoding': 'chunked',
   });
 
-  const sendProgress = (progress: number, message: string) => {
+  const sendProgress = (progress, message) => {
     try {
       res.write(JSON.stringify({ progress, message }) + '\n');
     } catch { /* ignore */ }
   };
 
-  const sendResult = (result: object) => {
+  const sendResult = (result) => {
     try {
       res.write(JSON.stringify(result) + '\n');
       res.end();
     } catch { /* ignore */ }
   };
 
-  const sendError = (err: string) => {
+  const sendError = (err) => {
     try {
       res.write(JSON.stringify({ error: err }) + '\n');
       res.end();
