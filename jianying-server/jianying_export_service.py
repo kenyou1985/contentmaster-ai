@@ -1589,6 +1589,18 @@ def create_draft_on_mac(
         prepared_shots.append(row)
         timeline_cursor += row["duration_us"]
 
+        # 及时清理 shot 对象中的大数据字段，释放内存
+        if image_url and str(image_url).startswith('data:'):
+            shot["imageUrl"] = ""  # 清理 base64 数据
+        if audio_url and str(audio_url).startswith('data:'):
+            shot["audioUrl"] = ""  # 清理 base64 数据
+            shot["voiceoverAudioUrl"] = ""
+
+        # 每处理 10 个镜头强制垃圾回收
+        if (i + 1) % 10 == 0:
+            import gc
+            gc.collect()
+
     # 调试：汇总每个镜头的音频信息
     for i, r in enumerate(prepared_shots):
         print(f"[jianying_export] 镜头{i} 汇总: audio_abs={r.get('audio_abs','无')} audio_dur_us={r.get('audio_duration_us','无')} timeline_dur_us={r.get('duration_us','无')}", file=sys.stderr, flush=True)
