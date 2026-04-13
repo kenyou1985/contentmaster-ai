@@ -551,6 +551,15 @@ export const generateImage = async (
   try {
     const baseUrl = 'https://yunwu.ai';
 
+    // 调试日志：打印传入的参考图信息
+    console.log('[YunwuService] generateImage 调用参数:', {
+      model: options.model,
+      prompt: options.prompt?.slice(0, 100),
+      referenceDataUrlsCount: options.referenceDataUrls?.length,
+      referenceDataUrls: options.referenceDataUrls?.map((u, i) => `${i}: ${u.slice(0, 50)}...`),
+      characterName: options.characterName,
+    });
+
     const opts: ImageGenerationOptions = {
       ...options,
       referenceDataUrls:
@@ -558,6 +567,11 @@ export const generateImage = async (
           ? await normalizeReferenceDataUrls(options.referenceDataUrls)
           : options.referenceDataUrls,
     };
+
+    console.log('[YunwuService] normalizeReferenceDataUrls 后:', {
+      referenceDataUrlsCount: opts.referenceDataUrls?.length,
+      referenceDataUrls: opts.referenceDataUrls?.map((u, i) => `${i}: ${u.slice(0, 50)}...`),
+    });
 
     if (
       (opts.model === 'grok-3-image' || opts.model === 'grok-4-image') &&

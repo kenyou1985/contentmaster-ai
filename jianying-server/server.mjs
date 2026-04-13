@@ -372,18 +372,18 @@ function runPythonStdin(args, payload) {
     // 优先使用 python3
     const pyCmd = existsSync('/usr/bin/python3') ? '/usr/bin/python3' : 'python3';
     const child = spawn(pyCmd, [PYTHON_SCRIPT, ...args], {
-      // 处理大量镜头时需要更长的超时时间（5分钟）
-      timeout: 300_000,
+      // Railway 下载+打包可能需要更长时间（10分钟）
+      timeout: 600_000,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
     let killed = false;
-    // 5 分钟超时（处理大量 base64 音频数据需要更长时间）
+    // 10 分钟超时（处理大量媒体文件下载+打包）
     const timer = setTimeout(() => {
       killed = true;
       child.kill('SIGKILL');
-      console.error('[jianying-server] Python 进程超时被杀（5分钟）');
-    }, 300_000);
+      console.error('[jianying-server] Python 进程超时被杀（10分钟）');
+    }, 600_000);
 
     let stdout = '';
     let stderr = '';

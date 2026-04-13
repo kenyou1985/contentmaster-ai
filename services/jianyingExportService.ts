@@ -271,8 +271,14 @@ function inferAudioMimeFromUrl(url: string): string | undefined {
 /**
  * 剪映导出服务跑在本地，无法带浏览器 Cookie；RunningHub 等外链音频服务端 urllib 常下载失败。
  * 导出前在浏览器拉取配音字节并转为 data: URL，Python 端可直接落盘，保证音轨与时长对齐。
+ *
+ * 注意：当 returnZip=true（Railway 环境）时，改为直接传 URL，由 Railway 服务端下载，
+ * 这样可以避免前端 base64 编码/上传的大文件传输开销，速度更快。
  */
-export async function embedAudioDataUrlsForJianyingExport(shots: JianyingShot[]): Promise<JianyingShot[]> {
+export async function embedAudioDataUrlsForJianyingExport(
+  shots: JianyingShot[],
+  returnZip: boolean = false
+): Promise<JianyingShot[]> {
   const out: JianyingShot[] = [];
   for (const s of shots) {
     const raw = (s.audioUrl || s.voiceoverAudioUrl)?.trim();
@@ -280,14 +286,33 @@ export async function embedAudioDataUrlsForJianyingExport(shots: JianyingShot[])
       out.push(s);
       continue;
     }
+    // 已经 base64 的直接用
     if (raw.startsWith('data:')) {
       out.push(s);
       continue;
     }
+    // 非 HTTP URL（如 blob:）转 base64
     if (!/^https?:\/\//i.test(raw)) {
+      try {
+        const r = await fetch(raw);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const mime = r.headers.get('content-type')?.split(';')[0]?.trim() || inferAudioMimeFromUrl(raw) || 'audio/mpeg';
+        const data = await r.arrayBuffer();
+        const dataUrl = `data:${mime};base64,${arrayBufferToBase64(data)}`;
+        out.push({ ...s, audioUrl: dataUrl, voiceoverAudioUrl: dataUrl });
+      } catch {
+        out.push(s);
+      }
+      continue;
+    }
+
+    // Railway 环境：直接传 URL，由服务端下载（更快）
+    if (returnZip) {
       out.push(s);
       continue;
     }
+
+    // 本地环境：转 base64 避免跨域问题
     try {
       let data: ArrayBuffer;
       let mime = '';
@@ -297,6 +322,7 @@ export async function embedAudioDataUrlsForJianyingExport(shots: JianyingShot[])
         mime = r.headers.get('content-type')?.split(';')[0]?.trim() || '';
         data = await r.arrayBuffer();
       } catch {
+        // 本地环境 fetch 失败时降级到代理
         if (typeof window === 'undefined') throw new Error('fetch failed');
         const proxy = `/__image_proxy?url=${encodeURIComponent(raw)}`;
         const r2 = await fetch(proxy);
@@ -345,7 +371,8 @@ async function legacyJianyingExportSync(
 export async function exportJianyingDraft(
   options: JianyingExportOptions
 ): Promise<JianyingExportResult> {
-  const shots = await embedAudioDataUrlsForJianyingExport(options.shots);
+  const returnZip = shouldUseJianyingZipDownload();
+  const shots = await embedAudioDataUrlsForJianyingExport(options.shots, returnZip);
   if (typeof console !== 'undefined' && console.debug) {
     console.debug(
       '[JianyingExport] 镜头音频摘要',

@@ -2381,6 +2381,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     
     // 以「图片提示词」匹配角色名/别名；参考图随所有生图模型传递
     const matchedCharacters = detectCharactersInPrompt(shot.imagePrompt || '');
+    console.log('[MediaGenerator] matchedCharacters:', {
+      count: matchedCharacters.length,
+      names: matchedCharacters.map(c => c.name),
+      imageUrls: matchedCharacters.map(c => c.imageUrl?.slice(0, 50)),
+    });
 
     // 支持多角色参考图（最多3张，避免过多参考图导致API问题）
     const maxRefImages = 3;
@@ -2395,10 +2400,20 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         }).slice(0, maxRefImages)
       : [];
 
+    console.log('[MediaGenerator] allRefChars:', {
+      count: allRefChars.length,
+      names: allRefChars.map(c => c.name),
+    });
+
     // Yunwu API 支持多参考图
     const charRefYunwu: Partial<ImageGenerationOptions> = allRefChars.length > 0
       ? { referenceDataUrls: allRefChars.map(c => c.imageUrl), characterName: allRefChars.map(c => c.name).join(', ') }
       : {};
+
+    console.log('[MediaGenerator] charRefYunwu:', {
+      referenceDataUrlsCount: charRefYunwu.referenceDataUrls?.length,
+      characterName: charRefYunwu.characterName,
+    });
 
     if (allRefChars.length > 0) {
       toast.info(`角色参考：${allRefChars.map(c => c.name).join(', ')}（${allRefChars.length} 张参考图已参与生图）`, 5000);
@@ -2492,12 +2507,12 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           model: selectedModel.jimengModel || 'jimeng-5.0'
         };
 
-        // 即梦只支持单张参考图，使用匹配度最高的角色
+        // 即梦支持多参考图，传递所有匹配的角色参考图
         if (allRefChars.length > 0) {
-          generationOptions.images = [allRefChars[0].imageUrl];
+          generationOptions.images = allRefChars.map(c => c.imageUrl);
           generationOptions.sample_strength = 0.7;
         }
-        
+
         const result = await generateJimengImages(
           generationOptions,
           { sessionId: jimengSessionId }

@@ -209,28 +209,37 @@ export function findCharacterByName(name: string): Character | null {
 export function detectCharactersInPrompt(prompt: string): Character[] {
   const characters = getAllCharacters();
   const matched: Character[] = [];
-  
+
+  console.log('[CharacterLibrary] detectCharactersInPrompt:', {
+    prompt: prompt.slice(0, 100),
+    characterCount: characters.length,
+    characters: characters.map(c => ({ name: c.name, aliases: c.aliases })),
+  });
+
   // 将提示词转换为小写以便匹配
   const lowerPrompt = prompt.toLowerCase();
-  
+
   for (const char of characters) {
     // 检查主名字
     if (lowerPrompt.includes(char.name.toLowerCase())) {
+      console.log('[CharacterLibrary] 匹配成功（主名字）:', char.name);
       matched.push(char);
       continue;
     }
-    
+
     // 检查别名
     if (char.aliases && char.aliases.length > 0) {
-      const hasAlias = char.aliases.some(alias => 
+      const hasAlias = char.aliases.some(alias =>
         lowerPrompt.includes(alias.toLowerCase())
       );
       if (hasAlias) {
+        console.log('[CharacterLibrary] 匹配成功（别名）:', char.name, char.aliases);
         matched.push(char);
       }
     }
   }
-  
+
+  console.log('[CharacterLibrary] detectCharactersInPrompt 结果:', matched.map(c => c.name));
   return matched;
 }
 
