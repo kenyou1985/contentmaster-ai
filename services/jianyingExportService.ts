@@ -490,6 +490,7 @@ async function pollForResult(
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const maxPoll = 300; // 最多约 10 分钟（轮询间隔 2 秒）
   let lastProgress = 0;
+  let lastLogIndex = 0; // 跟踪已显示的日志数量
 
   for (let i = 0; i < maxPoll; i++) {
     await sleep(2000);
@@ -500,7 +501,17 @@ async function pollForResult(
       const statusObj = tryParseJsonObject(statusText) as any;
       const status = String(statusObj?.status || '').toLowerCase();
 
-      if (statusObj?.progress !== undefined && statusObj.progress > lastProgress) {
+      // 显示新的日志（Railway 返回 logs 数组）
+      if (statusObj?.logs && Array.isArray(statusObj.logs)) {
+        const newLogs = statusObj.logs.slice(lastLogIndex);
+        for (const log of newLogs) {
+          if (log.message) {
+            onProgress?.(log.progress || lastProgress, log.message);
+          }
+        }
+        lastLogIndex = statusObj.logs.length;
+      } else if (statusObj?.progress !== undefined && statusObj.progress > lastProgress) {
+        // 非 Railway 模式：只显示进度变化
         lastProgress = statusObj.progress;
         onProgress?.(statusObj.progress, statusObj.message || '处理中...');
       }

@@ -42,6 +42,7 @@ function createExportTask(payload) {
     payload,
     result: null,
     error: null,
+    logs: [], // 存储详细日志供轮询返回
   };
   exportTasks.set(taskId, task);
   return task;
@@ -93,11 +94,22 @@ async function runExportJob(payload, taskId, onProgress) {
     returnZip = false,
   } = payload || {};
 
-  // 进度通知：同时打印到控制台
+  // 获取任务对象，用于存储日志
+  const task = taskId ? exportTasks.get(taskId) : null;
+
+  // 进度通知：打印到控制台 + 存储到任务日志（供轮询返回）
   const notify = (progress, message) => {
     if (onProgress) onProgress(progress, message);
     if (taskId) {
       notifyTaskSse(taskId, { progress, message, status: 'running' });
+      // 存储日志到任务对象，供轮询返回
+      if (task) {
+        task.logs.push({ time: Date.now(), progress, message });
+        // 只保留最近 500 条日志
+        if (task.logs.length > 500) {
+          task.logs = task.logs.slice(-500);
+        }
+      }
     }
     console.log(`[jianying-server] 任务 ${taskId || '同步'} 进度: ${progress}% - ${message}`);
   };
@@ -128,13 +140,20 @@ async function runExportJob(payload, taskId, onProgress) {
 
   notify(95, '解析结果...');
 
-  // 调试日志过滤：只记录 stderr 中的调试信息，不当作错误
+  // 调试日志过滤：记录到任务日志 + 控制台
   if (stderr.trim()) {
     const debugLines = stderr.split('\n').filter(line =>
       line.includes('[jianying_export]') || line.includes('[jianying-server]')
     );
     if (debugLines.length > 0) {
-      console.log('[jianying-server] Python 调试日志:\n', debugLines.join('\n').slice(0, 2000));
+      const logText = debugLines.join('\n').slice(0, 2000);
+      console.log('[jianying-server] Python 调试日志:\n', logText);
+      // 将调试日志也添加到任务日志
+      if (task) {
+        debugLines.forEach(line => {
+          task.logs.push({ time: Date.now(), progress: 95, message: line.trim() });
+        });
+      }
     }
   }
 
@@ -477,6 +496,7 @@ app.get('/api/jianying/export/status/:taskId', (req, res) => {
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     error: task.error || null,
+    logs: task.logs || [], // 返回详细日志数组
   });
 });
 
