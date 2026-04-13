@@ -7,6 +7,7 @@ macOS / Windows / Linux (Railway) 多平台支持
   - 生成剪映 5.9 兼容主脚本（根目录 draft_info.json / draft_content.json：materials + tracks）
   - 自动在 Finder 中显示导出目录
   - Railway 环境自动清理临时文件释放磁盘空间
+  - 支持进度回调（--progress-callback 参数）
 """
 import sys
 import os
@@ -22,6 +23,19 @@ import random
 from pathlib import Path
 from datetime import datetime
 from urllib.parse import urlparse
+
+# ---- 进度回调器 ----
+_progress_callback = None
+
+def set_progress_callback(callback):
+    """设置进度回调函数，接收 (progress: int, stage: str)"""
+    global _progress_callback
+    _progress_callback = callback
+
+def report_progress(progress: int, stage: str):
+    """报告进度到父进程（通过 stdout）"""
+    # 输出到 stdout，用特殊标记让 Node 解析
+    print(f"[PROGRESS] {progress}|{stage}", flush=True)
 
 # ---- 跨平台工具函数 ----
 # Railway 环境磁盘空间阈值（MB）
@@ -1463,9 +1477,14 @@ def create_draft_on_mac(
     prepared_shots: list[dict] = []
     timeline_cursor = 0
     total_shots = len(shots)
+    report_progress(5, f"开始处理 {total_shots} 个镜头...")
     print(f"[jianying_export] 开始处理 {total_shots} 个镜头...", file=sys.stderr, flush=True)
 
     for i, shot in enumerate(shots):
+        # 报告每个镜头的进度（5% - 70%）
+        shot_progress = 5 + int((i / max(total_shots, 1)) * 65)
+        report_progress(shot_progress, f"处理镜头 {i+1}/{total_shots}...")
+
         base_dur = int(float(shot.get("duration", 5)) * 1_000_000)
         start_us = timeline_cursor
 
@@ -1542,6 +1561,9 @@ def create_draft_on_mac(
             audio_filename = _safe_filename(str(audio_url))
             lap = os.path.join(draft_folder, "Resources", "audio", audio_filename)
             ok = _download_file(str(audio_url), lap)
+            # 报告音频下载进度（每个音频 5%）
+            audio_progress = 10 + int((i / max(total_shots, 1)) * 60)
+            report_progress(audio_progress, f"下载音频 {i+1}/{total_shots}...")
             print(f"[jianying_export] 镜头{i} 音频: url={'有' if audio_url else '无'} → 文件={audio_filename} → 下载={'成功' if ok else '失败'} {'(' + str(audio_url)[:80] + ')' if audio_url else ''}", file=sys.stderr, flush=True)
             if ok:
                 row["audio_abs"] = _safe_abs_for_jianying(lap)
@@ -1569,9 +1591,13 @@ def create_draft_on_mac(
     for i, r in enumerate(prepared_shots):
         print(f"[jianying_export] 镜头{i} 汇总: audio_abs={r.get('audio_abs','无')} audio_dur_us={r.get('audio_duration_us','无')} timeline_dur_us={r.get('duration_us','无')}", file=sys.stderr, flush=True)
 
+    report_progress(72, "所有镜头处理完成，开始生成剪映 JSON...")
+    report_progress(78, "写入草稿 JSON 文件...")
     print(f"[jianying_export] 所有镜头处理完成，共 {len(prepared_shots)} 个镜头，开始生成剪映 JSON...", file=sys.stderr, flush=True)
 
     total_duration = timeline_cursor
+
+    report_progress(82, "生成草稿内容...")
 
     lv59_script = _build_lv59_main_script(
         draft_id=draft_id,
@@ -1867,9 +1893,11 @@ def batch_export(
                         raise Exception(f"磁盘空间不足，无法创建 ZIP。当前可用: {disk_free:.1f}MB")
 
                     zip_base = os.path.join(os.path.dirname(draft_result["draft_folder"]), draft_result["draft_name"])
+                    report_progress(92, "创建 ZIP 包...")
                     zip_path = shutil.make_archive(zip_base, 'zip', root_dir=draft_result["draft_folder"])
                     result["zip_path"] = zip_path
                     result["zip_size_mb"] = os.path.getsize(zip_path) / (1024 * 1024)
+                    report_progress(98, f"ZIP 创建成功: {result['zip_size_mb']:.1f}MB")
                     print(f"[jianying-server] ZIP 创建成功: {result['zip_size_mb']:.1f}MB", file=sys.stderr, flush=True)
                 except Exception as _zip_err:
                     zip_error_msg = str(_zip_err)
@@ -1943,6 +1971,7 @@ if __name__ == "__main__":
     parser.add_argument("--name", type=str, default="测试草稿", help="草稿名称")
     parser.add_argument("--shots", type=str, default="[]", help="镜头 JSON（命令行参数方式）")
     parser.add_argument("--shots-json-stdin", action="store_true", help="镜头 JSON 从 stdin 读取（避免 E2BIG）")
+    parser.add_argument("--progress-callback", action="store_true", help="通过 stdout 报告进度")
     parser.add_argument("--resolution", type=str, default="1920x1080")
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--output", type=str, default=None)
@@ -1962,6 +1991,9 @@ if __name__ == "__main__":
             path_map_root = stdin_data.get("pathMapRoot")
             rnd_tr = bool(stdin_data.get("randomTransitions"))
             rnd_fx = bool(stdin_data.get("randomVideoEffects"))
+            # 启用进度回调
+            if args.progress_callback:
+                set_progress_callback(lambda p, s: report_progress(p, s))
         else:
             shots = json.loads(args.shots)
             output_path = args.output

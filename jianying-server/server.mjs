@@ -28,6 +28,9 @@ const recentZipPathByName = new Map();
 const exportTasks = new Map();
 const EXPORT_TASK_TTL_MS = 1000 * 60 * 30; // 30 分钟
 
+// SSE 连接队列（taskId → Set<{res, controller}>）
+const taskSseConnections = new Map();
+
 function createExportTask(payload) {
   const taskId = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   const now = Date.now();
@@ -53,6 +56,20 @@ function pruneOldExportTasks() {
   }
 }
 
+// SSE 流式推送：任务状态变化时通知所有订阅者
+function notifyTaskSse(taskId, data) {
+  const connections = taskSseConnections.get(taskId);
+  if (!connections) return;
+  const payload = `data: ${JSON.stringify(data)}\n\n`;
+  for (const { controller } of connections) {
+    try {
+      controller.enqueue(new TextEncoder().encode(payload));
+    } catch {
+      // 连接已关闭，忽略
+    }
+  }
+}
+
 function normalizeExportResult(result, returnZip) {
   if (!result || typeof result !== 'object') return result;
   if (returnZip && result.zip_path) {
@@ -63,7 +80,7 @@ function normalizeExportResult(result, returnZip) {
   return result;
 }
 
-async function runExportJob(payload) {
+async function runExportJob(payload, taskId) {
   const {
     draftName = 'ContentMaster_Export',
     shots = [],
@@ -76,12 +93,23 @@ async function runExportJob(payload) {
     returnZip = false,
   } = payload || {};
 
+  // SSE 进度通知函数
+  const notify = (progress, message) => {
+    if (taskId) {
+      notifyTaskSse(taskId, { progress, message, status: 'running' });
+    }
+    console.log(`[jianying-server] 任务 ${taskId} 进度: ${progress}% - ${message}`);
+  };
+
+  notify(5, '开始处理...');
+
   const { code, stdout, stderr } = await runPythonStdin(
     [
       '--name', draftName,
       '--shots-json-stdin',
       '--resolution', resolution,
       '--fps', String(fps),
+      '--progress-callback',
     ],
     {
       shots,
@@ -89,8 +117,15 @@ async function runExportJob(payload) {
       pathMapRoot,
       randomTransitions,
       randomVideoEffects,
+    },
+    (progress, stage) => {
+      // Python 进度回调：0-95% 之间
+      const scaledProgress = Math.round(5 + progress * 0.9);
+      notify(scaledProgress, stage || '处理中...');
     }
   );
+
+  notify(95, '解析结果...');
 
   // 调试日志过滤：只记录 stderr 中的调试信息，不当作错误
   if (stderr.trim()) {
@@ -121,9 +156,13 @@ async function runExportJob(payload) {
     throw new Error('Python 无输出');
   }
 
+  notify(98, '解析响应...');
+
   // 成功情况：尝试解析 JSON
   try {
-    return normalizeExportResult(JSON.parse(text), returnZip);
+    const result = normalizeExportResult(JSON.parse(text), returnZip);
+    notify(100, '完成');
+    return result;
   } catch {
     // JSON 解析失败，尝试提取
     const i = text.lastIndexOf('{');
@@ -299,6 +338,77 @@ app.get('/api/jianying/list', (_req, res) => {
     .catch((err) => res.status(500).json({ error: err.message }));
 });
 
+// ── 导出剪映草稿（SSE 流式进度）─────────────────────────────────────────────
+// GET /api/jianying/export/sse/:taskId - SSE 流式推送任务状态（前端订阅）
+app.get('/api/jianying/export/sse/:taskId', (req, res) => {
+  const { taskId } = req.params;
+  pruneOldExportTasks();
+
+  // 检查任务是否存在
+  const task = exportTasks.get(taskId);
+  if (!task) {
+    return res.status(404).json({ success: false, error: 'task not found' });
+  }
+
+  // 设置 SSE 头
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no', // 禁用 Nginx 缓冲
+  });
+
+  // 发送初始连接确认
+  res.write(`data: ${JSON.stringify({ type: 'connected', taskId })}\n\n`);
+
+  // 将此连接加入任务订阅队列
+  const controller = {
+    enqueue: (chunk) => {
+      try {
+        res.write(chunk);
+      } catch {
+        // 连接已断开
+      }
+    }
+  };
+
+  const entry = { res, controller };
+  if (!taskSseConnections.has(taskId)) {
+    taskSseConnections.set(taskId, new Set());
+  }
+  taskSseConnections.get(taskId).add(entry);
+
+  // 立即发送当前状态
+  res.write(`data: ${JSON.stringify({
+    type: 'status',
+    taskId: task.taskId,
+    status: task.status,
+    progress: task.status === 'success' ? 100 : task.status === 'failed' ? -1 : (task.progress || 0),
+    message: task.progressMessage || '',
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+    error: task.error || null,
+  })}\n\n`);
+
+  // 如果已完成，立即发送结果
+  if (task.status === 'success' && task.result) {
+    res.write(`data: ${JSON.stringify({ type: 'result', ...task.result })}\n\n`);
+  } else if (task.status === 'failed') {
+    res.write(`data: ${JSON.stringify({ type: 'error', error: task.error || '任务失败' })}\n\n`);
+  }
+
+  // 清理函数：连接断开时移除
+  req.on('close', () => {
+    const conns = taskSseConnections.get(taskId);
+    if (conns) {
+      conns.delete(entry);
+      if (conns.size === 0) {
+        taskSseConnections.delete(taskId);
+      }
+    }
+  });
+});
+
 // ── 导出剪映草稿（异步任务）──────────────────────────────────────────────
 app.post('/api/jianying/export/start', (req, res) => {
   pruneOldExportTasks();
@@ -316,18 +426,38 @@ app.post('/api/jianying/export/start', (req, res) => {
     if (!current) return;
     current.status = 'running';
     current.updatedAt = Date.now();
+
+    // SSE 通知任务开始
+    notifyTaskSse(task.taskId, { status: 'running', progress: 0, message: '任务已启动' });
+
     try {
-      const result = await runExportJob(payload);
+      const result = await runExportJob(payload, task.taskId);
       current.status = 'success';
       current.result = result;
       current.updatedAt = Date.now();
       current.payload = undefined;
+
+      // SSE 通知任务完成
+      notifyTaskSse(task.taskId, {
+        status: 'success',
+        progress: 100,
+        message: '导出完成',
+        ...result,
+      });
     } catch (e) {
       current.status = 'failed';
       current.error = e?.message || String(e);
       current.updatedAt = Date.now();
       current.payload = undefined;
       console.error('[jianying-server] export task failed:', current.taskId, current.error);
+
+      // SSE 通知任务失败
+      notifyTaskSse(task.taskId, {
+        status: 'failed',
+        progress: -1,
+        message: '导出失败',
+        error: current.error,
+      });
     }
   });
 });
@@ -342,6 +472,8 @@ app.get('/api/jianying/export/status/:taskId', (req, res) => {
     success: true,
     taskId: task.taskId,
     status: task.status,
+    progress: task.status === 'success' ? 100 : task.status === 'failed' ? -1 : (task.progress || 0),
+    message: task.progressMessage || '',
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     error: task.error || null,
@@ -427,8 +559,9 @@ app.listen(PORT, '0.0.0.0', () => {
  * 通过 stdin 传递 JSON（避免命令行参数超限 E2BIG）
  * @param {string[]} args - Python CLI 参数
  * @param {object|null} payload - 通过 stdin 传入的数据
+ * @param {function|null} onProgress - 进度回调 (progress: number, stage: string) => void
  */
-function runPythonStdin(args, payload) {
+function runPythonStdin(args, payload, onProgress = null) {
   return new Promise((resolve, reject) => {
     if (!existsSync(PYTHON_SCRIPT)) {
       reject(new Error(`Python 脚本不存在: ${PYTHON_SCRIPT}`));
@@ -454,7 +587,22 @@ function runPythonStdin(args, payload) {
     let stdout = '';
     let stderr = '';
 
-    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stdout.on('data', (d) => {
+      const text = d.toString();
+      stdout += text;
+      // 解析进度行: [PROGRESS] 50|下载音频...
+      if (onProgress) {
+        const m = text.match(/\[PROGRESS\]\s*(\d+)\|(.+)/);
+        if (m) {
+          try {
+            onProgress(parseInt(m[1]), m[2]);
+          } catch {
+            // 解析失败，忽略
+          }
+        }
+      }
+    });
+
     child.stderr.on('data', (d) => { stderr += d.toString(); });
 
     // stdin 写入 JSON，flush 后 end

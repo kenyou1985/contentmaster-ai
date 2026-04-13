@@ -367,9 +367,10 @@ async function legacyJianyingExportSync(
   return coerceExportResultFromText(legacyText, options, true);
 }
 
-/** 批量导出剪映草稿（异步任务轮询，避免长连接超时） */
+/** 批量导出剪映草稿（异步任务轮询 + SSE 订阅，避免长连接超时） */
 export async function exportJianyingDraft(
-  options: JianyingExportOptions
+  options: JianyingExportOptions,
+  onProgress?: (progress: number, message: string) => void
 ): Promise<JianyingExportResult> {
   const returnZip = shouldUseJianyingZipDownload();
   const shots = await embedAudioDataUrlsForJianyingExport(options.shots, returnZip);
@@ -410,11 +411,11 @@ export async function exportJianyingDraft(
   }
 
   // 本地开发时检测服务是否可用，500 错误则自动切换 railway
-  const tryExport = async (apiBase: string, payload: object): Promise<Response> => {
+  const tryExport = async (apiBase: string, p: object): Promise<Response> => {
     return fetch(`${apiBase}/export/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(p),
     });
   };
 
@@ -444,35 +445,137 @@ export async function exportJianyingDraft(
     return legacyJianyingExportSync(base, payload, options);
   }
 
-  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  const maxPoll = 240; // 最多约 8 分钟
   const usedRailway = startRes.url?.includes(railwayBase);
   const pollBase = usedRailway ? railwayBase : base;
+
+  // 尝试使用 SSE 订阅任务状态（如果服务器支持）
+  const useSse = () => new Promise<JianyingExportResult>((resolve, reject) => {
+    const sseUrl = `${pollBase}/export/sse/${encodeURIComponent(taskId)}`;
+    console.log('[JianyingExport] 订阅 SSE:', sseUrl);
+
+    let settled = false;
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      es?.close();
+      fn();
+    };
+
+    const es = new EventSource(sseUrl);
+    let lastProgress = 0;
+
+    es.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        console.log('[JianyingExport] SSE 事件:', data.type, data.status, data.progress, data.message);
+
+        if (data.type === 'error' || data.status === 'failed') {
+          settle(() => reject(new Error(data.error || data.message || '任务失败')));
+          return;
+        }
+
+        if (data.status === 'success' && data.type === 'result') {
+          // 构建结果
+          const { type, taskId: _t, status: _s, progress: _p, message: _m, createdAt: _c, updatedAt: _u, ...result } = data;
+          settle(() => resolve({ ...result, usedRailway }));
+          return;
+        }
+
+        // 更新进度
+        if (data.progress !== undefined && data.progress > lastProgress) {
+          lastProgress = data.progress;
+          onProgress?.(data.progress, data.message || '处理中...');
+        }
+      } catch {
+        // 解析失败，忽略
+      }
+    };
+
+    es.onerror = () => {
+      console.warn('[JianyingExport] SSE 连接断开，切换到轮询');
+      es.close();
+      if (!settled) {
+        settle(() => {
+          // SSE 失败后继续用轮询
+          resolve(pollForResult(taskId, pollBase, usedRailway, options, onProgress));
+        });
+      }
+    };
+
+    // SSE 30 秒超时自动切换轮询
+    setTimeout(() => {
+      if (!settled) {
+        console.warn('[JianyingExport] SSE 超时，切换到轮询');
+        settle(() => {
+          resolve(pollForResult(taskId, pollBase, usedRailway, options, onProgress));
+        });
+      }
+    }, 30000);
+  });
+
+  // 优先使用 SSE，失败则降级到轮询
+  try {
+    return await useSse();
+  } catch (sseErr) {
+    console.warn('[JianyingExport] SSE 失败，使用轮询:', sseErr);
+    return pollForResult(taskId, pollBase, usedRailway, options, onProgress);
+  }
+}
+
+/** 轮询获取任务结果 */
+async function pollForResult(
+  taskId: string,
+  pollBase: string,
+  usedRailway: boolean,
+  options: JianyingExportOptions,
+  onProgress?: (progress: number, message: string) => void
+): Promise<JianyingExportResult> {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const maxPoll = 300; // 最多约 10 分钟（轮询间隔 2 秒）
+  let lastProgress = 0;
+
   for (let i = 0; i < maxPoll; i++) {
     await sleep(2000);
-    const statusRes = await fetch(`${pollBase}/export/status/${encodeURIComponent(taskId)}`);
-    const statusText = await statusRes.text().catch(() => '');
-    const statusObj = tryParseJsonObject(statusText) as any;
-    const status = String(statusObj?.status || '').toLowerCase();
 
-    if (status === 'success') {
-      const resultRes = await fetch(`${pollBase}/export/result/${encodeURIComponent(taskId)}`);
-      const resultText = await resultRes.text().catch(() => '');
-      if (!resultRes.ok) {
-        const parsed = tryParseJsonObject(resultText);
-        const detail = parsed?.error || parsed?.message || resultText.slice(0, 400);
-        throw new Error(`导出结果获取失败 (${resultRes.status})${detail ? ': ' + detail : ''}`);
+    try {
+      const statusRes = await fetch(`${pollBase}/export/status/${encodeURIComponent(taskId)}`);
+      const statusText = await statusRes.text().catch(() => '');
+      const statusObj = tryParseJsonObject(statusText) as any;
+      const status = String(statusObj?.status || '').toLowerCase();
+
+      // 更新进度
+      if (statusObj?.progress !== undefined && statusObj.progress > lastProgress) {
+        lastProgress = statusObj.progress;
+        onProgress?.(statusObj.progress, statusObj.message || '处理中...');
       }
-      const parsed = tryParseJsonObject(resultText);
-      if (parsed) return { ...parsed, usedRailway };
-      return { ...coerceExportResultFromText(resultText, options, true), usedRailway };
-    }
 
-    if (status === 'failed') {
-      const detail = statusObj?.error || statusObj?.message || '导出任务失败';
-      throw new Error(String(detail));
+      if (status === 'success') {
+        const resultRes = await fetch(`${pollBase}/export/result/${encodeURIComponent(taskId)}`);
+        const resultText = await resultRes.text().catch(() => '');
+        if (!resultRes.ok) {
+          const parsed = tryParseJsonObject(resultText);
+          const detail = parsed?.error || parsed?.message || resultText.slice(0, 400);
+          throw new Error(`导出结果获取失败 (${resultRes.status})${detail ? ': ' + detail : ''}`);
+        }
+        const parsed = tryParseJsonObject(resultText);
+        if (parsed) return { ...parsed, usedRailway };
+        return { ...coerceExportResultFromText(resultText, options, true), usedRailway };
+      }
+
+      if (status === 'failed') {
+        const detail = statusObj?.error || statusObj?.message || '导出任务失败';
+        throw new Error(String(detail));
+      }
+    } catch (e) {
+      // 网络错误时短暂等待后重试（最多 3 次）
+      if (i < maxPoll - 3) {
+        console.warn(`[JianyingExport] 轮询出错 (${i + 1}/${maxPoll}):`, e);
+        await sleep(3000);
+        continue;
+      }
+      throw e;
     }
   }
 
-  throw new Error('导出任务超时（轮询超过 8 分钟）');
+  throw new Error('导出任务超时（轮询超过 10 分钟）');
 }

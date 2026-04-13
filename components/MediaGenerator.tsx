@@ -815,6 +815,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const [jyRandomTransitions, setJyRandomTransitions] = useState(false);
   const [jyRandomFilters, setJyRandomFilters] = useState(false);
   const [isExportingToJianying, setIsExportingToJianying] = useState(false);
+  const [jianyingExportProgress, setJianyingExportProgress] = useState(0);
+  const [jianyingExportMessage, setJianyingExportMessage] = useState('');
   const [lastJianyingDownloadUrl, setLastJianyingDownloadUrl] = useState<string>('');
   /** 批量打包 ZIP（图片 / 音频 / 视频）进行中，避免重复点击 */
   const [batchZipBusy, setBatchZipBusy] = useState(false);
@@ -850,17 +852,27 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const performExportToJianying = async (exportShots: Shot[], exportDraftName: string, settings?: { randomEffectBundle?: boolean; randomTransitions?: boolean; randomFilters?: boolean }): Promise<boolean> => {
     setIsExportingToJianying(true);
     setLastJianyingDownloadUrl('');
+    setJianyingExportProgress(0);
+    setJianyingExportMessage('准备导出...');
     try {
-      const result = await exportJianyingDraft({
-        draftName: exportDraftName,
-        shots: shotsToJianying(exportShots),
-        outputPath: undefined,
-        pathMapRoot: jianyingOutputDir || undefined,
-        randomTransitions: settings?.randomTransitions ?? jyRandomTransitions,
-        randomVideoEffects:
-          (settings?.randomEffectBundle ?? jyRandomEffectBundle) ||
-          (settings?.randomFilters ?? jyRandomFilters),
-      });
+      const result = await exportJianyingDraft(
+        {
+          draftName: exportDraftName,
+          shots: shotsToJianying(exportShots),
+          outputPath: undefined,
+          pathMapRoot: jianyingOutputDir || undefined,
+          randomTransitions: settings?.randomTransitions ?? jyRandomTransitions,
+          randomVideoEffects:
+            (settings?.randomEffectBundle ?? jyRandomEffectBundle) ||
+            (settings?.randomFilters ?? jyRandomFilters),
+        },
+        (progress, message) => {
+          setJianyingExportProgress(progress);
+          setJianyingExportMessage(message || '处理中...');
+        }
+      );
+      setJianyingExportProgress(100);
+      setJianyingExportMessage('导出完成');
       if (result.success) {
         const rawZipUrl = (result.zip_download_url || '').trim();
         let downloadUrl = '';
@@ -4284,9 +4296,21 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium rounded-lg transition-all disabled:opacity-50"
             >
               {isExportingToJianying ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-              导出剪映
+              {isExportingToJianying ? '导出中...' : '导出剪映'}
             </button>
-            {lastJianyingDownloadUrl && (
+            {/* 导出进度条 */}
+            {isExportingToJianying && (
+              <div className="flex flex-col gap-0.5 min-w-[120px]">
+                <div className="h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-purple-500 transition-all duration-300"
+                    style={{ width: `${Math.min(100, Math.max(0, jianyingExportProgress))}%` }}
+                  />
+                </div>
+                <span className="text-[9px] text-slate-400 truncate">{jianyingExportMessage || '处理中...'}</span>
+              </div>
+            )}
+            {lastJianyingDownloadUrl && !isExportingToJianying && (
               <a
                 href={lastJianyingDownloadUrl}
                 target="_blank"
