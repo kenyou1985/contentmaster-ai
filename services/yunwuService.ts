@@ -295,17 +295,41 @@ IDENTITY LOCK (highest priority — overrides any generic wording in the brief):
 
 After the reference image parts, a COMPOSITION BRIEF follows — follow it for layout, text, arrows, and mood, but NEVER break the identity lock above.`;
 
+/** Gemini 原生图模的多角色 preamble（封面设计使用） */
+function buildGeminiNativeMultiCharacterPreamble(referenceDataUrls: string[], characterName?: string): string {
+  const n = referenceDataUrls.length;
+  const chars = characterName?.split(',').map(c => c.trim()).filter(Boolean) || [];
+
+  if (chars.length === 0) {
+    return DEFAULT_GEMINI_REF_PREAMBLE_THUMBNAIL.replace(/REF_COUNT_PLACEHOLDER/g, String(n));
+  }
+
+  const identityBlocks = chars.map((char, idx) => {
+    const refNum = idx + 1;
+    return `- Image ${refNum}: Reproduce the character "${char}" with exact appearance matching reference image ${refNum}. For humans: face shape, skin tone, hair style/color, clothing, accessories, and body proportions. For animals: species, breed, markings, and silhouette.`;
+  }).join('\n');
+
+  return `You will generate ONE image with the aspect ratio stated in the composition brief below. Below this message come ${n} reference image(s) IN ORDER: Image 1, Image 2, ... Image ${n}.
+
+IDENTITY LOCK (highest priority — overrides any generic wording in the brief):
+${identityBlocks}
+- Keep the same illustration / photo language as the references (line weight, color blocks, or photographic look).
+
+After the reference image parts, a COMPOSITION BRIEF follows — follow it for layout, text, arrows, and mood, but NEVER break the identity lock above.`;
+}
+
 function buildGeminiNativeImageParts(
   prompt: string,
   referenceDataUrls?: string[],
-  multimodalPreamble?: string
+  multimodalPreamble?: string,
+  characterName?: string
 ): { parts: Record<string, unknown>[] } {
   const parts: Record<string, unknown>[] = [];
   if (referenceDataUrls?.length) {
     const n = referenceDataUrls.length;
-    const preambleText =
-      multimodalPreamble?.trim() ||
-      DEFAULT_GEMINI_REF_PREAMBLE_THUMBNAIL.replace(/REF_COUNT_PLACEHOLDER/g, String(n));
+    // 优先使用传入的 preamble，否则使用多角色 preamble
+    const preambleText = multimodalPreamble?.trim()
+      || buildGeminiNativeMultiCharacterPreamble(referenceDataUrls, characterName);
     parts.push({
       text: preambleText,
     });
@@ -332,9 +356,30 @@ function buildOpenAiVisionUserContent(
 ): string | Array<{ type: string; text?: string; image_url?: { url: string } }> {
   if (!referenceDataUrls?.length) return text;
 
-  const preamble = characterName
-    ? `CRITICAL: The character "${characterName}" appears in the attached reference image(s). You MUST reproduce this character's exact appearance — face shape, skin tone, hair style/color, clothing, accessories, and body proportions — in the generated image. Do NOT substitute a generic or different person/breed. Keep the same medium (photo, illustration, or 3D) as shown in the references unless the instructions explicitly demand otherwise.\n\nImage generation instructions:\n${text}`
-    : `Reference image(s) are attached in order. Preserve identity: for people match face shape, hair, and clothing; for animals match species, coat pattern, and body proportions; keep the same art medium (photo vs illustration) unless the instructions clearly require otherwise.\n\nImage generation instructions:\n${text}`;
+  // 支持多角色分别生成身份锁定说明
+  let preamble: string;
+  const chars = characterName?.split(',').map(c => c.trim()).filter(Boolean) || [];
+
+  if (chars.length > 0) {
+    // 多角色：分别为每个角色生成身份锁定说明
+    const identityBlocks = chars.map(char => {
+      return `- Character "${char}": You MUST reproduce this character's exact appearance — face shape, skin tone, hair style/color, clothing, accessories, and body proportions (for humans) or species, breed, markings, and silhouette (for animals). Do NOT substitute a generic or different person/breed.`;
+    }).join('\n');
+
+    preamble = `CRITICAL: The following characters appear in the attached reference image(s) IN ORDER (Image 1 is the first character, Image 2 is the second, etc.):
+
+${identityBlocks}
+
+Keep the same medium (photo, illustration, or 3D) as shown in the references unless the instructions explicitly demand otherwise.
+
+Image generation instructions:
+${text}`;
+  } else {
+    preamble = `Reference image(s) are attached in order. Preserve identity: for people match face shape, hair, and clothing; for animals match species, coat pattern, and body proportions; keep the same art medium (photo vs illustration) unless the instructions clearly require otherwise.
+
+Image generation instructions:
+${text}`;
+  }
 
   const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [
     { type: 'text', text: preamble },
@@ -409,7 +454,8 @@ async function yunwuGeminiNativeImageOnce(
   const { parts } = buildGeminiNativeImageParts(
     options.prompt,
     options.referenceDataUrls,
-    options.referenceMultimodalPreamble
+    options.referenceMultimodalPreamble,
+    options.characterName
   );
   const endpoint = `/v1beta/models/${geminiModelId}:generateContent`;
   const body: Record<string, unknown> = {
@@ -552,7 +598,7 @@ export const generateImage = async (
         messages: [
           {
             role: 'user',
-            content: buildOpenAiVisionUserContent(finalPrompt, opts.referenceDataUrls),
+            content: buildOpenAiVisionUserContent(finalPrompt, opts.referenceDataUrls, opts.characterName),
           },
         ],
         temperature: 0.7,
