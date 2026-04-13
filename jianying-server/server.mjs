@@ -22,6 +22,11 @@ const PYTHON_SCRIPT = join(__dirname, 'jianying_export_service.py');
 const PORT = process.env.PORT || 10000; // Render.com 免费版分配随机端口
 
 const app = express();
+
+// 增加请求体大小限制：从默认 100KB 增加到 200MB（支持 base64 图片数据）
+app.use(express.json({ limit: '200mb' }));
+app.use(express.urlencoded({ extended: true, limit: '200mb' }));
+
 const recentZipPathByName = new Map();
 
 // 异步导出任务（内存队列，进程重启后会清空）
