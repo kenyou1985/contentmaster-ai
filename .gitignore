@@ -25,3 +25,6 @@ dist-ssr
 # Vendor directories
 _vendor_jimeng_free_api_all/
 vendor/
+
+# Environment variables
+.env

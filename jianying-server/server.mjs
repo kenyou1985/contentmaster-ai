@@ -199,9 +199,67 @@ app.use(cors({
   maxAge: 86400,
 }));
 
-app.use(express.json({ limit: '200mb', inflate: true }));
+app.use(express.json({
+  limit: '100mb',
+  inflate: true,
+  // 自定义错误处理：区分请求中止（不打印为 ERROR）和格式错误
+  verify: (req, _res, buf) => {
+    req._rawBody = buf;
+  }
+}));
 
-// 请求超时中间件（Railway 默认 30s 太短）
+// 统一错误处理中间件（处理所有中间件错误，包括 JSON 解析、请求中止等）
+// Express 4 错误中间件必须 4 个参数: (err, req, res, next)
+app.use((err, req, res, _next) => {
+  const errMsg = err?.message || '';
+  const errType = err?.type || '';
+  const errCode = err?.code || '';
+
+  // 检测是否是客户端断连错误（Railway 平台超时、客户端主动取消等）
+  // 这些不是服务端问题，只是正常的中止，不返回响应（已 headers sent）
+  const isClientAbort =
+    /aborted|closed|ECONNRESET|request aborted|client aborted/i.test(errMsg) ||
+    /aborted|closed|ECONNRESET|request aborted/i.test(errType) ||
+    errCode === 'ECONNRESET' ||
+    errCode === 'ERR_STREAM_PREMATURE_CLOSE' ||
+    errCode === 'HTTP_ERROR' ||
+    req.socket?.destroyed;
+
+  if (isClientAbort) {
+    // 客户端已断开，不尝试发送响应
+    console.warn('[jianying-server] 客户端断开了连接');
+    if (!res.headersSent) {
+      res.end();
+    }
+    return;
+  }
+
+  // BadRequestError: JSON 格式错误
+  if (errType === 'entity.parse.failed') {
+    console.error('[jianying-server] JSON 解析失败:', errMsg);
+    if (!res.headersSent) {
+      res.status(400).json({ error: '请求格式错误', detail: errMsg });
+    }
+    return;
+  }
+
+  // 请求体过大
+  if (errType === 'entity.too.large') {
+    console.warn('[jianying-server] 请求体过大');
+    if (!res.headersSent) {
+      res.status(413).json({ error: '请求体过大，最大支持 100MB' });
+    }
+    return;
+  }
+
+  // 其他中间件错误
+  console.error('[jianying-server] 请求处理错误:', errMsg || err);
+  if (!res.headersSent) {
+    res.status(500).json({ error: errMsg || 'Internal error' });
+  }
+});
+
+// 请求超时中间件（Railway/Render 默认 30s 太短）
 app.use((req, res, next) => {
   // Railway/Render 请求超时约 60s，增加到 5 分钟
   req.setTimeout(300_000);
