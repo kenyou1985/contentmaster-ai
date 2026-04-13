@@ -356,21 +356,33 @@ function buildOpenAiVisionUserContent(
 ): string | Array<{ type: string; text?: string; image_url?: { url: string } }> {
   if (!referenceDataUrls?.length) return text;
 
+  console.log('[YunwuService] buildOpenAiVisionUserContent:', {
+    text: text.slice(0, 100),
+    refCount: referenceDataUrls.length,
+    characterName,
+    firstRefUrl: referenceDataUrls[0]?.slice(0, 50)
+  });
+
   // 支持多角色分别生成身份锁定说明
   let preamble: string;
   const chars = characterName?.split(',').map(c => c.trim()).filter(Boolean) || [];
 
   if (chars.length > 0) {
     // 多角色：分别为每个角色生成身份锁定说明
-    const identityBlocks = chars.map(char => {
-      return `- Character "${char}": You MUST reproduce this character's exact appearance — face shape, skin tone, hair style/color, clothing, accessories, and body proportions (for humans) or species, breed, markings, and silhouette (for animals). Do NOT substitute a generic or different person/breed.`;
+    const identityBlocks = chars.map((char, idx) => {
+      const refNum = idx + 1;
+      return `- Image ${refNum} (${char}): You MUST reproduce this character's exact appearance — face shape, skin tone, hair style/color, clothing, accessories, and body proportions (for humans) or species, breed, markings, and silhouette (for animals). Do NOT substitute a generic or different person/breed. Keep the same medium as shown in the reference.`;
     }).join('\n');
 
-    preamble = `CRITICAL: The following characters appear in the attached reference image(s) IN ORDER (Image 1 is the first character, Image 2 is the second, etc.):
+    preamble = `CRITICAL: The following ${chars.length} character(s) appear in the attached reference image(s) IN ORDER:
+- Image 1 is "${chars[0]}" (${referenceDataUrls[0] ? 'provided' : 'missing'})
+${chars.length > 1 ? `- Image 2 is "${chars[1]}" (${referenceDataUrls[1] ? 'provided' : 'missing'})` : ''}
+${chars.length > 2 ? `- Image 3 is "${chars[2]}" (${referenceDataUrls[2] ? 'provided' : 'missing'})` : ''}
 
+IDENTITY LOCK (highest priority — overrides any generic wording in the brief):
 ${identityBlocks}
 
-Keep the same medium (photo, illustration, or 3D) as shown in the references unless the instructions explicitly demand otherwise.
+IMPORTANT: You MUST include ALL ${chars.length} character(s) in the generated image. Each character's appearance must exactly match their reference image.
 
 Image generation instructions:
 ${text}`;
