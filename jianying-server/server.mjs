@@ -199,7 +199,15 @@ app.use(cors({
   maxAge: 86400,
 }));
 
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '200mb', inflate: true }));
+
+// 请求超时中间件（Railway 默认 30s 太短）
+app.use((req, res, next) => {
+  // Railway/Render 请求超时约 60s，增加到 5 分钟
+  req.setTimeout(300_000);
+  res.setTimeout(300_000);
+  next();
+});
 
 // ── 健康检查（Render 存活探针）──────────────────────────────────────────────
 app.get('/health', (_req, res) => {

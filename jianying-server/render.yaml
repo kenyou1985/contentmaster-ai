@@ -15,3 +15,6 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Railway 请求超时：默认 60s，增加到 10 分钟
+      - key: RAILWAY_REQUEST_TIMEOUT
+        value: 600
