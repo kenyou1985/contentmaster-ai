@@ -548,55 +548,21 @@ app.get('/api/jianying/export/sse/:taskId', (req, res) => {
 
 // 兼容旧接口：流式响应（Railway 代理兼容）
 // 先发送 headers，边处理边 stream 数据，防止代理超时关闭连接
-app.post('/api/jianying/export', (req, res) => {
+app.post('/api/jianying/export', async (req, res) => {
   const payload = req.body || {};
   const shots = payload?.shots;
   if (!Array.isArray(shots) || shots.length === 0) {
     return res.status(400).json({ success: false, error: 'shots 不能为空' });
   }
 
-  // 流式响应：发送 headers，禁用代理缓冲
-  res.writeHead(200, {
-    'Content-Type': 'application/x-ndjson', // 每行一个 JSON 对象
-    'X-Accel-Buffering': 'no',
-    'Cache-Control': 'no-cache',
-    'Transfer-Encoding': 'chunked',
-  });
-
-  const sendProgress = (progress, message) => {
-    try {
-      res.write(JSON.stringify({ progress, message }) + '\n');
-    } catch { /* ignore */ }
-  };
-
-  const sendResult = (result) => {
-    try {
-      res.write(JSON.stringify(result) + '\n');
-      res.end();
-    } catch { /* ignore */ }
-  };
-
-  const sendError = (err) => {
-    try {
-      res.write(JSON.stringify({ error: err }) + '\n');
-      res.end();
-    } catch { /* ignore */ }
-  };
-
-  // 发送初始确认
-  sendProgress(5, '开始处理...');
-
-  // 异步执行，不阻塞响应
-  setImmediate(async () => {
-    try {
-      sendProgress(10, `处理 ${shots.length} 个镜头...`);
-      const result = await runExportJob(payload, null, sendProgress);
-      sendResult(result);
-    } catch (err) {
-      console.error('[jianying-server] export error:', err);
-      sendError(err?.message || String(err));
-    }
-  });
+  try {
+    // Railway 代理会缓冲 chunked 响应导致超时，改为一次性返回结果
+    const result = await runExportJob(payload, null, null);
+    res.json(result);
+  } catch (err) {
+    console.error('[jianying-server] export error:', err);
+    res.status(500).json({ success: false, error: err?.message || String(err) });
+  }
 });
 
 // ── 下载导出的 ZIP（Railway Linux 场景）────────────────────────────────────
