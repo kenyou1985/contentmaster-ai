@@ -248,37 +248,15 @@ export async function embedAudioDataUrlsForJianyingExport(
   for (const s of shots) {
     let shot = { ...s };
 
-    // 处理图片：Railway 环境转 base64（服务器无法访问大陆的即梦域名）
+    // 处理图片：Railway 环境也传 URL，让服务器下载
+    // 注意：Railway 服务器在海外，可能无法访问某些大陆 CDN
+    // 如果图片下载失败，服务器会使用占位符图片
     if (returnZip) {
-      const rawImage = shot.imageUrl?.trim() || (shot as any).imageUrls?.[0]?.trim();
-      if (rawImage && !rawImage.startsWith('data:')) {
-        try {
-          let dataUrl = rawImage;
-          // blob: URL 需要先 fetch 再转 base64
-          if (rawImage.startsWith('blob:')) {
-            const r = await fetch(rawImage);
-            if (r.ok) {
-              const mime = r.headers.get('content-type')?.split(';')[0]?.trim() || 'image/png';
-              const data = await r.arrayBuffer();
-              dataUrl = `data:${mime};base64,${arrayBufferToBase64(data)}`;
-            }
-          } else if (/^https?:\/\//i.test(rawImage)) {
-            // HTTP(S) URL 直接 fetch
-            const r = await fetch(rawImage);
-            if (r.ok) {
-              const mime = r.headers.get('content-type')?.split(';')[0]?.trim() || 'image/png';
-              const data = await r.arrayBuffer();
-              dataUrl = `data:${mime};base64,${arrayBufferToBase64(data)}`;
-            }
-          }
-          shot.imageUrl = dataUrl;
-          if ((shot as any).imageUrls) {
-            (shot as any).imageUrls = [dataUrl];
-          }
-        } catch (e) {
-          console.warn('[JianyingExport] 图片转 base64 失败，将使用原 URL:', e);
-        }
-      }
+      // Railway 环境：直接传 URL，由服务器下载
+      // 不在浏览器端转换 base64，因为 base64 数据量太大（约增加 33%），
+      // 会导致 Railway 内存不足而被 OOM Kill
+      // 如果服务器无法下载图片，会自动使用占位符图片
+      // 图片已经在前端是 blob: URL 或 https: URL，直接传递即可
     }
 
     // 处理音频
