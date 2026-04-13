@@ -8,6 +8,7 @@ import {
 } from '../services/geminiService';
 import { fetchYouTubeTranscript, extractYouTubeVideoId, isYouTubeLink } from '../services/youtubeService';
 import { ytGetVideoComments, type CommentResult } from '../services/youtubeAnalyticsService';
+import { polishTextForAntiAi } from '../services/antiAiPolishService';
 import { FileText, Maximize2, RefreshCw, Scissors, ArrowRight, Copy, ChevronDown, Video, Download, Plus, X, History, Brain, Loader2, Youtube, Image, Wand2 } from 'lucide-react';
 import { saveHistory, getHistory, deleteHistory, clearHistory, HistoryRecord } from '../services/historyService';
 import { storage } from '../services/storageService';
@@ -4775,9 +4776,42 @@ ${finalText}`;
           }
           finalText = result.join('\n\n');
         }
-        
+
         setMergedOutput(finalText);
         appendTerminal('合并文案衔接优化完成。');
+
+        // ===== 去AI味内容清洗 =====
+        // 在合并完成后执行一轮"去AI味"清洗，让内容看起来更像人工写的
+        appendTerminal('[去AI味] 开始内容清洗...');
+
+        try {
+          initializeGemini(yunwuApiKey, { provider });
+          let antiAiPolished = '';
+
+          await polishTextForAntiAi(
+            finalText,
+            {
+              yunwuApiKey,
+              onLog: (msg) => appendTerminal(msg),
+              onChunk: (chunk) => {
+                antiAiPolished = chunk;
+                setMergedOutput(antiAiPolished);
+              },
+            },
+            ...deepRewriteStreamModelArgs
+          );
+
+          if (antiAiPolished.trim()) {
+            finalText = antiAiPolished.trim();
+            setMergedOutput(finalText);
+            appendTerminal('[去AI味] 清洗完成');
+          } else {
+            appendTerminal('[去AI味] 清洗返回空，保留合并结果');
+          }
+        } catch (e: any) {
+          appendTerminal(`[去AI味] 清洗失败，保留合并结果: ${e?.message || e}`);
+        }
+        // ===== 去AI味清洗结束 =====
 
         const finalLenForGate = finalText.replace(/\s+/g, '').length;
         const rewriteBelowSource =
