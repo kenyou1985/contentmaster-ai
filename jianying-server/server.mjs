@@ -350,16 +350,27 @@ app.get('/api/jianying/export/sse/:taskId', (req, res) => {
     return res.status(404).json({ success: false, error: 'task not found' });
   }
 
-  // 设置 SSE 头
+  // 设置 SSE 头（Railway 代理兼容）
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
     'X-Accel-Buffering': 'no', // 禁用 Nginx 缓冲
+    'Access-Control-Allow-Origin': '*',
+    'Keep-Alive': 'timeout=300, max=1000',
   });
 
   // 发送初始连接确认
   res.write(`data: ${JSON.stringify({ type: 'connected', taskId })}\n\n`);
+
+  // 心跳保活定时器（Railway 代理每 30-60s 超时，需每 15s 发心跳）
+  const heartbeatInterval = setInterval(() => {
+    try {
+      res.write(': heartbeat\n\n');
+    } catch {
+      // 连接已断开
+    }
+  }, 15000);
 
   // 将此连接加入任务订阅队列
   const controller = {
@@ -399,6 +410,7 @@ app.get('/api/jianying/export/sse/:taskId', (req, res) => {
 
   // 清理函数：连接断开时移除
   req.on('close', () => {
+    clearInterval(heartbeatInterval);
     const conns = taskSseConnections.get(taskId);
     if (conns) {
       conns.delete(entry);
