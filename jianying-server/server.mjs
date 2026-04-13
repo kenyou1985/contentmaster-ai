@@ -80,7 +80,7 @@ function normalizeExportResult(result, returnZip) {
   return result;
 }
 
-async function runExportJob(payload, taskId) {
+async function runExportJob(payload, taskId, onProgress) {
   const {
     draftName = 'ContentMaster_Export',
     shots = [],
@@ -93,12 +93,13 @@ async function runExportJob(payload, taskId) {
     returnZip = false,
   } = payload || {};
 
-  // SSE 进度通知函数
+  // 进度通知：同时打印到控制台
   const notify = (progress, message) => {
+    if (onProgress) onProgress(progress, message);
     if (taskId) {
       notifyTaskSse(taskId, { progress, message, status: 'running' });
     }
-    console.log(`[jianying-server] 任务 ${taskId} 进度: ${progress}% - ${message}`);
+    console.log(`[jianying-server] 任务 ${taskId || '同步'} 进度: ${progress}% - ${message}`);
   };
 
   notify(5, '开始处理...');
@@ -421,7 +422,8 @@ app.get('/api/jianying/export/sse/:taskId', (req, res) => {
   });
 });
 
-// ── 导出剪映草稿（异步任务）──────────────────────────────────────────────
+// ── 导出剪映草稿（异步任务 + 纯轮询，兼容 Railway 代理）─────────────────────
+// Railway 代理不支持 SSE 长连接，改用纯轮询
 app.post('/api/jianying/export/start', (req, res) => {
   pruneOldExportTasks();
   const payload = req.body || {};
@@ -431,49 +433,35 @@ app.post('/api/jianying/export/start', (req, res) => {
   }
 
   const task = createExportTask(payload);
+
+  // 立即返回 taskId，不等待处理完成
   res.json({ success: true, taskId: task.taskId, status: task.status });
 
+  // 异步执行 Python 脚本，轮询获取结果
   setImmediate(async () => {
     const current = exportTasks.get(task.taskId);
     if (!current) return;
-    current.status = 'running';
-    current.updatedAt = Date.now();
-
-    // SSE 通知任务开始
-    notifyTaskSse(task.taskId, { status: 'running', progress: 0, message: '任务已启动' });
 
     try {
-      const result = await runExportJob(payload, task.taskId);
+      const result = await runExportJob(payload, task.taskId, (p, m) => {
+        notifyTaskSse(task.taskId, { progress: p, message: m, status: 'running' });
+      });
       current.status = 'success';
       current.result = result;
       current.updatedAt = Date.now();
       current.payload = undefined;
-
-      // SSE 通知任务完成
-      notifyTaskSse(task.taskId, {
-        status: 'success',
-        progress: 100,
-        message: '导出完成',
-        ...result,
-      });
+      console.log(`[jianying-server] 任务 ${task.taskId} 完成，结果已缓存`);
     } catch (e) {
       current.status = 'failed';
       current.error = e?.message || String(e);
       current.updatedAt = Date.now();
       current.payload = undefined;
-      console.error('[jianying-server] export task failed:', current.taskId, current.error);
-
-      // SSE 通知任务失败
-      notifyTaskSse(task.taskId, {
-        status: 'failed',
-        progress: -1,
-        message: '导出失败',
-        error: current.error,
-      });
+      console.error(`[jianying-server] 任务 ${task.taskId} 失败:`, current.error);
     }
   });
 });
 
+// 轮询：查询任务状态（Railway 代理兼容）
 app.get('/api/jianying/export/status/:taskId', (req, res) => {
   pruneOldExportTasks();
   const task = exportTasks.get(req.params.taskId);
@@ -492,6 +480,7 @@ app.get('/api/jianying/export/status/:taskId', (req, res) => {
   });
 });
 
+// 轮询：获取任务结果
 app.get('/api/jianying/export/result/:taskId', (req, res) => {
   pruneOldExportTasks();
   const task = exportTasks.get(req.params.taskId);
@@ -507,20 +496,107 @@ app.get('/api/jianying/export/result/:taskId', (req, res) => {
   return res.status(202).json({ success: false, status: task.status, message: '任务仍在执行中' });
 });
 
-// 兼容旧接口：同步执行（可能超时，不建议线上使用）
-app.post('/api/jianying/export', async (req, res) => {
+// SSE 端点已废弃（Railway 代理不支持长连接），保留但不可靠
+// 客户端应使用轮询模式
+app.get('/api/jianying/export/sse/:taskId', (req, res) => {
+  const { taskId } = req.params;
+  pruneOldExportTasks();
+  const task = exportTasks.get(taskId);
+  if (!task) {
+    return res.status(404).json({ success: false, error: 'task not found' });
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+
+  const heartbeatInterval = setInterval(() => {
+    try { res.write(': heartbeat\n\n'); } catch { /* ignore */ }
+  }, 15000);
+
+  res.write(`data: ${JSON.stringify({ type: 'connected', taskId })}\n\n`);
+
+  const controller = { enqueue: (chunk) => { try { res.write(chunk); } catch { /* ignore */ } } };
+  const entry = { res, controller };
+  if (!taskSseConnections.has(taskId)) taskSseConnections.set(taskId, new Set());
+  taskSseConnections.get(taskId).add(entry);
+
+  res.write(`data: ${JSON.stringify({
+    type: 'status',
+    taskId: task.taskId,
+    status: task.status,
+    progress: task.status === 'success' ? 100 : task.status === 'failed' ? -1 : (task.progress || 0),
+    message: task.progressMessage || '',
+    error: task.error || null,
+  })}\n\n`);
+
+  if (task.status === 'success' && task.result) {
+    res.write(`data: ${JSON.stringify({ type: 'result', ...task.result })}\n\n`);
+  } else if (task.status === 'failed') {
+    res.write(`data: ${JSON.stringify({ type: 'error', error: task.error || '任务失败' })}\n\n`);
+  }
+
+  req.on('close', () => {
+    clearInterval(heartbeatInterval);
+    const conns = taskSseConnections.get(taskId);
+    if (conns) { conns.delete(entry); if (conns.size === 0) taskSseConnections.delete(taskId); }
+  });
+});
+
+// 兼容旧接口：流式响应（Railway 代理兼容）
+// 先发送 headers，边处理边 stream 数据，防止代理超时关闭连接
+app.post('/api/jianying/export', (req, res) => {
   const payload = req.body || {};
   const shots = payload?.shots;
   if (!Array.isArray(shots) || shots.length === 0) {
     return res.status(400).json({ success: false, error: 'shots 不能为空' });
   }
-  try {
-    const result = await runExportJob(payload);
-    return res.json(result);
-  } catch (err) {
-    console.error('[jianying-server] export error:', err);
-    return res.status(500).json({ success: false, error: err?.message || String(err) });
-  }
+
+  // 流式响应：发送 headers，禁用代理缓冲
+  res.writeHead(200, {
+    'Content-Type': 'application/x-ndjson', // 每行一个 JSON 对象
+    'X-Accel-Buffering': 'no',
+    'Cache-Control': 'no-cache',
+    'Transfer-Encoding': 'chunked',
+  });
+
+  const sendProgress = (progress: number, message: string) => {
+    try {
+      res.write(JSON.stringify({ progress, message }) + '\n');
+    } catch { /* ignore */ }
+  };
+
+  const sendResult = (result: object) => {
+    try {
+      res.write(JSON.stringify(result) + '\n');
+      res.end();
+    } catch { /* ignore */ }
+  };
+
+  const sendError = (err: string) => {
+    try {
+      res.write(JSON.stringify({ error: err }) + '\n');
+      res.end();
+    } catch { /* ignore */ }
+  };
+
+  // 发送初始确认
+  sendProgress(5, '开始处理...');
+
+  // 异步执行，不阻塞响应
+  setImmediate(async () => {
+    try {
+      sendProgress(10, `处理 ${shots.length} 个镜头...`);
+      const result = await runExportJob(payload, null, sendProgress);
+      sendResult(result);
+    } catch (err) {
+      console.error('[jianying-server] export error:', err);
+      sendError(err?.message || String(err));
+    }
+  });
 });
 
 // ── 下载导出的 ZIP（Railway Linux 场景）────────────────────────────────────

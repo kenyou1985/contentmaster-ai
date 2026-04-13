@@ -345,12 +345,13 @@ export async function embedAudioDataUrlsForJianyingExport(
   return out;
 }
 
-/** Railway 打包下载：使用较长超时（10 分钟） */
+/** Railway 打包下载：支持流式 ndjson 响应（Railway 代理兼容） */
 async function legacyJianyingExportSync(
   base: string,
   payload: Record<string, unknown>,
   options: JianyingExportOptions,
-  timeoutMs: number = 600_000
+  timeoutMs: number = 600_000,
+  onProgress?: (progress: number, message: string) => void
 ): Promise<JianyingExportResult> {
   const legacyRes = await fetch(`${base}/export`, {
     method: 'POST',
@@ -358,15 +359,58 @@ async function legacyJianyingExportSync(
     body: JSON.stringify(payload),
     signal: AbortSignal.timeout(timeoutMs),
   });
-  const legacyText = await legacyRes.text().catch(() => '');
+
   if (!legacyRes.ok) {
+    const legacyText = await legacyRes.text().catch(() => '');
     const parsed = tryParseJsonObject(legacyText);
     const detail = parsed?.error || parsed?.message || legacyText.slice(0, 400);
     throw new Error(`导出请求失败 (${legacyRes.status})${detail ? ': ' + detail : ''}`);
   }
+
+  // 尝试流式读取 ndjson 响应
+  if (legacyRes.body) {
+    try {
+      const reader = legacyRes.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let result: JianyingExportResult | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const obj = JSON.parse(line);
+            if (obj.error) throw new Error(obj.error);
+            if (obj.progress !== undefined && onProgress) {
+              onProgress(obj.progress, obj.message || '处理中...');
+            }
+            if (obj.success !== undefined || obj.zipPath || obj.message?.includes('草稿')) {
+              result = { ...obj, usedRailway: base.includes('railway') };
+            }
+          } catch {
+            // ignore parse errors
+          }
+        }
+      }
+
+      if (result) return result;
+    } catch {
+      // 流式读取失败，fallback 普通 JSON
+    }
+  }
+
+  // fallback：普通 JSON 响应
+  const legacyText = await legacyRes.text().catch(() => '');
   const parsed = tryParseJsonObject(legacyText);
-  if (parsed) return parsed;
-  return coerceExportResultFromText(legacyText, options, true);
+  if (parsed) return { ...parsed, usedRailway: base.includes('railway') };
+  return { ...coerceExportResultFromText(legacyText, options, true), usedRailway: base.includes('railway') };
 }
 
 /** 批量导出剪映草稿（Railway 用同步请求 + base64，避免轮询超时问题） */
@@ -412,10 +456,10 @@ export async function exportJianyingDraft(
     onProgress?.(5, '准备导出...');
   }
 
-  // Railway 用同步 /export 接口（Railway 代理可能不支持长轮询）
+  // Railway 用流式同步 /export 接口（边处理边发送进度，防止代理超时关闭连接）
   if (isRailway && !isJianyingLocalSiteOrigin()) {
     onProgress?.(10, '上传数据到 Railway...');
-    return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options);
+    return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 600_000, onProgress);
   }
 
   // 本地开发：尝试异步接口，失败则降级同步
