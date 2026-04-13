@@ -9,6 +9,7 @@ import {
 import { fetchYouTubeTranscript, extractYouTubeVideoId, isYouTubeLink } from '../services/youtubeService';
 import { ytGetVideoComments, type CommentResult } from '../services/youtubeAnalyticsService';
 import { polishTextForAntiAi } from '../services/antiAiPolishService';
+import { detectAiFeatures, type AiDetectionResult } from '../services/aiDetectionService';
 import { FileText, Maximize2, RefreshCw, Scissors, ArrowRight, Copy, ChevronDown, Video, Download, Plus, X, History, Brain, Loader2, Youtube, Image, Wand2 } from 'lucide-react';
 import { saveHistory, getHistory, deleteHistory, clearHistory, HistoryRecord } from '../services/historyService';
 import { storage } from '../services/storageService';
@@ -315,6 +316,8 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   const [autoMatchedNiche, setAutoMatchedNiche] = useState<{ niche: NicheType; score: number; reason: string } | null>(null);
   const [autoSwitchNicheEnabled, setAutoSwitchNicheEnabled] = useState(true);
   const [isOptimizingMerge, setIsOptimizingMerge] = useState(false);
+  const [aiDetectionResult, setAiDetectionResult] = useState<AiDetectionResult | null>(null);
+  const [isRunningAiDetection, setIsRunningAiDetection] = useState(false);
   const [rewriteLengthMode, setRewriteLengthMode] = useState<'strict' | 'balanced' | 'expressive'>('balanced');
 
   /** 深度洗稿 / 深度扩写（含同面板 5 段流）：Yunwu OpenAI 兼容流式主备模型 */
@@ -4861,6 +4864,29 @@ ${finalText}`;
         }
         // ===== 去AI味清洗结束 =====
 
+        // ===== AI 味检测 =====
+        appendTerminal('[AI检测] 开始检测内容 AI 味...');
+        setIsRunningAiDetection(true);
+        try {
+          const detection = detectAiFeatures(finalText);
+          setAiDetectionResult(detection);
+          appendTerminal(`[AI检测] 完成 - AI 味等级: ${detection.level === 'weak' ? '弱' : detection.level === 'medium' ? '中' : '强'} (${detection.score}分)`);
+          if (detection.issues.length > 0) {
+            detection.issues.slice(0, 3).forEach(issue => {
+              appendTerminal(`[AI检测] 问题: ${issue}`);
+            });
+          }
+          if (detection.level === 'strong') {
+            appendTerminal('[AI检测] ⚠️ AI 味过强，建议点击"重新去AI味"按钮再次清洗');
+            toast.warning('AI 味检测为"强"，建议继续清洗', 5000);
+          }
+        } catch (e: any) {
+          appendTerminal(`[AI检测] 检测失败: ${e?.message || e}`);
+        } finally {
+          setIsRunningAiDetection(false);
+        }
+        // ===== AI 检测结束 =====
+
         const finalLenForGate = finalText.replace(/\s+/g, '').length;
         const rewriteBelowSource =
           mode !== ToolMode.EXPAND &&
@@ -4890,6 +4916,75 @@ ${finalText}`;
     } finally {
       setIsOptimizingMerge(false);
       setAutoPilotStage('done');
+    }
+  };
+
+  // 重新执行去AI味清洗
+  const handleReAntiAiPolish = async () => {
+    if (!mergedOutput.trim()) {
+      toast.warning('没有可清洗的内容');
+      return;
+    }
+    if (!yunwuApiKey?.trim()) {
+      toast.warning('请先配置云雾 API Key');
+      return;
+    }
+
+    appendTerminal('[去AI味] 手动重新执行去AI味清洗...');
+    setIsOptimizingMerge(true);
+    setAiDetectionResult(null);
+
+    try {
+      initializeGemini(yunwuApiKey, { provider });
+      let antiAiPolished = '';
+
+      await polishTextForAntiAi(
+        mergedOutput,
+        {
+          yunwuApiKey,
+          onLog: (msg) => appendTerminal(`[去AI味] ${msg}`),
+          onChunk: (chunk) => {
+            antiAiPolished = chunk;
+            setMergedOutput(antiAiPolished);
+          },
+        },
+        ...deepRewriteStreamModelArgs
+      );
+
+      if (antiAiPolished.trim()) {
+        let cleanedPolish = antiAiPolished.trim();
+        cleanedPolish = cleanedPolish.replace(/\s*my channel\.?\s*$/i, '');
+        cleanedPolish = cleanedPolish.replace(/\s*please like and subscribe to my channel\.?\s*$/i, '');
+        cleanedPolish = cleanedPolish.replace(/\s*subscribe to my channel\.?\s*$/i, '');
+        cleanedPolish = cleanedPolish.replace(/\s*请点赞并订阅我的频道。?\s*$/, '');
+        cleanedPolish = cleanedPolish.replace(/\s*like and subscribe.*$/i, '');
+
+        if (!/[。！？.!?]$/.test(cleanedPolish.trim())) {
+          cleanedPolish = cleanedPolish.trim() + '。';
+        }
+
+        setMergedOutput(cleanedPolish);
+        appendTerminal('[去AI味] 重新清洗完成');
+
+        // 重新检测
+        const detection = detectAiFeatures(cleanedPolish);
+        setAiDetectionResult(detection);
+        appendTerminal(`[AI检测] 重新检测完成 - AI 味等级: ${detection.level === 'weak' ? '弱' : detection.level === 'medium' ? '中' : '强'} (${detection.score}分)`);
+
+        if (detection.level === 'strong') {
+          toast.warning('AI 味仍为"强"，可继续清洗', 5000);
+        } else {
+          toast.success(`AI 味检测为"${detection.level === 'weak' ? '弱' : '中'}"，清洗效果良好`, 5000);
+        }
+      } else {
+        appendTerminal('[去AI味] 清洗返回为空');
+        toast.warning('清洗返回为空，保留原内容');
+      }
+    } catch (e: any) {
+      appendTerminal(`[去AI味] 重新清洗失败: ${e?.message || e}`);
+      toast.error('重新清洗失败');
+    } finally {
+      setIsOptimizingMerge(false);
     }
   };
 
@@ -5635,6 +5730,92 @@ ${channelNameLang === 'zh' ? '- 必须为中文、清晰、专业、10个中文�
             </div>
             <div className={`text-[11px] ${mergedCompleteForDashboard ? 'text-emerald-300' : 'text-amber-300'}`}>
               完整性检测：{mergedOutput.trim() ? (mergedCompleteForDashboard ? '收尾完整' : '可能未完整（建议补尾）') : '待生成'}
+            </div>
+
+            {/* AI 味检测结果 */}
+            <div className="rounded border border-slate-800 bg-slate-900/60 p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[11px] text-slate-400">AI 味检测</span>
+                {isRunningAiDetection && (
+                  <span className="text-[10px] text-cyan-400 animate-pulse">检测中...</span>
+                )}
+              </div>
+              {aiDetectionResult ? (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-lg font-bold px-2 py-0.5 rounded ${
+                      aiDetectionResult.level === 'weak' ? 'bg-emerald-500/20 text-emerald-300' :
+                      aiDetectionResult.level === 'medium' ? 'bg-amber-500/20 text-amber-300' :
+                      'bg-rose-500/20 text-rose-300'
+                    }`}>
+                      {aiDetectionResult.level === 'weak' ? '弱' : aiDetectionResult.level === 'medium' ? '中' : '强'}
+                    </span>
+                    <span className="text-sm text-slate-300">
+                      AI 味 {aiDetectionResult.score}分
+                    </span>
+                  </div>
+                  <div className="flex gap-2">
+                    <div className="flex-1">
+                      <div className="text-[9px] text-slate-500 mb-1">模板词</div>
+                      <div className="w-full h-1.5 bg-slate-800 rounded overflow-hidden">
+                        <div
+                          className={`h-full ${aiDetectionResult.dimensions.templateWords > 60 ? 'bg-rose-400' : aiDetectionResult.dimensions.templateWords > 30 ? 'bg-amber-400' : 'bg-emerald-400'}`}
+                          style={{ width: `${aiDetectionResult.dimensions.templateWords}%` }}
+                        />
+                      </div>
+                    </div>
+                    <div className="flex-1">
+                      <div className="text-[9px] text-slate-500 mb-1">句式</div>
+                      <div className="w-full h-1.5 bg-slate-800 rounded overflow-hidden">
+                        <div
+                          className={`h-full ${aiDetectionResult.dimensions.sentencePattern > 60 ? 'bg-rose-400' : aiDetectionResult.dimensions.sentencePattern > 30 ? 'bg-amber-400' : 'bg-emerald-400'}`}
+                          style={{ width: `${aiDetectionResult.dimensions.sentencePattern}%` }}
+                        />
+                      </div>
+                    </div>
+                    <div className="flex-1">
+                      <div className="text-[9px] text-slate-500 mb-1">人味</div>
+                      <div className="w-full h-1.5 bg-slate-800 rounded overflow-hidden">
+                        <div
+                          className={`h-full ${aiDetectionResult.dimensions.humanFeatures < 40 ? 'bg-rose-400' : aiDetectionResult.dimensions.humanFeatures < 70 ? 'bg-amber-400' : 'bg-emerald-400'}`}
+                          style={{ width: `${100 - aiDetectionResult.dimensions.humanFeatures}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  {aiDetectionResult.level === 'strong' && (
+                    <button
+                      onClick={handleReAntiAiPolish}
+                      disabled={isOptimizingMerge}
+                      className="w-full mt-2 px-3 py-1.5 rounded bg-rose-600 hover:bg-rose-500 disabled:bg-slate-700 disabled:text-slate-500 text-sm text-white transition-colors flex items-center justify-center gap-1"
+                    >
+                      {isOptimizingMerge ? (
+                        <>
+                          <Loader2 size={12} className="animate-spin" />
+                          清洗中...
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCw size={12} />
+                          重新去AI味
+                        </>
+                      )}
+                    </button>
+                  )}
+                  {aiDetectionResult.issues.length > 0 && aiDetectionResult.level !== 'weak' && (
+                    <div className="mt-2 text-[9px] text-slate-500 space-y-0.5">
+                      <div className="text-slate-400">建议：</div>
+                      {aiDetectionResult.issues.slice(0, 2).map((issue, i) => (
+                        <div key={i}>• {issue}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="text-[11px] text-slate-500">
+                  {mergedOutput.trim() ? '点击"开始合并"后自动检测' : '待生成内容后检测'}
+                </div>
+              )}
             </div>
           </div>
 
