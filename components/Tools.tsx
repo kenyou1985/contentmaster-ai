@@ -4639,7 +4639,17 @@ ${finalOut}`;
       const mindfulCtaSuffix = niche === NicheType.MINDFUL_PSYCHOLOGY
         ? `\n\n【治愈心理学赛道特判】结尾必须包含：\n1. 互动引导（至少2句，自然邀请评论）\n2. 订阅引导（固定句式）\n3. 互动引导在前，订阅引导在后`
         : '';
-      const prompt = `你将收到5段"已清洗优化"结果，请执行"无缝衔接合并"。${mindfulCtaSuffix}\n\n要求：\n
+      const prompt = `你将收到5段"已清洗优化"结果，请执行"无缝衔接合并"。${mindfulCtaSuffix}
+
+要求：
+1) 保留每段核心信息，不丢观点
+2) 在段间补上承上启下过渡句，让全文连贯自然
+3) 统一口吻与时态
+4) 输出语言：${targetLang}
+5) ${mode === ToolMode.EXPAND ? expandMergeRule : mergeRewriteLenRule}
+6) 只做衔接清洗与必要删改，不得推翻5段结构重写
+7) 只输出最终正文，不要解释`;
+
       await streamContentGeneration(
         prompt,
         '你是专业总编，请基于清洗后的5段做高连贯合并。',
