@@ -249,14 +249,14 @@ export async function embedAudioDataUrlsForJianyingExport(
     let shot = { ...s };
 
     // 处理图片：Railway 环境转 base64（服务器无法访问大陆的即梦域名）
-    // 但 blob: URL 需要先 fetch 再转 base64
+    // 需要处理 blob: 和 https: 两种 URL 格式
     if (returnZip) {
       const rawImage = shot.imageUrl?.trim() || (shot as any).imageUrls?.[0]?.trim();
       if (rawImage && !rawImage.startsWith('data:')) {
         try {
           let dataUrl = rawImage;
-          // blob: URL 需要先 fetch 再转 base64
-          if (rawImage.startsWith('blob:')) {
+          // blob: URL 或 https: URL 都需要 fetch 并转换为 base64
+          if (rawImage.startsWith('blob:') || rawImage.startsWith('https:')) {
             const r = await fetch(rawImage);
             if (r.ok) {
               const mime = r.headers.get('content-type')?.split(';')[0]?.trim() || 'image/png';
