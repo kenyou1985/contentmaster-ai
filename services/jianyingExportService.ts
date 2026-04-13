@@ -345,16 +345,18 @@ export async function embedAudioDataUrlsForJianyingExport(
   return out;
 }
 
-/** 仅同步 `POST .../export` 的旧版本机服务（如 `server/server.mjs`），无异步 `/export/start` */
+/** Railway 打包下载：使用较长超时（10 分钟） */
 async function legacyJianyingExportSync(
   base: string,
   payload: Record<string, unknown>,
-  options: JianyingExportOptions
+  options: JianyingExportOptions,
+  timeoutMs: number = 600_000
 ): Promise<JianyingExportResult> {
   const legacyRes = await fetch(`${base}/export`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const legacyText = await legacyRes.text().catch(() => '');
   if (!legacyRes.ok) {
@@ -367,7 +369,7 @@ async function legacyJianyingExportSync(
   return coerceExportResultFromText(legacyText, options, true);
 }
 
-/** 批量导出剪映草稿（异步任务轮询 + SSE 订阅，避免长连接超时） */
+/** 批量导出剪映草稿（Railway 用同步请求 + base64，避免轮询超时问题） */
 export async function exportJianyingDraft(
   options: JianyingExportOptions,
   onProgress?: (progress: number, message: string) => void
@@ -398,214 +400,67 @@ export async function exportJianyingDraft(
   };
 
   const base = getJianyingApiBase();
-
-  // railway API 地址（从环境变量获取）
   const railwayBase = (import.meta.env.VITE_JIANYING_API_BASE || '').replace(/\/$/, '');
-
-  // Railway 免费版 15 分钟无请求后会睡眠，唤醒需要 30-60 秒
-  // 如果使用 Railway 且非本地开发，先预热服务
   const isRailway = base === railwayBase && railwayBase.includes('railway');
+
+  // Railway 免费版唤醒：预热服务
   if (isRailway && !isJianyingLocalSiteOrigin()) {
-    console.log('[JianyingExport] 检测到 Railway 服务，开始预热...');
-    await warmupJianyingService(60000); // 最多等待 60 秒让服务唤醒
+    console.log('[JianyingExport] 检测到 Railway 服务，预热中...');
+    await warmupJianyingService(90000);
+    onProgress?.(5, '服务已唤醒，准备上传...');
+  } else {
+    onProgress?.(5, '准备导出...');
   }
 
-  // 本地开发时检测服务是否可用，500 错误则自动切换 railway
-  const tryExport = async (apiBase: string, p: object): Promise<Response> => {
-    return fetch(`${apiBase}/export/start`, {
+  // Railway 用同步 /export 接口（Railway 代理可能不支持长轮询）
+  if (isRailway && !isJianyingLocalSiteOrigin()) {
+    onProgress?.(10, '上传数据到 Railway...');
+    return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options);
+  }
+
+  // 本地开发：尝试异步接口，失败则降级同步
+  try {
+    const startRes = await fetch(`${base}/export/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(p),
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(5000), // 5 秒超时，快速失败
     });
-  };
 
-  let startRes = await tryExport(base, payload);
+    const startText = await startRes.text().catch(() => '');
+    if (startRes.status === 404 || startRes.status === 0) {
+      // 旧版服务不支持异步，降级到同步
+      return legacyJianyingExportSync(base, payload, options);
+    }
 
-  // 本地服务返回 500 时，自动切换 railway 打包下载
-  if (startRes.status === 500 && isJianyingLocalSiteOrigin() && railwayBase) {
-    console.warn('[JianyingExport] 本地服务返回 500，尝试切换 railway 打包下载…');
-    startRes = await tryExport(railwayBase, { ...payload, returnZip: true });
-  }
-
-  const startText = await startRes.text().catch(() => '');
-  // 本仓库 `server/server.mjs` 仅实现同步 POST /api/jianying/export，无 /export/start → 404
-  if (startRes.status === 404) {
-    return legacyJianyingExportSync(base, payload, options);
-  }
-  if (!startRes.ok) {
-    const parsed = tryParseJsonObject(startText);
-    const detail = parsed?.error || parsed?.message || startText.slice(0, 400);
-    throw new Error(`导出任务提交失败 (${startRes.status})${detail ? ': ' + detail : ''}`);
-  }
-
-  const startObj = tryParseJsonObject(startText) as any;
-  const taskId = startObj?.taskId;
-  if (!taskId) {
-    // 兼容旧服务：若未返回 taskId，尝试同步接口
-    return legacyJianyingExportSync(base, payload, options);
-  }
-
-  const usedRailway = startRes.url?.includes(railwayBase);
-  const pollBase = usedRailway ? railwayBase : base;
-
-  // 尝试使用 SSE 订阅任务状态（如果服务器支持）
-  const useSse = () => new Promise<JianyingExportResult>((resolve, reject) => {
-    const sseUrl = `${pollBase}/export/sse/${encodeURIComponent(taskId)}`;
-    console.log('[JianyingExport] 订阅 SSE:', sseUrl);
-
-    let settled = false;
-    let reconnectAttempts = 0;
-    const maxReconnectAttempts = 3;
-    let es: EventSource | null = null;
-
-    const settle = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      es?.close();
-      fn();
-    };
-
-    const connect = () => {
-      if (settled || reconnectAttempts >= maxReconnectAttempts) {
-        if (!settled) {
-          console.warn('[JianyingExport] SSE 重连次数用尽，切换轮询');
-          settle(() => {
-            resolve(pollForResult(taskId, pollBase, usedRailway, options, onProgress));
-          });
-        }
-        return;
+    if (!startRes.ok) {
+      // 本地服务报错，切换 railway
+      if (railwayBase && isJianyingLocalSiteOrigin()) {
+        console.warn('[JianyingExport] 本地服务报错，切换 Railway...');
+        onProgress?.(5, '切换 Railway...');
+        return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options);
       }
+      const parsed = tryParseJsonObject(startText);
+      throw new Error(parsed?.error || parsed?.message || startText.slice(0, 400));
+    }
 
-      es = new EventSource(sseUrl);
-      let lastProgress = 0;
-      let connectTimeout: ReturnType<typeof setTimeout>;
+    const startObj = tryParseJsonObject(startText) as any;
+    const taskId = startObj?.taskId;
+    if (!taskId) {
+      return legacyJianyingExportSync(base, payload, options);
+    }
 
-      // SSE 60 秒超时自动重连
-      connectTimeout = setTimeout(() => {
-        if (!settled) {
-          console.warn(`[JianyingExport] SSE 连接超时，尝试重连 (${reconnectAttempts + 1}/${maxReconnectAttempts})`);
-          es?.close();
-          reconnectAttempts++;
-          setTimeout(connect, 2000);
-        }
-      }, 60000);
-
-      es.onmessage = (e) => {
-        clearTimeout(connectTimeout);
-        try {
-          const data = JSON.parse(e.data);
-          console.log('[JianyingExport] SSE 事件:', data.type, data.status, data.progress, data.message);
-
-          if (data.type === 'error' || data.status === 'failed') {
-            settle(() => reject(new Error(data.error || data.message || '任务失败')));
-            return;
-          }
-
-          if (data.status === 'success' && data.type === 'result') {
-            // 构建结果
-            const { type, taskId: _t, status: _s, progress: _p, message: _m, createdAt: _c, updatedAt: _u, ...result } = data;
-            settle(() => resolve({ ...result, usedRailway }));
-            return;
-          }
-
-          // 更新进度
-          if (data.progress !== undefined && data.progress > lastProgress) {
-            lastProgress = data.progress;
-            onProgress?.(data.progress, data.message || '处理中...');
-          }
-        } catch {
-          // 解析失败，忽略
-        }
-      };
-
-      es.onerror = () => {
-        clearTimeout(connectTimeout);
-        console.warn(`[JianyingExport] SSE 连接断开 (${reconnectAttempts + 1}/${maxReconnectAttempts})`);
-        es?.close();
-        if (!settled) {
-          reconnectAttempts++;
-          if (reconnectAttempts < maxReconnectAttempts) {
-            console.log(`[JianyingExport] ${2000 * reconnectAttempts}ms 后重连 SSE...`);
-            setTimeout(connect, 2000 * reconnectAttempts);
-          } else {
-            console.warn('[JianyingExport] SSE 重连次数用尽，切换到轮询');
-            settle(() => {
-              resolve(pollForResult(taskId, pollBase, usedRailway, options, onProgress));
-            });
-          }
-        }
-      };
-    };
-
-    connect();
-  });
-
-  // 优先使用轮询（Railway 代理会关闭 SSE 连接，但轮询不受影响）
-  // SSE 仅作为备用方案
-  try {
-    return await pollForResult(taskId, pollBase, usedRailway, options, onProgress);
-  } catch (pollErr) {
-    console.warn('[JianyingExport] 轮询失败，尝试 SSE 备用:', pollErr);
-    return sseFallback(taskId, pollBase, usedRailway, options, onProgress);
+    onProgress?.(10, '任务已提交，等待处理...');
+    return await pollForResult(taskId, base, false, options, onProgress);
+  } catch {
+    // 网络错误或超时，降级到同步
+    if (railwayBase) {
+      console.warn('[JianyingExport] 异步请求失败，降级到 Railway 同步模式...');
+      onProgress?.(5, '降级到 Railway...');
+      return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options);
+    }
+    throw new Error('服务连接失败，请检查本地剪映服务是否运行');
   }
-}
-
-/** SSE 备用方案（仅在轮询失败时使用） */
-async function sseFallback(
-  taskId: string,
-  pollBase: string,
-  usedRailway: boolean,
-  options: JianyingExportOptions,
-  onProgress?: (progress: number, message: string) => void
-): Promise<JianyingExportResult> {
-  return new Promise<JianyingExportResult>((resolve, reject) => {
-    const sseUrl = `${pollBase}/export/sse/${encodeURIComponent(taskId)}`;
-    console.log('[JianyingExport] SSE 备用:', sseUrl);
-
-    let settled = false;
-    let es: EventSource | null = null;
-
-    const settle = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      es?.close();
-      fn();
-    };
-
-    const connectTimeout = setTimeout(() => {
-      settle(() => reject(new Error('SSE 连接超时')));
-    }, 30000);
-
-    es = new EventSource(sseUrl);
-
-    es.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data.type === 'error' || data.status === 'failed') {
-          clearTimeout(connectTimeout);
-          settle(() => reject(new Error(data.error || data.message || '任务失败')));
-          return;
-        }
-        if (data.status === 'success' && data.type === 'result') {
-          clearTimeout(connectTimeout);
-          const { type, taskId: _t, status: _s, progress: _p, message: _m, createdAt: _c, updatedAt: _u, ...result } = data;
-          settle(() => resolve({ ...result, usedRailway }));
-          return;
-        }
-        if (data.progress !== undefined) {
-          onProgress?.(data.progress, data.message || '处理中...');
-        }
-      } catch {
-        // ignore
-      }
-    };
-
-    es.onerror = () => {
-      clearTimeout(connectTimeout);
-      console.warn('[JianyingExport] SSE 备用也失败');
-      settle(() => reject(new Error('SSE 连接失败')));
-    };
-  });
 }
 
 /** 轮询获取任务结果 */
