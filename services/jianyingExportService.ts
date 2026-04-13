@@ -248,20 +248,32 @@ export async function embedAudioDataUrlsForJianyingExport(
   for (const s of shots) {
     let shot = { ...s };
 
-    // 处理图片：Railway 环境转 base64（服务器无法访问大陆即梦域名）
+    // 处理图片：Railway 环境转 base64（服务器无法访问大陆的即梦域名）
     if (returnZip) {
       const rawImage = shot.imageUrl?.trim() || (shot as any).imageUrls?.[0]?.trim();
-      if (rawImage && !rawImage.startsWith('data:') && /^https?:\/\//i.test(rawImage)) {
+      if (rawImage && !rawImage.startsWith('data:')) {
         try {
-          const r = await fetch(rawImage);
-          if (r.ok) {
-            const mime = r.headers.get('content-type')?.split(';')[0]?.trim() || 'image/png';
-            const data = await r.arrayBuffer();
-            const dataUrl = `data:${mime};base64,${arrayBufferToBase64(data)}`;
-            shot.imageUrl = dataUrl;
-            if ((shot as any).imageUrls) {
-              (shot as any).imageUrls = [dataUrl];
+          let dataUrl = rawImage;
+          // blob: URL 需要先 fetch 再转 base64
+          if (rawImage.startsWith('blob:')) {
+            const r = await fetch(rawImage);
+            if (r.ok) {
+              const mime = r.headers.get('content-type')?.split(';')[0]?.trim() || 'image/png';
+              const data = await r.arrayBuffer();
+              dataUrl = `data:${mime};base64,${arrayBufferToBase64(data)}`;
             }
+          } else if (/^https?:\/\//i.test(rawImage)) {
+            // HTTP(S) URL 直接 fetch
+            const r = await fetch(rawImage);
+            if (r.ok) {
+              const mime = r.headers.get('content-type')?.split(';')[0]?.trim() || 'image/png';
+              const data = await r.arrayBuffer();
+              dataUrl = `data:${mime};base64,${arrayBufferToBase64(data)}`;
+            }
+          }
+          shot.imageUrl = dataUrl;
+          if ((shot as any).imageUrls) {
+            (shot as any).imageUrls = [dataUrl];
           }
         } catch (e) {
           console.warn('[JianyingExport] 图片转 base64 失败，将使用原 URL:', e);
