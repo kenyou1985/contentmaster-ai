@@ -238,6 +238,7 @@ function inferAudioMimeFromUrl(url: string): string | undefined {
 /**
  * 导出前在浏览器拉取配音字节并转为 data: URL，Python 端可直接落盘，保证音轨与时长对齐。
  * Railway 环境（returnZip=true）直接传 URL，由服务端下载，避免大文件 base64 传输开销。
+ * 但图片需要转为 base64，因为 Railway 服务器（海外）无法访问大陆的即梦域名。
  */
 export async function embedAudioDataUrlsForJianyingExport(
   shots: JianyingShot[],
@@ -245,9 +246,33 @@ export async function embedAudioDataUrlsForJianyingExport(
 ): Promise<JianyingShot[]> {
   const out: JianyingShot[] = [];
   for (const s of shots) {
-    const raw = (s.audioUrl || s.voiceoverAudioUrl)?.trim();
-    if (!raw) { out.push(s); continue; }
-    if (raw.startsWith('data:')) { out.push(s); continue; }
+    let shot = { ...s };
+
+    // 处理图片：Railway 环境转 base64（服务器无法访问大陆即梦域名）
+    if (returnZip) {
+      const rawImage = shot.imageUrl?.trim() || (shot as any).imageUrls?.[0]?.trim();
+      if (rawImage && !rawImage.startsWith('data:') && /^https?:\/\//i.test(rawImage)) {
+        try {
+          const r = await fetch(rawImage);
+          if (r.ok) {
+            const mime = r.headers.get('content-type')?.split(';')[0]?.trim() || 'image/png';
+            const data = await r.arrayBuffer();
+            const dataUrl = `data:${mime};base64,${arrayBufferToBase64(data)}`;
+            shot.imageUrl = dataUrl;
+            if ((shot as any).imageUrls) {
+              (shot as any).imageUrls = [dataUrl];
+            }
+          }
+        } catch (e) {
+          console.warn('[JianyingExport] 图片转 base64 失败，将使用原 URL:', e);
+        }
+      }
+    }
+
+    // 处理音频
+    const raw = (shot.audioUrl || shot.voiceoverAudioUrl)?.trim();
+    if (!raw) { out.push(shot); continue; }
+    if (raw.startsWith('data:')) { out.push(shot); continue; }
     if (!/^https?:\/\//i.test(raw)) {
       try {
         const r = await fetch(raw);
@@ -256,12 +281,14 @@ export async function embedAudioDataUrlsForJianyingExport(
           || inferAudioMimeFromUrl(raw) || 'audio/mpeg';
         const data = await r.arrayBuffer();
         const dataUrl = `data:${mime};base64,${arrayBufferToBase64(data)}`;
-        out.push({ ...s, audioUrl: dataUrl, voiceoverAudioUrl: dataUrl });
-      } catch { out.push(s); }
+        shot.audioUrl = dataUrl;
+        shot.voiceoverAudioUrl = dataUrl;
+        out.push(shot);
+      } catch { out.push(shot); }
       continue;
     }
     // Railway 环境直接传 URL
-    if (returnZip) { out.push(s); continue; }
+    if (returnZip) { out.push(shot); continue; }
     // 本地环境转 base64
     try {
       let data: ArrayBuffer;
@@ -282,10 +309,12 @@ export async function embedAudioDataUrlsForJianyingExport(
       const ct = mime && mime !== 'application/octet-stream'
         ? mime : inferAudioMimeFromUrl(raw) || 'audio/mpeg';
       const dataUrl = `data:${ct};base64,${arrayBufferToBase64(data)}`;
-      out.push({ ...s, audioUrl: dataUrl, voiceoverAudioUrl: dataUrl });
+      shot.audioUrl = dataUrl;
+      shot.voiceoverAudioUrl = dataUrl;
+      out.push(shot);
     } catch (e) {
       console.warn('[JianyingExport] 浏览器拉取配音失败，仍尝试服务端下载:', e);
-      out.push(s);
+      out.push(shot);
     }
   }
   return out;
@@ -352,10 +381,48 @@ export async function exportJianyingDraft(
     onProgress?.(5, '准备导出...');
   }
 
-  // Railway 用同步 /export 接口（Railway 会自动等待完成后返回完整结果）
+  // Railway 用异步 /export/start 接口 + 轮询，实现实时进度显示
   if (isRailway && !isJianyingLocalSiteOrigin()) {
-    onProgress?.(10, '上传数据到 Railway...');
-    return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 600_000);
+    onProgress?.(10, '提交导出任务到 Railway...');
+
+    try {
+      // 1. 提交异步任务
+      const startRes = await fetch(`${railwayBase}/export/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payload, returnZip: true }),
+        signal: AbortSignal.timeout(30000),
+      });
+
+      if (!startRes.ok) {
+        // 如果异步接口不可用，降级到同步
+        console.warn('[JianyingExport] Railway 异步接口不可用，降级到同步模式...');
+        onProgress?.(10, 'Railway 异步接口不可用，降级到同步模式...');
+        return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 600_000);
+      }
+
+      const startText = await startRes.text().catch(() => '');
+      const startObj = tryParseJsonObject(startText) as any;
+      const taskId = startObj?.taskId;
+
+      if (!taskId) {
+        // 没有返回 taskId，降级到同步
+        console.warn('[JianyingExport] Railway 异步任务 ID 无效，降级到同步模式...');
+        onProgress?.(10, 'Railway 异步任务 ID 无效，降级到同步模式...');
+        return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 600_000);
+      }
+
+      console.log(`[JianyingExport] Railway 异步任务已提交，taskId: ${taskId}`);
+      onProgress?.(10, 'Railway 任务已提交，等待处理...');
+
+      // 2. 轮询获取任务结果（实时显示 Railway 日志）
+      return await pollForResult(taskId, railwayBase, true, options, onProgress);
+    } catch (e) {
+      // 异步接口出错，降级到同步
+      console.warn('[JianyingExport] Railway 异步请求失败，降级到同步模式...', e);
+      onProgress?.(10, 'Railway 异步请求失败，降级到同步模式...');
+      return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 600_000);
+    }
   }
 
   // 本地开发：尝试 /export/start 异步接口，失败则降级同步
