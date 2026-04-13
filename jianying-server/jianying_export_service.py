@@ -1532,7 +1532,9 @@ def create_draft_on_mac(
             if image_url and str(image_url).strip():
                 img_filename = _safe_filename(str(image_url))
                 local_image_path = os.path.join(draft_folder, "Resources", "image", img_filename)
-                if not _download_file(str(image_url), local_image_path):
+                img_ok = _download_file(str(image_url), local_image_path)
+                print(f"[jianying_export] 镜头{i} 图片: url={'有' if image_url else '无'} → 文件={img_filename} → 下载={'成功' if img_ok else '失败'} {'(' + str(image_url)[:80] + ')' if image_url else ''}", file=sys.stderr, flush=True)
+                if not img_ok:
                     local_image_path = None
             if not local_image_path:
                 local_image_path = _placeholder_shot_image_path(draft_folder, i, width, height)

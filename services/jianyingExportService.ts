@@ -345,7 +345,7 @@ export async function embedAudioDataUrlsForJianyingExport(
   return out;
 }
 
-/** Railway 打包下载：支持流式 ndjson 响应（Railway 代理兼容） */
+/** Railway 打包下载：直接读取完整响应（Railway 代理会缓冲 chunked 数据） */
 async function legacyJianyingExportSync(
   base: string,
   payload: Record<string, unknown>,
@@ -353,6 +353,7 @@ async function legacyJianyingExportSync(
   timeoutMs: number = 600_000,
   onProgress?: (progress: number, message: string) => void
 ): Promise<JianyingExportResult> {
+  onProgress?.(10, '上传数据到 Railway...');
   const legacyRes = await fetch(`${base}/export`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -367,69 +368,21 @@ async function legacyJianyingExportSync(
     throw new Error(`导出请求失败 (${legacyRes.status})${detail ? ': ' + detail : ''}`);
   }
 
-  // 尝试流式读取 ndjson 响应
-  if (legacyRes.body) {
-    try {
-      const reader = legacyRes.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let result: JianyingExportResult | null = null;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const obj = JSON.parse(line);
-            if (obj.error) throw new Error(obj.error);
-            if (obj.progress !== undefined && onProgress) {
-              onProgress(obj.progress, obj.message || '处理中...');
-            }
-            if (obj.success !== undefined || obj.zipPath || obj.message?.includes('草稿')) {
-              result = { ...obj, usedRailway: base.includes('railway') };
-            }
-          } catch {
-            // ignore parse errors
-          }
-        }
-      }
-
-      if (result) return result;
-    } catch {
-      // 流式读取失败，fallback 普通 JSON
-    }
-  }
-
-  // fallback：普通 JSON 响应
+  // Railway 代理缓冲导致无法流式读取，直接读完整响应
+  onProgress?.(90, '读取响应...');
   const legacyText = await legacyRes.text().catch(() => '');
   const parsed = tryParseJsonObject(legacyText);
-  if (parsed) return { ...parsed, usedRailway: base.includes('railway') };
-  return { ...coerceExportResultFromText(legacyText, options, true), usedRailway: base.includes('railway') };
+  if (parsed) return { ...parsed, usedRailway: base.includes('railway') } as JianyingExportResult;
+  return { ...coerceExportResultFromText(legacyText, options, true), usedRailway: base.includes('railway') } as JianyingExportResult;
 }
 
-/** 批量导出剪映草稿（Railway 用同步请求 + base64，避免轮询超时问题） */
+/** 批量导出剪映草稿（Railway 用异步 + SSE 进度订阅 + 结果轮询） */
 export async function exportJianyingDraft(
   options: JianyingExportOptions,
   onProgress?: (progress: number, message: string) => void
 ): Promise<JianyingExportResult> {
   const returnZip = shouldUseJianyingZipDownload();
   const shots = await embedAudioDataUrlsForJianyingExport(options.shots, returnZip);
-  if (typeof console !== 'undefined' && console.debug) {
-    console.debug(
-      '[JianyingExport] 镜头音频摘要',
-      shots.map((s, i) => ({
-        i,
-        hasAudio: !!((s.audioUrl || s.voiceoverAudioUrl || '').trim()),
-        audioDurationSec: s.audioDurationSec,
-      }))
-    );
-  }
 
   const payload = {
     draftName: options.draftName,
@@ -440,26 +393,25 @@ export async function exportJianyingDraft(
     pathMapRoot: options.pathMapRoot || null,
     randomTransitions: !!options.randomTransitions,
     randomVideoEffects: !!options.randomVideoEffects,
-    returnZip: shouldUseJianyingZipDownload(),
+    returnZip,
   };
 
   const base = getJianyingApiBase();
   const railwayBase = (import.meta.env.VITE_JIANYING_API_BASE || '').replace(/\/$/, '');
   const isRailway = base === railwayBase && railwayBase.includes('railway');
 
-  // Railway 免费版唤醒：预热服务
+  // Railway 预热
   if (isRailway && !isJianyingLocalSiteOrigin()) {
-    console.log('[JianyingExport] 检测到 Railway 服务，预热中...');
+    console.log('[JianyingExport] 检测到 Railway，预热服务...');
     await warmupJianyingService(90000);
-    onProgress?.(5, '服务已唤醒，准备上传...');
+    onProgress?.(5, '服务已唤醒，准备导出...');
   } else {
     onProgress?.(5, '准备导出...');
   }
 
-  // Railway 用流式同步 /export 接口（边处理边发送进度，防止代理超时关闭连接）
+  // Railway 用异步接口（提交任务 + SSE 订阅进度 + 轮询结果）
   if (isRailway && !isJianyingLocalSiteOrigin()) {
-    onProgress?.(10, '上传数据到 Railway...');
-    return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 600_000, onProgress);
+    return await exportViaRailwayAsync(railwayBase, payload, onProgress);
   }
 
   // 本地开发：尝试异步接口，失败则降级同步
@@ -468,21 +420,19 @@ export async function exportJianyingDraft(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(5000), // 5 秒超时，快速失败
+      signal: AbortSignal.timeout(5000),
     });
 
     const startText = await startRes.text().catch(() => '');
     if (startRes.status === 404 || startRes.status === 0) {
-      // 旧版服务不支持异步，降级到同步
       return legacyJianyingExportSync(base, payload, options);
     }
 
     if (!startRes.ok) {
-      // 本地服务报错，切换 railway
       if (railwayBase && isJianyingLocalSiteOrigin()) {
         console.warn('[JianyingExport] 本地服务报错，切换 Railway...');
         onProgress?.(5, '切换 Railway...');
-        return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options);
+        return await exportViaRailwayAsync(railwayBase, { ...payload, returnZip: true }, onProgress);
       }
       const parsed = tryParseJsonObject(startText);
       throw new Error(parsed?.error || parsed?.message || startText.slice(0, 400));
@@ -497,14 +447,131 @@ export async function exportJianyingDraft(
     onProgress?.(10, '任务已提交，等待处理...');
     return await pollForResult(taskId, base, false, options, onProgress);
   } catch {
-    // 网络错误或超时，降级到同步
     if (railwayBase) {
-      console.warn('[JianyingExport] 异步请求失败，降级到 Railway 同步模式...');
+      console.warn('[JianyingExport] 异步请求失败，降级到 Railway...');
       onProgress?.(5, '降级到 Railway...');
-      return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options);
+      return await exportViaRailwayAsync(railwayBase, { ...payload, returnZip: true }, onProgress);
     }
     throw new Error('服务连接失败，请检查本地剪映服务是否运行');
   }
+}
+
+/** Railway 异步导出：提交任务 + SSE 进度订阅 + 结果轮询 */
+async function exportViaRailwayAsync(
+  railwayBase: string,
+  payload: Record<string, unknown>,
+  onProgress?: (progress: number, message: string) => void
+): Promise<JianyingExportResult> {
+  onProgress?.(10, '提交导出任务...');
+
+  // 1. 提交任务，获取 taskId
+  const startRes = await fetch(`${railwayBase}/export/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(10000),
+  });
+
+  if (!startRes.ok) {
+    const text = await startRes.text().catch(() => '');
+    // 如果 /export/start 不可用，降级到同步接口
+    if (startRes.status === 404) {
+      console.warn('[JianyingExport] Railway /export/start 不可用，降级到同步...');
+      onProgress?.(10, '同步处理中...');
+      return legacyJianyingExportSync(railwayBase, payload, {} as JianyingExportOptions, 600_000, onProgress);
+    }
+    const parsed = tryParseJsonObject(text);
+    throw new Error(parsed?.error || `提交失败 (${startRes.status}): ${text.slice(0, 200)}`);
+  }
+
+  const startObj = tryParseJsonObject(await startRes.text()) as any;
+  const taskId = startObj?.taskId;
+  if (!taskId) {
+    console.warn('[JianyingExport] 无 taskId，降级到同步...');
+    return legacyJianyingExportSync(railwayBase, payload, {} as JianyingExportOptions, 600_000, onProgress);
+  }
+
+  onProgress?.(15, `任务已提交 (${taskId.slice(0, 8)}...)，等待处理...`);
+
+  // 2. SSE 订阅进度（Railway 代理对 SSE 支持比 chunked encoding 好）
+  const sseDone = await new Promise<void>((resolve) => {
+    const sseUrl = `${railwayBase}/export/sse/${encodeURIComponent(taskId)}`;
+    const es = new EventSource(sseUrl);
+    let settled = false;
+
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      es.close();
+      resolve();
+    };
+
+    // 30 秒超时自动切换轮询
+    const timeout = setTimeout(() => {
+      console.warn('[JianyingExport] SSE 超时，切换轮询...');
+      settle();
+    }, 30000);
+
+    es.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'error' || data.status === 'failed') {
+          console.error('[JianyingExport] 任务失败:', data.error);
+          settle();
+          return;
+        }
+        if (data.progress !== undefined && data.progress > 0) {
+          onProgress?.(Math.min(data.progress, 95), data.message || '处理中...');
+        }
+        if (data.status === 'success') {
+          clearTimeout(timeout);
+          settle();
+        }
+      } catch { /* ignore */ }
+    };
+
+    es.onerror = () => {
+      console.warn('[JianyingExport] SSE 连接断开，切换轮询...');
+      clearTimeout(timeout);
+      settle();
+    };
+  });
+
+  // 3. 轮询结果（最多 10 分钟）
+  const maxPolls = 120; // 5 秒一次，共 10 分钟
+  for (let i = 0; i < maxPolls; i++) {
+    try {
+      const statusRes = await fetch(`${railwayBase}/export/status/${taskId}`, {
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (statusRes.ok) {
+        const status = tryParseJsonObject(await statusRes.text()) as any;
+        if (status?.status === 'success') {
+          onProgress?.(100, '导出完成！');
+          // 获取结果
+          const resultRes = await fetch(`${railwayBase}/export/result/${taskId}`, {
+            signal: AbortSignal.timeout(30000),
+          });
+          if (resultRes.ok) {
+            const result = tryParseJsonObject(await resultRes.text());
+            if (result) return { ...result, usedRailway: true } as JianyingExportResult;
+          }
+          return { ...status, usedRailway: true } as JianyingExportResult;
+        }
+        if (status?.status === 'failed') {
+          throw new Error(status.error || '导出任务失败');
+        }
+        if (status?.progress !== undefined) {
+          onProgress?.(Math.min(status.progress, 95), status.message || '处理中...');
+        }
+      }
+    } catch { /* 忽略单次轮询错误 */ }
+
+    await new Promise(r => setTimeout(r, 5000));
+  }
+
+  throw new Error('导出超时（10分钟），请重试');
 }
 
 /** 轮询获取任务结果 */
