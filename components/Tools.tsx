@@ -4636,8 +4636,10 @@ ${finalOut}`;
         mode === ToolMode.EXPAND
           ? `最终成稿（去空白计字）控制在 ${minFinalLen}~${maxFinalLen} 字，对应扩写强度策略约 ${expandRange.min}~${expandRange.max} 倍全文原文（约 ${Math.round(expandRange.min * 100)}%~${Math.round(expandRange.max * 100)}% 体量），必须长于原文，并增强扩写维度（场景/情绪/细节/逻辑/对比/故事/金句/数据）`
           : '';
-      const prompt = `你将收到5段“已清洗优化”结果，请执行“无缝衔接合并”。\n\n要求：\n1) 保留每段核心信息，不丢观点\n2) 在段间补上承上启下过渡句，让全文连贯自然\n3) 统一口吻与时态\n4) 输出语言：${targetLang}\n5) ${mode === ToolMode.EXPAND ? expandMergeRule : mergeRewriteLenRule}\n6) 只做衔接清洗与必要删改，不得推翻5段结构重写\n7) 只输出最终正文，不要解释\n\n【评论区痛点/关键词】\n${painPointText || '无'}\n\n【5段清洗结果】\n${cleanedSegmentsForMerge.map((s, idx) => `第${idx + 1}段：\n${(s || '').trim() || '（空）'}`).join('\n\n')}\n${mergeInstruction}`;
-
+      const mindfulCtaSuffix = niche === NicheType.MINDFUL_PSYCHOLOGY
+        ? `\n\n【治愈心理学赛道特判】结尾必须包含：\n1. 互动引导（至少2句，自然邀请评论）\n2. 订阅引导（固定句式）\n3. 互动引导在前，订阅引导在后`
+        : '';
+      const prompt = `你将收到5段"已清洗优化"结果，请执行"无缝衔接合并"。${mindfulCtaSuffix}\n\n要求：\n
       await streamContentGeneration(
         prompt,
         '你是专业总编，请基于清洗后的5段做高连贯合并。',
@@ -4783,33 +4785,69 @@ ${finalText}`;
         // ===== 去AI味内容清洗 =====
         // 在合并完成后执行一轮"去AI味"清洗，让内容看起来更像人工写的
         appendTerminal('[去AI味] 开始内容清洗...');
+        appendTerminal(`[去AI味] 输入文本长度: ${(finalText || '').replace(/\s+/g, '').length} 字`);
+        appendTerminal(`[去AI味] 正在调用 AI 模型进行深度去味改写...`);
+
+        let antiAiPolished = '';
+        let antiAiSuccess = false;
 
         try {
           initializeGemini(yunwuApiKey, { provider });
-          let antiAiPolished = '';
 
           await polishTextForAntiAi(
             finalText,
             {
               yunwuApiKey,
-              onLog: (msg) => appendTerminal(msg),
+              onLog: (msg) => {
+                appendTerminal(`[去AI味] ${msg}`);
+              },
               onChunk: (chunk) => {
                 antiAiPolished = chunk;
                 setMergedOutput(antiAiPolished);
+                const chunkLen = (chunk || '').replace(/\s+/g, '').length;
+                if (chunkLen > 0 && chunkLen % 500 < 50) {
+                  appendTerminal(`[去AI味] 清洗中... (${chunkLen} 字)`);
+                }
               },
             },
             ...deepRewriteStreamModelArgs
           );
 
-          if (antiAiPolished.trim()) {
-            finalText = antiAiPolished.trim();
+          const polishedLen = (antiAiPolished || '').replace(/\s+/g, '').length;
+          appendTerminal(`[去AI味] AI 返回结果长度: ${polishedLen} 字`);
+
+          if (antiAiPolished.trim() && polishedLen > 0) {
+            // 清理末尾可能的残留 "my channel" 等英文订阅引导
+            let cleanedPolish = antiAiPolished.trim();
+            cleanedPolish = cleanedPolish.replace(/\s*my channel\.?\s*$/i, '');
+            cleanedPolish = cleanedPolish.replace(/\s*please like and subscribe to my channel\.?\s*$/i, '');
+            cleanedPolish = cleanedPolish.replace(/\s*subscribe to my channel\.?\s*$/i, '');
+            cleanedPolish = cleanedPolish.replace(/\s*请点赞并订阅我的频道。?\s*$/, '');
+            cleanedPolish = cleanedPolish.replace(/\s*like and subscribe.*$/i, '');
+
+            if (!/[。！？.!?]$/.test(cleanedPolish.trim())) {
+              cleanedPolish = cleanedPolish.trim() + '。';
+            }
+
+            const cleanedLen = (cleanedPolish || '').replace(/\s+/g, '').length;
+            appendTerminal(`[去AI味] 清理残留后长度: ${cleanedLen} 字`);
+
+            finalText = cleanedPolish;
             setMergedOutput(finalText);
-            appendTerminal('[去AI味] 清洗完成');
+            appendTerminal('[去AI味] ✅ 清洗完成');
+            antiAiSuccess = true;
           } else {
-            appendTerminal('[去AI味] 清洗返回空，保留合并结果');
+            appendTerminal('[去AI味] ⚠️ 清洗返回为空，保留合并结果');
           }
         } catch (e: any) {
-          appendTerminal(`[去AI味] 清洗失败，保留合并结果: ${e?.message || e}`);
+          appendTerminal(`[去AI味] ❌ 清洗失败: ${e?.message || e}`);
+          appendTerminal('[去AI味] 保留合并结果，不影响内容输出');
+        }
+
+        if (antiAiSuccess) {
+          appendTerminal('[去AI味] ✅ 验证通过：AI 去味清洗已成功执行');
+        } else {
+          appendTerminal('[去AI味] ⚠️ 警告：去AI味未完全执行，内容可能保留AI特征');
         }
         // ===== 去AI味清洗结束 =====
 
