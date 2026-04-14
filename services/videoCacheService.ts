@@ -3,11 +3,17 @@
  * 用于将视频下载到本地缓存，提升播放性能
  * - 每个视频 URL 的缓存数据（blob URL）：localStorage（会话级，刷新后失效）
  * - 元数据表（CACHE_META_KEY）：IndexedDB（storageService） + localStorage 兼容层
+ * - 支持缓存大小限制（默认 500MB）和自动清理过期缓存
  */
 
 import { lsGetItem, lsSetItem } from './storageService';
 
+const CACHE_PREFIX = 'VIDEO_CACHE_';
 const CACHE_META_KEY = 'VIDEO_CACHE_META_V1';
+
+/** 缓存大小限制：500MB（可配置） */
+const MAX_CACHE_SIZE_MB = parseInt(import.meta.env.VITE_VIDEO_CACHE_SIZE_MB || '500', 10);
+const MAX_CACHE_SIZE_BYTES = MAX_CACHE_SIZE_MB * 1024 * 1024;
 
 interface VideoCacheMetadata {
   url: string;
@@ -182,27 +188,96 @@ export function getAllCachedVideos(): VideoCacheMetadata[] {
 }
 
 /**
+ * 获取当前缓存总大小
+ */
+export function getCacheTotalSize(): number {
+  const cachedVideos = getAllCachedVideos();
+  return cachedVideos.reduce((total, v) => total + (v.size || 0), 0);
+}
+
+/**
+ * 获取缓存统计信息
+ */
+export function getCacheStats(): { count: number; totalSize: number; maxSize: number; oldestItem?: number } {
+  const cachedVideos = getAllCachedVideos();
+  const totalSize = cachedVideos.reduce((total, v) => total + (v.size || 0), 0);
+  const oldestItem = cachedVideos.length > 0
+    ? Math.min(...cachedVideos.map(v => v.cachedAt))
+    : undefined;
+  return {
+    count: cachedVideos.length,
+    totalSize,
+    maxSize: MAX_CACHE_SIZE_BYTES,
+    oldestItem,
+  };
+}
+
+/**
+ * 清理过期缓存和超出大小限制的缓存
+ * 按时间从旧到新清理，直到缓存大小在限制内
+ */
+export async function cleanExpiredAndOversizedCache(): Promise<{ removed: number; freedBytes: number }> {
+  let removed = 0;
+  let freedBytes = 0;
+  const now = Date.now();
+  const thirtyDays = 30 * 24 * 60 * 60 * 1000;
+
+  // 获取所有缓存
+  const cachedVideos = getAllCachedVideos();
+
+  // 1. 先清理过期缓存（30天以上）
+  for (const video of cachedVideos) {
+    if (now - video.cachedAt > thirtyDays) {
+      clearVideoCache(video.url);
+      removed++;
+      freedBytes += video.size || 0;
+    }
+  }
+
+  // 2. 如果缓存大小超出限制，清理最旧的缓存
+  let currentSize = getCacheTotalSize();
+  if (currentSize > MAX_CACHE_SIZE_BYTES) {
+    // 按缓存时间从旧到新排序
+    const remainingVideos = getAllCachedVideos().sort((a, b) => a.cachedAt - b.cachedAt);
+
+    for (const video of remainingVideos) {
+      if (currentSize <= MAX_CACHE_SIZE_BYTES * 0.8) break; // 清理到 80% 以下
+      clearVideoCache(video.url);
+      removed++;
+      freedBytes += video.size || 0;
+      currentSize -= video.size || 0;
+    }
+  }
+
+  if (removed > 0) {
+    console.log(`[VideoCache] 清理完成：移除了 ${removed} 个缓存项，释放 ${(freedBytes / 1024 / 1024).toFixed(2)} MB`);
+  }
+
+  return { removed, freedBytes };
+}
+
+/**
  * 清除所有视频缓存
  */
 export function clearAllVideoCache(): void {
   const cachedVideos = getAllCachedVideos();
-  
+
   // 释放所有 Blob URL
   cachedVideos.forEach(metadata => {
     if (metadata.blobUrl) {
       URL.revokeObjectURL(metadata.blobUrl);
     }
   });
-  
+
   // 清除所有缓存键
   Object.keys(localStorage).forEach(key => {
     if (key.startsWith(CACHE_PREFIX)) {
       localStorage.removeItem(key);
     }
   });
-  
+
   localStorage.removeItem(CACHE_META_KEY);
-  
+
   console.log('[VideoCache] 已清除所有视频缓存');
 }
 

@@ -12,11 +12,33 @@ import { initializeGemini } from './services/geminiService';
 import { ApiProvider } from './types';
 import { ToastContainer, useToast } from './components/Toast';
 import { Rss } from 'lucide-react';
+import { cleanExpiredAndOversizedCache, getCacheStats } from './services/videoCacheService';
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'generate' | 'tools' | 'media' | 'dubbing' | 'cover' | 'monitor' | 'channel'>('generate');
   const toast = useToast();
-  
+
+  // 应用启动时清理过期和过大的视频缓存
+  useEffect(() => {
+    const initCacheCleanup = async () => {
+      try {
+        const stats = getCacheStats();
+        if (stats.count > 0) {
+          console.log(`[VideoCache] 启动时检测到 ${stats.count} 个缓存项，总大小 ${(stats.totalSize / 1024 / 1024).toFixed(2)} MB`);
+        }
+
+        const result = await cleanExpiredAndOversizedCache();
+        if (result.removed > 0) {
+          console.log(`[VideoCache] 清理了 ${result.removed} 个过期缓存项`);
+        }
+      } catch (e) {
+        console.warn('[VideoCache] 缓存清理失败:', e);
+      }
+    };
+
+    initCacheCleanup();
+  }, []);
+
   // 调试：检查 toast 状态
   React.useEffect(() => {
     console.log('[App] Toast 状态检查:', {
