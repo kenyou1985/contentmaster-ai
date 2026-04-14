@@ -47,9 +47,9 @@ function normalizeCharacterRecord(c: Character): Character {
 export function getAllCharacters(): Character[] {
   const stored = lsGetItem<Character[]>(STORAGE_KEY, []);
   if (!stored || !stored.length) return [];
-  console.log('[CharacterLibrary] 读取角色库，数量:', stored.length);
+  console.debug('[CharacterLibrary] 读取角色库，数量:', stored.length);
   const filtered = stored.filter(char => char.id && char.name);
-  console.log('[CharacterLibrary] 过滤后数量:', filtered.length);
+  console.debug('[CharacterLibrary] 过滤后数量:', filtered.length);
   const normalized = filtered.map(normalizeCharacterRecord);
   const dirty = normalized.some((c, i) => {
     const prev = filtered[i];
@@ -210,10 +210,9 @@ export function detectCharactersInPrompt(prompt: string): Character[] {
   const characters = getAllCharacters();
   const matched: Character[] = [];
 
-  console.log('[CharacterLibrary] detectCharactersInPrompt:', {
+  console.debug('[CharacterLibrary] detectCharactersInPrompt:', {
     prompt: prompt.slice(0, 100),
     characterCount: characters.length,
-    characters: characters.map(c => ({ name: c.name, aliases: c.aliases })),
   });
 
   // 将提示词转换为小写以便匹配
@@ -222,7 +221,7 @@ export function detectCharactersInPrompt(prompt: string): Character[] {
   for (const char of characters) {
     // 检查主名字
     if (lowerPrompt.includes(char.name.toLowerCase())) {
-      console.log('[CharacterLibrary] 匹配成功（主名字）:', char.name);
+      console.debug('[CharacterLibrary] 匹配成功（主名字）:', char.name);
       matched.push(char);
       continue;
     }
@@ -233,13 +232,13 @@ export function detectCharactersInPrompt(prompt: string): Character[] {
         lowerPrompt.includes(alias.toLowerCase())
       );
       if (hasAlias) {
-        console.log('[CharacterLibrary] 匹配成功（别名）:', char.name, char.aliases);
+        console.debug('[CharacterLibrary] 匹配成功（别名）:', char.name, char.aliases);
         matched.push(char);
       }
     }
   }
 
-  console.log('[CharacterLibrary] detectCharactersInPrompt 结果:', matched.map(c => c.name));
+  console.debug('[CharacterLibrary] detectCharactersInPrompt 结果:', matched.map(c => c.name));
   return matched;
 }
 
