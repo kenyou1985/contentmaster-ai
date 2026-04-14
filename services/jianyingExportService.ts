@@ -380,6 +380,7 @@ export async function exportJianyingDraft(
   // Railway 预热（免费版睡眠后唤醒需要 30-60 秒）
   if (isRailway && !isJianyingLocalSiteOrigin()) {
     console.log('[JianyingExport] 检测到 Railway，预热服务...');
+    console.log('[JianyingExport] railwayBase:', railwayBase);
     onProgress?.(2, 'Railway 服务唤醒中（首次约需 60 秒）...');
     await warmupJianyingService(90000);
     onProgress?.(5, '服务已唤醒，开始导出...');
@@ -390,19 +391,24 @@ export async function exportJianyingDraft(
   // Railway 用异步 /export/start 接口 + 轮询，实现实时进度显示
   if (isRailway && !isJianyingLocalSiteOrigin()) {
     onProgress?.(10, '提交导出任务到 Railway...');
+    const asyncEndpoint = `${railwayBase}/export/start`;
+    console.log('[JianyingExport] 异步接口地址:', asyncEndpoint);
 
     try {
       // 1. 提交异步任务（railwayBase 已包含 /api/jianying）
-      const startRes = await fetch(`${railwayBase}/export/start`, {
+      const startRes = await fetch(asyncEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...payload, returnZip: true }),
         signal: AbortSignal.timeout(30000),
       });
 
+      console.log('[JianyingExport] 异步接口响应状态:', startRes.status, startRes.statusText);
+
       if (!startRes.ok) {
         // 如果异步接口不可用，降级到同步
-        console.warn('[JianyingExport] Railway 异步接口不可用，降级到同步模式...');
+        const errText = await startRes.text().catch(() => '');
+        console.warn('[JianyingExport] Railway 异步接口不可用，降级到同步模式... 响应:', errText.slice(0, 200));
         onProgress?.(10, 'Railway 异步接口不可用，降级到同步模式...');
         return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 900_000);
       }
@@ -410,6 +416,8 @@ export async function exportJianyingDraft(
       const startText = await startRes.text().catch(() => '');
       const startObj = tryParseJsonObject(startText) as any;
       const taskId = startObj?.taskId;
+
+      console.log('[JianyingExport] 异步提交响应:', startObj);
 
       if (!taskId) {
         // 没有返回 taskId，降级到同步
@@ -423,9 +431,9 @@ export async function exportJianyingDraft(
 
       // 2. 轮询获取任务结果（实时显示 Railway 日志）
       return await pollForResult(taskId, railwayBase, true, options, onProgress);
-    } catch (e) {
+    } catch (e: any) {
       // 异步接口出错，降级到同步
-      console.warn('[JianyingExport] Railway 异步请求失败，降级到同步模式...', e);
+      console.warn('[JianyingExport] Railway 异步请求失败，降级到同步模式... 错误:', e.message, e.stack);
       onProgress?.(10, 'Railway 异步请求失败，降级到同步模式...');
       return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 900_000);
     }
