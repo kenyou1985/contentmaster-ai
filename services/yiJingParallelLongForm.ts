@@ -176,15 +176,15 @@ export function buildParallelOutlineUserPrompt(
 【任务】为以上选题生成${opts.channelLabel}的**章节大纲**（${opts.contentKind}），用于后续分段并发生成（每段单独请求，最后合并）。
 ${unitNote}
 【硬性要求】
-1. 共 **${segmentCount}** 章；全片合并后有效字数目标约 **${T} 字**（允许成稿落在约 ${low}–${high} 字区间），每章 min_chars / max_chars 需合理分摊总目标，单章 min_chars 约 ${perLo}–${perHi}（在 JSON 里逐章给出，且 max_chars - min_chars ≤ 450）。
+1. 共 **${segmentCount}** 章；全片合并后目标约 **${T} 字**（允许合理偏差），每章 min_chars / max_chars 需合理分摊，单章约 ${perLo}–${perHi}（在 JSON 里逐章给出，max_chars - min_chars ≤ 600）。
 2. ${opts.logicBlueprint}
 3. 每章必须包含：
-   - title：章标题（4–12 字，title 内可不写「第X章」）
+   - title：章标题（4–12 字）
    - min_chars / max_chars：整数
    - core_brief：本章要讲透的论点与素材方向（50–120 字）
    - opening_echo：**从上一章收束语义自然承接**的开头提示（第1章填空字符串 ""）；约 40–80 字，供写稿时嵌入开篇
    - closing_snippet_hint：本章结尾希望出现的收束语义摘要（40–80 字），供下一章 opening_echo 使用
-   - bridge_to_next：本章末 1–2 句过渡到下一章的提示（最后一章写总结升华，不写引出新话题）
+   - bridge_to_next：本章末 1–2 句过渡到下一章的提示（最后一章写总结升华）
 
 4. 只输出 **一个 JSON 对象**，不要 Markdown、不要注释。键名必须完全一致：
 {
@@ -261,8 +261,15 @@ export function buildParallelSegmentUserPrompt(
     : '【语言强制】全文必须使用**简体中文**输出，包括所有正文、金句、衔接句。禁止出现任何英文或其他语言的正文字符。';
 
   const charRule = opts.englishChapterCharStrict
-    ? `【本章字数】英文正文有效字符（含空格与标点）**必须**落在 ${chapter.min_chars}–${chapter.max_chars} 之间；禁止低于 ${chapter.min_chars}，禁止高于 ${chapter.max_chars}；宁简勿灌。`
-    : `【本章字数】有效字符约 ${chapter.min_chars}–${chapter.max_chars} 字（宁多勿少，但不要超过 ${chapter.max_chars + 150}）`;
+    ? `【本章字数】英文正文有效字符（含空格与标点）尽量控制在 ${chapter.min_chars}–${chapter.max_chars} 之间；如字数略有偏差可以接受，**内容完整性优先**。`
+    : `【本章字数】有效字符尽量在 ${chapter.min_chars}–${chapter.max_chars} 字范围内；字数略有偏差可接受，**内容完整性优先**。`;
+
+  // 最后一章（结语）：必须包含互动引导 CTA
+  const lastChapterInstruction = isLast
+    ? (isEnglishOutput
+        ? `\n\n【结语必须包含互动引导 CTA】\n- 结尾段末尾必须紧跟一条英文互动引导 CTA，例如：\n  "If this resonated with you, please like and subscribe to my channel."\n  或 "Feel free to share your thoughts in the comments below."\n- CTA 必须自然融入结语，不能生硬拼接；禁止加粗、禁止 Markdown。`
+        : `\n\n【结语必须包含互动引导 CTA】\n- 结尾段末尾必须紧跟一条中文互动引导 CTA，例如：\n  "请点赞并订阅我的频道。"\n  或 "如果这篇文章对你有收获，欢迎在评论区聊聊你的想法。"\n- CTA 必须自然融入结语，不能生硬拼接；禁止加粗、禁止 Markdown。`)
+    : '';
 
   return `【总选题】${topic}
 【全文主题】${coreTheme}
@@ -276,6 +283,7 @@ ${charRule}
 【衔接】
 ${isFirst ? '开篇直接从痛点/反常识切入，不要复述「上一章」。' : `开篇必须用 1–3 句自然承接下面语义（可改写，勿整段照抄）：\n「${chapter.opening_echo}」`}
 ${isLast ? '结尾收束全文：总结金句、呼应主题，自然收尾。' : `结尾必须自然收束，并融入过渡意图（供剪辑连贯）：\n「${chapter.bridge_to_next}」`}
+${lastChapterInstruction}
 
 【写作铁律】
 ${langLine}
@@ -323,8 +331,6 @@ export function buildParallelMergeUserPrompt(
     : 10000;
   const low = Math.round(T * 0.92);
   const high = Math.round(T * 1.08);
-  const head = combinedDraft.slice(0, 12000);
-  const tail = combinedDraft.length > 12000 ? combinedDraft.slice(-8000) : '';
   const kind = opts.contentKind || '正文';
   const isEnglish = opts.outputLanguage === 'en';
 
@@ -334,25 +340,44 @@ export function buildParallelMergeUserPrompt(
 
   const clamp = opts.englishMergedCharClamp;
   const lengthRule = clamp
-    ? `6. 合并后英文全文有效字符（含空格与标点）**必须**落在 **${clamp.min}–${clamp.max}** 之间；若初稿总长超出上限，须删繁就简、去重合并，**禁止**为凑字数灌水；若不足下限，仅允许少量补过渡，仍不得超 ${clamp.max}。`
-    : `6. 保留足够字数（目标总有效字数约 ${T} 字，合并后尽量落在约 ${low}–${high} 字），不要随意大删。`;
+    ? `7. 全文字符数尽量接近 **${clamp.min}–${clamp.max}** 范围；如超出上限仅允许小幅删减，如不足下限仅允许小幅补过渡；但**内容完整性优先**，不得因字数要求而截断任何段落。`
+    : `7. 保留原文完整内容，不得因字数要求而截断任何段落。如字数略有偏差可接受。`;
 
-  return `【任务】以下是由「${topic}」分段生成的${opts.channelTag}${kind}初稿拼接而成。请执行「合并初稿 + 统一全文语气」：
+  return `【任务】以下是由「${topic}」分段生成的${opts.channelTag}${kind}初稿拼接而成。请执行「合并初稿 + 统一全文语气」。
 
-1. 删除段与段之间的重复开头/重复金句（若有）。
-2. 理顺衔接：微调上一段尾与下一段首的重复或断裂，使一口气读完/听完自然。
-3. ${opts.toneInstruction}
+## ⚠️ 核心原则：内容完整性优先
+- **必须保留所有分段的完整内容**，禁止删除、截断任何段落
+- **禁止对正文内容进行改写、重写、润色**
+- **只允许微调段落开头1-2句**，使其与上一段自然衔接
+- **最后一段（结语）的全部内容必须原样保留**，包括完整结尾
+
+## 具体操作要求
+
+1. **保留分段内容**：
+   - 前4段：只微调开头1-2句与上一段衔接，主体内容原样保留
+   - **最后一段：100% 原样保留，禁止任何修改或删除**
+
+2. **处理重复内容**：
+   - 如果段与段之间有完全重复的句子，可选择性保留一处
+
+3. **语气统一**：
+   ${opts.toneInstruction}
+
 4. ${lang}
-5. 禁止新增与主题无关的大段；禁止改变核心事实与论点。
-${lengthRule}
-7. 保留原文末尾的收尾语，不要修改或添加任何 CTA。
 
-【初稿】
-${head}
-${tail && combinedDraft.length > 12000 ? `\n\n...（中略 ${combinedDraft.length - 20000} 字）...\n\n` : ''}
-${tail ? `【初稿末段】\n${tail}` : ''}
+5. **禁止行为**：
+   - ❌ 禁止删除任何内容
+   - ❌ 禁止截断任何段落
+   - ❌ 禁止合并或拆分句子
+   - ❌ 禁止替换词语
+   - ❌ 禁止修改末尾 CTA
 
-请直接输出合并润色后的**完整终稿**（单篇），不要前言后记。`;
+6. ${lengthRule}
+
+【初稿完整内容】
+${combinedDraft}
+
+请直接输出**完整终稿**，必须包含所有分段的完整内容，不得截断。`;
 }
 
 export function buildParallelMergeSystem(editorLine: string): string {

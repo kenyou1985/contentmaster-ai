@@ -184,6 +184,8 @@ import { generateTopics, streamContentGeneration, initializeGemini } from '../se
 import { fetchMacroNewsDigestForPrompt } from '../services/macroNewsFeedService';
 import { fetchPsychologyDigestForPrompt } from '../services/psychologyFeedService';
 import { needsParagraphNormalization, normalizeDenseChineseParagraphs } from '../services/textFormat';
+import { detectAiFeatures, type AiDetectionResult } from '../services/aiDetectionService';
+import { polishTextForAntiAi } from '../services/antiAiPolishService';
 
 
 
@@ -250,6 +252,9 @@ function sanitizeMindfulPsychologyTopicLine(raw: string): string {
   // 还原标签
   return label + (label ? ' ' : '') + t;
 }
+
+// 治愈心理学语言类型定义（需要在使用前定义）
+type MindfulLanguage = 'en' | 'zh' | 'ko' | 'ja' | 'es' | 'de' | 'hi' | 'ru' | 'pt' | 'fr' | 'id' | 'th';
 
 /** 各赛道分段并行：大纲 / 分段 / 合并 的提示与人设 */
 function getParallelPipelineBundle(
@@ -484,8 +489,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     }
   }, [mindfulStoryboardStyleId]);
 
-  // 治愈心理学���语言输出选项
-  type MindfulLanguage = 'en' | 'zh' | 'ko' | 'ja' | 'es' | 'de' | 'hi' | 'ru' | 'pt' | 'fr' | 'id' | 'th';
+  // 治愈心理学多语言输出选项
   const mindfulLanguages: { id: MindfulLanguage; name: string; native: string }[] = [
     { id: 'en', name: 'English', native: '英文' },
     { id: 'zh', name: '中文', native: '中文' },
@@ -555,6 +559,10 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const [yiJingPipelineLogs, setYiJingPipelineLogs] = useState<string[]>([]);
   const [yiJingMergedOutput, setYiJingMergedOutput] = useState('');
   const [yiJingPipelineBusy, setYiJingPipelineBusy] = useState(false);
+  /** AI 味检测结果 */
+  const [yiJingAiDetection, setYiJingAiDetection] = useState<AiDetectionResult | null>(null);
+  const [yiJingIsRunningAiDetection, setYiJingIsRunningAiDetection] = useState(false);
+  const [yiJingIsPolishing, setYiJingIsPolishing] = useState(false);
 
   type ParallelTopicStage = 'idle' | 'outline' | 'segments' | 'merge' | 'done' | 'error';
   type ParallelTopicRun = {
@@ -1326,7 +1334,7 @@ ${isEnglishScript
 
     const config = NICHES[niche];
     if (!config) {
-      setErrorMsg("配置错误：找不到該赛道配置");
+      toast.error("配置错误：找不到該赛道配置");
       return;
     }
 
@@ -1641,7 +1649,7 @@ ${segmentSourceText}
 
     } catch (err: any) {
       console.error(err);
-      setErrorMsg(parseErrorMessage(err));
+      toast.error(parseErrorMessage(err));
     } finally {
       setIsAdapting(false);
     }
@@ -1952,6 +1960,13 @@ ${segmentSourceText}
     setYiJingPipelineBusy(true);
     pushYiJingLog('合并初稿 + 统一全文语气…');
     setBatchProgress({ current: 0, total: 1, hint: '正在合并、统一语气…' });
+
+    // 计算输出语言
+    const isEnRevenge = niche === NicheType.STORY_REVENGE && storyLanguage === StoryLanguage.ENGLISH;
+    const isMindfulEnglish = niche === NicheType.MINDFUL_PSYCHOLOGY;
+    const effectiveLang = mindfulLanguage || 'en';
+    const outputLanguage: 'zh' | 'en' = isMindfulEnglish ? (effectiveLang === 'en' ? 'en' : 'zh') : (isEnRevenge ? 'en' : 'zh');
+
     try {
       const bundle = getParallelPipelineBundle(
         niche,
@@ -1973,12 +1988,47 @@ ${segmentSourceText}
           mindfulLanguage,
         }),
         bundle.mergeSystem,
-        24576
+        32768
       );
       let norm = normalizeYiJingBody(merged);
       if (mindfulLong) {
         norm = truncateMindfulScript(norm, MINDFUL_EN_SCRIPT_CHARS_MAX);
       }
+
+      // 提取并保留文末 CTA（互动引导）
+      const ctaPatterns = [
+        // 英文 CTA - 更宽松的匹配
+        /(If this resonated with you,?\s*(?:please\s+)?(?:like\s+and\s+subscribe|subscribe\s+to\s+my\s+channel)[^.]*(?:\.)?\s*)$/i,
+        /(please\s+(?:like\s+and\s+)?subscribe\s+to\s+my\s+channel[^.]*(?:\.)?\s*)$/i,
+        /(like\s+and\s+subscribe\s+to\s+my\s+channel[^.]*(?:\.)?\s*)$/i,
+        /(subscribe\s+to\s+my\s+channel[^.]*(?:\.)?\s*)$/i,
+        // 中文 CTA - 使用捕获组
+        /((?:请点赞|喜欢本文|如果觉得有收获)[^\n。！？]{0,100}[。！？]?)\s*$/i,
+        /((?:评论区|留言区|留言)[^\n。！？]{0,100}[。！？]?)\s*$/i,
+        /((?:咱们下期|下期继续)[^\n。！？]{0,100}[。！？]?)\s*$/i,
+        /((?:转发给|分享给)[^\n。！？]{0,100}[。！？]?)\s*$/i,
+      ];
+      let savedCta = '';
+      for (const pattern of ctaPatterns) {
+        const match = norm.match(pattern);
+        if (match && match[1]) {
+          savedCta = match[1].trim();
+          break;
+        }
+      }
+
+      // 如果没有匹配到 CTA，尝试从末尾提取最后一段
+      if (!savedCta && norm.length > 50) {
+        const lastParagraph = norm.split(/\n\n+/).filter(p => p.trim()).pop() || '';
+        const ctaKeywords = ['like and subscribe', 'subscribe to my channel', 'please like', 'if this resonated', '请点赞', '喜欢本文', '如果觉得'];
+        for (const keyword of ctaKeywords) {
+          if (lastParagraph.toLowerCase().includes(keyword.toLowerCase())) {
+            savedCta = lastParagraph.trim();
+            break;
+          }
+        }
+      }
+
       setYiJingMergedOutput(norm);
       setBatchProgress({ current: 1, total: 1, hint: '合并完成' });
       setGeneratedContents((prev) => {
@@ -1991,7 +2041,111 @@ ${segmentSourceText}
         }
         return [{ topic: sel[0].title, content: norm }];
       });
-      pushYiJingLog(`合并完成，终稿约 ${norm.length} 字`);
+      pushYiJingLog(`合并完成，终稿约 ${norm.length} 字` + (savedCta ? '（已保留末尾CTA）' : ''));
+
+      // ===== 原创爆款模块：去AI味清洗 + AI味检测 =====
+      pushYiJingLog('[去AI味] 开始内容清洗...');
+      pushYiJingLog(`[去AI味] 输入文本长度: ${(norm || '').replace(/\s+/g, '').length} 字`);
+      pushYiJingLog('[去AI味] 正在调用 AI 模型进行深度去味改写...');
+
+      let antiAiPolished = '';
+      let antiAiSuccess = false;
+      let antiAiPolishingResult: Awaited<ReturnType<typeof polishTextForAntiAi>> | null = null;
+      try {
+        antiAiPolishingResult = await polishTextForAntiAi(
+          norm,
+          {
+            apiKey,
+            onLog: (msg) => pushYiJingLog(`[去AI味] ${msg}`),
+            onChunk: (chunk) => {
+              antiAiPolished = chunk;
+            },
+            outputLanguage,
+          },
+          apiKey,
+          { provider }
+        );
+        antiAiSuccess = antiAiPolishingResult.success;
+
+        const polishedLen = (antiAiPolished || '').replace(/\s+/g, '').length;
+        pushYiJingLog(`[去AI味] AI 返回结果长度: ${polishedLen} 字`);
+
+        if (antiAiPolished.trim() && polishedLen > 0) {
+          // 禁止删除 CTA！保留原文 CTA 完整性
+          let cleanedPolish = antiAiPolished.trim();
+
+          // 检查去 AI 味后文末是否还有 CTA，如果没有则添加保留的 CTA
+          let hasCtaInResult = false;
+          for (const pattern of ctaPatterns) {
+            if (pattern.test(cleanedPolish)) {
+              hasCtaInResult = true;
+              break;
+            }
+          }
+
+          // 如果保留了 CTA 但去 AI 味后丢失了，则添加回来
+          if (savedCta && !hasCtaInResult) {
+            cleanedPolish = cleanedPolish.trim() + '\n\n' + savedCta;
+            pushYiJingLog('[去AI味] 已补充保留的末尾 CTA');
+          }
+
+          if (!/[。！？.!?]$/.test(cleanedPolish.trim())) {
+            cleanedPolish = cleanedPolish.trim() + '。';
+          }
+
+          const cleanedLen = (cleanedPolish || '').replace(/\s+/g, '').length;
+          pushYiJingLog(`[去AI味] 清理残留后长度: ${cleanedLen} 字`);
+
+          norm = cleanedPolish;
+          setYiJingMergedOutput(norm);
+          setGeneratedContents((prev) => {
+            const next = [...prev];
+            const hit = next.findIndex((x) => x.topic === sel[0].title);
+            if (hit >= 0) {
+              next[hit] = { ...next[hit], content: norm };
+            }
+            return next;
+          });
+          pushYiJingLog('[去AI味] ✅ 清洗完成');
+          antiAiSuccess = true;
+        } else {
+          pushYiJingLog('[去AI味] ⚠️ 清洗返回为空，保留合并结果');
+        }
+      } catch (e: any) {
+        pushYiJingLog(`[去AI味] ❌ 清洗失败: ${e?.message || e}`);
+      }
+
+      // AI 味检测
+      pushYiJingLog('[AI检测] 开始检测内容 AI 味...');
+      setYiJingIsRunningAiDetection(true);
+      try {
+        const detection = detectAiFeatures(norm);
+        setYiJingAiDetection(detection);
+        pushYiJingLog(`[AI检测] 完成 - AI 味等级: ${detection.level === 'weak' ? '弱' : detection.level === 'medium' ? '中' : '强'} (${detection.score}分)`);
+        if (detection.issues.length > 0) {
+          detection.issues.slice(0, 3).forEach(issue => {
+            pushYiJingLog(`[AI检测] 问题: ${issue}`);
+          });
+        }
+        if (antiAiSuccess) {
+          const polishingResult = antiAiPolishingResultRef;
+          if (polishingResult?.isEffective) {
+            pushYiJingLog('[AI检测] ✅ 验证通过：AI 去味清洗已成功执行');
+          } else {
+            pushYiJingLog('[AI检测] ⚠️ 验证通过但口语词添加较少，建议再次清洗');
+          }
+        }
+        if (detection.level === 'strong') {
+          pushYiJingLog('[AI检测] ⚠️ AI 味过强，建议点击"重新去AI味"按钮再次清洗');
+          toast.warning('AI 味检测为"强"，建议继续清洗', 5000);
+        }
+      } catch (e: any) {
+        pushYiJingLog(`[AI检测] 检测失败: ${e?.message || e}`);
+      } finally {
+        setYiJingIsRunningAiDetection(false);
+      }
+      // ===== 去AI味清洗结束 =====
+
       toast.success('已合并并写入右侧编辑器');
       try {
         const historyKey = getHistoryKeyForSubMode(niche, getParallelHistorySubModeId());
@@ -2027,6 +2181,77 @@ ${segmentSourceText}
     getParallelHistorySubModeId,
     mindfulLanguage,
   ]);
+
+  // 原创爆款模块：重新执行去AI味清洗
+  const handleYiJingReAntiAiPolish = useCallback(async () => {
+    if (!yiJingMergedOutput.trim()) {
+      toast.warning('没有可清洗的内容');
+      return;
+    }
+    if (!apiKey?.trim()) {
+      toast.warning('请先配置 API Key');
+      return;
+    }
+
+    pushYiJingLog('[去AI味] 手动重新执行去AI味清洗...');
+    setYiJingIsPolishing(true);
+    setYiJingAiDetection(null);
+
+    // 计算输出语言
+    const isEnRevenge = niche === NicheType.STORY_REVENGE && storyLanguage === StoryLanguage.ENGLISH;
+    const isMindfulEnglish = niche === NicheType.MINDFUL_PSYCHOLOGY;
+    const effectiveLang = mindfulLanguage || 'en';
+    const outputLanguage: 'zh' | 'en' = isMindfulEnglish ? (effectiveLang === 'en' ? 'en' : 'zh') : (isEnRevenge ? 'en' : 'zh');
+
+    try {
+      let antiAiPolished = '';
+
+      await polishTextForAntiAi(
+        yiJingMergedOutput,
+        {
+          apiKey,
+          onLog: (msg) => pushYiJingLog(`[去AI味] ${msg}`),
+          onChunk: (chunk) => {
+            antiAiPolished = chunk;
+          },
+          outputLanguage,
+        },
+        apiKey,
+        { provider }
+      );
+
+      if (antiAiPolished.trim()) {
+        // 禁止删除 CTA！保留原文 CTA 完整性
+        let cleanedPolish = antiAiPolished.trim();
+
+        if (!/[。！？.!?]$/.test(cleanedPolish.trim())) {
+          cleanedPolish = cleanedPolish.trim() + '。';
+        }
+
+        setYiJingMergedOutput(cleanedPolish);
+        pushYiJingLog('[去AI味] 重新清洗完成');
+
+        // 重新检测
+        const detection = detectAiFeatures(cleanedPolish);
+        setYiJingAiDetection(detection);
+        pushYiJingLog(`[AI检测] 重新检测完成 - AI 味等级: ${detection.level === 'weak' ? '弱' : detection.level === 'medium' ? '中' : '强'} (${detection.score}分)`);
+
+        if (detection.level === 'strong') {
+          toast.warning('AI 味仍为"强"，可继续清洗', 5000);
+        } else {
+          toast.success(`AI 味检测为"${detection.level === 'weak' ? '弱' : '中'}"，清洗效果良好`, 5000);
+        }
+      } else {
+        pushYiJingLog('[去AI味] 清洗返回为空');
+        toast.warning('清洗返回为空，保留原内容');
+      }
+    } catch (e: any) {
+      pushYiJingLog(`[去AI味] 重新清洗失败: ${e?.message || e}`);
+      toast.error('重新清洗失败');
+    } finally {
+      setYiJingIsPolishing(false);
+    }
+  }, [yiJingMergedOutput, apiKey, provider, pushYiJingLog, toast]);
 
   const handleYiJingAutoPilot = useCallback(async (): Promise<boolean> => {
     const sel = topics.filter((t) => t.selected);
@@ -2171,7 +2396,7 @@ ${segmentSourceText}
             mindfulLanguage,
           }),
           bundle.mergeSystem,
-          24576
+          32768
         );
         let norm = normalizeYiJingBody(merged);
         if (mindfulLongAp) {
@@ -2463,12 +2688,141 @@ ${segmentSourceText}
               mindfulLanguage,
             }),
             bundle.mergeSystem,
-            24576
+            32768
           );
           let finalText = normalizeYiJingBody(merged);
           if (mindfulLong) {
             finalText = truncateMindfulScript(finalText, MINDFUL_EN_SCRIPT_CHARS_MAX);
           }
+
+          // 提取并保留文末 CTA（互动引导）
+          const ctaPatterns = [
+            // 英文 CTA - 更宽松的匹配
+            /(If this resonated with you,?\s*(?:please\s+)?(?:like\s+and\s+subscribe|subscribe\s+to\s+my\s+channel)[^.]*(?:\.)?\s*)$/i,
+            /(please\s+(?:like\s+and\s+)?subscribe\s+to\s+my\s+channel[^.]*(?:\.)?\s*)$/i,
+            /(like\s+and\s+subscribe\s+to\s+my\s+channel[^.]*(?:\.)?\s*)$/i,
+            /(subscribe\s+to\s+my\s+channel[^.]*(?:\.)?\s*)$/i,
+            // 中文 CTA - 使用捕获组
+            /((?:请点赞|喜欢本文|如果觉得有收获)[^\n。！？]{0,100}[。！？]?)\s*$/i,
+            /((?:评论区|留言区|留言)[^\n。！？]{0,100}[。！？]?)\s*$/i,
+            /((?:咱们下期|下期继续)[^\n。！？]{0,100}[。！？]?)\s*$/i,
+            /((?:转发给|分享给)[^\n。！？]{0,100}[。！？]?)\s*$/i,
+          ];
+          let savedCta = '';
+          for (const pattern of ctaPatterns) {
+            const match = finalText.match(pattern);
+            if (match && match[1]) {
+              savedCta = match[1].trim();
+              break;
+            }
+          }
+
+          // 如果没有匹配到 CTA，尝试从末尾提取最后一段
+          if (!savedCta && finalText.length > 50) {
+            const lastParagraph = finalText.split(/\n\n+/).filter(p => p.trim()).pop() || '';
+            const ctaKeywords = ['like and subscribe', 'subscribe to my channel', 'please like', 'if this resonated', '请点赞', '喜欢本文', '如果觉得'];
+            for (const keyword of ctaKeywords) {
+              if (lastParagraph.toLowerCase().includes(keyword.toLowerCase())) {
+                savedCta = lastParagraph.trim();
+                break;
+              }
+            }
+          }
+
+          // ===== 自动生成流程：去AI味清洗 + AI味检测 =====
+          pushYiJingLog('[去AI味] 开始深度去味改写（替换+添加）...');
+          pushYiJingLog(`[去AI味] 输入文本长度: ${(finalText || '').replace(/\s+/g, '').length} 字` + (savedCta ? '（已保留末尾CTA）' : ''));
+
+          // 计算输出语言
+          const isEnRevengeBatch = niche === NicheType.STORY_REVENGE && storyLanguage === StoryLanguage.ENGLISH;
+          const isMindfulEnglishBatch = niche === NicheType.MINDFUL_PSYCHOLOGY;
+          const effectiveLangBatch = mindfulLanguage || 'en';
+          const outputLanguageBatch: 'zh' | 'en' = isMindfulEnglishBatch ? (effectiveLangBatch === 'en' ? 'en' : 'zh') : (isEnRevengeBatch ? 'en' : 'zh');
+
+          let antiAiPolished = '';
+          let antiAiSuccess = false;
+          let antiAiPolishingResult: Awaited<ReturnType<typeof polishTextForAntiAi>> | null = null;
+          try {
+            antiAiPolishingResult = await polishTextForAntiAi(
+              finalText,
+              {
+                apiKey,
+                onLog: (msg) => pushYiJingLog(`[去AI味] ${msg}`),
+                onChunk: (chunk) => {
+                  antiAiPolished = chunk;
+                },
+                outputLanguage: outputLanguageBatch,
+              },
+              apiKey,
+              { provider }
+            );
+            antiAiSuccess = antiAiPolishingResult.success;
+
+            const polishedLen = (antiAiPolished || '').replace(/\s+/g, '').length;
+            pushYiJingLog(`[去AI味] AI 返回结果长度: ${polishedLen} 字`);
+
+            if (antiAiPolished.trim() && polishedLen > 0) {
+              // 禁止删除 CTA！保留原文 CTA 完整性
+              let cleanedPolish = antiAiPolished.trim();
+
+              // 检查去 AI 味后文末是否还有 CTA，如果没有则添加保留的 CTA
+              let hasCtaInResult = false;
+              for (const pattern of ctaPatterns) {
+                if (pattern.test(cleanedPolish)) {
+                  hasCtaInResult = true;
+                  break;
+                }
+              }
+              if (savedCta && !hasCtaInResult) {
+                cleanedPolish = cleanedPolish.trim() + '\n\n' + savedCta;
+                pushYiJingLog('[去AI味] 已补充保留的末尾 CTA');
+              }
+
+              if (!/[。！？.!?]$/.test(cleanedPolish.trim())) {
+                cleanedPolish = cleanedPolish.trim() + '。';
+              }
+
+              const cleanedLen = (cleanedPolish || '').replace(/\s+/g, '').length;
+              pushYiJingLog(`[去AI味] 清理残留后长度: ${cleanedLen} 字`);
+
+              finalText = cleanedPolish;
+              pushYiJingLog('[去AI味] ✅ 清洗完成');
+              antiAiSuccess = true;
+            } else {
+              pushYiJingLog('[去AI味] ⚠️ 清洗返回为空，保留合并结果');
+            }
+          } catch (e: any) {
+            pushYiJingLog(`[去AI味] ❌ 清洗失败: ${e?.message || e}`);
+          }
+
+          // AI 味检测
+          pushYiJingLog('[AI检测] 开始检测内容 AI 味...');
+          setYiJingIsRunningAiDetection(true);
+          try {
+            const detection = detectAiFeatures(finalText);
+            setYiJingAiDetection(detection);
+            pushYiJingLog(`[AI检测] 完成 - AI 味等级: ${detection.level === 'weak' ? '弱' : detection.level === 'medium' ? '中' : '强'} (${detection.score}分)`);
+            if (detection.issues.length > 0) {
+              detection.issues.slice(0, 3).forEach(issue => {
+                pushYiJingLog(`[AI检测] 问题: ${issue}`);
+              });
+            }
+            if (antiAiSuccess) {
+              if (antiAiPolishingResult?.isEffective) {
+                pushYiJingLog('[AI检测] ✅ 验证通过：AI 去味清洗已成功执行');
+              } else {
+                pushYiJingLog('[AI检测] ⚠️ 验证通过但口语词添加较少，建议再次清洗');
+              }
+            }
+            if (detection.level === 'strong') {
+              pushYiJingLog('[AI检测] ⚠️ AI 味过强，建议点击"重新去AI味"按钮再次清洗');
+            }
+          } catch (e: any) {
+            pushYiJingLog(`[AI检测] 检测失败: ${e?.message || e}`);
+          } finally {
+            setYiJingIsRunningAiDetection(false);
+          }
+          // ===== 去AI味清洗结束 =====
 
           setGeneratedContents((prev) => {
             const next = [...prev];
@@ -5395,19 +5749,79 @@ ${segmentSourceText}
                     </div>
                     {yiJingMergedOutput && (
                       <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-xs font-medium text-amber-400/90">合并后终稿预览</span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              navigator.clipboard.writeText(yiJingMergedOutput);
-                              toast.success('已复制终稿');
-                            }}
-                            className="text-[10px] text-cyan-400 hover:text-cyan-300"
-                          >
-                            复制终稿
-                          </button>
+                        <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+                          <span className="text-xs font-medium text-amber-400/90 flex items-center gap-2">
+                            合并后终稿预览
+                            {yiJingAiDetection && (
+                              <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${
+                                yiJingAiDetection.level === 'weak' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' :
+                                yiJingAiDetection.level === 'medium' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' :
+                                'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                              }`}>
+                                AI味:{yiJingAiDetection.level === 'weak' ? '弱' : yiJingAiDetection.level === 'medium' ? '中' : '强'} {yiJingAiDetection.score}分
+                              </span>
+                            )}
+                            {yiJingIsRunningAiDetection && (
+                              <span className="text-[10px] text-cyan-400 animate-pulse">检测中...</span>
+                            )}
+                          </span>
+                          <div className="flex items-center gap-2">
+                            {yiJingAiDetection?.level === 'strong' && (
+                              <button
+                                type="button"
+                                onClick={() => void handleYiJingReAntiAiPolish()}
+                                disabled={yiJingIsPolishing}
+                                className="text-[10px] px-2 py-1 rounded bg-rose-600 hover:bg-rose-500 disabled:bg-slate-700 disabled:text-slate-500 text-white flex items-center gap-1"
+                              >
+                                {yiJingIsPolishing ? (
+                                  <><Loader2 size={10} className="animate-spin" />清洗中...</>
+                                ) : (
+                                  '重新去AI味'
+                                )}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(yiJingMergedOutput);
+                                toast.success('已复制终稿');
+                              }}
+                              className="text-[10px] text-cyan-400 hover:text-cyan-300"
+                            >
+                              复制终稿
+                            </button>
+                          </div>
                         </div>
+                        {/* AI 味检测详情 */}
+                        {yiJingAiDetection && (
+                          <div className="mb-2 p-2 rounded bg-slate-900/60 border border-slate-800 space-y-1">
+                            <div className="flex gap-3 text-[9px]">
+                              <div className="flex items-center gap-1">
+                                <span className="text-slate-500">模板词:</span>
+                                <span className={yiJingAiDetection.dimensions.templateWords > 60 ? 'text-rose-400' : yiJingAiDetection.dimensions.templateWords > 30 ? 'text-amber-400' : 'text-emerald-400'}>
+                                  {yiJingAiDetection.dimensions.templateWords}%
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <span className="text-slate-500">句式:</span>
+                                <span className={yiJingAiDetection.dimensions.sentencePattern > 60 ? 'text-rose-400' : yiJingAiDetection.dimensions.sentencePattern > 30 ? 'text-amber-400' : 'text-emerald-400'}>
+                                  {yiJingAiDetection.dimensions.sentencePattern}%
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <span className="text-slate-500">人味:</span>
+                                <span className={yiJingAiDetection.dimensions.humanFeatures < 40 ? 'text-rose-400' : yiJingAiDetection.dimensions.humanFeatures < 70 ? 'text-amber-400' : 'text-emerald-400'}>
+                                  {100 - yiJingAiDetection.dimensions.humanFeatures}%
+                                </span>
+                              </div>
+                            </div>
+                            {yiJingAiDetection.issues.length > 0 && yiJingAiDetection.level !== 'weak' && (
+                              <div className="text-[9px] text-slate-500">
+                                建议: {yiJingAiDetection.issues.slice(0, 2).join('; ')}
+                              </div>
+                            )}
+                          </div>
+                        )}
                         <div className="text-[11px] text-slate-400 max-h-40 overflow-y-auto border border-slate-800 rounded-lg p-2 bg-slate-950/80 whitespace-pre-wrap custom-scrollbar">
                           {yiJingMergedOutput.slice(0, 4000)}
                           {yiJingMergedOutput.length > 4000 ? '\n…' : ''}
@@ -5657,8 +6071,35 @@ ${segmentSourceText}
                                 <h3 className="text-lg font-bold text-amber-500 flex-1">
                                     {generatedContents[viewIndex].topic}
                                 </h3>
-                                
+
                                 <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
+                                    {/* AI 味检测显示 */}
+                                    {yiJingAiDetection && (
+                                        <span className={`text-xs font-bold px-2 py-1 rounded ${
+                                          yiJingAiDetection.level === 'weak' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' :
+                                          yiJingAiDetection.level === 'medium' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' :
+                                          'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                                        }`}>
+                                          AI味:{yiJingAiDetection.level === 'weak' ? '弱' : yiJingAiDetection.level === 'medium' ? '中' : '强'} {yiJingAiDetection.score}分
+                                        </span>
+                                    )}
+                                    {yiJingIsRunningAiDetection && (
+                                        <span className="text-[10px] text-cyan-400 animate-pulse">检测中...</span>
+                                    )}
+                                    {yiJingAiDetection?.level === 'strong' && (
+                                        <button
+                                            type="button"
+                                            onClick={() => void handleYiJingReAntiAiPolish()}
+                                            disabled={yiJingIsPolishing}
+                                            className="text-[10px] px-2 py-1 rounded bg-rose-600 hover:bg-rose-500 disabled:bg-slate-700 disabled:text-slate-500 text-white flex items-center gap-1"
+                                        >
+                                            {yiJingIsPolishing ? (
+                                                <><Loader2 size={10} className="animate-spin" />清洗中...</>
+                                            ) : (
+                                                '重新去AI味'
+                                            )}
+                                        </button>
+                                    )}
                                     {niche === NicheType.MINDFUL_PSYCHOLOGY && (
                                         <button
                                             type="button"

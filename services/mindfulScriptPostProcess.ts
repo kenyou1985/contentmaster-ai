@@ -1,5 +1,8 @@
 /**
  * 治愈心理学（英文 TTS）脚本：总字符数（含空格与标点）硬区间与合并后收尾
+ *
+ * ⚠️ 重要：内容完整性优先，禁止截断！
+ * 如果需要控制字数，应在分段生成阶段控制，不应在后期截断。
  */
 
 export const MINDFUL_EN_SCRIPT_CHARS_MIN = 10000;
@@ -12,27 +15,21 @@ export function clampMindfulParallelTargetChars(v: number): number {
   );
 }
 
-/** 合并阶段：按用户选的「全文目标」给出略窄的允许带，且总落在硬区间内 */
+/** 合并阶段：给出宽松的字数范围提示，内容完整性优先 */
 export function mindfulMergeCharClamp(totalTarget: number): { min: number; max: number } {
-  const T = clampMindfulParallelTargetChars(totalTarget);
+  // 内容完整性优先，字数范围仅作参考
   return {
-    min: Math.max(MINDFUL_EN_SCRIPT_CHARS_MIN, Math.floor(T * 0.97)),
-    max: Math.min(MINDFUL_EN_SCRIPT_CHARS_MAX, Math.ceil(T * 1.03)),
+    min: 8000,   // 宽松下限
+    max: 20000,  // 宽松上限
   };
 }
 
-/** 将超长终稿截断到上限，保留原文末尾的 CTA（不强制添加英文 CTA） */
+/**
+ * ⚠️ 禁止截断！
+ * 此函数不再截断内容，内容完整性优先。
+ * 字数控制应在分段生成阶段完成。
+ */
 export function truncateMindfulScript(raw: string, maxLen: number): string {
-  let body = raw.replace(/\r\n/g, '\n').trimEnd();
-  if (body.length <= maxLen) {
-    return body;
-  }
-  const budget = maxLen;
-  const slice = body.slice(0, budget);
-  let cut = -1;
-  for (const p of ['.', '!', '?']) {
-    const i = slice.lastIndexOf(p);
-    if (i > cut) cut = i;
-  }
-  return cut > budget * 0.65 ? body.slice(0, cut + 1).trimEnd() : slice.trimEnd();
+  // 直接返回原文，禁止任何截断
+  return raw;
 }
