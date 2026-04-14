@@ -377,30 +377,48 @@ export async function exportJianyingDraft(
   const railwayBase = (import.meta.env.VITE_JIANYING_API_BASE || '').replace(/\/$/, '');
   const hasRailwayConfig = railwayBase.includes('railway') && railwayBase.length > 0;
   const isRailway = hasRailwayConfig && base === railwayBase;
+  const isLocal = isJianyingLocalSiteOrigin();
 
   // 调试信息
   console.log('[JianyingExport] base:', base);
   console.log('[JianyingExport] railwayBase:', railwayBase);
   console.log('[JianyingExport] hasRailwayConfig:', hasRailwayConfig);
   console.log('[JianyingExport] isRailway:', isRailway);
-  console.log('[JianyingExport] isJianyingLocalSiteOrigin():', isJianyingLocalSiteOrigin());
+  console.log('[JianyingExport] isLocal:', isLocal);
+
+  // 检测本地服务是否可用
+  let localServiceAvailable = false;
+  if (isLocal) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      const res = await fetch('/api/jianying/health', { signal: controller.signal });
+      clearTimeout(timeoutId);
+      localServiceAvailable = res.ok;
+      console.log('[JianyingExport] 本地服务状态:', localServiceAvailable ? '可用' : '不可用');
+    } catch {
+      console.log('[JianyingExport] 本地服务状态: 不可用');
+    }
+  }
+
+  // 决策：优先使用本地服务（如果可用），否则使用 Railway
+  const useLocal = isLocal && localServiceAvailable;
 
   // Railway 预热（免费版睡眠后唤醒需要 30-60 秒）
-  if (hasRailwayConfig && !isJianyingLocalSiteOrigin()) {
+  if (hasRailwayConfig && !useLocal) {
     console.log('[JianyingExport] 检测到 Railway，预热服务...');
     onProgress?.(2, 'Railway 服务唤醒中（首次约需 60 秒）...');
     await warmupJianyingService(90000);
     onProgress?.(5, '服务已唤醒，开始导出...');
-  } else if (hasRailwayConfig && isJianyingLocalSiteOrigin()) {
-    // 本地开发但配置了 Railway，强制使用 Railway 异步接口
-    console.log('[JianyingExport] 本地开发模式，强制使用 Railway 异步接口...');
-    onProgress?.(5, '使用 Railway 异步导出...');
+  } else if (hasRailwayConfig && useLocal) {
+    console.log('[JianyingExport] 本地服务可用，使用本地导出...');
+    onProgress?.(5, '使用本地服务导出...');
   } else {
     onProgress?.(5, '准备导出...');
   }
 
   // Railway 用异步 /export/start 接口 + 轮询，实现实时进度显示
-  if (hasRailwayConfig) {
+  if (hasRailwayConfig && !useLocal) {
     onProgress?.(10, '提交导出任务到 Railway（异步模式）...');
     const asyncEndpoint = `${railwayBase}/export/start`;
     console.log('[JianyingExport] 异步接口地址:', asyncEndpoint);
@@ -450,47 +468,89 @@ export async function exportJianyingDraft(
     }
   }
 
-  // 本地开发（无 Railway 配置）：使用本地同步接口
-  onProgress?.(5, '准备本地导出...');
-  try {
-    const startRes = await fetch(`${base}/export/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(5000),
-    });
+  // 本地服务可用：使用本地接口
+  if (useLocal) {
+    console.log('[JianyingExport] 使用本地服务导出...');
+    onProgress?.(5, '使用本地服务导出...');
+    try {
+      // 尝试本地异步接口
+      const startRes = await fetch('/api/jianying/export/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(10000),
+      });
 
-    const startText = await startRes.text().catch(() => '');
-    if (startRes.status === 404 || startRes.status === 0) {
-      return legacyJianyingExportSync(base, payload, options);
-    }
-
-    if (!startRes.ok) {
-      if (railwayBase && isJianyingLocalSiteOrigin()) {
-        console.warn('[JianyingExport] 本地服务报错，切换 Railway...');
-        onProgress?.(5, '切换 Railway...');
-        return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options);
+      const startText = await startRes.text().catch(() => '');
+      if (startRes.status === 404 || startRes.status === 0) {
+        // 本地服务不支持异步，降级到同步
+        console.log('[JianyingExport] 本地服务不支持异步，降级到同步模式...');
+        return legacyJianyingExportSync(base, payload, options);
       }
-      const parsed = tryParseJsonObject(startText);
-      throw new Error(parsed?.error || parsed?.message || startText.slice(0, 400));
-    }
 
-    const startObj = tryParseJsonObject(startText) as any;
-    const taskId = startObj?.taskId;
-    if (!taskId) {
-      return legacyJianyingExportSync(base, payload, options);
-    }
+      if (!startRes.ok) {
+        const parsed = tryParseJsonObject(startText);
+        throw new Error(parsed?.error || parsed?.message || startText.slice(0, 400));
+      }
 
-    onProgress?.(10, '任务已提交，等待处理...');
-    return await pollForResult(taskId, base, false, options, onProgress);
-  } catch {
-    if (railwayBase) {
-      console.warn('[JianyingExport] 异步请求失败，降级到 Railway...');
-      onProgress?.(5, '降级到 Railway...');
-      return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options);
+      const startObj = tryParseJsonObject(startText) as any;
+      const taskId = startObj?.taskId;
+      if (!taskId) {
+        console.log('[JianyingExport] 本地异步接口未返回 taskId，降级到同步模式...');
+        return legacyJianyingExportSync(base, payload, options);
+      }
+
+      console.log(`[JianyingExport] 本地任务已提交，taskId: ${taskId}`);
+      onProgress?.(10, '本地任务已提交，等待处理...');
+      return await pollForResult(taskId, base, false, options, onProgress);
+    } catch (e: any) {
+      console.error('[JianyingExport] 本地服务出错:', e.message);
+      onProgress?.(5, `本地服务出错: ${e.message}，降级到 Railway...`);
+      // 降级到 Railway
+      if (hasRailwayConfig) {
+        return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 900_000);
+      }
+      throw e;
     }
-    throw new Error('服务连接失败，请检查本地剪映服务是否运行');
   }
+
+  // 无 Railway 配置：使用本地同步接口
+  if (!hasRailwayConfig) {
+    console.log('[JianyingExport] 无 Railway 配置，使用本地同步模式...');
+    onProgress?.(5, '准备本地同步导出...');
+    try {
+      const startRes = await fetch(`${base}/export/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(5000),
+      });
+
+      const startText = await startRes.text().catch(() => '');
+      if (startRes.status === 404 || startRes.status === 0) {
+        return legacyJianyingExportSync(base, payload, options);
+      }
+
+      if (!startRes.ok) {
+        const parsed = tryParseJsonObject(startText);
+        throw new Error(parsed?.error || parsed?.message || startText.slice(0, 400));
+      }
+
+      const startObj = tryParseJsonObject(startText) as any;
+      const taskId = startObj?.taskId;
+      if (!taskId) {
+        return legacyJianyingExportSync(base, payload, options);
+      }
+
+      onProgress?.(10, '任务已提交，等待处理...');
+      return await pollForResult(taskId, base, false, options, onProgress);
+    } catch {
+      throw new Error('服务连接失败，请检查本地剪映服务是否运行');
+    }
+  }
+
+  // 理论上不会走到这里
+  throw new Error('未知的导出配置');
 }
 
 /** 轮询获取任务结果 */
