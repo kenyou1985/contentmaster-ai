@@ -399,47 +399,116 @@ export async function generateJimengVideoAsync(
   }
 
   try {
-    const res = await fetch(`${apiBaseUrl}/v1/videos/generations/async`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${sessionId}`,
-      },
-      body: JSON.stringify({
-        model: options.model,
-        prompt: options.prompt,
-        ratio: options.ratio || '16:9',
-        resolution: options.resolution || '720p',
-        duration: options.duration || 5,
-        file_paths: options.file_paths || [],
-      }),
-    });
+    const endpoint = `${apiBaseUrl}/v1/videos/generations/async`;
 
-    const text = await res.text().catch(() => '');
-    let json: any = null;
-    try { json = text ? JSON.parse(text) : null; } catch { json = null; }
+    // 如果有图片 URL，需要先下载并作为文件上传
+    const hasImages = options.file_paths && options.file_paths.length > 0;
 
-    if (!res.ok) {
+    if (hasImages) {
+      // 使用 multipart/form-data 上传图片文件
+      const formData = new FormData();
+      formData.append('model', options.model);
+      formData.append('prompt', options.prompt || '');
+      formData.append('ratio', options.ratio || '16:9');
+      formData.append('resolution', options.resolution || '720p');
+      formData.append('duration', String(options.duration || 5));
+
+      // 下载图片并添加到 formData
+      for (let i = 0; i < options.file_paths!.length; i++) {
+        const imageUrl = options.file_paths![i];
+        try {
+          const response = await fetch(imageUrl);
+          if (!response.ok) {
+            console.warn(`[Jimeng] 下载图片失败 (${response.status}): ${imageUrl.slice(0, 80)}`);
+            continue;
+          }
+          const blob = await response.blob();
+          const ext = blob.type.includes('png') ? 'png' : blob.type.includes('webp') ? 'webp' : 'jpg';
+          const fieldName = i === 0 ? 'image_file' : `image_file_${i + 1}`;
+          formData.append(fieldName, blob, `image_${i + 1}.${ext}`);
+          console.log(`[Jimeng] 图片 ${i + 1} 已添加到 formData`);
+        } catch (e: any) {
+          console.warn(`[Jimeng] 下载图片 ${i + 1} 失败: ${e.message}`);
+        }
+      }
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${sessionId}`,
+        },
+        body: formData,
+      });
+
+      const text = await res.text().catch(() => '');
+      let json: any = null;
+      try { json = text ? JSON.parse(text) : null; } catch { json = null; }
+
+      if (!res.ok) {
+        return {
+          success: false,
+          error: json?.error || json?.message || `HTTP ${res.status}`,
+        };
+      }
+
+      const taskId = json?.task_id || json?.taskId;
+      if (!taskId) {
+        return {
+          success: false,
+          error: json?.message || '未返回 task_id',
+        };
+      }
+
       return {
-        success: false,
-        error: json?.error || json?.message || `HTTP ${res.status}`,
+        success: true,
+        taskId,
+        status: json?.status || 'processing',
+        message: json?.message,
+      };
+    } else {
+      // 无图片，使用纯 JSON
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${sessionId}`,
+        },
+        body: JSON.stringify({
+          model: options.model,
+          prompt: options.prompt,
+          ratio: options.ratio || '16:9',
+          resolution: options.resolution || '720p',
+          duration: options.duration || 5,
+          file_paths: [],
+        }),
+      });
+
+      const text = await res.text().catch(() => '');
+      let json: any = null;
+      try { json = text ? JSON.parse(text) : null; } catch { json = null; }
+
+      if (!res.ok) {
+        return {
+          success: false,
+          error: json?.error || json?.message || `HTTP ${res.status}`,
+        };
+      }
+
+      const taskId = json?.task_id || json?.taskId;
+      if (!taskId) {
+        return {
+          success: false,
+          error: json?.message || '未返回 task_id',
+        };
+      }
+
+      return {
+        success: true,
+        taskId,
+        status: json?.status || 'processing',
+        message: json?.message,
       };
     }
-
-    const taskId = json?.task_id || json?.taskId;
-    if (!taskId) {
-      return {
-        success: false,
-        error: json?.message || '未返回 task_id',
-      };
-    }
-
-    return {
-      success: true,
-      taskId,
-      status: json?.status || 'processing',
-      message: json?.message,
-    };
   } catch (e: any) {
     return { success: false, error: e?.message || String(e) };
   }
