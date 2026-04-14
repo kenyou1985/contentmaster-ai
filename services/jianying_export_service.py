@@ -28,6 +28,18 @@ def get_platform() -> str:
     return platform.system()
 
 
+def _emit_progress(progress: int, stage: str, callback: callable = None) -> None:
+    """输出 [PROGRESS]|stage 到 stderr（供 Node 端实时显示进度）"""
+    # 输出到 stderr 供 Node 端解析
+    print(f"[PROGRESS] {progress}|{stage}", file=sys.stderr, flush=True)
+    # 同时调用回调函数
+    if callback:
+        try:
+            callback(progress, stage)
+        except Exception:
+            pass
+
+
 def get_mac_draft_dir() -> str:
     """获取 macOS 剪映草稿目录（需要完全磁盘访问权限）"""
     return str(Path.home() / "Movies" / "JianyingPro" / "User Data" / "Projects" / "com.lveditor.draft")
@@ -1308,6 +1320,7 @@ def create_draft_on_mac(
     height: int = 1080,
     random_transitions: bool = False,
     random_filters: bool = False,
+    progress_callback: callable = None,
 ) -> dict:
     """
     创建剪映草稿：
@@ -1332,6 +1345,7 @@ def create_draft_on_mac(
         output_dir = get_mac_draft_dir()
 
     # ---- 建立目录 ----
+    _emit_progress(5, f"创建草稿目录: {draft_name}", progress_callback)
     safe_name = "".join(c for c in draft_name if c not in '/\\:*?"<>|').strip() or "未命名"
     draft_folder_name = safe_name
     draft_folder = os.path.join(output_dir, draft_folder_name)
@@ -1390,7 +1404,12 @@ def create_draft_on_mac(
     prepared_shots: list[dict] = []
     download_issues: list[dict] = []
     timeline_cursor = 0
+    total_shots = len(shots)
+    _emit_progress(8, f"开始下载 {total_shots} 个镜头的媒体资源...", progress_callback)
     for i, shot in enumerate(shots):
+        # 计算当前进度 (10-60%)
+        current_progress = 10 + int((i / max(total_shots, 1)) * 50)
+        _emit_progress(current_progress, f"下载镜头 {i + 1}/{total_shots}...", progress_callback)
         base_dur = int(float(shot.get("duration", 5)) * 1_000_000)
         start_us = timeline_cursor
 
@@ -1505,11 +1524,15 @@ def create_draft_on_mac(
         prepared_shots.append(row)
         timeline_cursor += row["duration_us"]
 
+    _emit_progress(62, f"已处理 {total_shots} 个镜头，开始生成草稿 JSON...", progress_callback)
+
     # 调试：汇总每个镜头的音频信息
     for i, r in enumerate(prepared_shots):
         print(f"[jianying_export] 镜头{i} 汇总: audio_abs={r.get('audio_abs','无')} audio_dur_us={r.get('audio_duration_us','无')} timeline_dur_us={r.get('duration_us','无')}", file=sys.stderr, flush=True)
 
     total_duration = timeline_cursor
+
+    _emit_progress(65, "写入草稿文件...", progress_callback)
 
     lv59_script = _build_lv59_main_script(
         draft_id=draft_id,
@@ -1535,6 +1558,7 @@ def create_draft_on_mac(
     materials_count = len(lv59_script.get("materials", {}).get("videos", [])) + len(
         lv59_script.get("materials", {}).get("audios", [])
     )
+    _emit_progress(75, f"写入 {materials_count} 个素材记录...", progress_callback)
 
     # ---- draft_meta_info.json ----
     meta_info = {
@@ -1602,6 +1626,7 @@ def create_draft_on_mac(
     meta_path = os.path.join(draft_folder, "draft_meta_info.json")
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta_info, f, ensure_ascii=False, indent=2)
+    _emit_progress(80, "写入元数据配置...", progress_callback)
 
     # ---- draft_settings（INI 格式）----
     draft_settings_path = os.path.join(draft_folder, "draft_settings")
@@ -1720,6 +1745,7 @@ def batch_export(
     output_path: str = None,
     random_transitions: bool = False,
     random_filters: bool = False,
+    progress_callback: callable = None,
 ) -> dict:
     """
     跨平台批量导出。
@@ -1759,12 +1785,15 @@ def batch_export(
                 height=h,
                 random_transitions=random_transitions,
                 random_filters=random_filters,
+                progress_callback=progress_callback,
             )
             result.update(draft_result)
+            _emit_progress(88, "准备启动剪映...", progress_callback)
 
             # 打开剪映
             open_msg = _open_jianying_pro()
             result["open_jianying"] = open_msg
+            _emit_progress(92, "在 Finder 中显示...", progress_callback)
 
             # 在 Finder 中显示
             try:
@@ -1774,6 +1803,7 @@ def batch_export(
                 result["reveal_folder"] = "Finder 显示失败"
 
             result["success"] = True
+            _emit_progress(100, "导出完成!", progress_callback)
             result["message"] = (
                 f"✅ 剪映草稿已生成！\n"
                 f"📁 {draft_result['draft_folder']}\n"
@@ -1828,6 +1858,7 @@ if __name__ == "__main__":
     parser.add_argument("--resolution", type=str, default="1920x1080")
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--output", type=str, default=None)
+    parser.add_argument("--progress-callback", action="store_true", help="启用进度输出到 stderr")
     args = parser.parse_args()
 
     if args.list_json:
@@ -1855,5 +1886,6 @@ if __name__ == "__main__":
             output_path=output_path,
             random_transitions=rnd_tr,
             random_filters=rnd_fx,
+            progress_callback=_emit_progress if args.progress_callback else None,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))

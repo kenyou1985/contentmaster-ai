@@ -434,18 +434,19 @@ export async function exportJianyingDraft(
 
       console.log('[JianyingExport] 异步接口响应状态:', startRes.status, startRes.statusText);
 
+      // 修复：即使状态码不是 200/201，也要尝试解析响应体获取错误信息
+      const responseText = await startRes.text().catch(() => '');
+      const startObj = tryParseJsonObject(responseText) as any;
+
       if (!startRes.ok) {
-        // 如果异步接口不可用，降级到同步
-        const errText = await startRes.text().catch(() => '');
-        console.warn('[JianyingExport] Railway 异步接口不可用，降级到同步模式... 响应:', errText.slice(0, 200));
-        onProgress?.(10, 'Railway 异步接口不可用，降级到同步模式...');
+        // 从响应中提取错误信息
+        const errorDetail = startObj?.error || startObj?.message || responseText.slice(0, 400) || `HTTP ${startRes.status}`;
+        console.warn('[JianyingExport] Railway 异步接口不可用，降级到同步模式... 响应:', errorDetail.slice(0, 200));
+        onProgress?.(10, `Railway 异步接口不可用 (${startRes.status})，降级到同步模式...`);
         return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 900_000);
       }
 
-      const startText = await startRes.text().catch(() => '');
-      const startObj = tryParseJsonObject(startText) as any;
       const taskId = startObj?.taskId;
-
       console.log('[JianyingExport] 异步提交响应:', startObj);
 
       if (!taskId) {
@@ -463,7 +464,9 @@ export async function exportJianyingDraft(
     } catch (e: any) {
       // 异步接口出错，降级到同步
       console.error('[JianyingExport] Railway 异步请求失败，错误:', e.message);
-      onProgress?.(10, `Railway 异步请求失败: ${e.message}，降级到同步模式...`);
+      // 修复：确保错误信息不为空
+      const errorMsg = e.message || '网络请求失败';
+      onProgress?.(10, `Railway 异步请求失败: ${errorMsg}，降级到同步模式...`);
       return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 900_000);
     }
   }
@@ -482,15 +485,17 @@ export async function exportJianyingDraft(
       });
 
       const startText = await startRes.text().catch(() => '');
-      if (startRes.status === 404 || startRes.status === 0) {
-        // 本地服务不支持异步，降级到同步
-        console.log('[JianyingExport] 本地服务不支持异步，降级到同步模式...');
-        return legacyJianyingExportSync(base, payload, options);
-      }
-
+      
+      // 修复：处理各种错误状态码
       if (!startRes.ok) {
         const parsed = tryParseJsonObject(startText);
-        throw new Error(parsed?.error || parsed?.message || startText.slice(0, 400));
+        const errMsg = parsed?.error || parsed?.message || startText.slice(0, 400) || `HTTP ${startRes.status}`;
+        // 404 或其他客户端错误，降级到同步
+        if (startRes.status === 404 || startRes.status === 400) {
+          console.log('[JianyingExport] 本地服务不支持异步，降级到同步模式...');
+          return legacyJianyingExportSync(base, payload, options);
+        }
+        throw new Error(errMsg);
       }
 
       const startObj = tryParseJsonObject(startText) as any;
@@ -505,9 +510,13 @@ export async function exportJianyingDraft(
       return await pollForResult(taskId, base, false, options, onProgress);
     } catch (e: any) {
       console.error('[JianyingExport] 本地服务出错:', e.message);
-      onProgress?.(5, `本地服务出错: ${e.message}，降级到 Railway...`);
+      // 修复：确保错误信息不为空，并调用 onProgress 更新状态
+      const errorMsg = e.message || '服务连接失败';
+      onProgress?.(5, `本地服务出错: ${errorMsg}`);
+      
       // 降级到 Railway
       if (hasRailwayConfig) {
+        onProgress?.(10, '降级到 Railway 服务...');
         return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 900_000);
       }
       throw e;
@@ -527,13 +536,26 @@ export async function exportJianyingDraft(
       });
 
       const startText = await startRes.text().catch(() => '');
-      if (startRes.status === 404 || startRes.status === 0) {
-        return legacyJianyingExportSync(base, payload, options);
-      }
-
+      
       if (!startRes.ok) {
-        const parsed = tryParseJsonObject(startText);
-        throw new Error(parsed?.error || parsed?.message || startText.slice(0, 400));
+        // 尝试同步接口
+        const syncRes = await fetch(`${base}/export`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(600000), // 10分钟超时
+        });
+        
+        if (!syncRes.ok) {
+          const errText = await syncRes.text().catch(() => '');
+          const parsed = tryParseJsonObject(errText);
+          throw new Error(parsed?.error || parsed?.message || errText.slice(0, 400) || `HTTP ${syncRes.status}`);
+        }
+        
+        const syncText = await syncRes.text().catch(() => '');
+        const parsed = tryParseJsonObject(syncText);
+        if (parsed) return parsed as JianyingExportResult;
+        return coerceExportResultFromText(syncText, options, true);
       }
 
       const startObj = tryParseJsonObject(startText) as any;
@@ -544,8 +566,10 @@ export async function exportJianyingDraft(
 
       onProgress?.(10, '任务已提交，等待处理...');
       return await pollForResult(taskId, base, false, options, onProgress);
-    } catch {
-      throw new Error('服务连接失败，请检查本地剪映服务是否运行');
+    } catch (e: any) {
+      const errorMsg = e.message || '服务连接失败';
+      onProgress?.(5, `错误: ${errorMsg}`);
+      throw new Error(errorMsg);
     }
   }
 
@@ -572,6 +596,20 @@ async function pollForResult(
 
     try {
       const statusRes = await fetch(`${pollBase}/export/status/${encodeURIComponent(taskId)}`);
+      
+      // 修复：处理非 200 响应
+      if (!statusRes.ok) {
+        const errText = await statusRes.text().catch(() => '');
+        console.warn(`[JianyingExport] 轮询出错 (${i + 1}/${maxPoll}): HTTP ${statusRes.status}`);
+        
+        if (i < maxPoll - 3) {
+          // 继续尝试
+          await sleep(3000);
+          continue;
+        }
+        throw new Error(`轮询失败: HTTP ${statusRes.status}`);
+      }
+      
       const statusText = await statusRes.text().catch(() => '');
       const statusObj = tryParseJsonObject(statusText) as any;
       const status = String(statusObj?.status || '').toLowerCase();
@@ -581,24 +619,33 @@ async function pollForResult(
         const newLogs = statusObj.logs.slice(lastLogIndex);
         for (const log of newLogs) {
           if (log.message) {
-            onProgress?.(log.progress || lastProgress, log.message);
+            lastProgress = log.progress || lastProgress;
+            onProgress?.(lastProgress, log.message);
           }
         }
         lastLogIndex = statusObj.logs.length;
       } else if (statusObj?.progress !== undefined && statusObj.progress > lastProgress) {
-        // 非 Railway 模式：只显示进度变化
+        // 非 Railway 模式：显示进度变化
         lastProgress = statusObj.progress;
         onProgress?.(statusObj.progress, statusObj.message || '处理中...');
+      }
+
+      // 如果后端返回了新的日志消息，也要显示
+      if (statusObj?.message && statusObj?.progress !== undefined) {
+        lastProgress = statusObj.progress;
+        onProgress?.(statusObj.progress, statusObj.message);
       }
 
       if (status === 'success') {
         const resultRes = await fetch(`${pollBase}/export/result/${encodeURIComponent(taskId)}`);
         const resultText = await resultRes.text().catch(() => '');
+        
         if (!resultRes.ok) {
           const parsed = tryParseJsonObject(resultText);
           const detail = parsed?.error || parsed?.message || resultText.slice(0, 400);
           throw new Error(`导出结果获取失败 (${resultRes.status})${detail ? ': ' + detail : ''}`);
         }
+        
         const parsed = tryParseJsonObject(resultText);
         if (parsed) return { ...parsed, usedRailway };
         return { ...coerceExportResultFromText(resultText, options, true), usedRailway };
@@ -614,6 +661,7 @@ async function pollForResult(
         await sleep(3000);
         continue;
       }
+      // 最后几次轮询失败，抛出错误
       throw e;
     }
   }
