@@ -205,18 +205,78 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     const t = text.toLowerCase();
     if (!text.trim() || text.trim().length < 80) return null;
 
+    // ===== 固定关键词优先检测（最高优先级，一票锁定） =====
+    // 中医玄学固定关键词
+    const cnTCMFixedPatterns = /倪海厦|倪师|南师|曲黎敏|徐文兵|刘渡舟|胡希恕|郝万山|刘力红|郭生白|JT叔叔|谭杰中|千古中医/i;
+
+    // 易经命理固定关键词
+    const cnYijingFixedPatterns = /曾仕强|曾教授|傅佩荣|傅教授|王弼|孔颖达|朱熹|邵雍|陈抟|刘伯温|李虚中|袁天罡|推背图/i;
+
+    // 新闻热点固定关键词（优先于金融理财检测）
+    const cnNewsFixedPatterns = /绞肉机|收割机|新闻|热点|地缘|关税|贸易战|大选|公投|军事|外交|战争|冲突|和平|抗议|示威|骚乱|暴乱|恐袭|爆炸|坠机|空难|海难|矿难|疫情|病毒|传染病|灾难|事故|伤亡|紧急状态|戒严|宵禁|封锁|禁运|断交|宣战|停火|谈判|协议|条约|论坛|联合国|G20|北约|WTO|OECD|欧盟|东盟|OPEC|安理会|联合国大会|头条|热搜|爆款|突发|快讯|刚刚|重磅|血洗|屠杀|崩盘|危机|转折|震惊|炸裂|逆转|翻盘|逆转|奇迹|突破|揭秘|曝光|实锤|爆料|内幕|真相|隐情|黑幕|潜规则|套路|反转|反转再反转|打脸|神反转|震撼|惊人|惊悚|恐怖|可怕|诡异|荒唐|讽刺|可笑|无语|崩溃|绝望|彻底|彻底完了|完蛋|毁灭|崩塌|瓦解|粉碎|终结|结局|悲剧|惨剧|人间悲剧|悲剧了|惨烈|残酷|残忍|暴行|罪行|恶行|丑闻|丑闻|秽闻|丑闻曝光|丢人|丢脸|脸丢大了|脸都不要了|无语了|醉了|我醉了|笑死|笑喷|笑掉大牙|奇葩|神操作|骚操作|迷惑行为|迷惑|无语子|绝绝子|YYDS|绝绝子|牛逼|牛批|厉害|厉害了我的|666|服了|服了你|服了你了|无语问苍天|天理何在|公道自在人心|正义|公平|平等|人权|自由|民主|法治|制度|规则|秩序|混乱|动荡|不稳定|风险|危险|警告|预警|紧急|迫在眉睫|一触即发|千钧一发|生死存亡|命悬一线|悬了|凉了|凉凉|凉了凉了|死定了|完蛋了|没救了|无可救药|无药可救|没救了|彻底没救了|没救了真的|彻底完了/i;
+
+    // 金融理财固定关键词
+    const cnFinanceFixedPatterns = /巴菲特|查理芒格|查理·芒格|沃伦巴菲特|价值投资|安全边际|护城河|长期主义|护城河理论|估值模型|财务报表|资产负债表|利润表|现金流量表|股价|股息率|市盈率|市净率|ROE|净资产收益率|价值股|蓝筹股|白马股|赛道股|庄家|主力资金|北向资金|融资融券|做多|做空|K线|均线|MACD|KDJ RSI|布林线|金叉|死叉|止盈|止损|建仓|清仓|满仓|轻仓|重仓|爆仓|加仓|减仓|补仓|平仓|换手率|成交量|量比|涨停|跌停|停牌|上市|退市|IPO|打新|配股|增发|回购|分红|送股|转增|除权|除息|填权|贴权|牛股|妖股|黑马|白马|蓝筹|仙股|壳资源|并购|重组|收购|定增|可转债|ETF|指数基金|主动基金|被动基金|货币基金|债券基金|混合基金|公募基金|私募基金|对冲基金|风投|VC|PE|天使投资|股权投资|债权投资|期货|期权|原油|黄金|美元|人民币汇率|美联储|加息|降息|缩表|扩表|通货膨胀|通货紧缩|GDP|CPI|PPI|PMI|非农|失业率|利率|存款准备金|逆回购|正回购|SLF|MLF|TLF|SOMO|量化宽松|紧缩政策|财政政策|货币政策/i;
+
+    // ===== 主题关键词优先检测 =====
+    // 中文宠物/动物心理学特征词
+    const cnAnimalPsychologyPatterns = /猫主子|汪星人|喵星人|猫奴|狗奴|养猫|养狗|流浪猫|流浪狗|弃养|绝育|疫苗|驱虫|猫粮|狗粮|猫砂|猫爬架|狗窝|宠物店|宠物医院|猫舍|犬舍|繁殖|纯种|杂交|品种狗|品种猫|定点|如厕|分离焦虑|护食|扑咬|吠叫|纠正|社会化|猫罐头|狗罐头|猫包|狗包|牵引绳|项圈|驱虫药|猫三联|狗五联|领养|救助站|救助机构|寄养|宠物保险/i;
+
+    // 中文富人思维（精简版，避免与金融理财混淆）
+    const cnRichMindsetPatterns = /富人思维|老板思维|创业|企业家|商业模式|盈利模式|资源整合|人脉|圈层|格局|副业|个人IP|品牌|裂变|私域|公域|斜杠/i;
+
+    // 中文情感禁忌优先检测
+    const cnEmotionTabooPatterns = /情感|恋爱|分手|暧昧|禁忌|婚姻|爱情|约会|相亲|出轨|小三|劈腿|备胎|绿茶|渣男|渣女|表白|告白|暗恋|追求|复合|挽回|离婚|再婚|闪婚|异地恋|姐弟恋|PUA|冷暴力|热暴力|家暴|原生家庭/i;
+
     const rules: Array<{ niche: NicheType; words: string[]; reason: string }> = [
-      { niche: NicheType.MINDFUL_PSYCHOLOGY, words: ['dog', 'puppy', 'pet parent', 'canine', 'bark', 'anxiety', 'reactive dog'], reason: '检测到治愈心理学（宠物心理）特征词' },
-      { niche: NicheType.PSYCHOLOGY, words: ['心理', '创伤', '焦虑', '抑郁', '人格', '认知', '情绪管理'], reason: '检测到心理学高频词' },
-      { niche: NicheType.FINANCE_CRYPTO, words: ['股票', '基金', '投资', '资产', '估值', '巴菲特', '芒格', '比特币', 'crypto'], reason: '检测到投资财经相关词' },
-      { niche: NicheType.GENERAL_VIRAL, words: ['新闻', '热点', '国际', '地缘', '关税', '贸易战', '突发'], reason: '检测到新闻热点相关词' },
-      { niche: NicheType.TCM_METAPHYSICS, words: ['中医', '玄学', '风水', '气血', '经络', '倪海厦', '阴阳'], reason: '检测到中医玄学相关词' },
-      { niche: NicheType.YI_JING_METAPHYSICS, words: ['易经', '卦', '爻', '八卦', '命理', '天干地支'], reason: '检测到易经命理相关词' },
-      { niche: NicheType.PHILOSOPHY_WISDOM, words: ['哲学', '意义', '存在', '人生智慧', '觉醒'], reason: '检测到哲学智慧相关词' },
-      { niche: NicheType.EMOTION_TABOO, words: ['情感', '恋爱', '分手', '暧昧', '禁忌', '婚姻'], reason: '检测到情感关系相关词' },
-      { niche: NicheType.RICH_MINDSET, words: ['富人思维', '商业认知', '赚钱', '财富自由', '老板思维'], reason: '检测到富人思维相关词' },
-      { niche: NicheType.STORY_REVENGE, words: ['复仇', '反击', '剧情', '角色', '冲突', '叙事'], reason: '检测到复仇故事相关词' },
+      { niche: NicheType.MINDFUL_PSYCHOLOGY, words: ['dog', 'puppy', 'pet parent', 'canine', 'bark', 'anxiety', 'reactive dog', 'psychology', 'therapist', 'mental health', 'behavior', 'training', 'breed', 'shelter', 'adopt', 'rescue dog', 'feline', 'animal assisted', 'therapy dog', 'service dog', 'emotional support', 'companion', 'bond', 'healing', 'mindful', 'awareness', 'presence', 'calm', 'stress relief', 'comfort', 'attachment', 'trauma recovery', 'animal therapy', 'pet therapy', 'cat', 'kitten', 'meow', 'pet', 'pets', 'animal', 'veterinary', 'cat behavior', 'dog behavior', '养猫', '养狗', '宠物训练', '猫心理', '狗心理', '动物心理', '猫行为', '狗行为'], reason: '检测到治愈心理学（宠物心理）特征词' },
+      { niche: NicheType.PSYCHOLOGY, words: ['心理', '创伤', '焦虑', '抑郁', '人格', '认知', '情绪管理', '心理咨询', '心理治疗', '心理疏导', '心理问题', '心理疾病', '心理障碍', '心理健康', '精神分析', '认知行为', '情绪调节', '自我认知', '心理脆弱', '心理压力', '情感障碍', '人格分裂', '焦虑症', '抑郁症', '心理咨询师', '心理防御'], reason: '检测到心理学高频词' },
+      { niche: NicheType.FINANCE_CRYPTO, words: ['股票', '基金', '投资', '资产', '估值', '巴菲特', '芒格', '比特币', 'crypto', '财富', '理财', '收益', '回报', '通货膨胀', '美联储', '加息', '降息', '牛市', '熊市', 'K线', '市值', '期权', '期货', '杠杆', '做空', '做多', '止损', '盈利', '亏损', '分红', '股息', '复利', '本金', '收益率', '年化', '赛道股', '蓝筹', '白马', '价值投资', '成长股'], reason: '检测到投资财经相关词' },
+      { niche: NicheType.GENERAL_VIRAL, words: ['新闻', '热点', '国际', '地缘', '关税', '贸易战', '突发', '头条', '热搜', '爆款', '刷屏', '病毒式传播', '舆论', '时事', '政治', '经济', '社会', '科技', '娱乐', '体育', '军事', '外交', '制裁', '协议', '峰会', '选举', '公投', '冲突', '战争', '和平', '抗议', '示威'], reason: '检测到新闻热点相关词' },
+      { niche: NicheType.TCM_METAPHYSICS, words: ['中医', '玄学', '风水', '气血', '经络', '倪海厦', '阴阳', '五行', '针灸', '推拿', '中药', '草药', '穴位', '脉象', '黄帝内经', '伤寒论', '本草纲目', '扁鹊', '华佗', '李时珍', '张仲景', '药方', '配伍', '君臣佐使', '养生', '食疗', '药膳', '气功', '太极', '八段锦', '易经八卦', '命理', '八字', '紫微斗数', '六爻', '奇门遁甲', '梅花易数', '面相', '手相', '骨相', '风水罗盘', '龙脉', '祖坟', '阳宅', '阴宅'], reason: '检测到中医玄学相关词' },
+      { niche: NicheType.YI_JING_METAPHYSICS, words: ['易经', '卦', '爻', '八卦', '命理', '天干地支', '六十四卦', '乾卦', '坤卦', '震卦', '巽卦', '坎卦', '离卦', '艮卦', '兑卦', '太极', '两仪', '四象', '河图', '洛书', '先天八卦', '后天八卦', '梅花易数', '六爻预测', '奇门遁甲', '大六壬', '铁板神数', '邵雍', '孔子', '文王', '周公', '十天干', '十二地支', '甲子', '纳音', '神煞', '冲合', '刑害', '三合', '六合', '择日', '选吉', '方位'], reason: '检测到易经命理相关词' },
+      { niche: NicheType.PHILOSOPHY_WISDOM, words: ['哲学', '尼采', '柏拉图', '亚里士多德', '康德', '黑格尔', '海德格尔', '萨特', '加缪', '笛卡尔', '休谟', '罗素', '维特根斯坦', '苏格拉底', '儒家', '道家', '佛学', '禅', '悟道', '涅槃', '般若', '中庸', '天人合一', '道法自然', '存在主义', '形而上学', '唯物主义', '唯心主义', '辩证法'], reason: '检测到哲学智慧相关词' },
+      { niche: NicheType.EMOTION_TABOO, words: ['情感', '恋爱', '分手', '暧昧', '禁忌', '婚姻', '爱情', '约会', '相亲', '出轨', '小三', '劈腿', '备胎', '绿茶', '渣男', '渣女', '表白', '告白', '暗恋', '追求', '复合', '挽回', '离婚', '再婚', '闪婚', '异地恋', '姐弟恋', '师生恋', '办公室恋情', '三角恋', '性骚扰', 'PUA', '情感操控', '冷暴力', '热暴力', '家暴', '原生家庭', '原生创伤'], reason: '检测到情感关系相关词' },
+      { niche: NicheType.RICH_MINDSET, words: ['富人思维', '商业认知', '赚钱', '财富自由', '老板思维', '创业', '企业家', '商业模式', '盈利模式', '第一性原理', '复利思维', '资产配置', '被动收入', '睡后收入', '财务自由', '投资思维', '风险控制', '现金流', '负债', '杠杆', '资源整合', '人脉', '圈层', '格局', '认知升级', '思维破局', '副业', '斜杠', '个人IP', '品牌', '流量', '变现', '裂变', '私域', '公域'], reason: '检测到富人思维相关词' },
+      { niche: NicheType.STORY_REVENGE, words: ['复仇', '反击', '剧情', '角色', '冲突', '叙事', '逆袭', '翻盘', '打脸', '打脸爽文', '爽文', '爽文男主', '爽文女主', '装逼', '打脸', '逆袭人生', '废柴逆袭', '王者归来', '战神', '龙王', '赘婿', '神医', '总裁', '豪门', '家族', '恩怨', '阴谋', '陷害', '背叛', '崛起', '蜕变', '黑化', '觉醒', '爆发', '秒杀', '碾压', '完虐', '绝地反击', '绝地翻盘'], reason: '检测到复仇故事相关词' },
     ];
+
+    // ===== 固定关键词优先检测（最高优先级，一票锁定） =====
+    // 中医玄学固定关键词
+    if (cnTCMFixedPatterns.test(t)) {
+      return { niche: NicheType.TCM_METAPHYSICS, score: 10, reason: '检测到中医玄学权威专家关键词' };
+    }
+
+    // 易经命理固定关键词
+    if (cnYijingFixedPatterns.test(t)) {
+      return { niche: NicheType.YI_JING_METAPHYSICS, score: 10, reason: '检测到易经命理权威专家关键词' };
+    }
+
+    // 新闻热点固定关键词（优先于金融理财检测）
+    if (cnNewsFixedPatterns.test(t)) {
+      return { niche: NicheType.GENERAL_VIRAL, score: 10, reason: '检测到新闻热点关键词' };
+    }
+
+    // 金融理财固定关键词
+    if (cnFinanceFixedPatterns.test(t)) {
+      return { niche: NicheType.FINANCE_CRYPTO, score: 10, reason: '检测到金融理财权威专家/专业术语' };
+    }
+
+    // ===== 主题关键词优先检测 =====
+    // 中文宠物/动物心理学特征词
+    if (cnAnimalPsychologyPatterns.test(t)) {
+      return { niche: NicheType.MINDFUL_PSYCHOLOGY, score: 5, reason: '检测到中文宠物/动物心理学特征词' };
+    }
+
+    // 中文富人思维
+    if (cnRichMindsetPatterns.test(t)) {
+      return { niche: NicheType.RICH_MINDSET, score: 5, reason: '检测到中文富人思维特征词' };
+    }
+
+    // 中文情感禁忌
+    if (cnEmotionTabooPatterns.test(t)) {
+      return { niche: NicheType.EMOTION_TABOO, score: 5, reason: '检测到中文情感禁忌特征词' };
+    }
 
     let best: { niche: NicheType; score: number; reason: string } | null = null;
     for (const r of rules) {
@@ -229,8 +289,12 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       }
     }
 
-    if (!best && !isChineseHeavy(text) && /dog|pet|canine|puppy/.test(t)) {
-      return { niche: NicheType.MINDFUL_PSYCHOLOGY, score: 1, reason: '检测到英文宠物心理语料' };
+    // 英文心理学兜底检测
+    if (!best) {
+      const enPsychologyPatterns = /dog|pet|puppy|canine|psychology|psychologist|therapist|mental health|behavior|behaviour|training|breed|shelter|adopt|rescue|therapy dog|healing|companion|feline|human.animal|bond|wellbeing|well-being|caregiver|cat|kitten|meow/i;
+      if (enPsychologyPatterns.test(t)) {
+        return { niche: NicheType.MINDFUL_PSYCHOLOGY, score: 3, reason: '检测到英文心理学/宠物心理语料' };
+      }
     }
 
     return best && best.score >= 2 ? best : null;
