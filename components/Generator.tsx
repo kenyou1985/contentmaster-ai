@@ -1131,8 +1131,14 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     const cleanOutput = (text: string): string =>
       text
         .replace(/\[TYPE:[^\]]+\]\s*/g, '')
-        // 统一视频标签：严禁 video prompt / 各语种乱码变体（含格鲁吉亚语 ვიდიო）
-        .replace(/^\s*(?:video\s*prompt|video\s*提示词|ვიდიო\s*prompt|ვიდიო\s*提示词|ვიდიო|ভিডিও\s*prompt|ভিডিও\s*提示词|ভিডিও)\s*[:：]\s*/gim, '视频提示词:')
+        // 统一视频标签：清除所有乱码变体（含格鲁吉亚语 ვიდიო、孟加拉语 ভিডিও）
+        .replace(/^\s*(?:video\s*prompt|video\s*提示词)\s*[:：]\s*/gim, '视频提示词:')
+        .replace(/(?:^|\n)\s*ვიდიო\s*prompt\s*[:：]\s*/gim, '视频提示词:')
+        .replace(/(?:^|\n)\s*ვიდიო\s*[:：]\s*/gim, '视频提示词:')
+        .replace(/(?:^|\n)\s*ვიდიო\b/gim, '')
+        .replace(/(?:^|\n)\s*ভিডিও\s*prompt\s*[:：]\s*/gim, '视频提示词:')
+        .replace(/(?:^|\n)\s*ভিডিও\s*[:：]\s*/gim, '视频提示词:')
+        .replace(/(?:^|\n)\s*ভিডিও\b/gim, '')
         .replace(/\n{3,}/g, '\n\n')
         .trim();
 
