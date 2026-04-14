@@ -479,7 +479,22 @@ export const generateImage = async (
  * 上传图片到 RunningHub（/task/openapi/upload）
  */
 const uploadImage = async (apiKey: string, imageUrl: string): Promise<string> => {
-  if (imageUrl.includes('runninghub.cn') || imageUrl.includes('rh-images')) {
+  if (!imageUrl) {
+    throw new Error('图片 URL 为空');
+  }
+
+  // 检查 URL 格式
+  console.log('[RunningHub] uploadImage 开始，URL 长度:', imageUrl.length, 'URL 前缀:', imageUrl.slice(0, 50));
+  console.log('[RunningHub] URL 类型判断:', {
+    isDataUrl: imageUrl.startsWith('data:'),
+    isBlob: imageUrl.startsWith('blob:'),
+    isHttp: imageUrl.startsWith('http'),
+    isRelative: !imageUrl.startsWith('data:') && !imageUrl.startsWith('blob:') && !imageUrl.startsWith('http')
+  });
+
+  // 如果已经是 RunningHub 的图片路径，直接返回
+  if (imageUrl.includes('runninghub.cn') || imageUrl.includes('rh-images') || imageUrl.includes('/uploads/')) {
+    console.log('[RunningHub] 已是 RunningHub 图片路径，直接返回:', imageUrl);
     return imageUrl;
   }
 
@@ -496,12 +511,13 @@ const uploadImage = async (apiKey: string, imageUrl: string): Promise<string> =>
       imageBlob = new Blob([arr], { type: mimeType });
       console.log('[RunningHub] data URL 解码成功，blob size:', imageBlob.size);
     } catch (decodeError: any) {
+      console.error('[RunningHub] data URL 解码失败:', decodeError);
       throw new Error(`data URL 解码失败: ${decodeError?.message}`);
     }
   } else if (imageUrl.startsWith('blob:')) {
     // blob: URL → 多种方式尝试读取
     console.log('[RunningHub] 尝试读取 blob URL:', imageUrl.slice(0, 80));
-    
+
     // 方式1：fetch（浏览器会自动解析 blob: 协议）
     try {
       const resp = await fetch(imageUrl);
@@ -510,7 +526,7 @@ const uploadImage = async (apiKey: string, imageUrl: string): Promise<string> =>
       console.log('[RunningHub] blob URL fetch 成功，blob size:', imageBlob.size);
     } catch (fetchError: any) {
       console.warn('[RunningHub] blob URL fetch 失败:', fetchError?.message);
-      
+
       // 方式2：XMLHttpRequest 兜底
       try {
         imageBlob = await new Promise<Blob>((resolve, reject) => {
@@ -538,13 +554,29 @@ const uploadImage = async (apiKey: string, imageUrl: string): Promise<string> =>
     // 相对路径 → 拼完整地址走 fetch
     const resolvedUrl = `${window.location.origin}/${imageUrl.replace(/^\//, '')}`;
     console.log('[RunningHub] 读取相对路径图片:', resolvedUrl);
-    const resp = await fetch(resolvedUrl);
-    if (!resp.ok) throw new Error(`无法获取图片: ${resp.status} ${resp.statusText}`);
-    imageBlob = await resp.blob();
+    try {
+      const resp = await fetch(resolvedUrl);
+      if (!resp.ok) throw new Error(`无法获取图片: ${resp.status} ${resp.statusText}`);
+      imageBlob = await resp.blob();
+      console.log('[RunningHub] 相对路径图片读取成功，blob size:', imageBlob.size);
+    } catch (e: any) {
+      console.error('[RunningHub] 相对路径图片读取失败:', e?.message);
+      throw new Error(`相对路径图片读取失败: ${e?.message}。请尝试重新生成图片后再次生成视频。`);
+    }
   } else {
-    // 普通 http/https URL（云雾/Grok 等 R2 链接常无 CORS，走代理兜底）
+    // 普通 http/https URL
     console.log('[RunningHub] 读取普通 URL 图片:', imageUrl.slice(0, 120));
-    imageBlob = await fetchRemoteImageAsBlob(imageUrl);
+    try {
+      imageBlob = await fetchRemoteImageAsBlob(imageUrl);
+      console.log('[RunningHub] 普通 URL 图片读取成功，blob size:', imageBlob.size);
+    } catch (e: any) {
+      console.error('[RunningHub] 普通 URL 图片读取失败:', e?.message);
+      // 提供更友好的错误提示
+      const errorHint = e?.message?.includes('CORS') || e?.message?.includes('Failed to fetch')
+        ? '图片链接无法被服务器访问，可能是临时链接或需要先上传到 RunningHub。请尝试重新生成图片后再次生成视频。'
+        : e?.message;
+      throw new Error(`图片 URL 读取失败: ${errorHint}`);
+    }
   }
 
   const formData = new FormData();
