@@ -331,7 +331,7 @@ async function legacyJianyingExportSync(
   base: string,
   payload: Record<string, unknown>,
   options: JianyingExportOptions,
-  timeoutMs: number = 600_000,
+  timeoutMs: number = 900_000, // 增加超时到 15 分钟
 ): Promise<JianyingExportResult> {
   const legacyRes = await fetch(`${base}/export`, {
     method: 'POST',
@@ -392,8 +392,8 @@ export async function exportJianyingDraft(
     onProgress?.(10, '提交导出任务到 Railway...');
 
     try {
-      // 1. 提交异步任务
-      const startRes = await fetch(`${railwayBase}/export/start`, {
+      // 1. 提交异步任务（后端路由是 /api/jianying/export/start）
+      const startRes = await fetch(`${railwayBase}/api/jianying/export/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...payload, returnZip: true }),
@@ -404,7 +404,7 @@ export async function exportJianyingDraft(
         // 如果异步接口不可用，降级到同步
         console.warn('[JianyingExport] Railway 异步接口不可用，降级到同步模式...');
         onProgress?.(10, 'Railway 异步接口不可用，降级到同步模式...');
-        return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 600_000);
+        return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 900_000);
       }
 
       const startText = await startRes.text().catch(() => '');
@@ -415,7 +415,7 @@ export async function exportJianyingDraft(
         // 没有返回 taskId，降级到同步
         console.warn('[JianyingExport] Railway 异步任务 ID 无效，降级到同步模式...');
         onProgress?.(10, 'Railway 异步任务 ID 无效，降级到同步模式...');
-        return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 600_000);
+        return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 900_000);
       }
 
       console.log(`[JianyingExport] Railway 异步任务已提交，taskId: ${taskId}`);
@@ -486,11 +486,14 @@ async function pollForResult(
   let lastProgress = 0;
   let lastLogIndex = 0; // 跟踪已显示的日志数量
 
+  // Railway 需要添加 /api/jianying 前缀
+  const apiPrefix = usedRailway ? '/api/jianying' : '';
+
   for (let i = 0; i < maxPoll; i++) {
     await sleep(2000);
 
     try {
-      const statusRes = await fetch(`${pollBase}/export/status/${encodeURIComponent(taskId)}`);
+      const statusRes = await fetch(`${pollBase}${apiPrefix}/export/status/${encodeURIComponent(taskId)}`);
       const statusText = await statusRes.text().catch(() => '');
       const statusObj = tryParseJsonObject(statusText) as any;
       const status = String(statusObj?.status || '').toLowerCase();
@@ -511,7 +514,7 @@ async function pollForResult(
       }
 
       if (status === 'success') {
-        const resultRes = await fetch(`${pollBase}/export/result/${encodeURIComponent(taskId)}`);
+        const resultRes = await fetch(`${pollBase}${apiPrefix}/export/result/${encodeURIComponent(taskId)}`);
         const resultText = await resultRes.text().catch(() => '');
         if (!resultRes.ok) {
           const parsed = tryParseJsonObject(resultText);
