@@ -605,7 +605,10 @@ export const uploadImageToRunningHub = async (apiKey: string, imageUrl: string):
   const data = await uploadResponse.json();
   console.log('[RunningHub] 上传成功，响应数据:', JSON.stringify(data).slice(0, 200));
   if (data.code !== 0) throw new Error(`图片上传失败: ${data.msg || data.message}`);
-  return data.data?.fileName || data.data?.filePath || imageUrl;
+
+  // 返回完整的可访问 URL（相对路径转换为绝对 URL）
+  const uploadedPath = data.data?.fileName || data.data?.filePath || imageUrl;
+  return resolveRunningHubOutputUrl(uploadedPath);
 };
 
 /**
