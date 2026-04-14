@@ -100,20 +100,22 @@ export async function checkJianyingHealth(): Promise<JianyingHealth> {
 /**
  * 预热 Railway 服务（解决免费版睡眠唤醒延迟问题）
  * Railway 免费版 15 分钟无请求后会睡眠，唤醒需要 30-60 秒
+ *
+ * ⚠️ 注意：对于异步接口 /export/start 不需要预热，因为它是立即返回 taskId 的。
+ * 预热只用于同步接口 /export（需要等待完整处理）。
  */
-export async function warmupJianyingService(timeoutMs: number = 60000): Promise<boolean> {
-  const base = getJianyingApiBase();
+export async function warmupJianyingService(railwayBase: string, timeoutMs: number = 90000): Promise<boolean> {
   const startTime = Date.now();
   const maxWait = timeoutMs;
 
-  console.log(`[JianyingExport] 开始预热 Railway 服务: ${base}`);
+  console.log(`[JianyingExport] 开始预热 Railway 服务: ${railwayBase}`);
 
   while (Date.now() - startTime < maxWait) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
 
-      const res = await fetch(`${base}/health`, {
+      const res = await fetch(`${railwayBase}/health`, {
         method: 'GET',
         signal: controller.signal,
       });
@@ -327,31 +329,6 @@ export async function embedAudioDataUrlsForJianyingExport(
 }
 
 /** Railway 同步导出：预热后 POST /export，等待完整结果返回（Railway 代理会自动等待） */
-async function legacyJianyingExportSync(
-  base: string,
-  payload: Record<string, unknown>,
-  options: JianyingExportOptions,
-  timeoutMs: number = 900_000, // 增加超时到 15 分钟
-): Promise<JianyingExportResult> {
-  const legacyRes = await fetch(`${base}/export`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-
-  if (!legacyRes.ok) {
-    const legacyText = await legacyRes.text().catch(() => '');
-    const parsed = tryParseJsonObject(legacyText);
-    const detail = parsed?.error || parsed?.message || legacyText.slice(0, 400);
-    throw new Error(`导出请求失败 (${legacyRes.status})${detail ? ': ' + detail : ''}`);
-  }
-
-  const legacyText = await legacyRes.text().catch(() => '');
-  const parsed = tryParseJsonObject(legacyText);
-  if (parsed) return { ...parsed, usedRailway: base.includes('railway') } as JianyingExportResult;
-  return { ...coerceExportResultFromText(legacyText, options, true), usedRailway: base.includes('railway') } as JianyingExportResult;
-}
 
 /** 批量导出剪映草稿 */
 export async function exportJianyingDraft(
@@ -379,202 +356,190 @@ export async function exportJianyingDraft(
   const isRailway = hasRailwayConfig && base === railwayBase;
   const isLocal = isJianyingLocalSiteOrigin();
 
-  // 调试信息
   console.log('[JianyingExport] base:', base);
   console.log('[JianyingExport] railwayBase:', railwayBase);
   console.log('[JianyingExport] hasRailwayConfig:', hasRailwayConfig);
-  console.log('[JianyingExport] isRailway:', isRailway);
   console.log('[JianyingExport] isLocal:', isLocal);
 
-  // 检测本地服务是否可用
-  let localServiceAvailable = false;
+  // ── 优先：本地服务（本地开发 + 服务可用）────────────────────────
   if (isLocal) {
+    let localOk = false;
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      const tid = setTimeout(() => controller.abort(), 3000);
       const res = await fetch('/api/jianying/health', { signal: controller.signal });
-      clearTimeout(timeoutId);
-      localServiceAvailable = res.ok;
-      console.log('[JianyingExport] 本地服务状态:', localServiceAvailable ? '可用' : '不可用');
+      clearTimeout(tid);
+      localOk = res.ok;
     } catch {
-      console.log('[JianyingExport] 本地服务状态: 不可用');
+      /* 不可用 */
+    }
+
+    if (localOk) {
+      console.log('[JianyingExport] 本地服务可用，使用本地导出...');
+      onProgress?.(5, '使用本地服务导出...');
+      return await localExport(payload, base, options, onProgress);
+    } else {
+      console.log('[JianyingExport] 本地服务不可用，切换到 Railway...');
+      onProgress?.(5, '本地服务不可用，切换到 Railway...');
     }
   }
 
-  // 决策：优先使用本地服务（如果可用），否则使用 Railway
-  const useLocal = isLocal && localServiceAvailable;
+  // ── 回退：Railway 异步接口（立即提交，不预热）─────────────────
+  if (hasRailwayConfig) {
+    console.log('[JianyingExport] 提交导出任务到 Railway（异步模式）...');
+    onProgress?.(5, 'Railway 异步任务提交中...');
+    const result = await railwayExportAsync(railwayBase, payload, options, onProgress);
+    if (result._handled) return result._result as JianyingExportResult;
 
-  // Railway 预热（免费版睡眠后唤醒需要 30-60 秒）
-  if (hasRailwayConfig && !useLocal) {
-    console.log('[JianyingExport] 检测到 Railway，预热服务...');
-    onProgress?.(2, 'Railway 服务唤醒中（首次约需 60 秒）...');
-    await warmupJianyingService(90000);
-    onProgress?.(5, '服务已唤醒，开始导出...');
-  } else if (hasRailwayConfig && useLocal) {
-    console.log('[JianyingExport] 本地服务可用，使用本地导出...');
-    onProgress?.(5, '使用本地服务导出...');
-  } else {
-    onProgress?.(5, '准备导出...');
+    // 异步失败，降级到同步
+    console.warn('[JianyingExport] Railway 异步失败，降级到同步模式...');
+    onProgress?.(10, 'Railway 异步失败，降级到同步导出...');
+    return await railwayExportSync(railwayBase, payload, options, 900_000);
   }
 
-  // Railway 用异步 /export/start 接口 + 轮询，实现实时进度显示
-  if (hasRailwayConfig && !useLocal) {
-    onProgress?.(10, '提交导出任务到 Railway（异步模式）...');
-    const asyncEndpoint = `${railwayBase}/export/start`;
-    console.log('[JianyingExport] 异步接口地址:', asyncEndpoint);
+  // ── 无 Railway：本地同步兜底 ────────────────────────────────
+  console.log('[JianyingExport] 无 Railway 配置，使用本地同步模式...');
+  onProgress?.(5, '准备本地同步导出...');
+  return await localExport(payload, base, options, onProgress);
+}
 
-    try {
-      // 1. 提交异步任务（railwayBase 已包含 /api/jianying）
-      const startRes = await fetch(asyncEndpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...payload, returnZip: true }),
-        signal: AbortSignal.timeout(30000),
-      });
+// ── 本地导出（优先异步，降级同步）──────────────────────────────────
+async function localExport(
+  payload: Record<string, unknown>,
+  base: string,
+  options: JianyingExportOptions,
+  onProgress?: (progress: number, message: string) => void,
+): Promise<JianyingExportResult> {
+  onProgress?.(10, '提交本地任务...');
 
-      console.log('[JianyingExport] 异步接口响应状态:', startRes.status, startRes.statusText);
+  // 尝试本地异步接口
+  try {
+    const startRes = await fetch('/api/jianying/export/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10000),
+    });
 
-      // 修复：即使状态码不是 200/201，也要尝试解析响应体获取错误信息
-      const responseText = await startRes.text().catch(() => '');
-      const startObj = tryParseJsonObject(responseText) as any;
+    const startText = await startRes.text().catch(() => '');
 
-      if (!startRes.ok) {
-        // 从响应中提取错误信息
-        const errorDetail = startObj?.error || startObj?.message || responseText.slice(0, 400) || `HTTP ${startRes.status}`;
-        console.warn('[JianyingExport] Railway 异步接口不可用，降级到同步模式... 响应:', errorDetail.slice(0, 200));
-        onProgress?.(10, `Railway 异步接口不可用 (${startRes.status})，降级到同步模式...`);
-        return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 900_000);
-      }
-
-      const taskId = startObj?.taskId;
-      console.log('[JianyingExport] 异步提交响应:', startObj);
-
-      if (!taskId) {
-        // 没有返回 taskId，降级到同步
-        console.warn('[JianyingExport] Railway 异步任务 ID 无效，降级到同步模式...');
-        onProgress?.(10, 'Railway 异步任务 ID 无效，降级到同步模式...');
-        return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 900_000);
-      }
-
-      console.log(`[JianyingExport] Railway 异步任务已提交，taskId: ${taskId}`);
-      onProgress?.(10, 'Railway 任务已提交，等待处理...');
-
-      // 2. 轮询获取任务结果（实时显示 Railway 日志）
-      return await pollForResult(taskId, railwayBase, true, options, onProgress);
-    } catch (e: any) {
-      // 异步接口出错，降级到同步
-      console.error('[JianyingExport] Railway 异步请求失败，错误:', e.message);
-      // 修复：确保错误信息不为空
-      const errorMsg = e.message || '网络请求失败';
-      onProgress?.(10, `Railway 异步请求失败: ${errorMsg}，降级到同步模式...`);
-      return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 900_000);
-    }
-  }
-
-  // 本地服务可用：使用本地接口
-  if (useLocal) {
-    console.log('[JianyingExport] 使用本地服务导出...');
-    onProgress?.(5, '使用本地服务导出...');
-    try {
-      // 尝试本地异步接口
-      const startRes = await fetch('/api/jianying/export/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(10000),
-      });
-
-      const startText = await startRes.text().catch(() => '');
-      
-      // 修复：处理各种错误状态码
-      if (!startRes.ok) {
-        const parsed = tryParseJsonObject(startText);
-        const errMsg = parsed?.error || parsed?.message || startText.slice(0, 400) || `HTTP ${startRes.status}`;
-        // 404 或其他客户端错误，降级到同步
-        if (startRes.status === 404 || startRes.status === 400) {
-          console.log('[JianyingExport] 本地服务不支持异步，降级到同步模式...');
-          return legacyJianyingExportSync(base, payload, options);
-        }
-        throw new Error(errMsg);
-      }
-
+    if (startRes.ok) {
       const startObj = tryParseJsonObject(startText) as any;
       const taskId = startObj?.taskId;
-      if (!taskId) {
-        console.log('[JianyingExport] 本地异步接口未返回 taskId，降级到同步模式...');
-        return legacyJianyingExportSync(base, payload, options);
+      if (taskId) {
+        console.log(`[JianyingExport] 本地任务已提交，taskId: ${taskId}`);
+        onProgress?.(15, '任务提交成功，等待处理...');
+        return await pollForResult(taskId, base, false, options, onProgress);
       }
-
-      console.log(`[JianyingExport] 本地任务已提交，taskId: ${taskId}`);
-      onProgress?.(10, '本地任务已提交，等待处理...');
-      return await pollForResult(taskId, base, false, options, onProgress);
-    } catch (e: any) {
-      console.error('[JianyingExport] 本地服务出错:', e.message);
-      // 修复：确保错误信息不为空，并调用 onProgress 更新状态
-      const errorMsg = e.message || '服务连接失败';
-      onProgress?.(5, `本地服务出错: ${errorMsg}`);
-      
-      // 降级到 Railway
-      if (hasRailwayConfig) {
-        onProgress?.(10, '降级到 Railway 服务...');
-        return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 900_000);
-      }
-      throw e;
     }
+
+    // 异步失败（404/非 200/无 taskId），降级同步
+    console.log('[JianyingExport] 本地异步不可用，降级到同步模式...');
+    onProgress?.(10, '本地服务降级到同步导出...');
+  } catch (e: any) {
+    console.warn('[JianyingExport] 本地异步请求失败:', e.message);
+    onProgress?.(10, '本地服务降级到同步导出...');
   }
 
-  // 无 Railway 配置：使用本地同步接口
-  if (!hasRailwayConfig) {
-    console.log('[JianyingExport] 无 Railway 配置，使用本地同步模式...');
-    onProgress?.(5, '准备本地同步导出...');
-    try {
-      const startRes = await fetch(`${base}/export/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(5000),
-      });
+  // 同步兜底
+  return await localExportSync(base, payload, options, 600_000);
+}
 
-      const startText = await startRes.text().catch(() => '');
-      
-      if (!startRes.ok) {
-        // 尝试同步接口
-        const syncRes = await fetch(`${base}/export`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(600000), // 10分钟超时
-        });
-        
-        if (!syncRes.ok) {
-          const errText = await syncRes.text().catch(() => '');
-          const parsed = tryParseJsonObject(errText);
-          throw new Error(parsed?.error || parsed?.message || errText.slice(0, 400) || `HTTP ${syncRes.status}`);
-        }
-        
-        const syncText = await syncRes.text().catch(() => '');
-        const parsed = tryParseJsonObject(syncText);
-        if (parsed) return parsed as JianyingExportResult;
-        return coerceExportResultFromText(syncText, options, true);
-      }
+async function localExportSync(
+  base: string,
+  payload: Record<string, unknown>,
+  options: JianyingExportOptions,
+  timeoutMs: number,
+): Promise<JianyingExportResult> {
+  try {
+    const res = await fetch(`${base}/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
 
-      const startObj = tryParseJsonObject(startText) as any;
-      const taskId = startObj?.taskId;
-      if (!taskId) {
-        return legacyJianyingExportSync(base, payload, options);
-      }
-
-      onProgress?.(10, '任务已提交，等待处理...');
-      return await pollForResult(taskId, base, false, options, onProgress);
-    } catch (e: any) {
-      const errorMsg = e.message || '服务连接失败';
-      onProgress?.(5, `错误: ${errorMsg}`);
-      throw new Error(errorMsg);
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      const parsed = tryParseJsonObject(text);
+      const detail = parsed?.error || parsed?.message || text.slice(0, 400);
+      throw new Error(`本地同步导出失败 (${res.status})${detail ? ': ' + detail : ''}`);
     }
+
+    const parsed = tryParseJsonObject(text);
+    if (parsed) return parsed as JianyingExportResult;
+    return coerceExportResultFromText(text, options, true);
+  } catch (e: any) {
+    throw new Error(`本地同步导出失败: ${e.message}`);
+  }
+}
+
+// ── Railway 异步导出（核心：立即提交，不预热）─────────────────────
+async function railwayExportAsync(
+  railwayBase: string,
+  payload: Record<string, unknown>,
+  options: JianyingExportOptions,
+  onProgress?: (progress: number, message: string) => void,
+): Promise<{ _handled: true; _result: JianyingExportResult } | { _handled: false }> {
+  try {
+    const startRes = await fetch(`${railwayBase}/export/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...payload, returnZip: true }),
+      signal: AbortSignal.timeout(30000),
+    });
+
+    const responseText = await startRes.text().catch(() => '');
+    const startObj = tryParseJsonObject(responseText) as any;
+
+    if (!startRes.ok || !startObj?.taskId) {
+      const errDetail = startObj?.error || startObj?.message || responseText.slice(0, 300);
+      console.warn('[JianyingExport] Railway 异步接口失败:', errDetail);
+      onProgress?.(10, `Railway 异步失败: ${errDetail}，降级同步...`);
+      return { _handled: false };
+    }
+
+    const taskId = startObj.taskId;
+    console.log(`[JianyingExport] Railway 任务已提交，taskId: ${taskId}`);
+    onProgress?.(15, 'Railway 任务提交成功，等待处理...');
+
+    const result = await pollForResult(taskId, railwayBase, true, options, onProgress);
+    return { _handled: true, _result: result };
+  } catch (e: any) {
+    console.warn('[JianyingExport] Railway 异步请求异常:', e.message);
+    return { _handled: false };
+  }
+}
+
+// ── Railway 同步导出（降级用，需要预热）──────────────────────────
+async function railwayExportSync(
+  railwayBase: string,
+  payload: Record<string, unknown>,
+  options: JianyingExportOptions,
+  timeoutMs: number,
+): Promise<JianyingExportResult> {
+  // 同步接口需要预热（Railway 睡眠后唤醒需要时间）
+  onProgress?.(5, 'Railway 同步预热中（首次约需 60 秒）...');
+  await warmupJianyingService(railwayBase, 90000);
+
+  onProgress?.(20, 'Railway 预热完成，开始同步导出...');
+  const res = await fetch(`${railwayBase}/export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...payload, returnZip: true }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+
+  const text = await res.text().catch(() => '');
+  if (!res.ok) {
+    const parsed = tryParseJsonObject(text);
+    const detail = parsed?.error || parsed?.message || text.slice(0, 400);
+    throw new Error(`Railway 同步导出失败 (${res.status})${detail ? ': ' + detail : ''}`);
   }
 
-  // 理论上不会走到这里
-  throw new Error('未知的导出配置');
+  const parsed = tryParseJsonObject(text);
+  if (parsed) return { ...parsed, usedRailway: true } as JianyingExportResult;
+  return { ...coerceExportResultFromText(text, options, true), usedRailway: true } as JianyingExportResult;
 }
 
 /** 轮询获取任务结果 */
