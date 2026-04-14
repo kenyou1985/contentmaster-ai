@@ -375,22 +375,33 @@ export async function exportJianyingDraft(
 
   const base = getJianyingApiBase();
   const railwayBase = (import.meta.env.VITE_JIANYING_API_BASE || '').replace(/\/$/, '');
-  const isRailway = base === railwayBase && railwayBase.includes('railway');
+  const hasRailwayConfig = railwayBase.includes('railway') && railwayBase.length > 0;
+  const isRailway = hasRailwayConfig && base === railwayBase;
+
+  // 调试信息
+  console.log('[JianyingExport] base:', base);
+  console.log('[JianyingExport] railwayBase:', railwayBase);
+  console.log('[JianyingExport] hasRailwayConfig:', hasRailwayConfig);
+  console.log('[JianyingExport] isRailway:', isRailway);
+  console.log('[JianyingExport] isJianyingLocalSiteOrigin():', isJianyingLocalSiteOrigin());
 
   // Railway 预热（免费版睡眠后唤醒需要 30-60 秒）
-  if (isRailway && !isJianyingLocalSiteOrigin()) {
+  if (hasRailwayConfig && !isJianyingLocalSiteOrigin()) {
     console.log('[JianyingExport] 检测到 Railway，预热服务...');
-    console.log('[JianyingExport] railwayBase:', railwayBase);
     onProgress?.(2, 'Railway 服务唤醒中（首次约需 60 秒）...');
     await warmupJianyingService(90000);
     onProgress?.(5, '服务已唤醒，开始导出...');
+  } else if (hasRailwayConfig && isJianyingLocalSiteOrigin()) {
+    // 本地开发但配置了 Railway，强制使用 Railway 异步接口
+    console.log('[JianyingExport] 本地开发模式，强制使用 Railway 异步接口...');
+    onProgress?.(5, '使用 Railway 异步导出...');
   } else {
     onProgress?.(5, '准备导出...');
   }
 
   // Railway 用异步 /export/start 接口 + 轮询，实现实时进度显示
-  if (isRailway && !isJianyingLocalSiteOrigin()) {
-    onProgress?.(10, '提交导出任务到 Railway...');
+  if (hasRailwayConfig) {
+    onProgress?.(10, '提交导出任务到 Railway（异步模式）...');
     const asyncEndpoint = `${railwayBase}/export/start`;
     console.log('[JianyingExport] 异步接口地址:', asyncEndpoint);
 
@@ -433,13 +444,14 @@ export async function exportJianyingDraft(
       return await pollForResult(taskId, railwayBase, true, options, onProgress);
     } catch (e: any) {
       // 异步接口出错，降级到同步
-      console.warn('[JianyingExport] Railway 异步请求失败，降级到同步模式... 错误:', e.message, e.stack);
-      onProgress?.(10, 'Railway 异步请求失败，降级到同步模式...');
+      console.error('[JianyingExport] Railway 异步请求失败，错误:', e.message);
+      onProgress?.(10, `Railway 异步请求失败: ${e.message}，降级到同步模式...`);
       return legacyJianyingExportSync(railwayBase, { ...payload, returnZip: true }, options, 900_000);
     }
   }
 
-  // 本地开发：尝试 /export/start 异步接口，失败则降级同步
+  // 本地开发（无 Railway 配置）：使用本地同步接口
+  onProgress?.(5, '准备本地导出...');
   try {
     const startRes = await fetch(`${base}/export/start`, {
       method: 'POST',
