@@ -477,8 +477,9 @@ export const generateImage = async (
 
 /**
  * 上传图片到 RunningHub（/task/openapi/upload）
+ * 导出供其他模块使用（如即梦图生视频需要先上传图片到 RunningHub）
  */
-const uploadImage = async (apiKey: string, imageUrl: string): Promise<string> => {
+export const uploadImageToRunningHub = async (apiKey: string, imageUrl: string): Promise<string> => {
   if (!imageUrl) {
     throw new Error('图片 URL 为空');
   }
@@ -718,7 +719,7 @@ export const generateVideo = async (
       let uploadedImagePath: string | undefined;
       if (options.image_url) {
         try {
-          uploadedImagePath = await uploadImage(apiKey, options.image_url);
+          uploadedImagePath = await uploadImageToRunningHub(apiKey, options.image_url);
           console.log('[RunningHub] LTX-2 图片上传成功:', uploadedImagePath);
         } catch (e: any) {
           throw new Error(`图片上传失败: ${e.message}`);
@@ -771,7 +772,7 @@ export const generateVideo = async (
 
     let uploadedImagePath: string | undefined;
     try {
-      uploadedImagePath = await uploadImage(apiKey, options.image_url);
+      uploadedImagePath = await uploadImageToRunningHub(apiKey, options.image_url);
       console.log('[RunningHub] Wan2.2 图片上传成功:', uploadedImagePath);
     } catch (e: any) {
       throw new Error(`图片上传失败: ${e.message}. 图生视频需要先上传图片`);

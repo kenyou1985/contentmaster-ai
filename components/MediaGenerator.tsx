@@ -15,6 +15,7 @@ import {
   checkTaskStatus as checkRunningHubTaskStatus,
   generateAudioWithRetry,
   uploadAudioToRunningHub,
+  uploadImageToRunningHub,
   resolveRunningHubOutputUrl,
   type RunningHubImageOptions,
   type RunningHubVideoOptions,
@@ -3200,7 +3201,20 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     try {
       if (isJimengVideoModel) {
         const ratio = selectedVideoOrientation === 'portrait' ? '9:16' : '16:9';
-        const selectedImageUrl = hasImages ? shotImages[shot.selectedImageIndex!] : undefined;
+        let processedImageUrl = hasImages ? shotImages[shot.selectedImageIndex!] : undefined;
+
+        // 如果有图片，先上传到 RunningHub 获取可访问的 URL（解决 403 问题）
+        if (processedImageUrl && runningHubApiKey) {
+          try {
+            appendTerminalLog('VideoGen', `镜头${shot.number}: 即梦图生视频，先上传图片到 RunningHub...`);
+            processedImageUrl = await uploadImageToRunningHub(runningHubApiKey, processedImageUrl);
+            appendTerminalLog('VideoGen', `镜头${shot.number}: 图片上传成功，开始提交即梦视频任务`);
+          } catch (uploadError: any) {
+            appendTerminalLog('VideoGen', `镜头${shot.number}: 图片上传失败 — ${uploadError.message}`);
+            throw new Error(`图片上传到 RunningHub 失败: ${uploadError.message}`);
+          }
+        }
+
         const submit = await generateJimengVideoAsync(
           {
             model: selectedVideoModel,
@@ -3208,7 +3222,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             ratio,
             resolution: (selectedVideoSize || '720p').toLowerCase(),
             duration: selectedVideoDuration || selectedModel?.duration || 5,
-            file_paths: selectedImageUrl ? [selectedImageUrl] : [],
+            file_paths: processedImageUrl ? [processedImageUrl] : [],
           },
           { sessionId: jimengSessionId }
         );
