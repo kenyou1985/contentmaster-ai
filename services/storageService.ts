@@ -724,36 +724,60 @@ export async function backfillLocalStorageFromIDB(): Promise<void> {
 
 /** 同步兼容 getItem（localStorage 优先；无则同步查 IndexedDB 兜底） */
 export function lsGetItem<T>(key: string, defaultValue: T): T {
+  // 优先从 localStorage 读取
   try {
-    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
-    if (raw !== null) {
-      return JSON.parse(raw) as T;
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(key);
+      if (raw !== null) {
+        return JSON.parse(raw) as T;
+      }
     }
   } catch { /* ignore */ }
 
-  // localStorage 为空 → 同步尝试从 IndexedDB 读取（不影响现有同步接口契约）
+  // localStorage 为空 → 尝试 IndexedDB 并同步回填 localStorage（不影响接口契约）
   void _syncIDBGetThenSet(key, defaultValue);
   return defaultValue;
 }
 
-// 同步从 IndexedDB 读取并回填 localStorage（不阻塞，不等待）
+// 同步从 IndexedDB 读取并回填 localStorage
 async function _syncIDBGetThenSet<T>(key: string, defaultValue: T): Promise<void> {
   try {
     const entry = await get<{ k: string; v: T }>('appData', key);
     if (entry?.v !== undefined) {
-      if (typeof localStorage !== 'undefined') {
-        try { localStorage.setItem(key, JSON.stringify(entry.v)); } catch { /* ignore */ }
+      const serialized = JSON.stringify(entry.v);
+      const isLargeData = serialized.length > 500_000 || _hasDataUrl(entry.v);
+      // 大数据不写回 localStorage（避免再次超出限制），小数据正常写回
+      if (!isLargeData && typeof localStorage !== 'undefined') {
+        try { localStorage.setItem(key, serialized); } catch { /* ignore */ }
       }
     }
   } catch { /* ignore */ }
 }
 
-/** 同步兼容 setItem（同步写 localStorage，后台写 IndexedDB） */
+/** 同步兼容 setItem（同步写 localStorage，后台写 IndexedDB）
+ *
+ * 对于包含 base64 图片的大数据，跳过 localStorage（5MB 硬限制），
+ * 直接写 IndexedDB，避免 QuotaExceededError 被静默吞掉导致数据丢失。
+ */
 export function lsSetItem<T>(key: string, value: T): void {
-  try {
-    const raw = JSON.stringify(value);
+  const serialized = JSON.stringify(value);
+  const isLargeData =
+    serialized.length > 500_000 || // 序列化后超过 500KB → 很可能是 base64 图片
+    (typeof value === 'object' && value !== null && _hasDataUrl(value));
+
+  if (isLargeData) {
+    // 大数据直接写 IndexedDB，不碰 localStorage（避免 QuotaExceededError）
+    void _asyncIDBWrite(key, value);
+    // 尝试清理 localStorage 中残留的旧数据
     if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(key, raw);
+      try { localStorage.removeItem(key); } catch { /* ignore */ }
+    }
+    return;
+  }
+
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(key, serialized);
     }
     // 后台异步写入 IndexedDB（不阻塞 UI）
     void _asyncIDBWrite(key, value);
@@ -761,6 +785,16 @@ export function lsSetItem<T>(key: string, value: T): void {
     // localStorage 写失败时仍然尝试写 IndexedDB
     void _asyncIDBWrite(key, value);
   }
+}
+
+/** 检测对象/数组中是否包含 data: URL（base64 图片） */
+function _hasDataUrl(value: unknown): boolean {
+  if (typeof value === 'string') return value.startsWith('data:');
+  if (Array.isArray(value)) return value.some(_hasDataUrl);
+  if (typeof value === 'object' && value !== null) {
+    return Object.values(value as Record<string, unknown>).some(_hasDataUrl);
+  }
+  return false;
 }
 
 /** 同步兼容 removeItem */
