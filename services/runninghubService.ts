@@ -238,15 +238,26 @@ const pollOpenApiV2ForOutputUrls = async (
     }
 
     const st = String(data.status || '').toUpperCase();
+
     if (st === 'SUCCESS') {
       const urls = extractUrlsFromOpenApiV2Results(data);
       if (urls.length > 0) return urls;
+      // 任务 SUCCESS 但首次 query 未拿到 URL，立即尝试 get-outputs 获取
+      // 注意：pollOpenApiV2ForOutputUrls 被图片生成调用，未暴露 doOutputs，需用 fetchOpenApiV2Query 重试
+      const retryData = await fetchOpenApiV2Query(apiKey, taskId);
+      const retryUrls = extractUrlsFromOpenApiV2Results(retryData || data);
+      if (retryUrls.length > 0) return retryUrls;
     }
     if (st === 'FAILED') {
       throw new Error(String(errMsg || '任务失败'));
     }
+    // 每 15 次轮询（约 45 秒）输出日志
+    const elapsed = Date.now() - t0;
+    if (elapsed > 0 && elapsed % (15 * intervalMs) < intervalMs) {
+      console.log(`[RunningHub] 任务轮询中 ${Math.round(elapsed / 1000)}s…`);
+    }
   }
-  throw new Error('任务超时，请稍后在 RunningHub 控制台查看任务详情');
+  throw new Error(`任务超时（${Math.round(maxMs / 1000)}s），请稍后在 RunningHub 控制台查看任务 ${taskId?.slice(0, 16)}… 是否已完成`);
 };
 
 const ASPECT_PRESETS_COLON = [
@@ -978,8 +989,12 @@ const pollRunningHubUntilMediaUrl = async (
       throw new Error(result.error || '配音任务失败');
     }
     if (result.url) return resolveRunningHubOutputUrl(result.url);
+    // 每 15 次轮询（约 37.5 秒）输出一次日志，让用户感知到仍在等待
+    if (attempt > 0 && attempt % 15 === 0) {
+      console.log(`[RunningHub] 配音轮询中 ${Math.round((attempt * intervalMs) / 1000)}s…`);
+    }
   }
-  throw new Error('轮询超时，未获取到音频地址');
+  throw new Error(`轮询超时（${maxAttempts * intervalMs / 1000}s），请稍后在 RunningHub 控制台查看任务 ${taskId?.slice(0, 16)}… 是否已完成`);
 };
 
 /**
@@ -1105,6 +1120,7 @@ export type GenerateAudioRetryHooks = {
 
 /**
  * 与 {@link generateAudio} 相同，但在 success===false 时自动重试，缓解网络抖动与服务器显存/队列瞬时失败。
+ * 轮询超时时额外尝试直接查询任务状态（后台可能已完成但轮询未能获取 URL）。
  */
 export const generateAudioWithRetry = async (
   apiKey: string,
@@ -1116,6 +1132,24 @@ export const generateAudioWithRetry = async (
   for (let i = 0; i < maxAttempts; i++) {
     last = await generateAudio(apiKey, options);
     if (last.success) return last;
+
+    // 轮询超时时，尝试直接查询任务状态（后台可能已完成但轮询未获取到 URL）
+    if (last.error?.includes('轮询超时') || last.error?.includes('超时')) {
+      const taskId = last.taskId;
+      if (taskId) {
+        hooks?.onRetry?.({
+          attemptNumber: i + 1,
+          maxAttempts,
+          error: `轮询超时，尝试直接查询任务 ${taskId.slice(0, 16)}…`,
+          delayMs: 0,
+        });
+        const statusResult = await checkTaskStatus(apiKey, taskId);
+        if (statusResult.success && statusResult.url) {
+          return { ...statusResult, success: true };
+        }
+      }
+    }
+
     if (i < maxAttempts - 1) {
       const delayMs = 700 * (i + 1) * (i + 1);
       const errStr = (last.error || '失败').slice(0, 160);
@@ -1262,6 +1296,21 @@ export const checkTaskStatus = async (
             url: resolveRunningHubOutputUrl(mediaUrl),
           };
         }
+        // RunningHub 任务状态为 SUCCESS 但首次 query 未拿到 URL
+        // 立即尝试 get-outputs 获取 URL（避免轮询超时后才拿到结果）
+        const out = await doOutputs();
+        const outUrl = extractFromResults(out.data) || extractFromData(out.data);
+        if (outUrl) {
+          return {
+            success: true,
+            data: out.data ?? q,
+            taskId,
+            status: 'SUCCESS',
+            progress: 100,
+            url: resolveRunningHubOutputUrl(outUrl),
+          };
+        }
+        // 任务成功但 URL 提取失败，告知调用方继续轮询以获取完整结果
         return {
           success: true,
           data: q,
@@ -1335,6 +1384,7 @@ export const checkTaskStatus = async (
     }
 
     if (stCode === 0 && taskStatus === 'SUCCESS') {
+      // RunningHub 任务状态 SUCCESS 但首次 query 未拿到 URL，立即再次尝试获取
       const retry = await doOutputs();
       videoUrl = extractVideoUrlFromParsed(retry.data);
       if (videoUrl) {
@@ -1357,6 +1407,18 @@ export const checkTaskStatus = async (
     }
 
     if (stCode === 0 && (taskStatus === 'RUNNING' || taskStatus === 'QUEUED' || taskStatus == null)) {
+      // 每次轮询 RUNNING 状态时也尝试获取 URL（避免任务完成但轮询结束才拿到结果）
+      const runningUrl = extractFromResults(out.data) || extractFromData(out.data);
+      if (runningUrl) {
+        return {
+          success: true,
+          data: out.data ?? taskInner,
+          taskId,
+          status: 'SUCCESS',
+          progress: 100,
+          url: resolveRunningHubOutputUrl(runningUrl),
+        };
+      }
       const prog =
         typeof taskInner?.progress === 'number'
           ? taskInner.progress
