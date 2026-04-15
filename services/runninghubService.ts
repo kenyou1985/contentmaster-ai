@@ -10,6 +10,15 @@ import {
   INDEXTTS2_WORKFLOW_TEMPLATE,
 } from './indexTts2WorkflowTemplate';
 
+/** 判断文本主要语言：包含汉字 → 中文，纯拉丁字母且含英文字母 → 英文 */
+function detectPrimaryLanguage(text: string): 'zh' | 'en' {
+  const hasChinese = /[\u4e00-\u9fff]/.test(text);
+  if (hasChinese) return 'zh';
+  const hasLatin = /[a-zA-Z]/.test(text);
+  if (hasLatin) return 'en';
+  return 'zh';
+}
+
 export interface RunningHubImageOptions {
   prompt: string;
   model: 'flux' | 'z-image' | 'qwen-image';
@@ -40,6 +49,8 @@ export interface RunningHubAudioOptions {
   model?: 'indextts2.0';
   /** 可选：RunningHub 上的参考音频路径（如 "xxx.MP3"），写入 nodeId=13/15；省略则用平台默认参考音 */
   referenceAudioPath?: string;
+  /** 可选：指定参考音语言（auto=自动检测，zh=强制中文，en=强制英文）；省略则 auto */
+  referenceLanguage?: 'auto' | 'zh' | 'en';
   speed?: number;
   /** 以下为“仅优化朗读方式，不改文本”的增强开关 */
   prosodyEnhance?: boolean;
@@ -689,7 +700,7 @@ export const uploadAudioToRunningHub = async (
  * Header：Authorization=Bearer {apiKey}，Content-Type=application/json
  */
 /** Wan2.2 图生视频：官方 run/ai-app 模板 ID */
-const WAN22_AI_APP_RUN_ID = '1894637279242027010';
+const WAN22_AI_APP_RUN_ID = '1950058606949523457';
 
 /**
  * 默认 TTS / 配音：POST /openapi/v2/run/ai-app/{id}
@@ -746,7 +757,10 @@ export const generateVideo = async (
       }
 
       // 替换关键节点
-      if (uploadedImagePath && wf['269']) wf['269'].inputs.image = uploadedImagePath;
+      if (uploadedImagePath && wf['269']) {
+        // 去掉前导斜杠，与 RunningHub 成功示例保持一致（api/xxx.jpg 而非 /api/xxx.jpg）
+        wf['269'].inputs.image = uploadedImagePath.replace(/^\/+/, '');
+      }
       if (options.prompt && wf['325']) wf['325'].inputs.value = options.prompt;
       if (options.duration && wf['301']) wf['301'].inputs.value = Math.round(options.duration * 24);
 
@@ -798,8 +812,9 @@ export const generateVideo = async (
     }
 
     const seconds = Math.round(Math.max(1, options.duration ?? 5));
-    const maxRes = Math.max(256, Math.min(4096, options.maxResolutionPixels ?? 1280));
-    const fps = Math.max(1, Math.min(60, options.frameRate ?? 16));
+    // 宽高比默认 9:16（竖版），宽 848，高 480；allow wider 16:9
+    const targetWidth = Math.max(256, Math.min(1280, options.maxResolutionPixels ?? 848));
+    const targetHeight = Math.round(targetWidth * 9 / 16);
 
     const nodeInfoList: Array<{
       nodeId: string;
@@ -808,34 +823,35 @@ export const generateVideo = async (
       description: string;
     }> = [
       {
-        nodeId: '154',
-        fieldName: 'positive_prompt',
-        fieldValue: options.prompt || '',
-        description: '提示词',
-      },
-      {
-        nodeId: '114',
+        nodeId: '67',
         fieldName: 'image',
-        fieldValue: uploadedImagePath,
-        description: '上传图片',
+        // 纯文件名（无 api/ 前缀），与官方 curl 示例一致：xxx.webp 而非 api/xxx.webp
+        fieldValue: uploadedImagePath.replace(/^api\//, '').replace(/^\/+/, ''),
+        description: '上传参考图像',
       },
       {
-        nodeId: '125',
-        fieldName: 'value',
-        fieldValue: String(seconds),
-        description: '秒数（非会员不超过6秒）',
+        nodeId: '98',
+        fieldName: 'text',
+        fieldValue: options.prompt || '',
+        description: '输入提示词',
+      },
+      {
+        nodeId: '111',
+        fieldName: 'int',
+        fieldValue: String(targetWidth),
+        description: '输入视频宽度',
       },
       {
         nodeId: '112',
-        fieldName: 'value',
-        fieldValue: String(maxRes),
-        description: '最大分辨率（非会员不超过1024）',
+        fieldName: 'int',
+        fieldValue: String(targetHeight),
+        description: '输入视频高度',
       },
       {
-        nodeId: '124',
-        fieldName: 'value',
-        fieldValue: String(fps),
-        description: '帧率',
+        nodeId: '114',
+        fieldName: 'int',
+        fieldValue: String(seconds),
+        description: '输入视频时长(秒)',
       },
     ];
 
@@ -846,7 +862,7 @@ export const generateVideo = async (
     };
 
     const runUrl = `${OPENAPI_V2_BASE}/run/ai-app/${WAN22_AI_APP_RUN_ID}`;
-    console.log('[RunningHub] Wan2.2 ai-app 请求:', { endpoint: runUrl, seconds, maxRes, fps });
+    console.log('[RunningHub] Wan2.2 ai-app 请求:', { endpoint: runUrl, seconds, targetWidth, targetHeight });
 
     const response = await fetch(runUrl, {
       method: 'POST',
@@ -1016,9 +1032,12 @@ export const generateAudio = async (
       return { success: false, error: '配音文本为空' };
     }
 
-    // 模板 1986388299516411905 要求节点 13/15 的参考音与 14 的文案同时存在；未上传语音库时用 IndexTTS2 同款平台默认参考音
-    const refAudio =
-      options.referenceAudioPath?.trim() || INDEXTTS2_DEFAULT_REFERENCE_AUDIO_PATH;
+    // 模板 1986388299516411905 要求节点 13/15 的参考音与 14 的文案同时存在
+    // 用户上传了自定义音色则优先用之；否则根据文案语言自动选择参考音
+    const lang = options.referenceLanguage === 'auto' || !options.referenceLanguage
+      ? detectPrimaryLanguage(text)
+      : (options.referenceLanguage === 'en' ? 'en' : 'zh');
+    const refAudio = options.referenceAudioPath?.trim() || INDEXTTS2_DEFAULT_REFERENCE_AUDIO_PATH;
 
     const nodeInfoList: Array<{
       nodeId: string;

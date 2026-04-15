@@ -1,5 +1,5 @@
 /**
- * RunningHub IndexTTS2 配音工作流模板（与控制台提交参数一致）
+ * RunningHub IndexTTS2 配音工作流模板（与控制台一致）
  * workflowId 与节点 id 需与 RunningHub 上应用保持一致
  */
 

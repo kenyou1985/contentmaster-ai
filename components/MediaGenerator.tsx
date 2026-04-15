@@ -553,6 +553,10 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   /** 避免一键成片/队列 pipeline 内 await 后仍读到旧的 shots 闭包（误判「未生成出图片」） */
   const shotsRef = useRef<Shot[]>(shots);
   shotsRef.current = shots;
+  /** 当前正在播放试听的 Audio 实例（用于 play/pause 切换） */
+  const activeAudioRef = useRef<{ audio: HTMLAudioElement; shotId: string } | null>(null);
+  /** 当前在播放的 shotId（用于按钮文字切换） */
+  const [playingAudioShotId, setPlayingAudioShotId] = useState<string | null>(null);
   const [selectedImageModel, setSelectedImageModel] = useState('jimeng-5.0');
   const [selectedVideoModel, setSelectedVideoModel] = useState(VIDEO_MODELS[0].id);
   const [selectedImageRatio, setSelectedImageRatio] = useState('16:9'); // 默认横屏 16:9
@@ -2986,6 +2990,49 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     });
 
   /**
+   * 试听音频：点一次播/暂停切换（全局唯一实例，同一 shot 再次点击则暂停，否则切到新音频）
+   * 返回当前播放状态（true=正在播放，false=已暂停），便于按钮文字切换
+   */
+  const toggleAudioPlayback = async (
+    shotId: string,
+    audioUrl: string
+  ): Promise<boolean> => {
+    const src = /^https?:|^data:|^blob:/i.test(audioUrl)
+      ? audioUrl
+      : resolveRunningHubOutputUrl(audioUrl);
+
+    // 正在播放同一 shot → 暂停
+    if (activeAudioRef.current?.shotId === shotId) {
+      activeAudioRef.current.audio.pause();
+      activeAudioRef.current = null;
+      setPlayingAudioShotId(null);
+      return false;
+    }
+
+    // 停止上一个
+    if (activeAudioRef.current) {
+      activeAudioRef.current.audio.pause();
+      activeAudioRef.current = null;
+    }
+
+    const audio = new Audio(src);
+    audio.addEventListener('ended', () => {
+      activeAudioRef.current = null;
+      setPlayingAudioShotId(null);
+    });
+    try {
+      await audio.play();
+      activeAudioRef.current = { audio, shotId };
+      setPlayingAudioShotId(shotId);
+      return true;
+    } catch {
+      activeAudioRef.current = null;
+      setPlayingAudioShotId(null);
+      return false;
+    }
+  };
+
+  /**
    * 输入/输出：镜头文案/语音分镜 → 写入 voiceAudioUrl；仅 opts.playAfter===true 时自动播放（默认不播）
    * 配置云雾 Key 时默认先经 gpt-5.4-mini 口播润色，与一键配音面板共用 RunningHub TTS。
    */
@@ -3067,16 +3114,25 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         refPath = await uploadAudioToRunningHub(runningHubApiKey, selected.audioDataUrl);
         updateVoice(selected.id, { runningHubAudioPath: refPath });
       }
+      // 自动检测语言：英文文本用英文参考音，中文文本用中文参考音
+      const effectiveLang = textIsEnglish ? 'en' : 'zh';
       if (!refPath) {
-        appendTerminalLog('Voice', `镜头${shot.number}: 未使用语音库参考音，使用系统默认参考音色`);
+        appendTerminalLog(
+          'Voice',
+          `镜头${shot.number}: 使用系统参考音色（${effectiveLang}），语言检测=${effectiveLang}`
+        );
       } else {
-        appendTerminalLog('Voice', `镜头${shot.number}: TTS ai-app（参考音 ${refPath.slice(0, 28)}…）`);
+        appendTerminalLog(
+          'Voice',
+          `镜头${shot.number}: TTS ai-app（参考音 ${refPath.slice(0, 28)}…）语言=${effectiveLang}`
+        );
       }
       const r = await generateAudioWithRetry(
         runningHubApiKey,
         {
           text: speakText,
           referenceAudioPath: refPath,
+          referenceLanguage: effectiveLang,
           speed,
           prosodyEnhance: true,
           breath: true,
@@ -3120,11 +3176,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         `镜头${shot.number}: 配音完成（${probedSec != null ? `实测约 ${audioDurationSec}s` : `估算 ${audioDurationSec}s`}）`
       );
       if (playAfter) {
-        try {
-          await new Audio(playableUrl).play();
-        } catch {
-          toast.info('配音已生成，若未自动播放请检查浏览器静音策略', 4000);
-        }
+        await toggleAudioPlayback(shot.id, playableUrl);
+        toast.info('配音已生成，若未自动播放请检查浏览器静音策略', 4000);
       }
       return playableUrl;
     } catch (e: any) {
@@ -3848,6 +3901,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             </select>
           </div>
 
+          {/* 即梦 SESSION_ID */}
           {selectedImageModel.startsWith('jimeng') && (
             <div className="w-full min-w-0">
               <label className="text-[10px] text-slate-500 mb-0.5 block flex items-center gap-1">
@@ -4892,47 +4946,83 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                     >
                       重新繪圖
                     </button>
-                    <button
-                      type="button"
-                      disabled={shot.voiceGenerating}
-                      onClick={async () => {
-                        if (shot.voiceAudioUrl) {
-                          // 已有音频 → 直接试听（兼容历史相对路径 api/xxx.wav）
-                          const u = shot.voiceAudioUrl.trim();
-                          const src =
-                            /^https?:|^data:|^blob:/i.test(u) ? u : resolveRunningHubOutputUrl(u);
-                          try {
-                            await new Audio(src).play();
-                            toast.success('试听播放中', 2500);
-                          } catch {
-                            toast.error('音频播放失败，可能是浏览器静音或 URL 无效', 4000);
+                    {/* 音频：左侧试听/暂停 + 右侧重新配音 */}
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        disabled={shot.voiceGenerating}
+                        onClick={async () => {
+                          if (shot.voiceAudioUrl) {
+                            // 已有音频 → 点一次播/暂停切换
+                            const u = shot.voiceAudioUrl.trim();
+                            const isPlaying = playingAudioShotId === shot.id;
+                            if (isPlaying) {
+                              // 暂停（toggleAudioPlayback 会处理）
+                              await toggleAudioPlayback(shot.id, u);
+                            } else {
+                              const ok = await toggleAudioPlayback(shot.id, u);
+                              if (!ok) toast.error('音频播放失败，可能是浏览器静音或 URL 无效', 4000);
+                            }
+                            return;
                           }
-                          return;
-                        }
-                        // 无音频 → 先生成再试听
-                        try {
-                          await synthesizeVoiceForShot(shot, { playAfter: true });
-                          toast.success('试听播放中', 2500);
-                        } catch (e: any) {
-                          toast.error(e?.message || '配音生成失败', 6000);
-                        }
-                      }}
-                      className="text-[10px] px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded whitespace-nowrap disabled:opacity-50"
-                      title={shot.voiceAudioUrl ? '点击试听已有配音' : '使用 RunningHub 生成配音（语音库可选；未配置则用系统默认参考音）'}
-                    >
-                      {shot.voiceGenerating ? '生成中…' : shot.voiceAudioUrl ? '音频试听' : '生成音频'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void handleGenerateVideo(shot).catch(() => {});
-                      }}
-                      disabled={shot.videoGenerating || !shot.videoPrompt}
-                      className="text-[10px] px-2 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded disabled:opacity-50 whitespace-nowrap"
-                      title="制作动画（RunningHub Wan2.2 / LTX-2）"
-                    >
-                      製作動畫
-                    </button>
+                          // 无音频 → 先生成再试听
+                          try {
+                            await synthesizeVoiceForShot(shot, { playAfter: true });
+                          } catch (e: any) {
+                            toast.error(e?.message || '配音生成失败', 6000);
+                          }
+                        }}
+                        className={`text-[10px] px-2 py-1 rounded whitespace-nowrap disabled:opacity-50 ${
+                          playingAudioShotId === shot.id
+                            ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                            : 'bg-slate-700 hover:bg-slate-600 text-white'
+                        }`}
+                        title={shot.voiceAudioUrl ? '点击试听/暂停' : '使用 RunningHub 生成配音'}
+                      >
+                        {shot.voiceGenerating ? '生成中…' : playingAudioShotId === shot.id ? '暂停试听' : '音频试听'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={shot.voiceGenerating}
+                        onClick={async () => {
+                          // 重新生成：先生成（不清空旧音频），生成完再试听
+                          try {
+                            await synthesizeVoiceForShot(shot, { playAfter: true });
+                          } catch (e: any) {
+                            toast.error(e?.message || '配音生成失败', 6000);
+                          }
+                        }}
+                        className="text-[10px] px-2 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded whitespace-nowrap disabled:opacity-50"
+                        title="重新生成配音"
+                      >
+                        重新配音
+                      </button>
+                    </div>
+                    {/* 视频：左侧制作动画 + 右侧重新制作 */}
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void handleGenerateVideo(shot).catch(() => {});
+                        }}
+                        disabled={shot.videoGenerating || !shot.videoPrompt}
+                        className="text-[10px] px-2 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded disabled:opacity-50 whitespace-nowrap"
+                        title="制作动画（RunningHub Wan2.2 / LTX-2）"
+                      >
+                        製作動畫
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void handleGenerateVideo(shot, true).catch(() => {});
+                        }}
+                        disabled={shot.videoGenerating || !shot.videoPrompt}
+                        className="text-[10px] px-2 py-1 bg-orange-600 hover:bg-orange-500 text-white rounded disabled:opacity-50 whitespace-nowrap"
+                        title="重新制作动画"
+                      >
+                        重新製作
+                      </button>
+                    </div>
                     <button
                       onClick={() => {
                         setEditingShotId(shot.id);
