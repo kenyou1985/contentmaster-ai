@@ -2,7 +2,128 @@
  * 剪映草稿导出服务（前端调用层）
  * 本地开发：Vite proxy `/api/jianying` → 本机 18091，Python 直接写入剪映草稿目录。
  * 线上（Vercel）：`VITE_JIANYING_API_BASE` 指向 Railway，Linux 侧生成 ZIP 供下载。
+ *
+ * 优化：支持大批量导出（50+ 镜头），自动分批处理 + 合并 ZIP
  */
+
+import JSZip from 'jszip';
+
+// ============================================================
+// 配置常量
+// ============================================================
+
+/** 单个批次最大请求体大小（MB）- 低于 Express 500MB 限制，留有安全余量 */
+const BATCH_MAX_PAYLOAD_SIZE_MB = 300;
+
+/** 预估每个镜头的平均大小（MB）- 用于批量决策 */
+const AVG_SHOT_SIZE_MB = {
+  withImage: 3,    // 有图片的镜头
+  withAudio: 1.5,  // 有音频的镜头
+  withVideo: 15,   // 有视频的镜头
+};
+
+/** 每批最大镜头数（保守估计，避免超限） */
+const MAX_SHOTS_PER_BATCH = 20;
+
+/**
+ * 预估 shots 的总大小（MB）
+ * 注意：base64 编码后数据会膨胀约 33%
+ */
+function estimatePayloadSizeMB(shots: JianyingShot[]): number {
+  let totalMB = 0;
+  for (const shot of shots) {
+    let shotMB = 0;
+    // 图片（假设 1-3 张，平均 2 张，每张约 1.5MB 原始大小 → base64 后 2MB）
+    if (shot.imageUrl || (shot as any).imageUrls) {
+      const imgCount = Math.max(1, ((shot as any).imageUrls?.length || 0) || (shot.imageUrl ? 1 : 0));
+      shotMB += imgCount * AVG_SHOT_SIZE_MB.withImage;
+    }
+    // 音频（假设平均 1MB 原始大小 → base64 后 1.3MB）
+    if (shot.audioUrl || shot.voiceoverAudioUrl) {
+      shotMB += AVG_SHOT_SIZE_MB.withAudio;
+    }
+    // 视频（如果有的话，base64 后更大）
+    if (shot.videoUrl || (shot as any).videoUrls) {
+      shotMB += AVG_SHOT_SIZE_MB.withVideo;
+    }
+    // 其他元数据（少量）
+    shotMB += 0.1;
+    totalMB += shotMB;
+  }
+  // base64 编码膨胀系数（约 4/3 = 1.33）
+  return totalMB * 1.33;
+}
+
+/**
+ * 将 shots 数组分割成多个批次
+ */
+function splitShotsIntoBatches(shots: JianyingShot[], batchSize?: number): JianyingShot[][] {
+  const size = batchSize || MAX_SHOTS_PER_BATCH;
+  if (shots.length <= size) return [shots];
+  const batches: JianyingShot[][] = [];
+  for (let i = 0; i < shots.length; i += size) {
+    batches.push(shots.slice(i, i + size));
+  }
+  return batches;
+}
+
+/**
+ * 在浏览器端合并多个 ZIP 文件
+ * 使用 JSZip 将多个 ZIP 包合并成一个大 ZIP
+ */
+async function mergeZipFiles(
+  zipUrls: string[],
+  onProgress?: (progress: number, message: string) => void
+): Promise<Blob> {
+  const zip = new JSZip();
+  onProgress?.(0, '准备合并 ZIP 文件...');
+
+  for (let i = 0; i < zipUrls.length; i++) {
+    onProgress?.(
+      Math.round(((i + 0.5) / zipUrls.length) * 80),
+      `正在处理 ZIP ${i + 1}/${zipUrls.length}...`
+    );
+
+    try {
+      const response = await fetch(zipUrls[i]);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      const arrayBuffer = await blob.arrayBuffer();
+
+      // 解压当前 ZIP
+      const currentZip = await JSZip.loadAsync(arrayBuffer);
+
+      // 将所有文件合并到主 ZIP
+      const fileCount = Object.keys(currentZip.files).length;
+      let processedFiles = 0;
+
+      for (const [path, file] of Object.entries(currentZip.files)) {
+        if (file.dir) {
+          // 目录，检查是否已存在
+          if (!zip.folder(path)) {
+            zip.folder(path);
+          }
+        } else {
+          // 文件，直接添加到 ZIP（相同路径会覆盖）
+          zip.file(path, await file.async('uint8array'), { compression: 'DEFLATE' });
+        }
+        processedFiles++;
+
+        // 定期报告进度
+        if (processedFiles % 10 === 0 || processedFiles === fileCount) {
+          const overallProgress = 80 + Math.round(((i + processedFiles / fileCount) / zipUrls.length) * 20);
+          onProgress?.(overallProgress, `合并 ZIP ${i + 1}/${zipUrls.length}: ${processedFiles}/${fileCount} 个文件`);
+        }
+      }
+    } catch (e) {
+      console.error(`[JianyingExport] ZIP 合并失败 (${i + 1}/${zipUrls.length}):`, e);
+      throw new Error(`ZIP ${i + 1} 合并失败: ${e}`);
+    }
+  }
+
+  onProgress?.(95, '生成最终 ZIP...');
+  return zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+}
 
 /** 是否为本机/局域网访问（应走本机剪映服务，不强制 Railway ZIP） */
 export function isJianyingLocalSiteOrigin(): boolean {
@@ -82,6 +203,13 @@ export interface JianyingExportResult {
   error?: string;
   download_issue_count?: number;
   download_issues?: Array<{ shot: number; kind: string; url?: string; reason?: string }>;
+
+  // 分批导出扩展字段（可选）
+  _batched?: boolean;
+  _batchCount?: number;
+  _completedBatches?: number;
+  _batchZipUrls?: string[];
+  _mergedBlob?: Blob;
 }
 
 export interface JianyingHealth {
@@ -367,12 +495,28 @@ export async function embedAudioDataUrlsForJianyingExport(
 
 /** Railway 同步导出：预热后 POST /export，等待完整结果返回（Railway 代理会自动等待） */
 
-/** 批量导出剪映草稿 */
+/**
+ * 批量导出剪映草稿 - 智能分批处理
+ * 自动检测请求体大小，超过阈值时自动分批次处理并合并
+ */
 export async function exportJianyingDraft(
   options: JianyingExportOptions,
   onProgress?: (progress: number, message: string) => void
 ): Promise<JianyingExportResult> {
   const returnZip = shouldUseJianyingZipDownload();
+
+  // 估算 payload 大小
+  const estimatedSizeMB = estimatePayloadSizeMB(options.shots);
+  console.log(`[JianyingExport] 预估数据大小: ${estimatedSizeMB.toFixed(1)}MB (镜头数: ${options.shots.length})`);
+
+  // 如果使用 Railway ZIP 模式且大小超过阈值，启用分批导出
+  const BATCH_THRESHOLD_MB = 200; // 超过 200MB 启用分批
+  if (returnZip && estimatedSizeMB > BATCH_THRESHOLD_MB) {
+    console.log(`[JianyingExport] 检测到大体积导出 (${estimatedSizeMB.toFixed(1)}MB > ${BATCH_THRESHOLD_MB}MB)，启用分批处理...`);
+    return await exportJianyingDraftInBatches(options, onProgress);
+  }
+
+  // 否则使用原来的单次导出逻辑
   const shots = await embedAudioDataUrlsForJianyingExport(options.shots, returnZip);
 
   const payload = {
@@ -722,4 +866,213 @@ async function pollForResult(
   }
 
   throw new Error('导出超时（10分钟），请重试');
+}
+
+// ============================================================
+// 分批导出 + ZIP 合并（解决 50+ 镜头大文件导出问题）
+// ============================================================
+
+/**
+ * 分批导出剪映草稿并合并 ZIP
+ *
+ * 工作原理：
+ * 1. 将镜头分成多个批次（每批 ≤ 20 个镜头）
+ * 2. 依次提交每个批次到 Railway 导出
+ * 3. 下载每个批次的 ZIP 文件
+ * 4. 在浏览器端合并所有 ZIP
+ * 5. 提供合并后的大 ZIP 下载
+ */
+async function exportJianyingDraftInBatches(
+  options: JianyingExportOptions,
+  onProgress?: (progress: number, message: string) => void
+): Promise<JianyingExportResult> {
+  const batches = splitShotsIntoBatches(options.shots);
+  const totalBatches = batches.length;
+
+  console.log(`[JianyingExport] 分批导出: ${totalBatches} 批次, 共 ${options.shots.length} 个镜头`);
+
+  if (totalBatches === 1) {
+    // 只有一批，直接导出
+    return exportJianyingDraft(options, onProgress);
+  }
+
+  onProgress?.(0, `准备分批导出: ${totalBatches} 批次，共 ${options.shots.length} 个镜头...`);
+
+  const railwayBase = (import.meta.env.VITE_JIANYING_API_BASE || '').replace(/\/$/, '');
+  if (!railwayBase.includes('railway')) {
+    throw new Error('分批导出仅支持 Railway 模式');
+  }
+
+  // 收集所有批次的 ZIP URL
+  const batchZipUrls: string[] = [];
+  const batchResults: JianyingExportResult[] = [];
+  let totalShots = 0;
+
+  // 依次导出每个批次
+  for (let i = 0; i < totalBatches; i++) {
+    const batchShots = batches[i];
+    const batchNum = i + 1;
+
+    // 计算当前批次的大致进度（0-60% 用于导出阶段）
+    const batchStartProgress = Math.round((i / totalBatches) * 60);
+
+    onProgress?.(
+      batchStartProgress,
+      `正在导出批次 ${batchNum}/${totalBatches}: ${batchShots.length} 个镜头...`
+    );
+
+    try {
+      // 导出当前批次
+      const batchPayload = {
+        draftName: `${options.draftName}_batch${batchNum}`,
+        shots: batchShots,
+        resolution: options.resolution || '1920x1080',
+        fps: options.fps || 30,
+        outputPath: null,
+        pathMapRoot: options.pathMapRoot || null,
+        randomTransitions: !!options.randomTransitions,
+        randomVideoEffects: !!options.randomVideoEffects,
+        returnZip: true,
+      };
+
+      // 提交批次导出任务
+      const startRes = await fetch(`${railwayBase}/export/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(batchPayload),
+        signal: AbortSignal.timeout(30000),
+      });
+
+      const startText = await startRes.text().catch(() => '');
+      const startObj = tryParseJsonObject(startText) as any;
+
+      if (!startRes.ok || !startObj?.taskId) {
+        const errDetail = startObj?.error || startObj?.message || startText.slice(0, 300);
+        throw new Error(`批次 ${batchNum} 任务提交失败: ${errDetail}`);
+      }
+
+      const taskId = startObj.taskId;
+      console.log(`[JianyingExport] 批次 ${batchNum} 任务已提交, taskId: ${taskId}`);
+
+      // 轮询获取结果
+      const result = await pollForResult(taskId, railwayBase, true, { ...options, shots: batchShots }, (p, m) => {
+        // 将轮询进度映射到批次进度区间
+        const scaledProgress = batchStartProgress + Math.round((p / 100) * (60 / totalBatches));
+        onProgress?.(scaledProgress, `批次 ${batchNum}/${totalBatches}: ${m}`);
+      });
+
+      if (!result.success) {
+        throw new Error(`批次 ${batchNum} 导出失败: ${result.error || result.message}`);
+      }
+
+      batchResults.push(result);
+      totalShots += batchShots.length;
+
+      // 获取 ZIP 下载 URL
+      const zipUrl = buildZipDownloadUrl(result, railwayBase);
+      if (zipUrl) {
+        batchZipUrls.push(zipUrl);
+      }
+
+      console.log(`[JianyingExport] 批次 ${batchNum} 导出成功，ZIP: ${zipUrl}`);
+
+      // 更新进度
+      const batchEndProgress = Math.round(((i + 1) / totalBatches) * 60);
+      onProgress?.(batchEndProgress, `批次 ${batchNum}/${totalBatches} 完成 (${batchZipUrls.length}/${batchBatches})...`);
+
+    } catch (e: any) {
+      console.error(`[JianyingExport] 批次 ${batchNum} 导出失败:`, e);
+      throw new Error(`批次 ${batchNum} 导出失败: ${e.message}`);
+    }
+  }
+
+  // 下载并合并所有 ZIP
+  onProgress?.(65, `正在下载并合并 ${batchZipUrls.length} 个 ZIP 文件...`);
+
+  try {
+    // 构建完整的 ZIP 下载 URL 列表
+    const fullZipUrls = batchZipUrls.map((url, idx) => {
+      if (/^https?:\/\//i.test(url)) return url;
+      const baseOrigin = new URL(railwayBase).origin;
+      return url.startsWith('/') ? `${baseOrigin}${url}` : `${baseOrigin}/${url}`;
+    });
+
+    // 合并 ZIP 文件
+    const mergedZipBlob = await mergeZipFiles(fullZipUrls, (p, m) => {
+      // 映射到 70-95% 区间
+      const scaledProgress = 70 + Math.round((p / 100) * 25);
+      onProgress?.(scaledProgress, m);
+    });
+
+    // 生成下载链接
+    onProgress?.(95, '生成最终下载链接...');
+
+    const mergedFileName = `${options.draftName}_merged_${Date.now()}.zip`;
+    const mergedZipUrl = URL.createObjectURL(mergedZipBlob);
+
+    // 创建下载链接
+    const downloadLink = document.createElement('a');
+    downloadLink.href = mergedZipUrl;
+    downloadLink.download = mergedFileName;
+
+    // 触发下载（异步，不阻塞）
+    // 注意：前端需要监听这个事件并显示下载链接给用户
+    console.log(`[JianyingExport] 合并完成，文件: ${mergedFileName} (${(mergedZipBlob.size / 1024 / 1024).toFixed(2)}MB)`);
+
+    onProgress?.(100, '分批导出完成！');
+
+    return {
+      success: true,
+      platform: 'jianying',
+      draft_name: options.draftName,
+      shots_count: totalShots,
+      resolution: options.resolution || '1920x1080',
+      fps: options.fps || 30,
+      message: `分批导出完成: ${totalBatches} 批次, ${totalShots} 个镜头。ZIP 已合并。`,
+      // 返回合并后的下载信息
+      zip_path: mergedFileName,
+      zip_download_url: mergedZipUrl,
+      zip_size_mb: mergedZipBlob.size / 1024 / 1024,
+      usedRailway: true,
+      // 额外信息
+      _batched: true,
+      _batchCount: totalBatches,
+      _mergedBlob: mergedZipBlob, // 保留引用，防止被 GC
+    };
+
+  } catch (e: any) {
+    console.error('[JianyingExport] ZIP 合并失败:', e);
+    // 即使合并失败，也返回已完成的批次结果
+    const firstResult = batchResults[0];
+    return {
+      success: false,
+      platform: 'jianying',
+      draft_name: options.draftName,
+      shots_count: totalShots,
+      resolution: options.resolution || '1920x1080',
+      fps: options.fps || 30,
+      message: `ZIP 合并失败，但已完成 ${batchResults.length}/${totalBatches} 批次`,
+      error: `ZIP 合并失败: ${e.message}`,
+      usedRailway: true,
+      _batched: true,
+      _batchCount: totalBatches,
+      _completedBatches: batchResults.length,
+      _batchZipUrls: batchZipUrls, // 保留单独的下载链接供用户使用
+    };
+  }
+}
+
+/**
+ * 构建 ZIP 下载 URL
+ */
+function buildZipDownloadUrl(result: JianyingExportResult, railwayBase: string): string | null {
+  const rawUrl = result.zip_download_url;
+  if (!rawUrl) return null;
+
+  // 如果是完整 URL，直接返回
+  if (/^https?:\/\//i.test(rawUrl)) return rawUrl;
+
+  // 否则拼接基础地址
+  const baseOrigin = new URL(railwayBase).origin;
+  return rawUrl.startsWith('/') ? `${baseOrigin}${rawUrl}` : `${baseOrigin}/${rawUrl}`;
 }
