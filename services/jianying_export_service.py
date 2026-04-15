@@ -1754,6 +1754,31 @@ def batch_export(
     """
     system = get_platform()
 
+    # ── 导出前检查磁盘空间，不足则自动清理 ─────────────────────────
+    disk_ok, disk_free = check_disk_space()
+    if not disk_ok:
+        print(f"[WARN] 磁盘空间不足 ({disk_free:.1f}MB)，开始清理...", file=sys.stderr, flush=True)
+        if progress_callback:
+            try:
+                progress_callback(3, "空间不足，清理缓存...")
+            except Exception:
+                pass
+        freed = cleanup_temp_files()
+        print(f"[INFO] 清理完成，释放 {freed:.1f}MB", file=sys.stderr, flush=True)
+        # 再次检查
+        disk_ok2, disk_free2 = check_disk_space()
+        if not disk_ok2 and disk_free2 < 50:
+            return {
+                "success": False,
+                "platform": system,
+                "draft_name": draft_name,
+                "shots_count": len(shots),
+                "resolution": resolution,
+                "fps": fps,
+                "message": f"磁盘空间不足 ({disk_free2:.1f}MB)，清理后仍不够，请手动清理",
+                "error": "insufficient_disk_space",
+            }
+
     # 解析分辨率
     if "x" in resolution:
         w, h = map(int, resolution.split("x"))
@@ -1846,6 +1871,54 @@ def batch_export(
     return result
 
 
+# ---- 磁盘空间管理（Railway / 本地通用）───────────────────────────────────
+RAILWAY_MIN_DISK_SPACE_MB = 100
+
+def check_disk_space(min_mb: int = RAILWAY_MIN_DISK_SPACE_MB) -> tuple[bool, float]:
+    """检查磁盘空间是否足够，返回 (够用, 可用空间MB)"""
+    try:
+        if platform.system() == "Windows":
+            import ctypes
+            free_bytes = ctypes.c_ulonglong(0)
+            ctypes.windll.kernel32.GetDiskFreeSpaceExW(ctypes.c_wchar_p(os.getcwd()), None, None, ctypes.pointer(free_bytes))
+            free_mb = free_bytes.value / (1024 * 1024)
+        else:
+            stat = os.statvfs(os.getcwd())
+            free_mb = (stat.f_bavail * stat.f_frsize) / (1024 * 1024)
+        return free_mb >= min_mb, free_mb
+    except Exception:
+        return True, 0  # 检查失败时默认通过
+
+
+def cleanup_temp_files(temp_dir: str = None) -> float:
+    """清理临时文件，返回释放的空间大小（MB）"""
+    freed_mb = 0.0
+    try:
+        if temp_dir is None:
+            temp_dir = tempfile.gettempdir()
+        patterns = ["media_*.mp3", "media_*.jpg", "media_*.png", "media_*.mp4", "draft_*", "*.tmp"]
+        cleaned = 0
+        total_size = 0
+        for p in patterns:
+            try:
+                for f in Path(temp_dir).glob(p):
+                    try:
+                        fsize = os.path.getsize(f)
+                        os.remove(f)
+                        cleaned += 1
+                        total_size += fsize
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        freed_mb = total_size / (1024 * 1024)
+        if cleaned > 0:
+            print(f"[CLEANUP] 已清理 {cleaned} 个临时文件，释放 {freed_mb:.1f}MB", file=sys.stderr, flush=True)
+    except Exception as e:
+        print(f"[CLEANUP] 清理失败: {e}", file=sys.stderr, flush=True)
+    return freed_mb
+
+
 # ---- 命令行调试入口 ----
 if __name__ == "__main__":
     import argparse, sys as _sys
@@ -1859,7 +1932,30 @@ if __name__ == "__main__":
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--progress-callback", action="store_true", help="启用进度输出到 stderr")
+    parser.add_argument("--check-disk", action="store_true", help="检查磁盘空间")
+    parser.add_argument("--cleanup", action="store_true", help="清理缓存文件")
     args = parser.parse_args()
+
+    # ── 磁盘空间检查 ────────────────────────────────────────────────────
+    if args.check_disk:
+        ok, free_mb = check_disk_space()
+        status = "OK" if ok else "LOW"
+        print(json.dumps({
+            "ok": ok,
+            "free_mb": round(free_mb, 2),
+            "message": f"{status}: {free_mb:.1f}MB 可用",
+        }, ensure_ascii=False))
+        _sys.exit(0 if ok else 1)
+
+    # ── 清理缓存 ───────────────────────────────────────────────────────
+    if args.cleanup:
+        freed = cleanup_temp_files()
+        print(json.dumps({
+            "success": True,
+            "freed_mb": round(freed, 2),
+            "message": f"清理完成，释放 {freed:.1f}MB",
+        }, ensure_ascii=False))
+        _sys.exit(0)
 
     if args.list_json:
         print(json.dumps({"error": "list_drafts 需要完全磁盘访问权限"}, ensure_ascii=False))
@@ -1878,6 +1974,31 @@ if __name__ == "__main__":
             shots = json.loads(args.shots)
             output_path = args.output
             rnd_tr = rnd_fx = False
+
+        # ── 导出前检查磁盘空间，不足则自动清理 ─────────────────────────
+        _emit_progress(2, "检查磁盘空间...", _progress_callback)
+        disk_ok, disk_free = check_disk_space()
+        if not disk_ok:
+            print(f"[WARN] 磁盘空间不足 ({disk_free:.1f}MB)，开始清理...", file=_sys.stderr, flush=True)
+            _emit_progress(3, "空间不足，清理缓存...", _progress_callback)
+            freed = cleanup_temp_files()
+            print(f"[INFO] 清理完成，释放 {freed:.1f}MB", file=_sys.stderr, flush=True)
+            # 再次检查
+            disk_ok2, disk_free2 = check_disk_space()
+            if not disk_ok2 and disk_free2 < 50:  # 至少 50MB 才能继续
+                result = {
+                    "success": False,
+                    "platform": system,
+                    "draft_name": args.name,
+                    "shots_count": len(shots),
+                    "resolution": args.resolution,
+                    "fps": args.fps,
+                    "message": f"磁盘空间不足 ({disk_free2:.1f}MB)，清理后仍不够，请手动清理",
+                    "error": "insufficient_disk_space",
+                }
+                print(json.dumps(result, ensure_ascii=False))
+                _sys.exit(1)
+
         result = batch_export(
             draft_name=args.name,
             shots=shots,

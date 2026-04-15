@@ -98,6 +98,43 @@ export async function checkJianyingHealth(): Promise<JianyingHealth> {
 }
 
 /**
+ * 检查磁盘空间并清理缓存（Railway 环境）
+ * 返回: { ok: boolean, freeMB: number, message: string }
+ */
+export async function checkDiskSpace(railwayBase: string): Promise<{ ok: boolean; freeMB: number; message: string }> {
+  try {
+    const res = await fetch(`${railwayBase}/disk-space`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    return {
+      ok: data.free_mb > 100, // 至少保留 100MB
+      freeMB: data.free_mb || 0,
+      message: data.message || `剩余空间: ${data.free_mb}MB`,
+    };
+  } catch (e: any) {
+    return { ok: true, freeMB: -1, message: `无法检查空间: ${e.message}` };
+  }
+}
+
+/**
+ * 清理 Railway 缓存（旧草稿、临时文件）
+ * 返回清理结果
+ */
+export async function cleanupCache(railwayBase: string): Promise<{ success: boolean; freedMB: number; message: string }> {
+  try {
+    const res = await fetch(`${railwayBase}/cleanup`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    return {
+      success: res.ok,
+      freedMB: data.freed_mb || 0,
+      message: data.message || (res.ok ? '清理完成' : `清理失败 (${res.status})`),
+    };
+  } catch (e: any) {
+    return { success: false, freedMB: 0, message: `清理异常: ${e.message}` };
+  }
+}
+
+/**
  * 预热 Railway 服务（解决免费版睡眠唤醒延迟问题）
  * Railway 免费版 15 分钟无请求后会睡眠，唤醒需要 30-60 秒
  *
@@ -481,34 +518,87 @@ async function railwayExportAsync(
   options: JianyingExportOptions,
   onProgress?: (progress: number, message: string) => void,
 ): Promise<{ _handled: true; _result: JianyingExportResult } | { _handled: false }> {
-  try {
-    const startRes = await fetch(`${railwayBase}/export/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...payload, returnZip: true }),
-      signal: AbortSignal.timeout(30000),
-    });
+  const MAX_RETRIES = 2;
 
-    const responseText = await startRes.text().catch(() => '');
-    const startObj = tryParseJsonObject(responseText) as any;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      onProgress?.(attempt === 1 ? 5 : 5 + (attempt - 1) * 2, `Railway 导出尝试 ${attempt}/${MAX_RETRIES}...`);
 
-    if (!startRes.ok || !startObj?.taskId) {
-      const errDetail = startObj?.error || startObj?.message || responseText.slice(0, 300);
-      console.warn('[JianyingExport] Railway 异步接口失败:', errDetail);
-      onProgress?.(10, `Railway 异步失败: ${errDetail}，降级同步...`);
+      const startRes = await fetch(`${railwayBase}/export/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payload, returnZip: true }),
+        signal: AbortSignal.timeout(30000),
+      });
+
+      const responseText = await startRes.text().catch(() => '');
+      const startObj = tryParseJsonObject(responseText) as any;
+
+      if (!startRes.ok || !startObj?.taskId) {
+        const errDetail = startObj?.error || startObj?.message || responseText.slice(0, 300);
+        console.warn(`[JianyingExport] Railway 异步失败 (尝试 ${attempt}):`, errDetail);
+
+        if (attempt < MAX_RETRIES) {
+          // 等待后重试
+          await new Promise(r => setTimeout(r, 3000 * attempt));
+          continue;
+        }
+        onProgress?.(10, `Railway 异步失败: ${errDetail}，降级同步...`);
+        return { _handled: false };
+      }
+
+      const taskId = startObj.taskId;
+      console.log(`[JianyingExport] Railway 任务已提交，taskId: ${taskId} (尝试 ${attempt})`);
+      onProgress?.(15, 'Railway 任务提交成功，等待处理...');
+
+      const result = await pollForResult(taskId, railwayBase, true, options, onProgress);
+      return { _handled: true, _result: result };
+
+    } catch (e: any) {
+      console.warn(`[JianyingExport] Railway 异步异常 (尝试 ${attempt}):`, e.message);
+
+      if (attempt < MAX_RETRIES) {
+        await new Promise(r => setTimeout(r, 3000 * attempt));
+        continue;
+      }
+
+      // 最后一次失败，检查是否是空间问题
+      const errMsg = e.message.toLowerCase();
+      if (errMsg.includes('space') || errMsg.includes('disk') || errMsg.includes('quota') || errMsg.includes('no space')) {
+        onProgress?.(5, '检测到空间不足，尝试清理缓存...');
+        try {
+          const cleanup = await cleanupCache(railwayBase);
+          if (cleanup.success && cleanup.freedMB > 0) {
+            onProgress?.(8, `清理完成，释放 ${cleanup.freedMB}MB，重新尝试...`);
+            // 清理后最后一次重试（不计数，作为额外机会）
+            try {
+              const retryRes = await fetch(`${railwayBase}/export/start`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ...payload, returnZip: true }),
+                signal: AbortSignal.timeout(30000),
+              });
+              const retryText = await retryRes.text().catch(() => '');
+              const retryObj = tryParseJsonObject(retryText) as any;
+
+              if (retryRes.ok && retryObj?.taskId) {
+                const result = await pollForResult(retryObj.taskId, railwayBase, true, options, onProgress);
+                return { _handled: true, _result: { ...result, message: `${result.message}\n[空间清理后重试成功]` } };
+              }
+            } catch (retryErr) {
+              console.warn('[JianyingExport] 清理后重试失败:', retryErr);
+            }
+          }
+        } catch (cleanupErr) {
+          console.warn('[JianyingExport] 清理缓存失败:', cleanupErr);
+        }
+      }
+
       return { _handled: false };
     }
-
-    const taskId = startObj.taskId;
-    console.log(`[JianyingExport] Railway 任务已提交，taskId: ${taskId}`);
-    onProgress?.(15, 'Railway 任务提交成功，等待处理...');
-
-    const result = await pollForResult(taskId, railwayBase, true, options, onProgress);
-    return { _handled: true, _result: result };
-  } catch (e: any) {
-    console.warn('[JianyingExport] Railway 异步请求异常:', e.message);
-    return { _handled: false };
   }
+
+  return { _handled: false };
 }
 
 // ── Railway 同步导出（降级用，需要预热）──────────────────────────
