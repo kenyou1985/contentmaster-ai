@@ -43,8 +43,10 @@ interface ChannelGeneratorProps {
 }
 
 export const ChannelGenerator: React.FC<ChannelGeneratorProps> = ({ apiKey, provider, toast: externalToast }) => {
+  console.log('[ChannelGenerator] 组件初始化开始 - 入参检查:', { apiKey: apiKey?.slice(0, 10) + '...', provider });
   const internalToast = useToast();
   const toast = externalToast || internalToast;
+  addLog('[ChannelGenerator] 组件初始化完成', 'info');
 
   const [channelTopic, setChannelTopic] = useState('');
   const [channelTargetAudience, setChannelTargetAudience] = useState('');
@@ -681,7 +683,8 @@ ${nameLangReq}
   const generateAllAvatars = async () => {
     if (!channelOutput?.avatarPrompts?.length) return;
     addLog('[头像] 开始并行生成所有头像方案...', 'info');
-    const promises = channelOutput.avatarPrompts.map((_, i) => generateAvatarImage(i));
+    const prompts = channelOutput.avatarPrompts;
+    const promises = prompts.map((_, i) => generateAvatarImage(i));
     await Promise.allSettled(promises);
     addLog('[头像] 所有头像方案生成完成', 'success');
   };
@@ -820,7 +823,8 @@ ${nameLangReq}
   const generateAllBanners = async () => {
     if (!channelOutput?.bannerPrompts?.length) return;
     addLog('[横幅] 开始并行生成所有横幅方案...', 'info');
-    const promises = channelOutput.bannerPrompts.map((_, i) => generateBannerImage(i));
+    const prompts = channelOutput.bannerPrompts;
+    const promises = prompts.map((_, i) => generateBannerImage(i));
     await Promise.allSettled(promises);
     addLog('[横幅] 所有横幅方案生成完成', 'success');
   };
@@ -1040,7 +1044,7 @@ ${nameLangReq}
                   频道名称（3个方案，点击选择用于频道说明）
                 </h4>
                 <div className="space-y-2">
-                  {channelOutput.names.map((name, i) => (
+                  {channelOutput?.names?.map((name, i) => (
                     <div key={i} className="bg-slate-900/80 rounded-lg p-3 border border-slate-700">
                       <div className="flex items-center justify-between mb-1">
                         <span className="text-xs text-slate-500">方案 {i + 1}</span>
@@ -1090,7 +1094,7 @@ ${nameLangReq}
                   </button>
                 </h4>
                 <div className="space-y-2">
-                  {channelOutput.avatarPrompts.map((prompt, i) => (
+                  {(channelOutput?.avatarPrompts || []).map((prompt, i) => (
                     <div key={i} className="bg-slate-900/80 rounded-lg p-3 border border-slate-700">
                       <div className="flex items-center justify-between mb-1.5">
                         <div className="flex items-center gap-2">
@@ -1129,11 +1133,11 @@ ${nameLangReq}
                         </button>
                       </div>
                       <p className="text-xs text-slate-300 leading-relaxed">{prompt}</p>
-                      {channelOutput.avatarUrls?.[i]?.length ? (
+                      {(channelOutput?.avatarUrls?.[i]?.length || 0) > 0 ? (
                         <div className="mt-2">
                           {/* 显示所有版本的缩略图 */}
                           <div className="flex gap-1 flex-wrap">
-                            {channelOutput.avatarUrls[i].map((url, vIdx) => (
+                            {(channelOutput.avatarUrls?.[i] || []).map((url, vIdx) => (
                               <div key={vIdx} className="relative group">
                                 <img
                                   src={url}
@@ -1215,7 +1219,7 @@ ${nameLangReq}
                   </button>
                 </h4>
                 <div className="space-y-2">
-                  {channelOutput.bannerPrompts.map((prompt, i) => (
+                  {(channelOutput?.bannerPrompts || []).map((prompt, i) => (
                     <div key={i} className="bg-slate-900/80 rounded-lg p-3 border border-slate-700">
                       <div className="flex items-center justify-between mb-1.5">
                         <div className="flex items-center gap-2">
@@ -1254,11 +1258,11 @@ ${nameLangReq}
                         </button>
                       </div>
                       <p className="text-xs text-slate-300 leading-relaxed break-words">{prompt}</p>
-                      {channelOutput.bannerUrls?.[i]?.length ? (
+                      {(channelOutput?.bannerUrls?.[i]?.length || 0) > 0 ? (
                         <div className="mt-2">
                           {/* 显示所有版本的缩略图 */}
                           <div className="flex gap-1 flex-wrap">
-                            {channelOutput.bannerUrls[i].map((url, vIdx) => (
+                            {(channelOutput?.bannerUrls?.[i] || []).map((url, vIdx) => (
                               <div key={vIdx} className="relative group cursor-pointer" onClick={() => openImagePreview(url, `横幅方案${i + 1} v${vIdx + 1}`, prompt)}>
                                 <img
                                   src={url}
@@ -1325,7 +1329,7 @@ ${nameLangReq}
               <div>
                 <h4 className="text-sm font-semibold text-amber-300 mb-3 flex items-center gap-2">
                   <Youtube size={14} />
-                  频道说明（已选择：{channelOutput.names[selectedNameForDesc] || '方案1'}）
+                  频道说明（已选择：{channelOutput?.names?.[selectedNameForDesc] || '方案1'}）
                   <button
                     onClick={() => regenerateDescription()}
                     disabled={isGeneratingChannel}
@@ -1337,15 +1341,15 @@ ${nameLangReq}
                 </h4>
                 <div className="bg-slate-900/80 rounded-lg p-3 border border-slate-700">
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs text-slate-500">{channelOutput.description.length} 字符</span>
+                    <span className="text-xs text-slate-500">{(channelOutput?.description || '').length} 字符</span>
                     <button
-                      onClick={() => navigator.clipboard.writeText(channelOutput.description)}
+                      onClick={() => navigator.clipboard.writeText(channelOutput?.description || '')}
                       className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
                     >
                       <Copy size={10} /> 复制
                     </button>
                   </div>
-                  <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap">{channelOutput.description}</p>
+                  <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap">{channelOutput?.description}</p>
                 </div>
               </div>
 
@@ -1356,14 +1360,14 @@ ${nameLangReq}
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-xs text-slate-500">3个方案（中文/英文/混合）</span>
                     <button
-                      onClick={() => navigator.clipboard.writeText(channelOutput.keywords.join('\n\n'))}
+                      onClick={() => navigator.clipboard.writeText((channelOutput?.keywords || []).join('\n\n'))}
                       className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
                     >
                       <Copy size={10} /> 复制全部
                     </button>
                   </div>
                   <div className="space-y-2">
-                    {channelOutput.keywords.map((kw, i) => (
+                    {(channelOutput?.keywords || []).map((kw, i) => (
                       <div key={i} className="flex items-start gap-2">
                         <span className="text-xs text-slate-500 shrink-0">方案{i + 1}：</span>
                         <p className="text-xs text-slate-300">{kw}</p>
