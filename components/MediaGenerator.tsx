@@ -2738,6 +2738,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     let lastStatus = '';
     let consecutiveErrors = 0;
     const maxConsecutiveErrors = 5;
+    // 进度冻结保护：进度不变超过此时间（ms）视为卡死
+    const FROZEN_TIMEOUT_MS = 30 * 60 * 1000; // 30 分钟
+    let lastProgressChangeTime = Date.now();
     const shotLabel = () => {
       const n = shotsRef.current.find(s => s.id === shotId)?.number;
       return n != null ? `镜头${n}` : `shotId=${shotId.slice(0, 8)}…`;
@@ -2898,6 +2901,20 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               pollInterval = 3000;
             } else if (progress >= 50) {
               pollInterval = 4000;
+            }
+
+            // 先更新进度记录（防止首次变化 0→55 时错误触发冻结检测）
+            if (progress !== lastProgress) {
+              lastProgress = progress;
+              lastProgressChangeTime = Date.now();
+            }
+
+            // 进度冻结超时保护：进度不变超过 30 分钟且无 URL，视为任务卡死
+            if (progress > 0 && Date.now() - lastProgressChangeTime > FROZEN_TIMEOUT_MS) {
+              appendTerminalLog('VideoGen', `${shotLabel()}: 任务进度 ${progress}% 超过 30 分钟无变化，强制结束`);
+              toast.error(`视频生成任务卡死（进度 ${progress}% 超过 30 分钟无变化），请重新生成`, 8000);
+              updateShot(shotId, { videoGenerating: false });
+              return;
             }
 
             await new Promise(r => setTimeout(r, pollInterval));

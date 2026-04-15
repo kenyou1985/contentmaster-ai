@@ -1273,6 +1273,18 @@ export const checkTaskStatus = async (
             data: q,
           };
         }
+        // 即使 status=RUNNING/RUNNING，服务器也可能通过 errorMessage 报告失败（如 "cannot identify image file"）
+        // 此时应立即返回失败，不继续轮询
+        if (qStatus === 'RUNNING' || qStatus === 'QUEUED' || qStatus === 'CREATE') {
+          console.log('[RunningHub] openapi/v2/query 状态为 RUNNING 但包含错误信息，标记为失败:', { taskId, errorMessage: qMsg });
+          return {
+            success: false,
+            error: formatRunningHubQueryFailurePayload(q),
+            taskId,
+            status: 'FAILED',
+            data: q,
+          };
+        }
       }
 
       const qStatus = qStatusEarly;
