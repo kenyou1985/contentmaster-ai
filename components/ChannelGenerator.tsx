@@ -50,11 +50,25 @@ export const ChannelGenerator: React.FC<ChannelGeneratorProps> = ({ apiKey, prov
   // 终端日志状态
   const [terminalLogs, setTerminalLogs] = useState<LogEntry[]>([]);
   const [showTerminal, setShowTerminal] = useState(false);
+  const [logLevel, setLogLevel] = useState<'debug' | 'info' | 'warning' | 'error'>('warning'); // 默认只显示 warning 及以上
   const terminalRef = useRef<HTMLDivElement>(null);
   const logIdRef = useRef(0);
 
+  // 日志级别优先级映射
+  const logLevelPriority: Record<string, number> = {
+    debug: 0,
+    info: 1,
+    success: 2,
+    warning: 3,
+    error: 4,
+  };
+
   // 添加日志（需要提前定义，因为后面会使用）
   const addLog = (message: string, type: 'info' | 'success' | 'error' | 'warning' | 'debug' = 'info', details?: string) => {
+    // 根据当前日志级别过滤
+    if (logLevelPriority[type] < logLevelPriority[logLevel]) {
+      return; // 低于当前级别，不记录
+    }
     const entry: LogEntry = {
       id: ++logIdRef.current,
       type,
@@ -172,7 +186,7 @@ export const ChannelGenerator: React.FC<ChannelGeneratorProps> = ({ apiKey, prov
       console.error('加载频道历史记录失败:', e);
       addLog(`[历史] 加载失败: ${e?.message || e}`, 'error');
     }
-  }, [addLog]);
+  }, []); // 只在挂载时执行，addLog 通过引用访问避免无限循环
 
   // 保存历史记录（使用函数式更新避免闭包陷阱）
   const saveChannelHistory = useCallback((record: ChannelHistoryRecord) => {
@@ -195,20 +209,52 @@ export const ChannelGenerator: React.FC<ChannelGeneratorProps> = ({ apiKey, prov
         } else {
           updated = [finalRecord, ...prev].slice(0, 20);
         }
-        localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+        try {
+          localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+        } catch (quotaErr: any) {
+          // 配额超限，尝试清理旧记录后重试
+          if (quotaErr.name === 'QuotaExceededError' || quotaErr.message?.includes('quota')) {
+            addLog('[历史] 本地存储配额不足，尝试清理...', 'warning');
+            // 移除最旧的记录，保留一半
+            const trimmed = updated.slice(0, Math.floor(updated.length / 2));
+            // 移除图片URL以减小数据大小
+            const slimmed = trimmed.map(r => ({
+              ...r,
+              output: {
+                ...r.output,
+                avatarUrls: [[], [], []],
+                bannerUrls: [[], [], []],
+              },
+            }));
+            try {
+              localStorage.setItem(HISTORY_KEY, JSON.stringify(slimmed));
+              return slimmed;
+            } catch {
+              // 清理后仍然失败，清空历史
+              localStorage.removeItem(HISTORY_KEY);
+              addLog('[历史] 清理后仍无法保存，清空历史记录', 'error');
+              return [];
+            }
+          }
+          throw quotaErr;
+        }
         return updated;
       });
     } catch (e) {
       console.error('保存频道历史记录失败:', e);
       addLog(`✗ 保存历史记录失败: ${e}`, 'error');
     }
-  }, [addLog]);
+  }, []); // addLog 通过 ref 访问
 
   // 删除单条历史记录
   const deleteChannelHistory = (id: string) => {
     const updated = channelHistory.filter(r => r.id !== id);
     setChannelHistory(updated);
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+    } catch (e) {
+      console.error('删除历史记录失败:', e);
+    }
     addLog(`已删除项目`, 'info');
   };
 
@@ -362,7 +408,11 @@ ${nameLangReq}
               finalRecord,
               ...prev.filter(r => r.id !== existingRecord.id)
             ].slice(0, 20);
-            localStorage.setItem(HISTORY_KEY, JSON.stringify(updatedHistory));
+            try {
+              localStorage.setItem(HISTORY_KEY, JSON.stringify(updatedHistory));
+            } catch (e) {
+              console.error('更新历史记录失败:', e);
+            }
             return updatedHistory;
           });
           addLog(`✓ 项目 "${existingRecord.name}" 已更新`, 'success');
@@ -658,7 +708,11 @@ ${nameLangReq}
                 updatedAt: Date.now(),
               };
               const updatedHistory = [updatedRecord, ...prev.slice(1)].slice(0, 20);
-              localStorage.setItem(HISTORY_KEY, JSON.stringify(updatedHistory));
+              try {
+                localStorage.setItem(HISTORY_KEY, JSON.stringify(updatedHistory));
+              } catch (e) {
+                console.error('缓存头像后更新历史记录失败:', e);
+              }
               addLog(`✓ 头像已缓存，更新项目 "${prev[0].name}"`, 'success', `头像: ${cached.avatarUrls.flat().filter(Boolean).length} 张`);
               return updatedHistory;
             });
@@ -674,8 +728,20 @@ ${nameLangReq}
         toast.error('头像生成失败：' + (result?.error || '未知错误'));
       }
     } catch (e: any) {
-      addLog(`[头像] 方案${index + 1} 生成异常：${e?.message || e}`, 'error');
-      toast.error('生成失败：' + (e?.message || e));
+      // 检查是否为配额超限错误
+      const errMsg = e?.message || String(e);
+      const isQuotaError = errMsg.toLowerCase().includes('quota') || e?.name === 'QuotaExceededError';
+
+      if (isQuotaError) {
+        addLog(`[头像] ⚠ 配额超限，停止所有生成任务`, 'error');
+        toast.error('图像生成配额已耗尽，请稍后再试或清理历史记录');
+        // 清理所有生成中状态
+        setGeneratingAvatars([]);
+        setGeneratingBanners([]);
+      } else {
+        addLog(`[头像] 方案${index + 1} 生成异常：${errMsg}`, 'error');
+        toast.error('生成失败：' + errMsg);
+      }
     } finally {
       // 移除生成中状态
       setGeneratingAvatars(prev => prev.filter(i => i !== index));
@@ -799,7 +865,11 @@ ${nameLangReq}
                 updatedAt: Date.now(),
               };
               const updatedHistory = [updatedRecord, ...prev.slice(1)].slice(0, 20);
-              localStorage.setItem(HISTORY_KEY, JSON.stringify(updatedHistory));
+              try {
+                localStorage.setItem(HISTORY_KEY, JSON.stringify(updatedHistory));
+              } catch (e) {
+                console.error('缓存横幅后更新历史记录失败:', e);
+              }
               addLog(`✓ 横幅已缓存，更新项目 "${prev[0].name}"`, 'success', `横幅: ${cached.bannerUrls.flat().filter(Boolean).length} 张`);
               return updatedHistory;
             });
@@ -815,11 +885,24 @@ ${nameLangReq}
         toast.error('横幅生成失败：' + (result.error || '未知错误'));
       }
     } catch (e: any) {
-      addLog(`[横幅] 方案${index + 1} 生成失败：${e?.message || e}`, 'error');
-      toast.error('生成失败：' + (e?.message || e));
+      // 检查是否为配额超限错误
+      const errMsg = e?.message || String(e);
+      const isQuotaError = errMsg.toLowerCase().includes('quota') || e?.name === 'QuotaExceededError';
+
+      if (isQuotaError) {
+        addLog(`[横幅] ⚠ 配额超限，停止所有生成任务`, 'error');
+        toast.error('图像生成配额已耗尽，请稍后再试或清理历史记录');
+        // 清理所有生成中状态
+        setGeneratingAvatars([]);
+        setGeneratingBanners([]);
+      } else {
+        addLog(`[横幅] 方案${index + 1} 生成失败：${errMsg}`, 'error');
+        toast.error('生成失败：' + errMsg);
+      }
     } finally {
       // 移除生成中状态
       setGeneratingBanners(prev => prev.filter(i => i !== index));
+      addLog(`[横幅] ========== 方案${index + 1} 结束 ==========`, 'debug');
     }
   };
 
@@ -1407,13 +1490,25 @@ ${nameLangReq}
                   <span className="text-xs text-slate-500 ml-1">({terminalLogs.length})</span>
                 )}
               </h4>
-              <button
-                onClick={clearLogs}
-                className="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-400 flex items-center gap-1"
-              >
-                <Trash2 size={10} />
-                清空
-              </button>
+              <div className="flex items-center gap-2">
+                <select
+                  value={logLevel}
+                  onChange={(e) => setLogLevel(e.target.value as any)}
+                  className="text-xs bg-slate-700 text-slate-300 rounded px-2 py-1 border border-slate-600 cursor-pointer"
+                >
+                  <option value="error">仅错误</option>
+                  <option value="warning">警告及以上</option>
+                  <option value="info">信息及以上</option>
+                  <option value="debug">全部</option>
+                </select>
+                <button
+                  onClick={clearLogs}
+                  className="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-400 flex items-center gap-1"
+                >
+                  <Trash2 size={10} />
+                  清空
+                </button>
+              </div>
             </div>
             <div
               ref={terminalRef}
