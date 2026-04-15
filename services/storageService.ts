@@ -722,7 +722,37 @@ export async function backfillLocalStorageFromIDB(): Promise<void> {
   });
 }
 
-/** 同步兼容 getItem（localStorage 优先；无则同步查 IndexedDB 兜底） */
+/** 缓存已触发回填的 key（避免重复触发） */
+const _fillPending = new Set<string>();
+
+/** IndexedDB → localStorage 同步回填缓存
+ * 存储最近一次从 IndexedDB 成功读取的数据，键为 storage key。
+ * 用于 lsGetItem 在 localStorage 为空时同步返回 IndexedDB 数据（避免 async/await）。
+ * 注意：大数据（包含 base64 等）不会写回 localStorage，但仍可通过此缓存同步返回。 */
+const _idbFallbackCache = new Map<string, unknown>();
+
+/** 触发 IndexedDB 回填 localStorage（异步，不阻塞）
+ * 成功读取后会更新 _idbFallbackCache，下次 lsGetItem 命中此缓存 */
+function _triggerIDBFill<T>(key: string, defaultValue: T): void {
+  if (_fillPending.has(key)) return;
+  _fillPending.add(key);
+  void (async () => {
+    try {
+      const entry = await get<{ k: string; v: T }>('appData', key);
+      if (entry?.v !== undefined) {
+        _idbFallbackCache.set(key, entry.v);
+        const serialized = JSON.stringify(entry.v);
+        const isLargeData = serialized.length > 500_000 || _hasDataUrl(entry.v);
+        if (!isLargeData && typeof localStorage !== 'undefined') {
+          try { localStorage.setItem(key, serialized); } catch { /* ignore */ }
+        }
+      }
+    } catch { /* ignore */ }
+    finally { _fillPending.delete(key); }
+  })();
+}
+
+/** 同步兼容 getItem（localStorage 优先；无则从 IndexedDB 同步缓存返回） */
 export function lsGetItem<T>(key: string, defaultValue: T): T {
   // 优先从 localStorage 读取
   try {
@@ -734,24 +764,14 @@ export function lsGetItem<T>(key: string, defaultValue: T): T {
     }
   } catch { /* ignore */ }
 
-  // localStorage 为空 → 尝试 IndexedDB 并同步回填 localStorage（不影响接口契约）
-  void _syncIDBGetThenSet(key, defaultValue);
-  return defaultValue;
-}
+  // localStorage 为空 → 优先用 IndexedDB 同步缓存（刚写入的大数据已缓存），其次触发异步回填
+  if (_idbFallbackCache.has(key)) {
+    return _idbFallbackCache.get(key) as T;
+  }
 
-// 同步从 IndexedDB 读取并回填 localStorage
-async function _syncIDBGetThenSet<T>(key: string, defaultValue: T): Promise<void> {
-  try {
-    const entry = await get<{ k: string; v: T }>('appData', key);
-    if (entry?.v !== undefined) {
-      const serialized = JSON.stringify(entry.v);
-      const isLargeData = serialized.length > 500_000 || _hasDataUrl(entry.v);
-      // 大数据不写回 localStorage（避免再次超出限制），小数据正常写回
-      if (!isLargeData && typeof localStorage !== 'undefined') {
-        try { localStorage.setItem(key, serialized); } catch { /* ignore */ }
-      }
-    }
-  } catch { /* ignore */ }
+  // 触发 IndexedDB 回填 localStorage（不阻塞，返回默认值）
+  _triggerIDBFill(key, defaultValue);
+  return defaultValue;
 }
 
 /** 同步兼容 setItem（同步写 localStorage，后台写 IndexedDB）
@@ -768,6 +788,8 @@ export function lsSetItem<T>(key: string, value: T): void {
   if (isLargeData) {
     // 大数据直接写 IndexedDB，不碰 localStorage（避免 QuotaExceededError）
     void _asyncIDBWrite(key, value);
+    // 同步更新回退缓存，确保 lsGetItem 下次同步读取能命中
+    _idbFallbackCache.set(key, value);
     // 尝试清理 localStorage 中残留的旧数据
     if (typeof localStorage !== 'undefined') {
       try { localStorage.removeItem(key); } catch { /* ignore */ }
@@ -779,6 +801,8 @@ export function lsSetItem<T>(key: string, value: T): void {
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(key, serialized);
     }
+    // 同步更新回退缓存
+    _idbFallbackCache.set(key, value);
     // 后台异步写入 IndexedDB（不阻塞 UI）
     void _asyncIDBWrite(key, value);
   } catch (e) {
@@ -802,6 +826,7 @@ export function lsRemoveItem(key: string): void {
   if (typeof localStorage !== 'undefined') {
     try { localStorage.removeItem(key); } catch { /* ignore */ }
   }
+  _idbFallbackCache.delete(key);
   void _asyncIDBRemove(key);
 }
 
