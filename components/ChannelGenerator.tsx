@@ -131,15 +131,42 @@ export const ChannelGenerator: React.FC<ChannelGeneratorProps> = ({ apiKey, prov
   // 加载历史记录
   useEffect(() => {
     try {
+      addLog('[历史] 开始加载历史记录...', 'debug');
       const saved = localStorage.getItem(HISTORY_KEY);
       if (saved) {
         const records = JSON.parse(saved) as ChannelHistoryRecord[];
-        setChannelHistory(records);
+        addLog(`[历史] 加载到 ${records.length} 条历史记录`, 'debug');
+        // 验证数据格式并修复旧数据
+        const validRecords = records.map((record, idx) => {
+          if (!record.output) {
+            addLog(`[历史] 警告: 记录 ${idx + 1} 缺少 output 字段`, 'warning');
+            return null;
+          }
+          // 确保必要字段存在
+          return {
+            ...record,
+            output: {
+              names: record.output.names || [],
+              avatarPrompts: record.output.avatarPrompts || [],
+              bannerPrompts: record.output.bannerPrompts || [],
+              description: record.output.description || '',
+              keywords: record.output.keywords || [],
+              avatarUrls: record.output.avatarUrls || [[], [], []],
+              bannerUrls: record.output.bannerUrls || [[], [], []],
+            },
+          };
+        }).filter((r): r is ChannelHistoryRecord => r !== null);
+
+        setChannelHistory(validRecords);
+        addLog(`[历史] 成功加载 ${validRecords.length} 条有效记录`, 'success');
+      } else {
+        addLog('[历史] 没有找到历史记录', 'debug');
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error('加载频道历史记录失败:', e);
+      addLog(`[历史] 加载失败: ${e?.message || e}`, 'error');
     }
-  }, []);
+  }, [addLog]);
 
   // 保存历史记录（使用函数式更新避免闭包陷阱）
   const saveChannelHistory = useCallback((record: ChannelHistoryRecord) => {
@@ -511,35 +538,44 @@ ${nameLangReq}
   };
 
   const generateAvatarImage = async (index: number, styleOverride?: number) => {
-    if (!channelOutput?.avatarPrompts?.[index]) return;
-    
+    if (!channelOutput?.avatarPrompts?.[index]) {
+      addLog(`[头像] 方案${index + 1} 无可用提示词，跳过`, 'warning');
+      return;
+    }
+
+    addLog(`[头像] ========== 开始生成方案${index + 1} ==========`, 'info');
+
     // 标记为生成中
     setGeneratingAvatars(prev => [...prev, index]);
     const prompt = channelOutput.avatarPrompts[index];
-    
+    addLog(`[头像] 获取到提示词，长度: ${prompt?.length || 0}`, 'debug');
+
     // 获取当前风格选择（使用传入的styleOverride或已选风格，-1表示自动按顺序）
     const selectedStyle = styleOverride !== undefined ? styleOverride : (avatarStyleSelections[index] ?? -1);
     const styleIndex = selectedStyle === -1 ? index : selectedStyle;
     const styleDef = avatarStyleDefinitions[styleIndex];
     const channelName = channelOutput.names[index] || 'Channel';
-    
+    addLog(`[头像] 风格: ${styleDef?.name || 'unknown'}, 频道名: ${channelName}`, 'debug');
+
     // 检查风格是否需要包含频道名（动漫和美漫默认包含）
     const includeChannelName = styleIndex !== 1 && styleIndex !== 2;
-    
+
     addLog(`[头像] 方案${index + 1} 开始生成 (${styleDef.name}风格)`, 'info');
-    
+
     try {
       let result: { success: boolean; url?: string; error?: string } | null = null;
-      
+
       // 构建提示词
       let fullPrompt = `${prompt}\n\nStyle: ${styleDef.desc}`;
       if (includeChannelName) {
         fullPrompt += `\n\nIncorporate the channel name "${channelName}" creatively into the design.`;
       }
       fullPrompt += '\n\nYouTube channel avatar, circular or square profile image, high quality, professional look, clean composition.';
-      
+      addLog(`[头像] 方案${index + 1} 提示词构建完成，长度: ${fullPrompt.length}`, 'debug');
+
       // 首次尝试
       try {
+        addLog(`[头像] 方案${index + 1} 发起API请求...`, 'debug');
         result = await generateImage(apiKey, {
           model: COVER_GEMINI_IMAGE_MODEL,
           prompt: fullPrompt,
@@ -547,6 +583,7 @@ ${nameLangReq}
           quality: 'high',
           n: 1,
         });
+        addLog(`[头像] 方案${index + 1} API返回: success=${result?.success}, url=${result?.url?.slice(0, 50) || 'none'}...`, 'debug');
       } catch (e) {
         // 首次失败，尝试重试一次
         addLog(`[头像] 方案${index + 1} 首次失败，尝试重试...`, 'warning');
@@ -561,9 +598,14 @@ ${nameLangReq}
       }
 
       if (result.success && result.url) {
+        addLog(`[头像] 方案${index + 1} 生成成功，开始更新UI...`, 'success');
+
         // 使用函数式更新确保正确获取最新状态
         setChannelOutput(prev => {
-          if (!prev) return prev;
+          if (!prev) {
+            addLog('[头像] setChannelOutput: prev is null!', 'error');
+            return prev;
+          }
           const newImages = prev.avatarUrls ? [...prev.avatarUrls] : [[], [], []];
           const currentArray = newImages[index] ? [...newImages[index]] : [];
           currentArray.push(result!.url!);
@@ -572,12 +614,14 @@ ${nameLangReq}
             currentArray.shift();
           }
           newImages[index] = currentArray;
+          addLog(`[头像] setChannelOutput: 更新avatarUrls[${index}]=${currentArray.length}个`, 'debug');
           return { ...prev, avatarUrls: newImages };
         });
-        
+
         // 异步缓存图片并更新历史记录
         (async () => {
           try {
+            addLog(`[头像] 异步: 开始缓存图片...`, 'debug');
             // 使用 ref 获取最新状态，避免闭包陷阱
             const currentOutput = channelOutputRef.current;
             const newAvatarUrls = currentOutput?.avatarUrls ? [...currentOutput.avatarUrls] : [[], [], []];
@@ -587,11 +631,17 @@ ${nameLangReq}
             newAvatarUrls[index] = arr;
 
             const currentBannerUrls = currentOutput?.bannerUrls || [[], [], []];
+            addLog(`[头像] 异步: 准备缓存 ${arr.length} 个头像`, 'debug');
 
             const cached = await cacheImages(newAvatarUrls, currentBannerUrls);
+            addLog(`[头像] 异步: 缓存完成，${cached?.avatarUrls?.flat()?.filter(Boolean)?.length || 0} 个`, 'debug');
+
             // 更新历史记录（使用函数式更新避免闭包陷阱）
             setChannelHistory(prev => {
-              if (prev.length === 0) return prev;
+              if (prev.length === 0) {
+                addLog('[头像] 异步: 没有历史记录，跳过更新', 'debug');
+                return prev;
+              }
               const updatedRecord = {
                 ...prev[0],
                 output: {
@@ -606,23 +656,24 @@ ${nameLangReq}
               addLog(`✓ 头像已缓存，更新项目 "${prev[0].name}"`, 'success', `头像: ${cached.avatarUrls.flat().filter(Boolean).length} 张`);
               return updatedHistory;
             });
-          } catch (cacheErr) {
-            addLog(`⚠ 图片缓存失败`, 'warning');
+          } catch (cacheErr: any) {
+            addLog(`⚠ 图片缓存失败: ${cacheErr?.message || cacheErr}`, 'warning');
           }
         })();
-        
+
         addLog(`[头像] 方案${index + 1} 生成成功！(${styleDef.name}风格)`, 'success');
         toast.success(`头像生成成功！(${styleDef.name}风格)`);
       } else {
-        addLog(`[头像] 方案${index + 1} 生成失败：${result.error || '未知错误'}`, 'error');
-        toast.error('头像生成失败：' + (result.error || '未知错误'));
+        addLog(`[头像] 方案${index + 1} 生成失败：${result?.error || '未知错误'}`, 'error');
+        toast.error('头像生成失败：' + (result?.error || '未知错误'));
       }
     } catch (e: any) {
-      addLog(`[头像] 方案${index + 1} 生成失败：${e?.message || e}`, 'error');
+      addLog(`[头像] 方案${index + 1} 生成异常：${e?.message || e}`, 'error');
       toast.error('生成失败：' + (e?.message || e));
     } finally {
       // 移除生成中状态
       setGeneratingAvatars(prev => prev.filter(i => i !== index));
+      addLog(`[头像] ========== 方案${index + 1} 结束 ==========`, 'debug');
     }
   };
 
@@ -941,18 +992,18 @@ ${nameLangReq}
                           </div>
                           <p className="text-xs text-slate-500 line-clamp-1">主题：{record.topic}</p>
                           <p className="text-xs text-slate-500 mt-0.5 line-clamp-1">
-                            {record.output.names[0] || '未命名'}
-                            {record.output.names[1] ? ` / ${record.output.names[1]}` : ''}
-                            {record.output.names[2] ? ` / ${record.output.names[2]}` : ''}
+                            {(record.output?.names?.[0]) || '未命名'}
+                            {record.output?.names?.[1] ? ` / ${record.output.names[1]}` : ''}
+                            {record.output?.names?.[2] ? ` / ${record.output.names[2]}` : ''}
                           </p>
                           {/* 历史图片缩略图 */}
-                          {(record.output.avatarUrls?.some(v => v?.length > 0) || record.output.bannerUrls?.some(v => v?.length > 0)) && (
+                          {((record.output?.avatarUrls?.some(v => v?.length > 0)) || (record.output?.bannerUrls?.some(v => v?.length > 0))) && (
                             <div className="flex gap-2 mt-2 flex-wrap">
-                              {record.output.avatarUrls?.flat().slice(0, 6).map((url, i) => (
-                                <img key={`av-${i}`} src={url} alt="avatar" className="w-8 h-8 rounded object-cover border border-blue-600" />
+                              {(record.output?.avatarUrls?.flat() || []).slice(0, 6).map((url, i) => (
+                                <img key={`av-${i}`} src={url || ''} alt="avatar" className="w-8 h-8 rounded object-cover border border-blue-600" />
                               ))}
-                              {record.output.bannerUrls?.flat().slice(0, 6).map((url, i) => (
-                                <img key={`bn-${i}`} src={url} alt="banner" className="w-12 h-6 rounded object-cover border border-purple-600" />
+                              {(record.output?.bannerUrls?.flat() || []).slice(0, 6).map((url, i) => (
+                                <img key={`bn-${i}`} src={url || ''} alt="banner" className="w-12 h-6 rounded object-cover border border-purple-600" />
                               ))}
                             </div>
                           )}

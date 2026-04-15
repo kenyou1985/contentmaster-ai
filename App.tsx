@@ -8,6 +8,7 @@ import { CoverDesign } from './components/CoverDesign';
 import { YouTubeMonitor } from './components/YouTubeMonitor';
 import { QueueTaskViewer } from './components/QueueTaskViewer';
 import { ChannelGenerator } from './components/ChannelGenerator';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { initializeGemini } from './services/geminiService';
 import { ApiProvider } from './types';
 import { ToastContainer, useToast } from './components/Toast';
@@ -218,7 +219,24 @@ const App: React.FC = () => {
           <YouTubeMonitor />
         </div>
         <div className={activeTab === 'channel' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'channel'}>
-          <ChannelGenerator apiKey={apiKey} provider={provider} toast={toast} />
+          <ErrorBoundary
+            fallback={
+              <div className="p-6 bg-red-900/20 border border-red-700 rounded-lg">
+                <h2 className="text-lg font-semibold text-red-400 mb-2">频道生成器加载失败</h2>
+                <p className="text-sm text-red-300">
+                  请检查浏览器控制台获取详细信息，或尝试刷新页面。
+                </p>
+                <button
+                  onClick={() => window.location.reload()}
+                  className="mt-4 px-4 py-2 bg-red-700 hover:bg-red-600 text-white text-sm rounded transition-colors"
+                >
+                  刷新页面
+                </button>
+              </div>
+            }
+          >
+            <ChannelGenerator apiKey={apiKey} provider={provider} toast={toast} />
+          </ErrorBoundary>
         </div>
       </Layout>
       <ToastContainer toasts={toast.toasts} onClose={toast.closeToast} />
