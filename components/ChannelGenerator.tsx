@@ -46,7 +46,39 @@ export const ChannelGenerator: React.FC<ChannelGeneratorProps> = ({ apiKey, prov
   console.log('[ChannelGenerator] 组件初始化开始 - 入参检查:', { apiKey: apiKey?.slice(0, 10) + '...', provider });
   const internalToast = useToast();
   const toast = externalToast || internalToast;
-  addLog('[ChannelGenerator] 组件初始化完成', 'info');
+
+  // 终端日志状态
+  const [terminalLogs, setTerminalLogs] = useState<LogEntry[]>([]);
+  const [showTerminal, setShowTerminal] = useState(false);
+  const terminalRef = useRef<HTMLDivElement>(null);
+  const logIdRef = useRef(0);
+
+  // 添加日志（需要提前定义，因为后面会使用）
+  const addLog = (message: string, type: 'info' | 'success' | 'error' | 'warning' | 'debug' = 'info', details?: string) => {
+    const entry: LogEntry = {
+      id: ++logIdRef.current,
+      type,
+      message,
+      timestamp: new Date(),
+      details,
+    };
+    setTerminalLogs(prev => [...prev.slice(-199), entry]);
+  };
+
+  // 清空日志
+  const clearLogs = () => setTerminalLogs([]);
+
+  // 自动滚动到最新日志
+  useEffect(() => {
+    if (terminalRef.current) {
+      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+    }
+  }, [terminalLogs]);
+
+  // 组件初始化日志（只在挂载时执行一次）
+  useEffect(() => {
+    addLog('[ChannelGenerator] 组件初始化完成', 'info');
+  }, []);
 
   const [channelTopic, setChannelTopic] = useState('');
   const [channelTargetAudience, setChannelTargetAudience] = useState('');
@@ -76,34 +108,6 @@ export const ChannelGenerator: React.FC<ChannelGeneratorProps> = ({ apiKey, prov
   useEffect(() => {
     channelOutputRef.current = channelOutput;
   }, [channelOutput]);
-
-  // 终端日志状态
-  const [terminalLogs, setTerminalLogs] = useState<LogEntry[]>([]);
-  const [showTerminal, setShowTerminal] = useState(false);
-  const terminalRef = useRef<HTMLDivElement>(null);
-  const logIdRef = useRef(0);
-
-  // 添加日志
-  const addLog = (message: string, type: 'info' | 'success' | 'error' | 'warning' | 'debug' = 'info', details?: string) => {
-    const entry: LogEntry = {
-      id: ++logIdRef.current,
-      type,
-      message,
-      timestamp: new Date(),
-      details,
-    };
-    setTerminalLogs(prev => [...prev.slice(-199), entry]);
-  };
-
-  // 清空日志
-  const clearLogs = () => setTerminalLogs([]);
-
-  // 自动滚动到最新日志
-  useEffect(() => {
-    if (terminalRef.current) {
-      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-    }
-  }, [terminalLogs]);
 
   // 头像风格选择状态 (默认 -1 = 自动按顺序)
   const [avatarStyleSelections, setAvatarStyleSelections] = useState<{ [key: number]: number }>({});
