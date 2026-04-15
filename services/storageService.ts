@@ -819,24 +819,42 @@ let _writeQueue: { key: string; value: unknown }[] = [];
 let _writePending = false;
 
 async function _asyncIDBWrite(key: string, value: unknown): Promise<void> {
+  // 大数据走同步写入，确保页面关闭前已完成（不排队等待）
+  const serialized = JSON.stringify(value);
+  const isLargeData = serialized.length > 500_000 || _hasDataUrl(value);
+
+  if (isLargeData) {
+    // 同步写 IndexedDB（不等队列，防止页面卸载导致数据丢失）
+    try {
+      await put('appData', { k: key, v: value, updatedAt: Date.now() });
+    } catch (e) {
+      console.warn(`[storage] IndexedDB sync write failed for key "${key}":`, e);
+    }
+    return;
+  }
+
+  // 小数据排队批量写入（不阻塞 UI）
   _writeQueue.push({ key, value });
   if (_writePending) return;
+
   _writePending = true;
 
-  const batch = _writeQueue.splice(0, 3);
+  // 不等待每个 put 完成，直接批量 fire-and-forget
+  // 等队列清空后再重置 _writePending（防止新调用截断正在写的队列）
+  _flushQueue();
+}
+
+async function _flushQueue(): Promise<void> {
+  while (_writeQueue.length > 0) {
+    const batch = _writeQueue.splice(0, 3);
+    // 并发写一批（不串行等待，大幅提升速度）
+    await Promise.allSettled(
+      batch.map(({ key: k, value: v }) =>
+        put('appData', { k, v, updatedAt: Date.now() })
+      )
+    );
+  }
   _writePending = false;
-
-  for (const { key: k, value: v } of batch) {
-    try {
-      await put('appData', { k, v, updatedAt: Date.now() });
-    } catch (e) {
-      console.warn(`[storage] IndexedDB write failed for key "${k}":`, e);
-    }
-  }
-
-  if (_writeQueue.length > 0) {
-    setTimeout(() => { void _asyncIDBWrite('_trigger_', null); }, 0);
-  }
 }
 
 async function _asyncIDBRemove(key: string): Promise<void> {

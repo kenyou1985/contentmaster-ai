@@ -188,7 +188,6 @@ export const CharacterLibrary: React.FC<CharacterLibraryProps> = ({
 
   // 加载角色列表
   useEffect(() => {
-    console.log('[CharacterLibrary] 组件挂载，加载角色列表');
     loadCharacters();
   }, []);
 
@@ -196,39 +195,25 @@ export const CharacterLibrary: React.FC<CharacterLibraryProps> = ({
     setLoraTemplates(getAllLoraTemplates());
   }, []);
 
-  // 监听 characters 变化
-  useEffect(() => {
-    console.log('[CharacterLibrary] characters 状态变化:', characters.length, characters.map(c => c.name));
-  }, [characters]);
-
   const loadCharacters = () => {
-    console.log('[CharacterLibrary] loadCharacters 被调用');
     const allCharacters = getAllCharacters();
-    console.log('[CharacterLibrary] 从存储读取的角色数量:', allCharacters.length);
-    console.log('[CharacterLibrary] 当前状态:', { characters: allCharacters });
     setCharacters(allCharacters);
   };
 
   // 处理文件选择
   const handleFileSelect = async (file: File) => {
-    console.log('[CharacterLibrary] 选择文件:', file.name, file.type, file.size);
-    
     const validation = validateImageFile(file);
     if (!validation.valid) {
-      console.error('[CharacterLibrary] 文件验证失败:', validation.error);
       toast.error(validation.error || '图片文件无效');
       return;
     }
 
     try {
-      console.log('[CharacterLibrary] 开始读取文件...');
       const dataURL = await fileToDataURL(file);
-      console.log('[CharacterLibrary] 文件读取成功，dataURL长度:', dataURL.length);
       setNewCharacterImage(file);
       setNewCharacterImagePreview(dataURL);
       toast.success('图片上传成功');
     } catch (error: any) {
-      console.error('[CharacterLibrary] 读取图片失败:', error);
       toast.error(`读取图片失败: ${error.message || '未知错误'}`);
     }
   };
@@ -424,15 +409,7 @@ export const CharacterLibrary: React.FC<CharacterLibraryProps> = ({
 
   // 添加角色或场景
   const handleAddCharacter = async () => {
-    console.log('[CharacterLibrary] handleAddCharacter 被调用');
-    console.log('[CharacterLibrary] 当前状态 - characters:', characters.length, 'newCharacterName:', newCharacterName, 'newCharacterImagePreview:', newCharacterImagePreview ? '有' : '无');
-
     const itemLabel = newItemType === 'scene' ? '场景' : '角色';
-    console.log(`[CharacterLibrary] 开始添加${itemLabel}...`);
-    console.log(`[CharacterLibrary] 类型: ${newItemType}`);
-    console.log(`[CharacterLibrary] 名字:`, newCharacterName);
-    console.log(`[CharacterLibrary] 别名:`, newCharacterAliases);
-    console.log(`[CharacterLibrary] 图片预览:`, newCharacterImagePreview ? '已设置' : '未设置');
 
     if (!newCharacterName.trim()) {
       toast.error(`请输入${itemLabel}名字`);
@@ -445,7 +422,6 @@ export const CharacterLibrary: React.FC<CharacterLibraryProps> = ({
         .map(a => a.trim())
         .filter(a => a.length > 0);
 
-      console.log('[CharacterLibrary] 调用addCharacter...');
       const newItem = addCharacter({
         type: newItemType,
         name: newCharacterName.trim(),
@@ -456,8 +432,6 @@ export const CharacterLibrary: React.FC<CharacterLibraryProps> = ({
         description: newCharacterDescription.trim() || undefined,
         imageStyleId: selectedStyle !== 'none' ? selectedStyle : undefined,
       });
-
-      console.log(`[CharacterLibrary] ${itemLabel}添加成功:`, newItem.id);
 
       toast.success(`${itemLabel} "${newCharacterName}" 添加成功`);
 
@@ -1213,7 +1187,6 @@ export const CharacterLibrary: React.FC<CharacterLibraryProps> = ({
                               alt={`生成图片 ${index + 1}`}
                               className="w-20 h-20 object-cover rounded"
                               onError={(e) => {
-                                console.error(`[CharacterLibrary] 生成图片${index + 1}加载失败`);
                                 (e.target as HTMLImageElement).style.display = 'none';
                               }}
                             />
@@ -1231,8 +1204,7 @@ export const CharacterLibrary: React.FC<CharacterLibraryProps> = ({
                           src={newCharacterImagePreview}
                           alt="预览"
                           className="w-20 h-20 object-cover rounded border-2 border-slate-600"
-                          onError={(e) => {
-                            console.error('[CharacterLibrary] 图片加载失败');
+                          onError={() => {
                             toast.error('图片预览失败，请重新选择图片');
                             setNewCharacterImagePreview('');
                           }}
@@ -1323,7 +1295,6 @@ export const CharacterLibrary: React.FC<CharacterLibraryProps> = ({
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {(() => {
               const filtered = filterType === 'all' ? characters : characters.filter(c => c.type === filterType);
-              console.log('[CharacterLibrary] 渲染列表 - filterType:', filterType, 'characters:', characters.length, 'filtered:', filtered.length, 'filteredItems:', filtered.map(c => c.name));
               if (filtered.length === 0) {
                 return (
                   <div className="col-span-full text-center py-8 text-slate-500">
@@ -1335,7 +1306,6 @@ export const CharacterLibrary: React.FC<CharacterLibraryProps> = ({
                 );
               }
               const items = filtered.map((character) => {
-                console.log('[CharacterLibrary] 渲染角色:', character.name, character.type, character.id);
                 return (
                 <div
                   key={character.id}

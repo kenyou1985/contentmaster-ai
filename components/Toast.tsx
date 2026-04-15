@@ -22,13 +22,10 @@ interface ToastProps {
 
 const ToastItem: React.FC<ToastProps> = ({ toast, onClose }) => {
   useEffect(() => {
-    console.log('[ToastItem] Toast 已挂载:', toast.id, toast.type, toast.message);
     if (toast.duration !== undefined && toast.duration > 0) {
       const timer = setTimeout(() => {
-        console.log('[ToastItem] Toast 自动关闭:', toast.id);
         onClose(toast.id);
       }, toast.duration);
-
       return () => clearTimeout(timer);
     }
   }, [toast.id, toast.duration, onClose]);
@@ -83,18 +80,7 @@ interface ToastContainerProps {
 }
 
 export const ToastContainer: React.FC<ToastContainerProps> = ({ toasts, onClose }) => {
-  // 使用 useEffect 来追踪 toasts 的变化
-  React.useEffect(() => {
-    console.log('[ToastContainer] toasts 状态变化:', { 
-      count: toasts.length, 
-      toasts: toasts.map(t => ({ id: t.id, type: t.type, message: t.message }))
-    });
-  }, [toasts]);
-  
-  console.log('[ToastContainer] 渲染 Toast 容器:', { count: toasts.length, toasts });
-  
   if (!toasts || toasts.length === 0) {
-    console.log('[ToastContainer] 没有 Toast，返回 null');
     return null;
   }
 
@@ -110,14 +96,11 @@ export const ToastContainer: React.FC<ToastContainerProps> = ({ toasts, onClose 
         bottom: 'auto',
       }}
     >
-      {toasts.map((toast) => {
-        console.log('[ToastContainer] 渲染 Toast 项:', toast.id);
-        return (
+      {toasts.map((toast) => (
           <div key={toast.id} className="pointer-events-auto">
             <ToastItem toast={toast} onClose={onClose} />
           </div>
-        );
-      })}
+        ))}
     </div>
   );
 };
@@ -129,31 +112,11 @@ export const useToast = () => {
   const showToast = (
     type: ToastType,
     message: string,
-    duration: number = 6000  // 默认 6 秒，让用户有足够时间阅读
+    duration: number = 6000
   ) => {
     const id = `toast-${Date.now()}-${Math.random()}`;
-    const newToast: Toast = {
-      id,
-      type,
-      message,
-      duration,
-    };
-
-    console.log('[Toast] 添加新 Toast:', { id, type, message, duration });
-    setToasts((prev) => {
-      const updated = [...prev, newToast];
-      console.log('[Toast] Toast 列表更新:', { 
-        prevCount: prev.length, 
-        newCount: updated.length, 
-        toasts: updated,
-        newToast: newToast 
-      });
-      // 使用 setTimeout 确保状态更新
-      setTimeout(() => {
-        console.log('[Toast] 状态更新后的 toasts:', updated);
-      }, 0);
-      return updated;
-    });
+    const newToast: Toast = { id, type, message, duration };
+    setToasts((prev) => [...prev, newToast]);
     return id;
   };
 

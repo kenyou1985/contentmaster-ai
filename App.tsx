@@ -22,32 +22,14 @@ const App: React.FC = () => {
   useEffect(() => {
     const initCacheCleanup = async () => {
       try {
-        const stats = getCacheStats();
-        if (stats.count > 0) {
-          console.log(`[VideoCache] 启动时检测到 ${stats.count} 个缓存项，总大小 ${(stats.totalSize / 1024 / 1024).toFixed(2)} MB`);
-        }
-
-        const result = await cleanExpiredAndOversizedCache();
-        if (result.removed > 0) {
-          console.log(`[VideoCache] 清理了 ${result.removed} 个过期缓存项`);
-        }
-      } catch (e) {
-        console.warn('[VideoCache] 缓存清理失败:', e);
+        await cleanExpiredAndOversizedCache();
+      } catch {
+        // 静默忽略
       }
     };
-
-    initCacheCleanup();
+    void initCacheCleanup();
   }, []);
 
-  // 调试：检查 toast 状态
-  React.useEffect(() => {
-    console.log('[App] Toast 状态检查:', {
-      toastsLength: toast.toasts.length,
-      toasts: toast.toasts,
-      hasSuccess: typeof toast.success === 'function',
-    });
-  }, [toast.toasts]);
-  
   // 按 provider 获取 API Key 的 localStorage key
   const getApiKeyStorageKey = (provider: ApiProvider): string => {
     return `API_KEY_${provider}`;
@@ -118,12 +100,8 @@ const App: React.FC = () => {
   // 当 provider 切换时，自动加载对应的 API Key
   useEffect(() => {
     const keyForProvider = loadApiKeyForProvider(provider);
-    if (keyForProvider) {
-      // 如果新 provider 有缓存的 Key，加载它
-      if (keyForProvider !== apiKey) {
-        console.log(`[App] 切换 provider 到 ${provider}，加载缓存的 API Key`);
-        setApiKey(keyForProvider);
-      }
+    if (keyForProvider && keyForProvider !== apiKey) {
+      setApiKey(keyForProvider);
     } else {
       // 如果新 provider 没有缓存的 Key，且当前 Key 是其他 provider 的，清空它
       // 这样可以避免显示错误的 Key（例如切换到 runninghub 时还显示 yunwu 的 Key）
@@ -150,7 +128,7 @@ const App: React.FC = () => {
     if (apiKey) {
       const storageKey = getApiKeyStorageKey(provider);
       localStorage.setItem(storageKey, apiKey);
-      console.log(`[App] 已保存 ${provider} 的 API Key 到 ${storageKey}`);
+      localStorage.setItem(storageKey, apiKey);
     }
   }, [apiKey, provider]);
 
@@ -174,14 +152,11 @@ const App: React.FC = () => {
     const detected = detectProvider(apiKey);
     if (provider !== detected && provider !== 'runninghub') {
       // 如果检测到的 provider 与当前不一致，但用户可能手动选择了，不自动切换
-      // 只在用户没有手动选择时自动切换
-      console.log(`[App] 检测到 provider 为 ${detected}，但当前选择为 ${provider}，保持用户选择`);
     }
 
     try {
       const actualProvider = provider === 'runninghub' ? detected : provider;
       initializeGemini(apiKey, { provider: actualProvider, baseUrl });
-      console.log('[App] Gemini API initialized successfully');
     } catch (error) {
       console.error('[App] Failed to initialize Gemini API:', error);
     }
