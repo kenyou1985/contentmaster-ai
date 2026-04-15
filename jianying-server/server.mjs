@@ -106,9 +106,12 @@ async function runExportJob(payload, taskId, onProgress) {
   const notify = (progress, message) => {
     if (onProgress) onProgress(progress, message);
     if (taskId) {
-      notifyTaskSse(taskId, { progress, message, status: 'running' });
-      // 存储日志到任务对象，供轮询返回
+      const payload = { progress, message, status: 'running' };
+      notifyTaskSse(taskId, payload);
+      // 同步更新任务对象，供轮询端点返回最新状态
       if (task) {
+        task.progress = progress;
+        task.progressMessage = message;
         task.logs.push({ time: Date.now(), progress, message });
         // 只保留最近 500 条日志
         if (task.logs.length > 500) {
@@ -286,12 +289,19 @@ app.use((err, req, res, _next) => {
     /aborted|closed|ECONNRESET|request aborted/i.test(errType) ||
     errCode === 'ECONNRESET' ||
     errCode === 'ERR_STREAM_PREMATURE_CLOSE' ||
+    errCode === 'ERR_STREAM_WRITE_AFTER_END' ||
     errCode === 'HTTP_ERROR' ||
     req.socket?.destroyed;
 
   if (isClientAbort) {
-    // 客户端已断开，不尝试发送响应
-    console.warn('[jianying-server] 客户端断开了连接');
+    const taskHint = req?.params?.taskId || req?.body?.taskId || 'unknown';
+    // 尝试获取任务状态（用于排查是超时断开还是主动取消）
+    let taskStatusHint = '';
+    try {
+      const task = exportTasks.get(taskHint);
+      if (task) taskStatusHint = ` [任务状态: ${task.status}, 结果: ${task.result ? '有' : '无'}]`;
+    } catch { /* ignore */ }
+    console.warn(`[jianying-server] 客户端断开连接 taskId=${taskHint}${taskStatusHint} reason=${errCode || errType || 'unknown'}`);
     if (!res.headersSent) {
       res.end();
     }
@@ -388,14 +398,15 @@ app.get('/api/jianying/export/sse/:taskId', (req, res) => {
   // 发送初始连接确认
   res.write(`data: ${JSON.stringify({ type: 'connected', taskId })}\n\n`);
 
-  // 心跳保活定时器（Railway 代理每 30-60s 超时，需每 15s 发心跳）
+  // 心跳保活定时器（Railway 代理每 30-60s 超时，需每 5s 发心跳并 flush）
   const heartbeatInterval = setInterval(() => {
     try {
       res.write(': heartbeat\n\n');
+      res.flush?.();
     } catch {
       // 连接已断开
     }
-  }, 15000);
+  }, 5000);
 
   // 将此连接加入任务订阅队列
   const controller = {
@@ -443,6 +454,7 @@ app.get('/api/jianying/export/sse/:taskId', (req, res) => {
         taskSseConnections.delete(taskId);
       }
     }
+    console.log(`[jianying-server] SSE 连接断开 taskId=${taskId} (remaining=${conns?.size ?? 0})`);
   });
 });
 
@@ -469,17 +481,27 @@ app.post('/api/jianying/export/start', (req, res) => {
     try {
       const result = await runExportJob(payload, task.taskId, (p, m) => {
         notifyTaskSse(task.taskId, { progress: p, message: m, status: 'running' });
+        if (current) {
+          current.progress = p;
+          current.progressMessage = m;
+        }
       });
       current.status = 'success';
       current.result = result;
+      current.progress = 100;
+      current.progressMessage = '完成';
       current.updatedAt = Date.now();
       current.payload = undefined;
+      // 通知 SSE 客户端任务已完成（即使连接已断开，日志中也能看到）
+      notifyTaskSse(task.taskId, { type: 'result', status: 'success', progress: 100, message: '导出成功', ...result });
       console.log(`[jianying-server] 任务 ${task.taskId} 完成，结果已缓存`);
     } catch (e) {
       current.status = 'failed';
       current.error = e?.message || String(e);
+      current.progressMessage = e?.message || '任务失败';
       current.updatedAt = Date.now();
       current.payload = undefined;
+      notifyTaskSse(task.taskId, { type: 'error', status: 'failed', progress: -1, error: current.error });
       console.error(`[jianying-server] 任务 ${task.taskId} 失败:`, current.error);
     }
   });
@@ -513,12 +535,28 @@ app.get('/api/jianying/export/result/:taskId', (req, res) => {
     return res.status(404).json({ success: false, error: 'task not found' });
   }
   if (task.status === 'success') {
-    return res.json(task.result || { success: true });
+    return res.json({
+      success: true,
+      taskId: task.taskId,
+      status: 'success',
+      result: task.result || { success: true },
+      message: '导出成功',
+      // 告知客户端任务已完成，可直接使用 result
+      _hint: 'poll_or_sse',
+    });
   }
   if (task.status === 'failed') {
     return res.status(500).json({ success: false, error: task.error || 'export failed' });
   }
-  return res.status(202).json({ success: false, status: task.status, message: '任务仍在执行中' });
+  return res.status(202).json({
+    success: false,
+    status: task.status,
+    taskId: task.taskId,
+    progress: task.progress || 0,
+    message: task.progressMessage || '任务执行中，请继续轮询',
+    logs: task.logs || [],
+    _hint: 'keep_polling',
+  });
 });
 
 // SSE 端点已废弃（Railway 代理不支持长连接），保留但不可靠
@@ -539,8 +577,8 @@ app.get('/api/jianying/export/sse/:taskId', (req, res) => {
   });
 
   const heartbeatInterval = setInterval(() => {
-    try { res.write(': heartbeat\n\n'); } catch { /* ignore */ }
-  }, 15000);
+    try { res.write(': heartbeat\n\n'); res.flush?.(); } catch { /* ignore */ }
+  }, 5000);
 
   res.write(`data: ${JSON.stringify({ type: 'connected', taskId })}\n\n`);
 
@@ -568,6 +606,7 @@ app.get('/api/jianying/export/sse/:taskId', (req, res) => {
     clearInterval(heartbeatInterval);
     const conns = taskSseConnections.get(taskId);
     if (conns) { conns.delete(entry); if (conns.size === 0) taskSseConnections.delete(taskId); }
+    console.log(`[jianying-server] SSE(legacy) 连接断开 taskId=${taskId} (remaining=${conns?.size ?? 0})`);
   });
 });
 
