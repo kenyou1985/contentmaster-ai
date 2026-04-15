@@ -882,40 +882,17 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       setJianyingExportProgress(100);
       setJianyingExportMessage('导出完成');
 
-      // 处理分批导出的合并 ZIP
-      if (result._batched) {
-        // 分批导出已完成
-        if (result.success) {
-          // 获取合并后的 Blob（如果有）
-          const mergedBlob = (result as any)._mergedBlob;
-          if (mergedBlob) {
-            // 创建下载 URL
-            const downloadUrl = URL.createObjectURL(mergedBlob);
-            setLastJianyingDownloadUrl(downloadUrl);
-
-            // 自动触发下载
-            setTimeout(() => {
-              const a = document.createElement('a');
-              a.href = downloadUrl;
-              a.download = result.zip_path || `${exportDraftName}_merged.zip`;
-              a.click();
-            }, 100);
-
-            appendTerminalLog('Jianying', `分批导出完成: ${result.shots_count} 个镜头, 已合并为 ${(result.zip_size_mb || 0).toFixed(2)}MB ZIP`);
-          } else if (result._batchZipUrls && result._batchZipUrls.length > 0) {
-            // 合并失败，但有单独的批次 ZIP
-            setLastJianyingDownloadUrl('');
-            appendTerminalLog('Jianying', `分批导出完成但 ZIP 合并失败。可使用以下 ${result._batchZipUrls.length} 个独立 ZIP:`);
-            result._batchZipUrls.forEach((url: string, idx: number) => {
-              appendTerminalLog('Jianying', `  批次 ${idx + 1}: ${url}`);
-            });
-          }
-          toast.success(`剪映分批导出成功: ${result.shots_count} 个镜头`);
+      // 处理分批导出结果（50+ 镜头场景）
+      if (result._batched && result.success) {
+        const urls = result._batchZipUrls || [];
+        if (urls.length > 0) {
+          // 显示下载链接，让用户手动点击
+          const displayUrls = urls.filter(u => u).join('\n');
+          setLastJianyingDownloadUrl(urls[0] || ''); // 显示第一个链接
+          appendTerminalLog('Jianying', `分批导出完成: ${result.shots_count} 个镜头，生成 ${urls.length} 个 ZIP 文件`);
+          appendTerminalLog('Jianying', `下载链接:\n${displayUrls}`);
+          toast.success(`剪映分批导出成功: ${result.shots_count} 个镜头（${urls.length} 个 ZIP）`);
           return true;
-        } else {
-          appendTerminalLog('Jianying', `分批导出失败: ${result.error}`);
-          toast.error(`分批导出失败: ${result.error}`);
-          return false;
         }
       }
 
@@ -923,9 +900,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       if (result.success) {
         const rawZipUrl = (result.zip_download_url || '').trim();
         let downloadUrl = '';
-        // 如果服务器返回了 ZIP 下载链接，使用正确的 API 基础地址构建完整 URL
         if (rawZipUrl) {
-          // 根据是否使用 railway 确定 API 基础地址
           const baseForDownload = result.usedRailway
             ? (import.meta.env.VITE_JIANYING_API_BASE || '').replace(/\/$/, '')
             : getJianyingApiBase();
@@ -941,13 +916,10 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         }
         if (downloadUrl) {
           setLastJianyingDownloadUrl(downloadUrl);
-          appendTerminalLog('Jianying', `导出成功并生成 ZIP 下载链接: ${downloadUrl}`);
+          appendTerminalLog('Jianying', `导出成功: ${downloadUrl}`);
         } else {
           setLastJianyingDownloadUrl('');
-          appendTerminalLog(
-            'Jianying',
-            `导出完成（未返回 ZIP 下载链接）${result.draft_folder ? ` · ${result.draft_folder}` : ''}`
-          );
+          appendTerminalLog('Jianying', `导出完成${result.draft_folder ? ` · ${result.draft_folder}` : ''}`);
         }
         appendTerminalLog('Jianying', `导出成功: ${exportDraftName} → ${result.draft_folder || jianyingOutputDir}`);
         toast.success(

@@ -123,38 +123,6 @@ async function runExportJob(payload, taskId, onProgress, fromRailway = false) {
     console.log(`[jianying-server] 任务 ${taskId || '同步'} 进度: ${progress}% - ${message}`);
   };
 
-  // ── 导出前检查磁盘空间，不足则清理 ─────────────────────────────────
-  if (fromRailway) {
-    notify(2, '检查磁盘空间...');
-    try {
-      const selfBase = `http://localhost:${PORT}`;
-      const spaceRes = await fetch(`${selfBase}/api/jianying/disk-space`, {
-        method: 'GET',
-        signal: AbortSignal.timeout(10000),
-      });
-      if (spaceRes.ok) {
-        const spaceData = await spaceRes.json().catch(() => null);
-        if (spaceData && !spaceData.ok) {
-          notify(3, `磁盘空间不足 (${spaceData.free_mb}MB)，开始清理...`);
-          console.log(`[jianying-server] 磁盘空间不足: ${spaceData.free_mb}MB，开始清理...`);
-          const cleanupRes = await fetch(`${selfBase}/api/jianying/cleanup`, {
-            method: 'POST',
-            signal: AbortSignal.timeout(30000),
-          });
-          if (cleanupRes.ok) {
-            const cleanupData = await cleanupRes.json().catch(() => null);
-            if (cleanupData && cleanupData.freed_mb > 0) {
-              notify(4, `清理完成，释放 ${cleanupData.freed_mb}MB`);
-              console.log(`[jianying-server] 清理完成: ${cleanupData.freed_mb}MB`);
-            }
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('[jianying-server] 空间检查/清理失败，继续导出:', e.message);
-    }
-  }
-
   notify(5, '开始处理...');
 
   const { code, stdout, stderr } = await runPythonStdin(
@@ -391,88 +359,6 @@ app.get('/api/jianying/health', (_req, res) => {
 // ── 列出剪映草稿（仅 macOS 有完全磁盘访问权限，Windows/Linux 不可用）──
 app.get('/api/jianying/list', (_req, res) => {
   runPython(['--list-json'], null)
-    .then(({ code, stdout, stderr }) => {
-      if (code !== 0) {
-        return res.status(500).json({ error: stderr || `exit ${code}` });
-      }
-      try {
-        const data = JSON.parse(stdout.trim() || '[]');
-        res.json(Array.isArray(data) ? data : []);
-      } catch {
-        res.json([]);
-      }
-    })
-    .catch((err) => res.status(500).json({ error: err.message }));
-});
-
-// ── 检查磁盘空间 ─────────────────────────────────────────────────────
-app.get('/api/jianying/disk-space', async (_req, res) => {
-  try {
-    const { code, stdout, stderr } = await runPython(['--check-disk'], null);
-    if (code !== 0) {
-      return res.status(500).json({
-        ok: false,
-        free_mb: 0,
-        message: stderr?.slice(0, 200) || '检查失败',
-      });
-    }
-    const text = (stdout || '').trim();
-    const match = text.match(/free[_\s]?space[:\s]*([\d.]+)\s*mb/i);
-    if (match) {
-      const freeMB = parseFloat(match[1]);
-      return res.json({
-        ok: freeMB >= 100,
-        free_mb: freeMB,
-        message: `剩余空间: ${freeMB.toFixed(1)}MB`,
-      });
-    }
-    // 尝试从 JSON 解析
-    try {
-      const data = JSON.parse(text);
-      return res.json({
-        ok: data.free_mb >= 100,
-        free_mb: data.free_mb,
-        message: data.message || `剩余空间: ${data.free_mb}MB`,
-      });
-    } catch {
-      return res.json({ ok: true, free_mb: -1, message: text.slice(0, 200) });
-    }
-  } catch (e) {
-    res.status(500).json({ ok: false, free_mb: 0, message: e.message });
-  }
-});
-
-// ── 清理缓存 ─────────────────────────────────────────────────────────
-app.post('/api/jianying/cleanup', async (_req, res) => {
-  try {
-    const { code, stdout, stderr } = await runPython(['--cleanup'], null);
-    if (code !== 0) {
-      return res.status(500).json({
-        success: false,
-        freed_mb: 0,
-        message: stderr?.slice(0, 200) || '清理失败',
-      });
-    }
-    const text = (stdout || '').trim();
-    try {
-      const data = JSON.parse(text);
-      return res.json({
-        success: true,
-        freed_mb: data.freed_mb || 0,
-        message: data.message || '清理完成',
-      });
-    } catch {
-      // 从文本解析 "Freed 123.45 MB"
-      const m = text.match(/freed[:\s]*([\d.]+)\s*mb/i);
-      const freed = m ? parseFloat(m[1]) : 0;
-      return res.json({ success: true, freed_mb: freed, message: text.slice(0, 200) });
-    }
-  } catch (e) {
-    res.status(500).json({ success: false, freed_mb: 0, message: e.message });
-  }
-});
-
-// ── 导出剪映草稿（SSE 流式进度）─────────────────────────────────────────────
 // GET /api/jianying/export/sse/:taskId - SSE 流式推送任务状态（前端订阅）
 app.get('/api/jianying/export/sse/:taskId', (req, res) => {
   const { taskId } = req.params;
