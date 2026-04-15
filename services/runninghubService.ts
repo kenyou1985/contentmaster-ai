@@ -617,9 +617,14 @@ export const uploadImageToRunningHub = async (apiKey: string, imageUrl: string):
   console.log('[RunningHub] 上传成功，响应数据:', JSON.stringify(data).slice(0, 200));
   if (data.code !== 0) throw new Error(`图片上传失败: ${data.msg || data.message}`);
 
-  // 返回完整的可访问 URL（相对路径转换为绝对 URL）
+  // 返回相对路径（不带 base URL），ComfyUI LoadImageFromUrl 节点会自行拼接完整 URL
+  // ⚠️ 传完整 URL（如 https://www.runninghub.cn/api/xxx.jpg）会导致 ComfyUI
+  //   HTTP 下载时拿到无效内容（403/401/重定向页面），PIL 无法识别为图片
   const uploadedPath = data.data?.fileName || data.data?.filePath || imageUrl;
-  return resolveRunningHubOutputUrl(uploadedPath);
+  const relativePath = (uploadedPath || '').startsWith('/')
+    ? uploadedPath
+    : `/${uploadedPath}`;
+  return relativePath;
 };
 
 /**
