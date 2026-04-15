@@ -69,6 +69,12 @@ export const ChannelGenerator: React.FC<ChannelGeneratorProps> = ({ apiKey, prov
   const [showHistory, setShowHistory] = useState(false);
   const [previewImage, setPreviewImage] = useState<{ url: string; title: string; prompt: string } | null>(null);
 
+  // 使用 ref 保持 channelOutput 最新值的引用，避免异步回调闭包陷阱
+  const channelOutputRef = useRef(channelOutput);
+  useEffect(() => {
+    channelOutputRef.current = channelOutput;
+  }, [channelOutput]);
+
   // 终端日志状态
   const [terminalLogs, setTerminalLogs] = useState<LogEntry[]>([]);
   const [showTerminal, setShowTerminal] = useState(false);
@@ -570,16 +576,18 @@ ${nameLangReq}
         });
         
         // 异步缓存图片并更新历史记录
-        const newAvatarUrls = channelOutput.avatarUrls ? [...channelOutput.avatarUrls] : [[], [], []];
-        const arr = newAvatarUrls[index] ? [...newAvatarUrls[index]] : [];
-        arr.push(result.url);
-        if (arr.length > 3) arr.shift();
-        newAvatarUrls[index] = arr;
-        
-        const currentBannerUrls = channelOutput.bannerUrls || [[], [], []];
-        
         (async () => {
           try {
+            // 使用 ref 获取最新状态，避免闭包陷阱
+            const currentOutput = channelOutputRef.current;
+            const newAvatarUrls = currentOutput?.avatarUrls ? [...currentOutput.avatarUrls] : [[], [], []];
+            const arr = newAvatarUrls[index] ? [...newAvatarUrls[index]] : [];
+            arr.push(result.url);
+            if (arr.length > 3) arr.shift();
+            newAvatarUrls[index] = arr;
+
+            const currentBannerUrls = currentOutput?.bannerUrls || [[], [], []];
+
             const cached = await cacheImages(newAvatarUrls, currentBannerUrls);
             // 更新历史记录（使用函数式更新避免闭包陷阱）
             setChannelHistory(prev => {
@@ -708,15 +716,17 @@ ${nameLangReq}
         });
         
         // 异步缓存图片并更新历史记录
-        const currentAvatarUrls = channelOutput.avatarUrls || [[], [], []];
-        const newBannerUrls = channelOutput.bannerUrls ? [...channelOutput.bannerUrls] : [[], [], []];
-        const arr = newBannerUrls[index] ? [...newBannerUrls[index]] : [];
-        arr.push(result.url);
-        if (arr.length > 3) arr.shift();
-        newBannerUrls[index] = arr;
-        
         (async () => {
           try {
+            // 使用 ref 获取最新状态，避免闭包陷阱
+            const currentOutput = channelOutputRef.current;
+            const currentAvatarUrls = currentOutput?.avatarUrls || [[], [], []];
+            const newBannerUrls = currentOutput?.bannerUrls ? [...currentOutput.bannerUrls] : [[], [], []];
+            const arr = newBannerUrls[index] ? [...newBannerUrls[index]] : [];
+            arr.push(result.url);
+            if (arr.length > 3) arr.shift();
+            newBannerUrls[index] = arr;
+
             const cached = await cacheImages(currentAvatarUrls, newBannerUrls);
             // 更新历史记录（使用函数式更新避免闭包陷阱）
             setChannelHistory(prev => {

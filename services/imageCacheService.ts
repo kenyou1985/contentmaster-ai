@@ -9,24 +9,36 @@ const STORE_NAME = 'images';
 let db: IDBDatabase | null = null;
 
 // 初始化数据库
-export const initImageCache = (): Promise<void> => {
-  return new Promise((resolve, reject) => {
+export const initImageCache = (): Promise<boolean> => {
+  return new Promise((resolve) => {
     if (db) {
-      resolve();
+      resolve(true);
+      return;
+    }
+
+    // 检查是否支持 IndexedDB
+    if (typeof indexedDB === 'undefined') {
+      console.warn('[ImageCache] IndexedDB 不可用，图片缓存功能已禁用');
+      resolve(false);
       return;
     }
 
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
     request.onerror = () => {
-      console.error('[ImageCache] 数据库打开失败');
-      reject(request.error);
+      console.warn('[ImageCache] 数据库打开失败，图片缓存功能已禁用');
+      db = null;
+      resolve(false);
     };
 
     request.onsuccess = () => {
       db = request.result;
       console.log('[ImageCache] 数据库初始化成功');
-      resolve();
+      resolve(true);
+    };
+
+    request.onblocked = () => {
+      console.warn('[ImageCache] 数据库打开被阻止');
     };
 
     request.onupgradeneeded = (event) => {
@@ -41,10 +53,21 @@ export const initImageCache = (): Promise<void> => {
 // 将图片URL转换为base64并缓存
 export const cacheImage = async (key: string, url: string): Promise<string> => {
   try {
-    await initImageCache();
-
     // 如果是已经是data URL，直接返回
     if (url.startsWith('data:')) {
+      return url;
+    }
+
+    // 初始化缓存，检查是否可用
+    const cacheAvailable = await initImageCache();
+    if (!cacheAvailable) {
+      console.warn('[ImageCache] 缓存不可用，跳过缓存:', key);
+      return url;
+    }
+
+    // 再次检查 db 状态
+    if (!db) {
+      console.warn('[ImageCache] 数据库未就绪，跳过缓存:', key);
       return url;
     }
 
@@ -55,15 +78,23 @@ export const cacheImage = async (key: string, url: string): Promise<string> => {
     const dataUrl = `data:${blob.type};base64,${base64}`;
 
     // 存储到IndexedDB
-    return new Promise((resolve, reject) => {
-      const transaction = db!.transaction([STORE_NAME], 'readwrite');
-      const store = transaction.objectStore(STORE_NAME);
-      store.put({ key, dataUrl });
-      transaction.oncomplete = () => {
-        console.log(`[ImageCache] 图片已缓存: ${key}`);
-        resolve(dataUrl);
-      };
-      transaction.onerror = () => reject(transaction.error);
+    return new Promise((resolve) => {
+      try {
+        const transaction = db!.transaction([STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+        store.put({ key, dataUrl });
+        transaction.oncomplete = () => {
+          console.log(`[ImageCache] 图片已缓存: ${key}`);
+          resolve(dataUrl);
+        };
+        transaction.onerror = () => {
+          console.warn('[ImageCache] 事务错误，返回原始URL');
+          resolve(url);
+        };
+      } catch (e) {
+        console.warn('[ImageCache] 存储失败，返回原始URL:', e);
+        resolve(url);
+      }
     });
   } catch (e) {
     console.error('[ImageCache] 缓存图片失败:', e);
@@ -120,7 +151,8 @@ export const getCachedImage = (key: string): Promise<string | null> => {
         resolve(request.result?.dataUrl || null);
       };
       request.onerror = () => resolve(null);
-    } catch {
+    } catch (e) {
+      console.warn('[ImageCache] 读取缓存失败:', e);
       resolve(null);
     }
   });
@@ -128,7 +160,6 @@ export const getCachedImage = (key: string): Promise<string | null> => {
 
 // 清理过期缓存（保留最近N条记录的缓存）
 export const cleanupOldCache = (keepCount: number = 10): void => {
-  // 简单的清理策略：随机删除一半的缓存
   if (!db) return;
 
   try {
@@ -146,8 +177,11 @@ export const cleanupOldCache = (keepCount: number = 10): void => {
         cursor.continue();
       }
     };
+    request.onerror = () => {
+      console.warn('[ImageCache] 清理缓存游标错误');
+    };
   } catch (e) {
-    console.error('[ImageCache] 清理缓存失败:', e);
+    console.warn('[ImageCache] 清理缓存失败:', e);
   }
 };
 
@@ -156,12 +190,23 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onloadend = () => {
-      const result = reader.result as string;
-      // 移除data URL前缀
-      const base64 = result.split(',')[1];
-      resolve(base64);
+      try {
+        const result = reader.result as string;
+        if (!result || typeof result !== 'string') {
+          reject(new Error('Invalid reader result'));
+          return;
+        }
+        const parts = result.split(',');
+        if (parts.length < 2) {
+          reject(new Error('Invalid data URL format'));
+          return;
+        }
+        resolve(parts[1]);
+      } catch (e) {
+        reject(e instanceof Error ? e : new Error(String(e)));
+      }
     };
-    reader.onerror = reject;
+    reader.onerror = () => reject(new Error('FileReader error'));
     reader.readAsDataURL(blob);
   });
 };
