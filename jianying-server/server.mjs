@@ -535,14 +535,27 @@ app.get('/api/jianying/export/result/:taskId', (req, res) => {
     return res.status(404).json({ success: false, error: 'task not found' });
   }
   if (task.status === 'success') {
+    // 把 result 里的关键字段（zip_download_url 等）展开到顶层，前端只做浅展开
+    const inner = task.result || {};
     return res.json({
       success: true,
       taskId: task.taskId,
       status: 'success',
-      result: task.result || { success: true },
       message: '导出成功',
-      // 告知客户端任务已完成，可直接使用 result
-      _hint: 'poll_or_sse',
+      platform: inner.platform || 'jianying',
+      // 核心字段展开（前端 pollForResult 只做浅展开）
+      draft_name: inner.draft_name,
+      shots_count: inner.shots_count,
+      resolution: inner.resolution,
+      fps: inner.fps,
+      draft_folder: inner.draft_folder,
+      total_duration: inner.total_duration,
+      zip_path: inner.zip_path,
+      zip_download_url: inner.zip_download_url,
+      zip_size_mb: inner.zip_size_mb,
+      download_issue_count: inner.download_issue_count,
+      download_issues: inner.download_issues,
+      usedRailway: true,
     });
   }
   if (task.status === 'failed') {
