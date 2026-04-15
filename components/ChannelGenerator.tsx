@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Youtube, Image, Wand2, Loader2, Copy, Clock, Trash2, X, Download, Maximize2, Terminal } from 'lucide-react';
 import { ApiProvider } from '../types';
 import { streamContentGeneration } from '../services/geminiService';
@@ -135,33 +135,35 @@ export const ChannelGenerator: React.FC<ChannelGeneratorProps> = ({ apiKey, prov
     }
   }, []);
 
-  // 保存历史记录
-  const saveChannelHistory = (record: ChannelHistoryRecord) => {
+  // 保存历史记录（使用函数式更新避免闭包陷阱）
+  const saveChannelHistory = useCallback((record: ChannelHistoryRecord) => {
     try {
-      // 确保记录有ID和更新时间
-      const finalRecord = {
-        ...record,
-        id: record.id || `channel_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-        updatedAt: record.updatedAt || Date.now(),
-      };
-      // 更新或添加记录
-      const existingIndex = channelHistory.findIndex(r => r.id === finalRecord.id);
-      let updated: ChannelHistoryRecord[];
-      if (existingIndex >= 0) {
-        updated = [
-          finalRecord,
-          ...channelHistory.filter((_, i) => i !== existingIndex)
-        ];
-      } else {
-        updated = [finalRecord, ...channelHistory].slice(0, 20);
-      }
-      setChannelHistory(updated);
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+      setChannelHistory(prev => {
+        // 确保记录有ID和更新时间
+        const finalRecord = {
+          ...record,
+          id: record.id || `channel_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+          updatedAt: record.updatedAt || Date.now(),
+        };
+        // 更新或添加记录
+        const existingIndex = prev.findIndex(r => r.id === finalRecord.id);
+        let updated: ChannelHistoryRecord[];
+        if (existingIndex >= 0) {
+          updated = [
+            finalRecord,
+            ...prev.filter((_, i) => i !== existingIndex)
+          ];
+        } else {
+          updated = [finalRecord, ...prev].slice(0, 20);
+        }
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+        return updated;
+      });
     } catch (e) {
       console.error('保存频道历史记录失败:', e);
       addLog(`✗ 保存历史记录失败: ${e}`, 'error');
     }
-  };
+  }, [addLog]);
 
   // 删除单条历史记录
   const deleteChannelHistory = (id: string) => {
@@ -315,13 +317,15 @@ ${nameLangReq}
             }
           }
           
-          // 更新历史记录
-          const updatedHistory = [
-            finalRecord,
-            ...channelHistory.filter(r => r.id !== existingRecord.id)
-          ].slice(0, 20);
-          setChannelHistory(updatedHistory);
-          localStorage.setItem(HISTORY_KEY, JSON.stringify(updatedHistory));
+          // 更新历史记录（使用函数式更新避免闭包陷阱）
+          setChannelHistory(prev => {
+            const updatedHistory = [
+              finalRecord,
+              ...prev.filter(r => r.id !== existingRecord.id)
+            ].slice(0, 20);
+            localStorage.setItem(HISTORY_KEY, JSON.stringify(updatedHistory));
+            return updatedHistory;
+          });
           addLog(`✓ 项目 "${existingRecord.name}" 已更新`, 'success');
         } else {
           // 创建新项目
@@ -577,22 +581,23 @@ ${nameLangReq}
         (async () => {
           try {
             const cached = await cacheImages(newAvatarUrls, currentBannerUrls);
-            // 更新历史记录
-            if (channelHistory.length > 0) {
+            // 更新历史记录（使用函数式更新避免闭包陷阱）
+            setChannelHistory(prev => {
+              if (prev.length === 0) return prev;
               const updatedRecord = {
-                ...channelHistory[0],
+                ...prev[0],
                 output: {
-                  ...channelHistory[0].output,
+                  ...prev[0].output,
                   avatarUrls: cached.avatarUrls,
                   bannerUrls: cached.bannerUrls,
                 },
                 updatedAt: Date.now(),
               };
-              const updatedHistory = [updatedRecord, ...channelHistory.slice(1)].slice(0, 20);
-              setChannelHistory(updatedHistory);
+              const updatedHistory = [updatedRecord, ...prev.slice(1)].slice(0, 20);
               localStorage.setItem(HISTORY_KEY, JSON.stringify(updatedHistory));
-              addLog(`✓ 头像已缓存，更新项目 "${channelHistory[0].name}"`, 'success', `头像: ${cached.avatarUrls.flat().filter(Boolean).length} 张`);
-            }
+              addLog(`✓ 头像已缓存，更新项目 "${prev[0].name}"`, 'success', `头像: ${cached.avatarUrls.flat().filter(Boolean).length} 张`);
+              return updatedHistory;
+            });
           } catch (cacheErr) {
             addLog(`⚠ 图片缓存失败`, 'warning');
           }
@@ -713,22 +718,23 @@ ${nameLangReq}
         (async () => {
           try {
             const cached = await cacheImages(currentAvatarUrls, newBannerUrls);
-            // 更新历史记录
-            if (channelHistory.length > 0) {
+            // 更新历史记录（使用函数式更新避免闭包陷阱）
+            setChannelHistory(prev => {
+              if (prev.length === 0) return prev;
               const updatedRecord = {
-                ...channelHistory[0],
+                ...prev[0],
                 output: {
-                  ...channelHistory[0].output,
+                  ...prev[0].output,
                   avatarUrls: cached.avatarUrls,
                   bannerUrls: cached.bannerUrls,
                 },
                 updatedAt: Date.now(),
               };
-              const updatedHistory = [updatedRecord, ...channelHistory.slice(1)].slice(0, 20);
-              setChannelHistory(updatedHistory);
+              const updatedHistory = [updatedRecord, ...prev.slice(1)].slice(0, 20);
               localStorage.setItem(HISTORY_KEY, JSON.stringify(updatedHistory));
-              addLog(`✓ 横幅已缓存，更新项目 "${channelHistory[0].name}"`, 'success', `横幅: ${cached.bannerUrls.flat().filter(Boolean).length} 张`);
-            }
+              addLog(`✓ 横幅已缓存，更新项目 "${prev[0].name}"`, 'success', `横幅: ${cached.bannerUrls.flat().filter(Boolean).length} 张`);
+              return updatedHistory;
+            });
           } catch (cacheErr) {
             addLog(`⚠ 图片缓存失败`, 'warning');
           }

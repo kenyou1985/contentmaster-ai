@@ -3103,7 +3103,7 @@ export const YouTubeMonitor: React.FC = () => {
                                 <span className="text-xs text-emerald-500/70 ml-1">· {groupVideoCount} 条视频</span>
                               )}
                               <button
-                                onClick={e => { e.stopPropagation(); setSelectedGroupId(group.id); void loadAllGroupChannels(group.id); }}
+                                onClick={e => { e.stopPropagation(); setSelectedGroupId(group.id); void loadAllGroupChannels(group.id, false, 50); }}
                                 className="ml-auto mr-2 px-2 py-0.5 text-[10px] bg-emerald-500/15 text-emerald-400 rounded hover:bg-emerald-500/25 flex items-center gap-1"
                               >
                                 <RefreshCw className="w-2.5 h-2.5" />抓取
@@ -3284,7 +3284,7 @@ export const YouTubeMonitor: React.FC = () => {
                       <h3 className="text-sm font-medium text-slate-200">{group.name}</h3>
                       <span className="text-xs text-slate-500">({channels.length} 频道)</span>
                       <button
-                        onClick={() => { setExpandedGroupId(null); setSelectedGroupId(group.id); void loadAllGroupChannels(group.id); }}
+                        onClick={() => { setExpandedGroupId(null); setSelectedGroupId(group.id); void loadAllGroupChannels(group.id, false, 50); }}
                         className="ml-auto px-2 py-1 text-xs bg-cyan-500/15 text-cyan-400 rounded hover:bg-cyan-500/25 flex items-center gap-1"
                       >
                         <RefreshCw className="w-3 h-3" />查看分组数据

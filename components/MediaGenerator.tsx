@@ -31,7 +31,7 @@ import {
 } from '../services/characterLibraryService';
 import { CharacterLibrary } from './CharacterLibrary';
 import { VoiceLibrary } from './VoiceLibrary';
-import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, FolderOpen, Rocket, Copy, Check, CheckSquare, Square, Users, HardDrive, ListOrdered, ArrowUp, Terminal, Gauge } from 'lucide-react';
+import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, FolderOpen, Rocket, Copy, Check, CheckSquare, Square, Users, HardDrive, ListOrdered, ArrowUp, Terminal, Gauge, AlertCircle } from 'lucide-react';
 import JSZip from 'jszip';
 import { HistorySelector } from './HistorySelector';
 import { getRunningHubMaxConcurrent, setRunningHubMaxConcurrent, initRunningHubConcurrency, MAX_CONCURRENT } from '../services/runningHubConcurrency';
@@ -102,6 +102,10 @@ interface Shot {
   cachedVideoUrls?: string[]; // 缓存的视频 Blob URL 数组
   imageGenerating?: boolean;
   videoGenerating?: boolean;
+  /** 视频生成失败标记 */
+  videoFailed?: boolean;
+  /** 视频生成失败原因 */
+  videoFailedReason?: string;
   selected?: boolean;
   editing?: boolean;
   selectedImageIndex?: number; // 选中的图片索引（-1 表示未选中）
@@ -2895,9 +2899,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           } else if (result.status === 'FAILED' || result.status === 'failed' || result.status === 'error') {
             appendTerminalLog('VideoGen', `${shotLabel()}: 任务失败 — ${result.error || '未知错误'}`);
             toast.error(`视频生成失败: ${result.error || '未知错误'}`, 6000);
-            updateShot(shotId, { videoGenerating: false });
+            // 标记该镜头为失败状态，前端视频区域会显示失败图标
+            updateShot(shotId, { 
+              videoGenerating: false,
+              videoFailed: true,
+              videoFailedReason: result.error || '视频生成失败'
+            });
             return;
-          } else {
+          } else if (result.status === 'SUCCESS' || result.status === 'completed' || result.status === 'success') {
             const progress = result.progress || 0;
             let pollInterval = 5000;
 
@@ -4918,9 +4927,21 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                       } else {
                         // 没有视频
                         return (
-                          <div className="flex items-center justify-center h-32 bg-slate-800/50 rounded border border-slate-700 text-slate-500 text-[10px]">
+                          <div className="flex flex-col items-center justify-center h-32 bg-slate-800/50 rounded border border-slate-700 text-slate-500 text-[10px]">
                             {shot.videoGenerating ? (
                               <Loader2 size={16} className="animate-spin text-purple-400" />
+                            ) : shot.videoFailed ? (
+                              <div className="flex flex-col items-center gap-1">
+                                <div className="text-red-400 flex items-center gap-1">
+                                  <AlertCircle size={14} />
+                                  <span>视频生成失败</span>
+                                </div>
+                                {shot.videoFailedReason && (
+                                  <span className="text-slate-500 text-[8px] max-w-full px-2 text-center truncate" title={shot.videoFailedReason}>
+                                    {shot.videoFailedReason}
+                                  </span>
+                                )}
+                              </div>
                             ) : (
                               '暂无视频'
                             )}
