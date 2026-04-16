@@ -659,7 +659,7 @@ async function exportJianyingDraftInMultipleBatches(
   onProgress?: (progress: number, message: string) => void
 ): Promise<JianyingExportResult> {
   const totalShots = options.shots.length;
-  const BATCH_SIZE = 22; // 每批最多 22 个镜头（避免超过 Railway 请求体限制）
+  const BATCH_SIZE = 20; // 每批最多 20 个镜头（避免超过 Railway 请求体限制）
   const batchCount = Math.ceil(totalShots / BATCH_SIZE);
   const batches: JianyingShot[][] = [];
 
