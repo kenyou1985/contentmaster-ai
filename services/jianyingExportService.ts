@@ -720,8 +720,21 @@ async function exportJianyingDraftInMultipleBatches(
 
     onProgress?.(95, '合并完成，触发下载...');
 
+    // 修复下载链接：避免重复拼接 /api/jianying
+    let mergedUrl = mergeResult.zip_download_url || '';
+    if (mergedUrl.startsWith('/api/jianying') && railwayBase.includes('/api/jianying')) {
+      // 去掉 /api/jianying 前缀，直接拼接到 railwayBase
+      const suffix = mergedUrl.replace(/^\/api\/jianying/, '');
+      mergedUrl = suffix.startsWith('/')
+        ? `${railwayBase}${suffix}`
+        : `${railwayBase}/${suffix}`;
+    } else if (mergedUrl.startsWith('/') && !mergedUrl.startsWith('/api/')) {
+      // 纯路径，如 /download/xxx
+      mergedUrl = `${railwayBase}${mergedUrl}`;
+    }
+    // 否则保持原样（可能是完整 URL 或已经是正确格式）
+
     // 触发下载合并后的单个 ZIP
-    const mergedUrl = mergeResult.zip_download_url;
     if (mergedUrl) {
       triggerDownload(mergedUrl, mergedFilename);
     }
@@ -741,15 +754,28 @@ async function exportJianyingDraftInMultipleBatches(
       _batched: true,
       _batchCount: batchCount,
       _mergedZip: mergedFilename,
+      _batchZipUrls: [mergedUrl], // 返回合并后的单个下载链接
     };
   } catch (e: any) {
     console.error('[JianyingExport] 合并失败，降级为分批下载:', e.message);
     // 降级：分批下载（保留原有行为）
     onProgress?.(90, '合并失败，改用分批下载...');
 
+    // 收集所有批次的下载链接
+    const allBatchUrls: string[] = [];
+
     for (let i = 0; i < batchZipFilenames.length; i++) {
       const filename = batchZipFilenames[i];
-      const zipUrl = `${railwayBase}/api/jianying/download/${encodeURIComponent(filename)}`;
+      // 修复：避免重复拼接 /api/jianying
+      let zipUrl: string;
+      if (railwayBase.includes('/api/jianying')) {
+        // railwayBase 已包含 /api/jianying，直接拼接路径
+        zipUrl = `${railwayBase}/download/${encodeURIComponent(filename)}`;
+      } else {
+        // railwayBase 不包含 /api/jianying，需要拼接完整路径
+        zipUrl = `${railwayBase}/api/jianying/download/${encodeURIComponent(filename)}`;
+      }
+      allBatchUrls.push(zipUrl);
       triggerDownload(zipUrl, filename);
     }
 
@@ -766,6 +792,7 @@ async function exportJianyingDraftInMultipleBatches(
       usedRailway: true,
       _batched: true,
       _batchCount: batchCount,
+      _batchZipUrls: allBatchUrls, // 返回所有批次的下载链接
     };
   }
 }
@@ -828,7 +855,7 @@ async function submitAndWait(
 
 /**
  * 构建 ZIP 下载 URL
- * 确保不会重复拼接 /api/jianying 路径
+ * 修复：避免重复拼接 /api/jianying 路径
  */
 function buildZipDownloadUrl(result: JianyingExportResult, railwayBase: string): string | null {
   const rawUrl = result.zip_download_url;
@@ -837,7 +864,7 @@ function buildZipDownloadUrl(result: JianyingExportResult, railwayBase: string):
   // 已经是完整 URL，直接返回
   if (/^https?:\/\//i.test(rawUrl)) return rawUrl;
 
-  // 清理 railwayBase 末尾斜杠，避免双重路径
+  // 清理 railwayBase 末尾斜杠
   const base = railwayBase.replace(/\/$/, '');
 
   // rawUrl 可能是 /api/jianying/download/xxx.zip
@@ -855,15 +882,27 @@ function buildZipDownloadUrl(result: JianyingExportResult, railwayBase: string):
 }
 
 /**
- * 触发浏览器下载
+ * 触发浏览器下载（新窗口打开，避免页面替换）
  */
 function triggerDownload(url: string, filename: string) {
   setTimeout(() => {
     try {
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      a.click();
+      // 方式1：使用 window.open 新窗口下载（不替换当前页面）
+      const newWindow = window.open(url, '_blank');
+      if (!newWindow) {
+        // 如果新窗口被拦截，降级为 <a> 标签下载
+        console.warn('[JianyingExport] 新窗口被拦截，降级为链接下载');
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } else {
+        // 新窗口打开成功，提示用户
+        console.log('[JianyingExport] 已在新窗口打开下载链接');
+      }
     } catch (e) {
       console.warn('[JianyingExport] 自动下载失败，请手动下载:', e);
     }
