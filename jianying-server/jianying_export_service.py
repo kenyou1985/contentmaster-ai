@@ -58,17 +58,33 @@ def check_disk_space(min_mb: int = RAILWAY_MIN_DISK_SPACE_MB) -> tuple[bool, flo
         return True, 0  # 检查失败时默认通过
 
 
-def cleanup_temp_files(temp_dir: str = None):
-    """清理 Railway 容器中的临时文件，释放磁盘空间"""
+def cleanup_temp_files(temp_dir: str = None, preserve_patterns: list = None):
+    """清理 Railway 容器中的临时文件，释放磁盘空间
+    preserve_patterns: 需要保留的文件/目录模式列表
+    """
     try:
         if temp_dir is None:
             temp_dir = tempfile.gettempdir()
         # 清理常见临时文件模式
-        patterns = ["media_*.mp3", "media_*.jpg", "media_*.png", "media_*.mp4", "draft_*"]
+        patterns = ["media_*.mp3", "media_*.jpg", "media_*.png", "media_*.mp4"]
+        # 默认保留 draft_* 目录（用于分批合并）
+        if preserve_patterns is None:
+            preserve_patterns = []
+        
         cleaned = 0
+        preserved = 0
         for p in patterns:
             try:
                 for f in Path(temp_dir).glob(p):
+                    # 检查是否需要保留
+                    should_preserve = False
+                    for preserve in preserve_patterns:
+                        if preserve in str(f):
+                            should_preserve = True
+                            break
+                    if should_preserve:
+                        preserved += 1
+                        continue
                     try:
                         os.remove(f)
                         cleaned += 1
@@ -77,9 +93,27 @@ def cleanup_temp_files(temp_dir: str = None):
             except Exception:
                 pass
         if cleaned > 0:
-            print(f"[CLEANUP] 已清理 {cleaned} 个临时文件", file=sys.stderr, flush=True)
+            print(f"[CLEANUP] 已清理 {cleaned} 个临时文件，保留 {preserved} 个文件", file=sys.stderr, flush=True)
     except Exception as e:
         print(f"[CLEANUP] 清理失败: {e}", file=sys.stderr, flush=True)
+
+
+def get_persistent_dir() -> str:
+    """获取 Railway 持久化存储目录"""
+    persistent_path = "/data"
+    if os.path.exists(persistent_path) and os.access(persistent_path, os.W_OK):
+        return persistent_path
+    # 回退到临时目录
+    return tempfile.gettempdir()
+
+
+def get_batch_dir(batch_id: str) -> str:
+    """获取指定批次的工作目录（持久化）"""
+    persistent = get_persistent_dir()
+    batch_dir = os.path.join(persistent, f"batch_{batch_id}")
+    os.makedirs(batch_dir, exist_ok=True)
+    return batch_dir
+
 
 def get_platform() -> str:
     return platform.system()
@@ -1382,6 +1416,8 @@ def create_draft_on_mac(
     # 追加模式：继续已有草稿目录的导出
     append_to_draft: str = None,
     append_timeline_offset: int = 0,
+    # 媒体只模式：只下载媒体文件，不生成完整草稿 JSON
+    media_only: bool = False,
 ) -> dict:
     """
     创建剪映草稿：
@@ -1804,6 +1840,25 @@ def create_draft_on_mac(
     with open(os.path.join(timeline_dir, "attachment_pc_common.json"), "w", encoding="utf-8") as f:
         json.dump(attach_pc, f, ensure_ascii=False, indent=2)
 
+    # ---- media_only 模式：只保留媒体文件，跳过草稿 JSON ----
+    if media_only:
+        print(f"[jianying_export] media_only 模式：已保存 {len(prepared_shots)} 个镜头的媒体文件", file=sys.stderr, flush=True)
+        # 计算总时长（用于后续合并）
+        total_dur = 0
+        for ps in prepared_shots:
+            total_dur += ps.get("duration_us", 0)
+        return {
+            "draft_id": None,
+            "draft_name": draft_folder_name,
+            "draft_folder": draft_folder,
+            "content_path": None,
+            "total_duration": total_dur,
+            "shots_count": len(prepared_shots),
+            "materials_count": materials_count,
+            "platform": "macOS",
+            "media_only": True,
+        }
+
     # ---- 草稿封面（生成纯色占位图）----
     try:
         _generate_cover(draft_folder, width, height)
@@ -1835,6 +1890,10 @@ def batch_export(
     path_map_root: str = None,
     force_draft_folder_name: str = None,
     zip_part_suffix: str = None,
+    # 持久化支持
+    batch_id: str = None,
+    is_final_batch: bool = True,
+    media_only: bool = False,
 ) -> dict:
     """
     跨平台批量导出。
@@ -1843,6 +1902,9 @@ def batch_export(
 
     force_draft_folder_name: 分批导出时用于统一目录结构
     zip_part_suffix: 分批导出时添加到 ZIP 文件名的后缀，如 "_part1"
+    batch_id: 批次 ID（用于持久化存储目录）
+    is_final_batch: 是否为最后一组（最后一组才生成完整草稿和打包）
+    media_only: 是否只保存媒体文件（用于分批中间组）
     """
     system = get_platform()
 
@@ -1868,10 +1930,20 @@ def batch_export(
 
     if system in ("Darwin", "Linux"):
         try:
+            # Linux (Railway)：确定输出目录
+            if system == "Linux" and batch_id:
+                # 使用持久化存储目录
+                output_dir = get_batch_dir(batch_id)
+                print(f"[jianying-server] Railway 持久化目录: {output_dir}", file=sys.stderr, flush=True)
+            elif output_path:
+                output_dir = output_path
+            else:
+                output_dir = None
+            
             draft_result = create_draft_on_mac(
                 draft_name=draft_name,
                 shots=shots,
-                output_dir=output_path,
+                output_dir=output_dir,
                 fps=fps,
                 width=w,
                 height=h,
@@ -1879,6 +1951,7 @@ def batch_export(
                 random_filters=random_filters,
                 path_map_root=path_map_root,
                 force_draft_folder_name=force_draft_folder_name,
+                media_only=media_only,
             )
             result.update(draft_result)
 
@@ -1908,16 +1981,23 @@ def batch_export(
                 disk_ok, disk_free = check_disk_space()
                 if not disk_ok:
                     print(f"[jianying-server] 磁盘空间不足: {disk_free:.1f}MB < {RAILWAY_MIN_DISK_SPACE_MB}MB，尝试清理临时文件", file=sys.stderr, flush=True)
-                    cleanup_temp_files()
+                    cleanup_temp_files(preserve_patterns=[batch_id] if batch_id else None)
                     disk_ok, disk_free = check_disk_space()
                 result["disk_space_mb"] = disk_free
+
+                # media_only 模式：只保存媒体文件，不打包
+                if media_only:
+                    print(f"[jianying-server] media_only 模式：已保存 {draft_result.get('shots_count', 0)} 个镜头的媒体文件到 {draft_result.get('draft_folder', '')}", file=sys.stderr, flush=True)
+                    result["message"] = f"✅ 媒体文件已保存（media_only 模式）"
+                    result["success"] = True
+                    return result
 
                 zip_path = None
                 zip_error_msg = None
                 try:
                     # Railway 环境：先清理临时文件再打包
                     if system == "Linux":
-                        cleanup_temp_files()
+                        cleanup_temp_files(preserve_patterns=[batch_id] if batch_id else None)
 
                     # 再次检查空间（留 50MB 余量）
                     space_ok, _ = check_disk_space(50)
@@ -2027,6 +2107,9 @@ if __name__ == "__main__":
             path_map_root = stdin_data.get("pathMapRoot")
             force_draft_folder_name = stdin_data.get("forceDraftFolderName")
             zip_part_suffix = stdin_data.get("zipPartSuffix")  # 分批导出时添加到 ZIP 文件名的后缀
+            batch_id = stdin_data.get("batchId")  # 批次 ID（用于持久化存储）
+            is_final_batch = bool(stdin_data.get("isFinalBatch", True))  # 是否为最后一组
+            media_only = bool(stdin_data.get("mediaOnly", False))  # 是否只保存媒体文件
             rnd_tr = bool(stdin_data.get("randomTransitions"))
             rnd_fx = bool(stdin_data.get("randomVideoEffects"))
             # 启用进度回调
@@ -2038,6 +2121,9 @@ if __name__ == "__main__":
             path_map_root = None
             force_draft_folder_name = None
             zip_part_suffix = None
+            batch_id = None
+            is_final_batch = True
+            media_only = False
             rnd_tr = rnd_fx = False
         result = batch_export(
             draft_name=args.name,
@@ -2050,5 +2136,8 @@ if __name__ == "__main__":
             path_map_root=path_map_root,
             force_draft_folder_name=force_draft_folder_name,
             zip_part_suffix=zip_part_suffix,
+            batch_id=batch_id,
+            is_final_batch=is_final_batch,
+            media_only=media_only,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))

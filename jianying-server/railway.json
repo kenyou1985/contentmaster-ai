@@ -1,0 +1,24 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS",
+    "nixpacksPkgs": [
+      "nodejs_20",
+      "python311",
+      "ffmpeg"
+    ]
+  },
+  "deploy": {
+    "numReplicas": 1,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3,
+    "healthcheckPath": "/health",
+    "起名": "jianying-export"
+  },
+  "persistentDisks": [
+    {
+      "mountPath": "/data",
+      "sizeInGB": 1
+    }
+  ]
+}
