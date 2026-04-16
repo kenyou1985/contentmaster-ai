@@ -826,6 +826,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const [jianyingExportProgress, setJianyingExportProgress] = useState(0);
   const [jianyingExportMessage, setJianyingExportMessage] = useState('');
   const [lastJianyingDownloadUrl, setLastJianyingDownloadUrl] = useState<string>('');
+  /** 所有批次的 ZIP 下载链接（分批导出时） */
+  const [allBatchDownloadUrls, setAllBatchDownloadUrls] = useState<Array<{ filename: string; url: string }>>([]);
   /** 批量打包 ZIP（图片 / 音频 / 视频）进行中，避免重复点击 */
   const [batchZipBusy, setBatchZipBusy] = useState(false);
 
@@ -892,9 +894,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       if (result._batched && result.success) {
         const urls = result._batchZipUrls || [];
         if (urls.length > 0) {
-          // 显示下载链接，让用户手动点击
-          const displayUrls = urls.filter(u => u).join('\n');
+          // 清空并保存所有批次的下载链接
           setLastJianyingDownloadUrl(urls[0] || ''); // 显示第一个链接
+          const batchLinks: Array<{ filename: string; url: string }> = urls.map((url: string, idx: number) => ({
+            filename: `${exportDraftName}_part${idx + 1}.zip`,
+            url,
+          }));
+          setAllBatchDownloadUrls(batchLinks);
+          const displayUrls = urls.filter(u => u).join('\n');
           appendTerminalLog('Jianying', `分批导出完成: ${result.shots_count} 个镜头，生成 ${urls.length} 个 ZIP 文件`);
           appendTerminalLog('Jianying', `下载链接:\n${displayUrls}`);
           toast.success(`剪映分批导出成功: ${result.shots_count} 个镜头（${urls.length} 个 ZIP）`);
@@ -904,6 +911,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
       // 普通单次导出逻辑
       if (result.success) {
+        // 清空批次下载链接
+        setAllBatchDownloadUrls([]);
         const rawZipUrl = (result.zip_download_url || '').trim();
         let downloadUrl = '';
         if (rawZipUrl) {
@@ -4408,7 +4417,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                 <span className="text-[9px] text-slate-400 truncate">{jianyingExportMessage || '处理中...'}</span>
               </div>
             )}
-            {lastJianyingDownloadUrl && !isExportingToJianying && (
+            {/* 单次导出下载按钮 */}
+            {lastJianyingDownloadUrl && !isExportingToJianying && allBatchDownloadUrls.length === 0 && (
               <a
                 href={lastJianyingDownloadUrl}
                 target="_blank"
@@ -4419,6 +4429,25 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                 <Download size={14} />
                 下载草稿ZIP
               </a>
+            )}
+            {/* 多批次下载按钮（分批导出时显示） */}
+            {allBatchDownloadUrls.length > 0 && !isExportingToJianying && (
+              <div className="flex items-center gap-1">
+                <span className="text-[10px] text-slate-400">批次下载:</span>
+                {allBatchDownloadUrls.map((item, idx) => (
+                  <a
+                    key={idx}
+                    href={item.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center gap-1 px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-medium rounded transition-all"
+                    title={`下载第 ${idx + 1} 批次 ZIP`}
+                  >
+                    <Download size={12} />
+                    {idx + 1}/{allBatchDownloadUrls.length}
+                  </a>
+                ))}
+              </div>
             )}
           </div>
         </div>

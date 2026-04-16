@@ -818,6 +818,8 @@ async function submitAndWait(
     shots: shotsProcessed,
     resolution: options.resolution || '1920x1080',
     fps: options.fps || 30,
+    outputPath: options.outputPath || null,
+    pathMapRoot: options.pathMapRoot || null,
     returnZip: true,
   };
 
