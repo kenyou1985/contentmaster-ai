@@ -557,9 +557,9 @@ async function pollForResult(
     }
 
     try {
-      // Railway 代理约 30-60 秒强制断连，超时设 25 秒让它在断连前完成
+      // Railway 代理约 30-90 秒强制断连，超时设 60 秒提供足够缓冲
       const statusRes = await fetch(`${pollBase}/export/status/${encodeURIComponent(taskId)}`, {
-        signal: AbortSignal.timeout(25000),
+        signal: AbortSignal.timeout(60000),
       });
 
       if (!statusRes.ok) {
@@ -599,7 +599,7 @@ async function pollForResult(
 
       if (status === 'success') {
         const resultRes = await fetch(`${pollBase}/export/result/${encodeURIComponent(taskId)}`, {
-          signal: AbortSignal.timeout(60000), // 1 分钟超时
+          signal: AbortSignal.timeout(120000), // 2 分钟超时，足够下载 ZIP
         });
         const resultText = await resultRes.text().catch(() => '');
 
@@ -705,7 +705,7 @@ async function exportJianyingDraftInMultipleBatches(
         zipFiles: batchZipFilenames,
         mergedFilename,
       }),
-      signal: AbortSignal.timeout(300000), // 5 分钟合并超时
+      signal: AbortSignal.timeout(600000), // 10 分钟合并超时
     });
 
     if (!mergeRes.ok) {
