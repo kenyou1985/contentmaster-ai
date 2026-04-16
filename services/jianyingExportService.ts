@@ -307,11 +307,11 @@ export async function exportJianyingDraft(
   const returnZip = shouldUseJianyingZipDownload();
   onProgress?.(5, '准备导出...');
 
-  // 判断是否分批：Railway 模式且超过 50 个镜头
-  const BATCH_THRESHOLD_SHOTS = 50;
+  // 判断是否分批：Railway 模式且超过 20 个镜头（避免请求体超过 100MB 限制）
+  const BATCH_THRESHOLD_SHOTS = 20;
   if (returnZip && options.shots.length > BATCH_THRESHOLD_SHOTS) {
-    console.log(`[JianyingExport] 镜头数 ${options.shots.length} > ${BATCH_THRESHOLD_SHOTS}，分批导出（2 批）`);
-    return await exportJianyingDraftInTwoBatches(options, onProgress);
+    console.log(`[JianyingExport] 镜头数 ${options.shots.length} > ${BATCH_THRESHOLD_SHOTS}，分批导出（每批最多12个镜头）`);
+    return await exportJianyingDraftInMultipleBatches(options, onProgress);
   }
 
   // 单次导出（50 个镜头以下）
@@ -622,44 +622,64 @@ async function pollForResult(
 // ============================================================
 
 /**
- * 分两批导出（50+ 镜头场景）
- * 不合并 ZIP，直接返回两批各自的下载链接
+ * 分多批导出（大批量镜头场景）
+ * 按每批最多 12 个镜头拆分，避免请求体超过 Railway 100MB 限制
  */
-async function exportJianyingDraftInTwoBatches(
+async function exportJianyingDraftInMultipleBatches(
   options: JianyingExportOptions,
   onProgress?: (progress: number, message: string) => void
 ): Promise<JianyingExportResult> {
   const totalShots = options.shots.length;
-  const mid = Math.ceil(totalShots / 2);
-  const batch1 = options.shots.slice(0, mid);
-  const batch2 = options.shots.slice(mid);
+  const BATCH_SIZE = 12; // 每批最多 12 个镜头
+  const batchCount = Math.ceil(totalShots / BATCH_SIZE);
+  const batches: JianyingShot[][] = [];
+
+  for (let i = 0; i < totalShots; i += BATCH_SIZE) {
+    batches.push(options.shots.slice(i, i + BATCH_SIZE));
+  }
 
   const railwayBase = (import.meta.env.VITE_JIANYING_API_BASE || '').replace(/\/$/, '');
   if (!railwayBase.includes('railway')) {
     throw new Error('分批导出仅支持 Railway 模式');
   }
 
-  onProgress?.(10, `分批导出: 第 1/2 批 (${batch1.length} 个镜头)...`);
+  const batchResults: JianyingExportResult[] = [];
+  const batchZipUrls: string[] = [];
 
-  // ── 导出第一批 ──────────────────────────────────
-  const batch1Result = await submitAndWait(railwayBase, options.draftName + '_part1', batch1, options, 0, 40, onProgress);
+  // 依次导出每批
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i];
+    const progressStart = 5 + (i / batchCount) * 90;
+    const progressEnd = 5 + ((i + 1) / batchCount) * 90;
 
-  onProgress?.(50, `分批导出: 第 2/2 批 (${batch2.length} 个镜头)...`);
+    onProgress?.(Math.round(progressStart), `分批导出: 第 ${i + 1}/${batchCount} 批 (${batch.length} 个镜头)...`);
 
-  // ── 导出第二批 ──────────────────────────────────
-  const batch2Result = await submitAndWait(railwayBase, options.draftName + '_part2', batch2, options, 40, 90, onProgress);
+    const batchResult = await submitAndWait(
+      railwayBase,
+      `${options.draftName}_part${i + 1}`,
+      batch,
+      options,
+      progressStart,
+      progressEnd,
+      onProgress
+    );
 
-  onProgress?.(95, '生成下载链接...');
+    if (!batchResult.success) {
+      throw new Error(`第 ${i + 1} 批导出失败: ${batchResult.error || batchResult.message}`);
+    }
 
-  // ── 构建两批的下载 URL ─────────────────────────────
-  const zipUrl1 = buildZipDownloadUrl(batch1Result, railwayBase);
-  const zipUrl2 = buildZipDownloadUrl(batch2Result, railwayBase);
+    batchResults.push(batchResult);
 
-  // 批量触发下载（两个 ZIP）
-  if (zipUrl1) triggerDownload(zipUrl1, `${options.draftName}_part1.zip`);
-  if (zipUrl2) triggerDownload(zipUrl2, `${options.draftName}_part2.zip`);
+    // 构建 ZIP 下载 URL
+    const zipUrl = buildZipDownloadUrl(batchResult, railwayBase);
+    if (zipUrl) {
+      batchZipUrls.push(zipUrl);
+      // 触发下载
+      triggerDownload(zipUrl, `${options.draftName}_part${i + 1}.zip`);
+    }
+  }
 
-  onProgress?.(100, '分批导出完成！已触发两个 ZIP 下载');
+  onProgress?.(100, '分批导出完成！已触发所有 ZIP 下载');
 
   return {
     success: true,
@@ -668,11 +688,11 @@ async function exportJianyingDraftInTwoBatches(
     shots_count: totalShots,
     resolution: options.resolution || '1920x1080',
     fps: options.fps || 30,
-    message: `分批导出完成：共 ${totalShots} 个镜头，分为两批独立 ZIP（已触发下载）`,
+    message: `分批导出完成：共 ${totalShots} 个镜头，分为 ${batchCount} 批独立 ZIP（已触发下载）`,
     usedRailway: true,
     _batched: true,
-    _batchCount: 2,
-    _batchZipUrls: [zipUrl1, zipUrl2],
+    _batchCount: batchCount,
+    _batchZipUrls: batchZipUrls,
   };
 }
 
