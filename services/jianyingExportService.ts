@@ -648,18 +648,18 @@ async function pollForResult(
 // ============================================================
 
 /**
- * 分批导出到 Railway（合并模式 - 持久化合并）
- * 策略：
- * - 第一批 + 中间批次：使用持久化目录保存媒体 + JSON（mediaOnly 模式）
- * - 最后批次：加载已有 JSON，追加媒体和 timeline，打包单个 ZIP
- * - 最终只下载 1 个合并后的 ZIP
+ * 分批导出到 Railway（独立批次模式）
+ * 策略：每个批次都生成完整草稿和 ZIP，返回所有批次的下载链接
+ * - 分批避免请求体超过 Railway 100MB 限制
+ * - 每批独立生成完整草稿（不依赖持久化存储合并）
+ * - 返回多个 ZIP 下载链接供用户下载
  */
 async function exportJianyingDraftInMultipleBatches(
   options: JianyingExportOptions,
   onProgress?: (progress: number, message: string) => void
 ): Promise<JianyingExportResult> {
   const totalShots = options.shots.length;
-  const BATCH_SIZE = 16; // 每批最多 16 个镜头（避免超过 Railway 请求体限制）
+  const BATCH_SIZE = 22; // 每批最多 22 个镜头（避免超过 Railway 请求体限制）
   const batchCount = Math.ceil(totalShots / BATCH_SIZE);
   const batches: JianyingShot[][] = [];
 
@@ -672,99 +672,76 @@ async function exportJianyingDraftInMultipleBatches(
     throw new Error('分批导出仅支持 Railway 模式');
   }
 
-  // 生成批次会话 ID（用于持久化存储）
-  const batchSessionId = `s${Date.now()}`;
-
-  // 分批导出时使用统一的目录名
-  const unifiedDraftFolderName = options.draftName.replace(/[^a-zA-Z0-9\u4e00-\u9fa5_-]/g, '_');
-
-  // 收集批次结果
+  // 收集所有批次结果
   const batchResults: Array<JianyingExportResult> = [];
+  const batchUrls: string[] = [];
+  const batchLabels: string[] = [];
 
   // 依次导出每批
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i];
     const partIndex = i + 1;
-    const isFinalBatch = (i === batches.length - 1);
     const progressStart = 5 + (i / batchCount) * 80;
     const progressEnd = 5 + ((i + 1) / batchCount) * 80;
 
-    if (isFinalBatch) {
-      onProgress?.(Math.round(progressStart), `最后一批: 第 ${partIndex}/${batchCount} 批 (${batch.length} 个镜头)，生成完整草稿...`);
-    } else {
-      onProgress?.(Math.round(progressStart), `分批导出: 第 ${partIndex}/${batchCount} 批 (${batch.length} 个镜头)...`);
-    }
+    onProgress?.(Math.round(progressStart), `导出第 ${partIndex}/${batchCount} 批 (${batch.length} 个镜头)...`);
 
     const batchResult = await submitAndWait(
       railwayBase,
       `${options.draftName}_part${partIndex}`,
       batch,
-      { ...options, forceDraftFolderName: unifiedDraftFolderName },
+      { ...options, forceDraftFolderName: null },
       progressStart,
       progressEnd,
       onProgress,
       partIndex,
-      batchSessionId, // 使用会话 ID 进行持久化
-      isFinalBatch
+      undefined, // batchId - 不使用持久化，每个批次独立
+      true // isFinalBatch - 每个批次都生成完整草稿和 ZIP
     );
 
     // 保存批次结果
     batchResults.push(batchResult);
 
-    // 如果当前批次失败，检查是否有已成功的批次
-    if (!batchResult.success) {
-      console.warn(`[JianyingExport] 第 ${i + 1} 批导出失败，尝试返回已成功的批次结果`);
+    // 提取下载链接
+    if (batchResult.success && batchResult.zip_download_url) {
+      batchUrls.push(batchResult.zip_download_url);
+      batchLabels.push(`第 ${partIndex} 部分 (${batch.length} 个镜头)`);
+    }
 
-      const successfulResults = batchResults.filter(r => r.success);
-      if (successfulResults.length > 0) {
-        const fallbackResult = successfulResults[0];
-        return {
-          success: true,
-          platform: 'jianying',
-          draft_name: options.draftName,
-          shots_count: successfulResults.reduce((sum, r) => sum + (r.shots_count || 0), 0),
-          resolution: options.resolution || '1920x1080',
-          fps: options.fps || 30,
-          message: `部分导出成功（${successfulResults.length}/${batchCount} 批），建议重新尝试完整导出`,
-          usedRailway: true,
-          zip_download_url: fallbackResult?.zip_download_url || '',
-          draft_folder: fallbackResult?.draft_folder || '',
-          _batched: true,
-          _batchCount: batchCount,
-          _batchZipUrls: fallbackResult?.zip_download_url ? [fallbackResult.zip_download_url] : [],
-          _batchPartLabels: [`Part ${batchResults.indexOf(fallbackResult) + 1}`],
-        };
-      }
-      throw new Error(`第 ${i + 1} 批导出失败: ${batchResult.error || batchResult.message}`);
+    // 如果当前批次失败，继续处理后续批次
+    if (!batchResult.success) {
+      console.warn(`[JianyingExport] 第 ${i + 1} 批导出失败，继续处理后续批次`);
     }
   }
 
-  // 所有批次已完成，应该从最后一批获取合并后的 ZIP
+  // 汇总结果
   onProgress?.(100, '导出完成！');
 
-  const lastBatchResult = batchResults[batchResults.length - 1];
-  const finalZipUrl = lastBatchResult?.zip_download_url || '';
+  const successfulCount = batchResults.filter(r => r.success).length;
+  const totalSuccessfulShots = batchResults.filter(r => r.success).reduce((sum, r) => sum + (r.shots_count || 0), 0);
 
-  // 修正为完整 Railway URL
-  const fixedZipUrl = finalZipUrl ? (buildZipDownloadUrl({ zip_download_url: finalZipUrl } as JianyingExportResult, railwayBase) || finalZipUrl) : '';
+  // 修正批次 URL 为完整 Railway URL
+  const fixedBatchUrls = batchUrls.map(url => buildZipDownloadUrl({ zip_download_url: url } as JianyingExportResult, railwayBase) || url);
 
-  // 返回成功结果
+  // 返回多批次结果
   return {
-    success: true,
+    success: successfulCount > 0,
     platform: 'jianying',
     draft_name: options.draftName,
-    shots_count: totalShots,
+    shots_count: totalSuccessfulShots,
     resolution: options.resolution || '1920x1080',
     fps: options.fps || 30,
-    message: `分批导出完成：共 ${totalShots} 个镜头，分为 ${batchCount} 批，最终生成 1 个 ZIP`,
+    message: successfulCount === batchCount
+      ? `分批导出完成：共 ${totalShots} 个镜头，分为 ${batchCount} 批`
+      : `部分导出成功（${successfulCount}/${batchCount} 批，共 ${totalSuccessfulShots} 个镜头）`,
     usedRailway: true,
-    zip_download_url: fixedZipUrl,
-    draft_folder: lastBatchResult?.draft_folder || '',
-    // 合并模式：只返回单个下载链接
-    _batched: false,
+    zip_download_url: fixedBatchUrls[0] || '',
+    draft_folder: batchResults[0]?.draft_folder || '',
+    // 分批模式：返回所有批次链接
+    _batched: true,
     _batchCount: batchCount,
-    _batchZipUrls: fixedZipUrl ? [fixedZipUrl] : [],
-    _batchPartLabels: ['下载草稿'],
+    _batchZipUrls: fixedBatchUrls,
+    _batchPartLabels: batchLabels,
   };
 }
 /**
