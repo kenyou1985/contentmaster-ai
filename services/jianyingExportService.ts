@@ -720,6 +720,9 @@ async function exportJianyingDraftInMultipleBatches(
   const successfulCount = batchResults.filter(r => r.success).length;
   const totalSuccessfulShots = batchResults.filter(r => r.success).reduce((sum, r) => sum + (r.shots_count || 0), 0);
 
+  // 修正批次 URL 为完整 Railway URL
+  const fixedBatchUrls = batchUrls.map(url => buildZipDownloadUrl({ zip_download_url: url } as JianyingExportResult, railwayBase) || url);
+
   // 返回多批次结果
   return {
     success: successfulCount > 0,
@@ -732,12 +735,12 @@ async function exportJianyingDraftInMultipleBatches(
       ? `分批导出完成：共 ${totalShots} 个镜头，分为 ${batchCount} 批`
       : `部分导出成功（${successfulCount}/${batchCount} 批，共 ${totalSuccessfulShots} 个镜头）`,
     usedRailway: true,
-    zip_download_url: batchUrls[0] || '',
+    zip_download_url: fixedBatchUrls[0] || '',
     draft_folder: batchResults[0]?.draft_folder || '',
     // 分批模式：返回所有批次链接
     _batched: true,
     _batchCount: batchCount,
-    _batchZipUrls: batchUrls,
+    _batchZipUrls: fixedBatchUrls,
     _batchPartLabels: batchLabels,
   };
 }
