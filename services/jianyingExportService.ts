@@ -307,8 +307,8 @@ export async function exportJianyingDraft(
   const returnZip = shouldUseJianyingZipDownload();
   onProgress?.(5, '准备导出...');
 
-  // 判断是否分批：Railway 模式且超过 20 个镜头（避免请求体超过 100MB 限制）
-  const BATCH_THRESHOLD_SHOTS = 20;
+  // 判断是否分批：Railway 模式且超过 50 个镜头（避免请求体过大）
+  const BATCH_THRESHOLD_SHOTS = 50;
   if (returnZip && options.shots.length > BATCH_THRESHOLD_SHOTS) {
     console.log(`[JianyingExport] 镜头数 ${options.shots.length} > ${BATCH_THRESHOLD_SHOTS}，分批导出（每批最多12个镜头）`);
     return await exportJianyingDraftInMultipleBatches(options, onProgress);
