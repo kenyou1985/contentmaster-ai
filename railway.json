@@ -1,0 +1,17 @@
+{
+  "$schema": "https://railway.app railway-schema.json",
+  "environments": {
+    "production": {
+      "deployment": {
+        "branch": "main",
+        "rootDirectory": "jianying-server"
+      },
+      "build": {
+        "command": "npm install"
+      },
+      "start": {
+        "command": "node server.mjs"
+      }
+    }
+  }
+}

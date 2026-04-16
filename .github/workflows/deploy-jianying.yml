@@ -1,0 +1,25 @@
+name: Deploy Jianying Server to Railway
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'jianying-server/**'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          cd jianying-server
+          railway deploy --service ${{ vars.RAILWAY_SERVICE_NAME || 'jianying-export' }}
