@@ -102,9 +102,12 @@ def get_persistent_dir() -> str:
     """获取 Railway 持久化存储目录"""
     persistent_path = "/data"
     if os.path.exists(persistent_path) and os.access(persistent_path, os.W_OK):
+        print(f"[jianying_export] 使用持久化目录: {persistent_path}", file=sys.stderr, flush=True)
         return persistent_path
     # 回退到临时目录
-    return tempfile.gettempdir()
+    temp_dir = tempfile.gettempdir()
+    print(f"[jianying_export] 持久化目录不可用，回退到临时目录: {temp_dir}", file=sys.stderr, flush=True)
+    return temp_dir
 
 
 def get_batch_dir(batch_id: str) -> str:
@@ -1418,6 +1421,8 @@ def create_draft_on_mac(
     append_timeline_offset: int = 0,
     # 媒体只模式：只下载媒体文件，不生成完整草稿 JSON
     media_only: bool = False,
+    # 批次 ID：用于跨请求持久化合并
+    batch_id: str = None,
 ) -> dict:
     """
     创建剪映草稿：
@@ -1456,9 +1461,13 @@ def create_draft_on_mac(
     # 检查是否追加模式（已有草稿目录）
     append_mode_init = False
     if batch_id and output_dir:
+        # 每次请求使用相同的目录名
         existing_check = os.path.join(output_dir, draft_folder_name, "draft_content.json")
         if os.path.exists(existing_check):
             append_mode_init = True
+            print(f"[jianying_export] 检测到已有草稿，将进入追加模式: {existing_check}", file=sys.stderr, flush=True)
+        else:
+            print(f"[jianying_export] 新建草稿目录: {draft_folder_name}", file=sys.stderr, flush=True)
 
     draft_folder = os.path.join(output_dir, draft_folder_name)
     # 非追加模式时，如果目录已存在则添加后缀
@@ -1850,18 +1859,84 @@ def create_draft_on_mac(
     with open(os.path.join(timeline_dir, "attachment_pc_common.json"), "w", encoding="utf-8") as f:
         json.dump(attach_pc, f, ensure_ascii=False, indent=2)
 
-    # ---- media_only 模式：只保留媒体文件，跳过草稿 JSON ----
+    # ---- media_only 模式：只保留媒体文件，但也要保存基础 JSON（供后续批次追加）----
     if media_only:
         print(f"[jianying_export] media_only 模式：已保存 {len(prepared_shots)} 个镜头的媒体文件", file=sys.stderr, flush=True)
         # 计算总时长（用于后续合并）
         total_dur = 0
         for ps in prepared_shots:
             total_dur += ps.get("duration_us", 0)
+
+        # 保存基础 JSON（供后续批次追加）
+        if batch_id and output_dir:
+            # 检查是否已有草稿（追加模式）
+            existing_draft_path = os.path.join(output_dir, draft_folder_name)
+            existing_info_path = os.path.join(existing_draft_path, "draft_content.json")
+
+            if os.path.exists(existing_info_path):
+                # 追加模式
+                try:
+                    with open(existing_info_path, "r", encoding="utf-8") as f:
+                        existing_draft_info = json.load(f)
+                    print(f"[jianying_export] media_only 追加模式：更新已有草稿", file=sys.stderr, flush=True)
+
+                    # 追加新的 materials
+                    existing_materials = existing_draft_info.get("materials", {})
+                    new_materials = lv59_script.get("materials", {})
+                    for mat_type in ["videos", "images", "audios"]:
+                        if mat_type in new_materials:
+                            if mat_type not in existing_materials:
+                                existing_materials[mat_type] = []
+                            existing_ids = {m.get("id") for m in existing_materials.get(mat_type, [])}
+                            for mat in new_materials[mat_type]:
+                                if mat.get("id") not in existing_ids:
+                                    existing_materials[mat_type].append(mat)
+
+                    # 追加 tracks
+                    timeline_end_us = 0
+                    for track in existing_draft_info.get("tracks", []):
+                        for segment in track.get("segments", []):
+                            end_us = segment.get("start_time_us", 0) + segment.get("duration_us", 0)
+                            timeline_end_us = max(timeline_end_us, end_us)
+
+                    new_tracks = lv59_script.get("tracks", [])
+                    for track in new_tracks:
+                        for segment in track.get("segments", []):
+                            segment["start_time_us"] += timeline_end_us
+
+                    existing_draft_info["tracks"].extend(new_tracks)
+
+                    # 重新计算总时长
+                    new_end_us = 0
+                    for track in existing_draft_info["tracks"]:
+                        for segment in track.get("segments", []):
+                            end_us = segment.get("start_time_us", 0) + segment.get("duration_us", 0)
+                            new_end_us = max(new_end_us, end_us)
+                    total_dur = new_end_us
+
+                    existing_draft_info["duration"] = total_dur
+
+                    # 写入更新后的 JSON
+                    with open(existing_info_path, "w", encoding="utf-8") as f:
+                        json.dump(existing_draft_info, f, ensure_ascii=False, indent=2)
+                    print(f"[jianying_export] media_only 追加完成：{total_dur / 1_000_000:.1f}s", file=sys.stderr, flush=True)
+                except Exception as e:
+                    print(f"[jianying_export] media_only 追加失败: {e}，将创建新草稿", file=sys.stderr, flush=True)
+            else:
+                # 新建草稿（保存基础 JSON）
+                print(f"[jianying_export] media_only 新建草稿 JSON", file=sys.stderr, flush=True)
+                root_info_path = os.path.join(draft_folder, "draft_info.json")
+                content_path = os.path.join(draft_folder, "draft_content.json")
+                with open(root_info_path, "w", encoding="utf-8") as f:
+                    json.dump(lv59_script, f, ensure_ascii=False, indent=2)
+                with open(content_path, "w", encoding="utf-8") as f:
+                    json.dump(lv59_script, f, ensure_ascii=False, indent=2)
+
         return {
-            "draft_id": None,
+            "draft_id": draft_id,
             "draft_name": draft_folder_name,
             "draft_folder": draft_folder,
-            "content_path": None,
+            "content_path": content_path if not media_only else None,
             "total_duration": total_dur,
             "shots_count": len(prepared_shots),
             "materials_count": materials_count,
@@ -2078,6 +2153,7 @@ def batch_export(
                 path_map_root=path_map_root,
                 force_draft_folder_name=force_draft_folder_name,
                 media_only=media_only,
+                batch_id=batch_id,
             )
             result.update(draft_result)
 
