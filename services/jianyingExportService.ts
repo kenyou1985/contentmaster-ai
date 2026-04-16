@@ -678,6 +678,9 @@ async function exportJianyingDraftInMultipleBatches(
   // 分批导出时，强制所有批次使用统一的目录名（不含 part 后缀）
   const unifiedDraftFolderName = options.draftName.replace(/[^a-zA-Z0-9\u4e00-\u9fa5_-]/g, '_');
 
+  // 收集批次结果
+  const batchResults: Array<JianyingExportResult> = [];
+
   // 依次导出每批
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i];
@@ -705,6 +708,9 @@ async function exportJianyingDraftInMultipleBatches(
       isFinalBatch
     );
 
+    // 保存批次结果
+    batchResults.push(batchResult);
+
     if (!batchResult.success) {
       throw new Error(`第 ${i + 1} 批导出失败: ${batchResult.error || batchResult.message}`);
     }
@@ -714,7 +720,11 @@ async function exportJianyingDraftInMultipleBatches(
   // 从最后一批的结果中获取 ZIP 下载链接
   onProgress?.(100, '导出完成！');
 
-  // 返回成功结果（最后一组已经触发了下载）
+  // 从最后一批的结果中获取下载链接
+  const lastBatchResult = batchResults[batchResults.length - 1];
+  const finalZipUrl = lastBatchResult?.zip_download_url || '';
+
+  // 返回成功结果
   return {
     success: true,
     platform: 'jianying',
@@ -724,11 +734,13 @@ async function exportJianyingDraftInMultipleBatches(
     fps: options.fps || 30,
     message: `分批导出完成：共 ${totalShots} 个镜头，分为 ${batchCount} 批，最终生成 1 个 ZIP`,
     usedRailway: true,
+    zip_download_url: finalZipUrl,
+    draft_folder: lastBatchResult?.draft_folder || '',
     // 合并模式：不显示多批次按钮，只显示单个下载
     _batched: false,
     _batchCount: batchCount,
-    _batchZipUrls: [],
-    _batchPartLabels: [],
+    _batchZipUrls: finalZipUrl ? [finalZipUrl] : [],
+    _batchPartLabels: ['下载草稿'],
   };
 }
 
