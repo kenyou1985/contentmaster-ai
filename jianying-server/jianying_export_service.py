@@ -1378,12 +1378,15 @@ def create_draft_on_mac(
     random_transitions: bool = False,
     random_filters: bool = False,
     path_map_root: str = None,
+    force_draft_folder_name: str = None,
 ) -> dict:
     """
     创建剪映草稿：
       1. 建立目录结构
       2. 下载每个镜头的图片/音频到本地
       3. 写入根目录 draft_info.json 与 draft_content.json（剪映 5.9 主时间线格式）
+
+    force_draft_folder_name: 强制使用该名称作为草稿目录名（分批导出时用于统一目录结构）
     """
     # 调试信息必须写 stderr，stdout 仅用于 JSON（否则 Node 会把整段 stdout 当响应体）
     for i, shot in enumerate(shots):
@@ -1402,7 +1405,11 @@ def create_draft_on_mac(
         output_dir = get_mac_draft_dir()
 
     # ---- 建立目录 ----
-    safe_name = "".join(c for c in draft_name if c not in '/\\:*?"<>|').strip() or "未命名"
+    # 分批导出时，强制使用统一的目录名（避免 ZIP 内目录结构不一致）
+    if force_draft_folder_name and str(force_draft_folder_name).strip():
+        safe_name = "".join(c for c in str(force_draft_folder_name).strip() if c not in '/\\:*?"<>|') or "未命名"
+    else:
+        safe_name = "".join(c for c in draft_name if c not in '/\\:*?"<>|').strip() or "未命名"
     draft_folder_name = safe_name
     draft_folder = os.path.join(output_dir, draft_folder_name)
     counter = 1
@@ -1821,11 +1828,14 @@ def batch_export(
     random_transitions: bool = False,
     random_filters: bool = False,
     path_map_root: str = None,
+    force_draft_folder_name: str = None,
 ) -> dict:
     """
     跨平台批量导出。
     macOS：下载媒体 + 生成草稿 JSON + 打开剪映。
     Windows：使用 pyJianYingDraft（如可用）。
+
+    force_draft_folder_name: 分批导出时用于统一目录结构
     """
     system = get_platform()
 
@@ -1861,6 +1871,7 @@ def batch_export(
                 random_transitions=random_transitions,
                 random_filters=random_filters,
                 path_map_root=path_map_root,
+                force_draft_folder_name=force_draft_folder_name,
             )
             result.update(draft_result)
 
@@ -2003,6 +2014,7 @@ if __name__ == "__main__":
             shots = stdin_data.get("shots", [])
             output_path = stdin_data.get("outputPath") or args.output
             path_map_root = stdin_data.get("pathMapRoot")
+            force_draft_folder_name = stdin_data.get("forceDraftFolderName")
             rnd_tr = bool(stdin_data.get("randomTransitions"))
             rnd_fx = bool(stdin_data.get("randomVideoEffects"))
             # 启用进度回调
@@ -2012,6 +2024,7 @@ if __name__ == "__main__":
             shots = json.loads(args.shots)
             output_path = args.output
             path_map_root = None
+            force_draft_folder_name = None
             rnd_tr = rnd_fx = False
         result = batch_export(
             draft_name=args.name,
@@ -2022,5 +2035,6 @@ if __name__ == "__main__":
             random_transitions=rnd_tr,
             random_filters=rnd_fx,
             path_map_root=path_map_root,
+            force_draft_folder_name=force_draft_folder_name,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))

@@ -165,6 +165,7 @@ async function runLocalExportJob(payload, taskId) {
     resolution = '1920x1080',
     fps = 30,
     outputPath = null,
+    forceDraftFolderName = null,
     randomTransitions = false,
     randomVideoEffects = false,
   } = payload || {};
@@ -195,6 +196,7 @@ async function runLocalExportJob(payload, taskId) {
     {
       shots,
       outputPath,
+      forceDraftFolderName,
       randomTransitions,
       randomVideoEffects,
     },

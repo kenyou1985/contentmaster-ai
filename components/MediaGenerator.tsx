@@ -827,7 +827,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const [jianyingExportMessage, setJianyingExportMessage] = useState('');
   const [lastJianyingDownloadUrl, setLastJianyingDownloadUrl] = useState<string>('');
   /** 所有批次的 ZIP 下载链接（分批导出时） */
-  const [allBatchDownloadUrls, setAllBatchDownloadUrls] = useState<Array<{ filename: string; url: string }>>([]);
+  const [allBatchDownloadUrls, setAllBatchDownloadUrls] = useState<Array<{ filename: string; url: string; partLabel: string }>>([]);
   /** 批量打包 ZIP（图片 / 音频 / 视频）进行中，避免重复点击 */
   const [batchZipBusy, setBatchZipBusy] = useState(false);
 
@@ -893,12 +893,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       // 处理分批导出结果（50+ 镜头场景）
       if (result._batched && result.success) {
         const urls = result._batchZipUrls || [];
+        const partLabels = result._batchPartLabels || [];
         if (urls.length > 0) {
           // 清空并保存所有批次的下载链接
           setLastJianyingDownloadUrl(urls[0] || ''); // 显示第一个链接
-          const batchLinks: Array<{ filename: string; url: string }> = urls.map((url: string, idx: number) => ({
+          const batchLinks: Array<{ filename: string; url: string; partLabel: string }> = urls.map((url: string, idx: number) => ({
             filename: `${exportDraftName}_part${idx + 1}.zip`,
             url,
+            partLabel: partLabels[idx] || `Part ${idx + 1}`,
           }));
           setAllBatchDownloadUrls(batchLinks);
           const displayUrls = urls.filter(u => u).join('\n');
@@ -4433,7 +4435,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             {/* 多批次下载按钮（分批导出时显示） */}
             {allBatchDownloadUrls.length > 0 && !isExportingToJianying && (
               <div className="flex items-center gap-1">
-                <span className="text-[10px] text-slate-400">批次下载:</span>
+                <span className="text-[10px] text-slate-400">批次:</span>
                 {allBatchDownloadUrls.map((item, idx) => (
                   <a
                     key={idx}
@@ -4441,10 +4443,10 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                     target="_blank"
                     rel="noreferrer"
                     className="flex items-center gap-1 px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-medium rounded transition-all"
-                    title={`下载第 ${idx + 1} 批次 ZIP`}
+                    title={`下载 ${item.partLabel} ZIP`}
                   >
                     <Download size={12} />
-                    {idx + 1}/{allBatchDownloadUrls.length}
+                    {item.partLabel}
                   </a>
                 ))}
               </div>
