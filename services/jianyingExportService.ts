@@ -547,9 +547,19 @@ async function pollForResult(
   for (let i = 0; i < maxPoll; i++) {
     await sleep(2000);
 
+    // Railway 代理 60 秒无活动会断连，每 30 秒发送一次心跳
+    if (i > 0 && i % 15 === 0) {
+      try {
+        await fetch(`${pollBase}/health`, {
+          signal: AbortSignal.timeout(5000),
+        });
+      } catch { /* 心跳失败不影响主流程 */ }
+    }
+
     try {
+      // Railway 代理约 30-60 秒强制断连，超时设 25 秒让它在断连前完成
       const statusRes = await fetch(`${pollBase}/export/status/${encodeURIComponent(taskId)}`, {
-        signal: AbortSignal.timeout(60000), // 1 分钟超时，避免 Railway 代理中断
+        signal: AbortSignal.timeout(25000),
       });
 
       if (!statusRes.ok) {
@@ -588,7 +598,9 @@ async function pollForResult(
       }
 
       if (status === 'success') {
-        const resultRes = await fetch(`${pollBase}/export/result/${encodeURIComponent(taskId)}`);
+        const resultRes = await fetch(`${pollBase}/export/result/${encodeURIComponent(taskId)}`, {
+          signal: AbortSignal.timeout(60000), // 1 分钟超时
+        });
         const resultText = await resultRes.text().catch(() => '');
 
         if (!resultRes.ok) {
