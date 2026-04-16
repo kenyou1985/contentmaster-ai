@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
 剪映草稿导出服务（ContentMaster AI）
-macOS / Windows 双平台支持
+macOS / Windows / Linux (Railway) 多平台支持
 功能：
   - 自动下载图片/音频到本地草稿目录
   - 生成剪映 5.9 兼容主脚本（根目录 draft_info.json / draft_content.json：materials + tracks）
   - 自动在 Finder 中显示导出目录
+  - Railway 环境自动清理临时文件释放磁盘空间
+  - 支持进度回调（--progress-callback 参数）
 """
 import sys
 import os
@@ -22,22 +24,102 @@ from pathlib import Path
 from datetime import datetime
 from urllib.parse import urlparse
 
+# ---- 进度回调器 ----
+_progress_callback = None
+
+def set_progress_callback(callback):
+    """设置进度回调函数，接收 (progress: int, stage: str)"""
+    global _progress_callback
+    _progress_callback = callback
+
+def report_progress(progress: int, stage: str):
+    """报告进度到父进程（通过 stdout）"""
+    # 输出到 stdout，用特殊标记让 Node 解析
+    print(f"[PROGRESS] {progress}|{stage}", flush=True)
+
 # ---- 跨平台工具函数 ----
+# Railway 环境磁盘空间阈值（MB）
+RAILWAY_MIN_DISK_SPACE_MB = 100
+
+
+def check_disk_space(min_mb: int = RAILWAY_MIN_DISK_SPACE_MB) -> tuple[bool, float]:
+    """检查磁盘空间是否足够，返回 (够用, 可用空间MB)"""
+    try:
+        if platform.system() == "Windows":
+            import ctypes
+            free_bytes = ctypes.c_ulonglong(0)
+            ctypes.windll.kernel32.GetDiskFreeSpaceExW(ctypes.c_wchar_p(os.getcwd()), None, None, ctypes.pointer(free_bytes))
+            free_mb = free_bytes.value / (1024 * 1024)
+        else:
+            stat = os.statvfs(os.getcwd())
+            free_mb = (stat.f_bavail * stat.f_frsize) / (1024 * 1024)
+        return free_mb >= min_mb, free_mb
+    except Exception:
+        return True, 0  # 检查失败时默认通过
+
+
+def cleanup_temp_files(temp_dir: str = None, preserve_patterns: list = None):
+    """清理 Railway 容器中的临时文件，释放磁盘空间
+    preserve_patterns: 需要保留的文件/目录模式列表
+    """
+    try:
+        if temp_dir is None:
+            temp_dir = tempfile.gettempdir()
+        # 清理常见临时文件模式
+        patterns = ["media_*.mp3", "media_*.jpg", "media_*.png", "media_*.mp4"]
+        # 默认保留 draft_* 目录（用于分批合并）
+        if preserve_patterns is None:
+            preserve_patterns = []
+        
+        cleaned = 0
+        preserved = 0
+        for p in patterns:
+            try:
+                for f in Path(temp_dir).glob(p):
+                    # 检查是否需要保留
+                    should_preserve = False
+                    for preserve in preserve_patterns:
+                        if preserve in str(f):
+                            should_preserve = True
+                            break
+                    if should_preserve:
+                        preserved += 1
+                        continue
+                    try:
+                        os.remove(f)
+                        cleaned += 1
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        if cleaned > 0:
+            print(f"[CLEANUP] 已清理 {cleaned} 个临时文件，保留 {preserved} 个文件", file=sys.stderr, flush=True)
+    except Exception as e:
+        print(f"[CLEANUP] 清理失败: {e}", file=sys.stderr, flush=True)
+
+
+def get_persistent_dir() -> str:
+    """获取 Railway 持久化存储目录"""
+    persistent_path = "/data"
+    if os.path.exists(persistent_path) and os.access(persistent_path, os.W_OK):
+        print(f"[jianying_export] 使用持久化目录: {persistent_path}", file=sys.stderr, flush=True)
+        return persistent_path
+    # 回退到临时目录
+    temp_dir = tempfile.gettempdir()
+    print(f"[jianying_export] 持久化目录不可用，回退到临时目录: {temp_dir}", file=sys.stderr, flush=True)
+    return temp_dir
+
+
+def get_batch_dir(batch_id: str) -> str:
+    """获取指定批次的工作目录（持久化）"""
+    persistent = get_persistent_dir()
+    batch_dir = os.path.join(persistent, f"batch_{batch_id}")
+    os.makedirs(batch_dir, exist_ok=True)
+    return batch_dir
+
 
 def get_platform() -> str:
     return platform.system()
-
-
-def _emit_progress(progress: int, stage: str, callback: callable = None) -> None:
-    """输出 [PROGRESS]|stage 到 stderr（供 Node 端实时显示进度）"""
-    # 输出到 stderr 供 Node 端解析
-    print(f"[PROGRESS] {progress}|{stage}", file=sys.stderr, flush=True)
-    # 同时调用回调函数
-    if callback:
-        try:
-            callback(progress, stage)
-        except Exception:
-            pass
 
 
 def get_mac_draft_dir() -> str:
@@ -110,101 +192,103 @@ def _safe_filename(url: str) -> str:
     return name
 
 
-def _download_file(url: str, dest_path: str, timeout: int = 30) -> bool:
-    """下载文件到本地，支持 http/https/data:"""
-    try:
-        if url.startswith('data:'):
-            # data:image/png;base64,iVBORw0KG...
-            header, data = url.split(',', 1)
-            import base64
-            # 提取 mime type
-            mime_match = re.search(r'data:([^;]+)', header)
-            ext = '.png'
-            if mime_match:
-                mime = mime_match.group(1)
-                ext_map = {
-                    'image/png': '.png',
-                    'image/jpeg': '.jpg',
-                    'image/jpg': '.jpg',
-                    'image/gif': '.gif',
-                    'image/webp': '.webp',
-                    'audio/wav': '.wav',
-                    'audio/mpeg': '.mp3',
-                    'audio/mp3': '.mp3',
-                    'audio/mp4': '.m4a',
-                    'audio/x-m4a': '.m4a',
-                    'audio/flac': '.flac',
-                    'audio/ogg': '.ogg',
-                    'video/mp4': '.mp4',
-                    'video/quicktime': '.mov',
-                    'video/webm': '.webm',
-                }
-                ext = ext_map.get(mime, ext)
-            # 如果文件没有扩展名，加上推断的扩展名
-            if '.' not in os.path.basename(dest_path):
-                dest_path += ext
-            binary_data = base64.b64decode(data)
-            with open(dest_path, 'wb') as f:
-                f.write(binary_data)
-            return True
+def _download_file(url: str, dest_path: str, timeout: int = 120, max_retries: int = 3) -> bool:
+    """下载文件到本地，支持 http/https/data:，Railway 环境默认 120s 超时+3次重试"""
+    import time as _time
 
-        # HTTP/HTTPS 下载（RunningHub 等站点常校验 Referer，无则 403）
-        import urllib.request
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        }
-        if 'runninghub.cn' in url.lower():
-            headers['Referer'] = 'https://www.runninghub.cn/'
-            timeout = max(timeout, 90)
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            content_type = response.headers.get('Content-Type', '')
-            # 根据 Content-Type 自动推断扩展名
-            if '.' not in os.path.basename(dest_path):
-                ct_map = {
-                    'image/png': '.png',
-                    'image/jpeg': '.jpg',
-                    'image/jpg': '.jpg',
-                    'image/gif': '.gif',
-                    'image/webp': '.webp',
-                    'video/mp4': '.mp4',
-                    'video/quicktime': '.mov',
-                    'audio/wav': '.wav',
-                    'audio/wave': '.wav',
-                    'audio/x-wav': '.wav',
-                    'audio/mpeg': '.mp3',
-                    'audio/mp3': '.mp3',
-                    'audio/mp4': '.m4a',
-                    'audio/x-m4a': '.m4a',
-                    'audio/flac': '.flac',
-                    'audio/ogg': '.ogg',
-                }
-                ext = ct_map.get(content_type.split(';')[0].strip(), '')
-                if ext:
+    for attempt in range(max_retries):
+        try:
+            if url.startswith('data:'):
+                # data:image/png;base64,iVBORw0KG...
+                header, data = url.split(',', 1)
+                import base64
+                # 提取 mime type
+                mime_match = re.search(r'data:([^;]+)', header)
+                ext = '.png'
+                if mime_match:
+                    mime = mime_match.group(1)
+                    ext_map = {
+                        'image/png': '.png',
+                        'image/jpeg': '.jpg',
+                        'image/jpg': '.jpg',
+                        'image/gif': '.gif',
+                        'image/webp': '.webp',
+                        'audio/wav': '.wav',
+                        'audio/mpeg': '.mp3',
+                        'audio/mp3': '.mp3',
+                        'audio/mp4': '.m4a',
+                        'audio/x-m4a': '.m4a',
+                        'audio/flac': '.flac',
+                        'audio/ogg': '.ogg',
+                        'video/mp4': '.mp4',
+                        'video/quicktime': '.mov',
+                        'video/webm': '.webm',
+                    }
+                    ext = ext_map.get(mime, ext)
+                # 如果文件没有扩展名，加上推断的扩展名
+                if '.' not in os.path.basename(dest_path):
                     dest_path += ext
-            with open(dest_path, 'wb') as f:
-                shutil.copyfileobj(response, f)
-        return True
-    except Exception as e:
-        print(f"[WARN] 下载失败 {url}: {e}", file=sys.stderr)
-        return False
+                binary_data = base64.b64decode(data)
+                with open(dest_path, 'wb') as f:
+                    f.write(binary_data)
+                # Railway 环境：定期清理临时文件防止磁盘满
+                if platform.system() == "Linux":
+                    disk_ok, disk_free = check_disk_space()
+                    if not disk_ok:
+                        cleanup_temp_files()
+                return True
 
+            # HTTP/HTTPS 下载
+            import urllib.request
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            }
+            # 常见站点的特殊 headers
+            if 'runninghub.cn' in url.lower():
+                headers['Referer'] = 'https://www.runninghub.cn/'
+                timeout = max(timeout, 180)  # RunningHub 文件较大，增加超时
+            elif 'yunwu.ai' in url.lower():
+                headers['Referer'] = 'https://yunwu.ai/'
+            elif 'jianying' in url.lower():
+                headers['Referer'] = 'https://lv.ulikecom.com/'
 
-def _download_file_with_retry(url: str, dest_path: str, timeout: int = 30, retries: int = 2) -> bool:
-    """下载重试封装：快速重试，降低偶发网络抖动导致的整单失败。"""
-    last_ok = False
-    for attempt in range(retries + 1):
-        ok = _download_file(url, dest_path, timeout=timeout)
-        if ok:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                content_type = response.headers.get('Content-Type', '')
+                # 根据 Content-Type 自动推断扩展名
+                if '.' not in os.path.basename(dest_path):
+                    ct_map = {
+                        'image/png': '.png',
+                        'image/jpeg': '.jpg',
+                        'image/jpg': '.jpg',
+                        'image/gif': '.gif',
+                        'image/webp': '.webp',
+                        'video/mp4': '.mp4',
+                        'video/quicktime': '.mov',
+                        'audio/wav': '.wav',
+                        'audio/wave': '.wav',
+                        'audio/x-wav': '.wav',
+                        'audio/mpeg': '.mp3',
+                        'audio/mp3': '.mp3',
+                        'audio/mp4': '.m4a',
+                        'audio/x-m4a': '.m4a',
+                        'audio/flac': '.flac',
+                        'audio/ogg': '.ogg',
+                    }
+                    ext = ct_map.get(content_type.split(';')[0].strip(), '')
+                    if ext:
+                        dest_path += ext
+                with open(dest_path, 'wb') as f:
+                    shutil.copyfileobj(response, f)
             return True
-        last_ok = ok
-        if attempt < retries:
-            wait_s = 0.35 * (attempt + 1)
-            try:
-                time.sleep(wait_s)
-            except Exception:
-                pass
-    return last_ok
+        except Exception as e:
+            last_err = e
+            if attempt < max_retries - 1:
+                wait = (attempt + 1) * 2  # 2s, 4s, 6s
+                print(f"[WARN] 下载失败 {url} (尝试 {attempt+1}/{max_retries}): {e}，{wait}s 后重试...", file=sys.stderr)
+                _time.sleep(wait)
+    print(f"[WARN] 下载最终失败 {url}: {last_err}", file=sys.stderr)
+    return False
 
 
 def _reveal_in_finder(path: str):
@@ -533,26 +617,36 @@ _LV59_FILTER_PRESETS = [
 
 def _split_caption_into_natural_chunks(text: str, max_chars: int = 28) -> list[str]:
     """
-    字幕严格按句读切分，优先按逗号/句号分段（中英文都支持），与配音停顿对齐。
-    不做文案改写；仅做分段展示。
+    仅按句读切分字幕（逗号/句号等），不在句子中间按长度硬切。
+    这样可保持整句与配音节奏一致，避免出现只剩几个单词的截断字幕。
     """
-    raw = (text or "").strip()
-    if not raw:
+    t = " ".join((text or "").strip().split())
+    if not t:
         return []
 
-    # 保留标点、仅压缩空白；避免把文本“粘成一块”
-    t = re.sub(r"[\t\r\f\v ]+", " ", raw)
+    # 去掉“标题符号”，保留句读用于断句
     t = re.sub(r"[《》【】「」『』]", "", t)
 
-    # 以句读结束为一个块：优先逗号/句号，同时兼容问号/感叹号/分号/冒号
-    # 例："A, B. C" -> ["A,", "B.", "C"]
-    chunks = re.findall(r"[^，,。.!?！？；;：:]+[，,。.!?！？；;：:]?", t)
-    cleaned = [c.strip() for c in chunks if c and c.strip()]
-    # 字幕显示去掉逗号与句号，其他符号保持原样
-    cleaned = [re.sub(r"[，,。.]$", "", c).strip() for c in cleaned]
-    cleaned = [c for c in cleaned if c]
+    # 按中英文逗号/句号/问号/感叹号/分号/冒号断句；保留分隔符
+    parts = re.split(r"([，,。.!?！？；;：:])", t)
+    chunks: list[str] = []
+    buf = ""
+    for p in parts:
+        if not p:
+            continue
+        p = p.strip()
+        if not p:
+            continue
+        buf += p
+        if re.fullmatch(r"[，,。.!?！？；;：:]", p):
+            chunks.append(buf.strip())
+            buf = ""
 
-    return cleaned if cleaned else [t]
+    if buf.strip():
+        chunks.append(buf.strip())
+
+    return [c for c in chunks if c]
+
 
 def _distribute_chunk_durations_us(chunks: list[str], total_duration_us: int, min_chunk_us: int = 120_000) -> list[int]:
     """按字符权重把本镜总时长分到各字幕块，保证每块至少 min_chunk_us（约 0.12s）。"""
@@ -653,12 +747,12 @@ def _build_lv59_main_script(
         dur_us = row["duration_us"]
         media_kind = row.get("media_kind") or "photo"
         if media_kind == "video":
-            media_path = row["video_abs"]
+            media_path = row.get("video_client_path") or row["video_abs"]
             iw, ih = int(row["video_w"]), int(row["video_h"])
             mat_duration = int(row.get("video_material_duration_us") or dur_us)
             is_video = True
         else:
-            media_path = row["image_abs"]
+            media_path = row.get("image_client_path") or row["image_abs"]
             iw, ih = int(row["image_w"]), int(row["image_h"])
             mat_duration = 10800000000
             is_video = False
@@ -907,7 +1001,7 @@ def _build_lv59_main_script(
                     "local_material_id": lm,
                     "music_id": music_id,
                     "name": os.path.basename(apath),
-                    "path": apath,
+                    "path": row.get("audio_client_path") or apath,
                     "query": "",
                     "request_id": "",
                     "resource_id": "",
@@ -1320,13 +1414,23 @@ def create_draft_on_mac(
     height: int = 1080,
     random_transitions: bool = False,
     random_filters: bool = False,
-    progress_callback: callable = None,
+    path_map_root: str = None,
+    force_draft_folder_name: str = None,
+    # 追加模式：继续已有草稿目录的导出
+    append_to_draft: str = None,
+    append_timeline_offset: int = 0,
+    # 媒体只模式：只下载媒体文件，不生成完整草稿 JSON
+    media_only: bool = False,
 ) -> dict:
     """
     创建剪映草稿：
       1. 建立目录结构
       2. 下载每个镜头的图片/音频到本地
       3. 写入根目录 draft_info.json 与 draft_content.json（剪映 5.9 主时间线格式）
+
+    force_draft_folder_name: 强制使用该名称作为草稿目录名（分批导出时用于统一目录结构）
+    append_to_draft: 追加模式，传入已有草稿目录路径，新镜头将从 append_timeline_offset 开始
+    append_timeline_offset: 追加模式下，新镜头开始的时间线偏移（微秒）
     """
     # 调试信息必须写 stderr，stdout 仅用于 JSON（否则 Node 会把整段 stdout 当响应体）
     for i, shot in enumerate(shots):
@@ -1345,15 +1449,32 @@ def create_draft_on_mac(
         output_dir = get_mac_draft_dir()
 
     # ---- 建立目录 ----
-    _emit_progress(5, f"创建草稿目录: {draft_name}", progress_callback)
-    safe_name = "".join(c for c in draft_name if c not in '/\\:*?"<>|').strip() or "未命名"
+    # 分批导出时，强制使用统一的目录名（避免 ZIP 内目录结构不一致）
+    if force_draft_folder_name and str(force_draft_folder_name).strip():
+        safe_name = "".join(c for c in str(force_draft_folder_name).strip() if c not in '/\\:*?"<>|') or "未命名"
+    else:
+        safe_name = "".join(c for c in draft_name if c not in '/\\:*?"<>|').strip() or "未命名"
     draft_folder_name = safe_name
+
+    # 检查是否追加模式（已有草稿目录）
+    append_mode_init = False
+    if output_dir:
+        # 每次请求使用相同的目录名
+        existing_check = os.path.join(output_dir, draft_folder_name, "draft_content.json")
+        if os.path.exists(existing_check):
+            append_mode_init = True
+            print(f"[jianying_export] 检测到已有草稿，将进入追加模式: {existing_check}", file=sys.stderr, flush=True)
+        else:
+            print(f"[jianying_export] 新建草稿目录: {draft_folder_name}", file=sys.stderr, flush=True)
+
     draft_folder = os.path.join(output_dir, draft_folder_name)
-    counter = 1
-    while os.path.exists(draft_folder):
-        draft_folder_name = f"{safe_name}_{counter}"
-        draft_folder = os.path.join(output_dir, draft_folder_name)
-        counter += 1
+    # 非追加模式时，如果目录已存在则添加后缀
+    if not append_mode_init:
+        counter = 1
+        while os.path.exists(draft_folder):
+            draft_folder_name = f"{safe_name}_{counter}"
+            draft_folder = os.path.join(output_dir, draft_folder_name)
+            counter += 1
 
     def _ensure_dirs():
         os.makedirs(draft_folder, exist_ok=True)
@@ -1400,16 +1521,35 @@ def create_draft_on_mac(
     now_us = _timestamp_us()
     timeline_id = _make_id()
 
+    mapped_root_abs = None
+    if path_map_root and str(path_map_root).strip():
+        mapped_root_abs = _normalize_jianying_path(str(path_map_root).strip())
+
+    def _material_path_for_client(local_abs_path: str) -> str:
+        """将容器内绝对路径映射为客户端可用绝对路径（若提供 path_map_root）。"""
+        if not local_abs_path:
+            return local_abs_path
+        if not mapped_root_abs:
+            return _safe_abs_for_jianying(local_abs_path)
+        try:
+            rel = os.path.relpath(local_abs_path, draft_folder)
+            mapped = os.path.join(mapped_root_abs, draft_folder_name, rel)
+            return _safe_abs_for_jianying(mapped)
+        except Exception:
+            return _safe_abs_for_jianying(local_abs_path)
+
     # ---- 下载资源，组装剪映 5.9 主脚本所需镜头行（绝对路径）----
     prepared_shots: list[dict] = []
-    download_issues: list[dict] = []
     timeline_cursor = 0
     total_shots = len(shots)
-    _emit_progress(8, f"开始下载 {total_shots} 个镜头的媒体资源...", progress_callback)
+    report_progress(5, f"开始处理 {total_shots} 个镜头...")
+    print(f"[jianying_export] 开始处理 {total_shots} 个镜头...", file=sys.stderr, flush=True)
+
     for i, shot in enumerate(shots):
-        # 计算当前进度 (10-60%)
-        current_progress = 10 + int((i / max(total_shots, 1)) * 50)
-        _emit_progress(current_progress, f"下载镜头 {i + 1}/{total_shots}...", progress_callback)
+        # 报告每个镜头的进度（5% - 70%）
+        shot_progress = 5 + int((i / max(total_shots, 1)) * 65)
+        report_progress(shot_progress, f"处理镜头 {i+1}/{total_shots}...")
+
         base_dur = int(float(shot.get("duration", 5)) * 1_000_000)
         start_us = timeline_cursor
 
@@ -1425,15 +1565,9 @@ def create_draft_on_mac(
             if not re.search(r"\.(mp4|mov|webm|m4v)$", vname, re.I):
                 vname = f"{vname}.mp4" if "." not in vname else re.sub(r"[^.]+$", "mp4", vname)
             local_video_path = os.path.join(draft_folder, "Resources", "video", vname)
-            if _download_file_with_retry(str(video_url), local_video_path, timeout=60, retries=2):
+            if _download_file(str(video_url), local_video_path):
                 use_video = True
             else:
-                download_issues.append({
-                    "shot": i,
-                    "kind": "video",
-                    "url": str(video_url)[:240],
-                    "reason": "download_failed_after_retries",
-                })
                 local_video_path = None
 
         duration_us = base_dur
@@ -1452,6 +1586,7 @@ def create_draft_on_mac(
                 duration_us = vd
             row["media_kind"] = "video"
             row["video_abs"] = vabs
+            row["video_client_path"] = _material_path_for_client(vabs)
             row["video_w"] = vw or width
             row["video_h"] = vh or height
             row["video_material_duration_us"] = vd or duration_us
@@ -1462,13 +1597,9 @@ def create_draft_on_mac(
             if image_url and str(image_url).strip():
                 img_filename = _safe_filename(str(image_url))
                 local_image_path = os.path.join(draft_folder, "Resources", "image", img_filename)
-                if not _download_file_with_retry(str(image_url), local_image_path, timeout=45, retries=2):
-                    download_issues.append({
-                        "shot": i,
-                        "kind": "image",
-                        "url": str(image_url)[:240],
-                        "reason": "download_failed_after_retries",
-                    })
+                img_ok = _download_file(str(image_url), local_image_path)
+                print(f"[jianying_export] 镜头{i} 图片: url={'有' if image_url else '无'} → 文件={img_filename} → 下载={'成功' if img_ok else '失败'} {'(' + str(image_url)[:80] + ')' if image_url else ''}", file=sys.stderr, flush=True)
+                if not img_ok:
                     local_image_path = None
             if not local_image_path:
                 local_image_path = _placeholder_shot_image_path(draft_folder, i, width, height)
@@ -1476,6 +1607,7 @@ def create_draft_on_mac(
             iw, ih = _read_image_dimensions(img_abs, width, height)
             row["media_kind"] = "photo"
             row["image_abs"] = img_abs
+            row["image_client_path"] = _material_path_for_client(img_abs)
             row["image_w"] = iw
             row["image_h"] = ih
 
@@ -1495,10 +1627,14 @@ def create_draft_on_mac(
         if audio_url and str(audio_url).strip():
             audio_filename = _safe_filename(str(audio_url))
             lap = os.path.join(draft_folder, "Resources", "audio", audio_filename)
-            ok = _download_file_with_retry(str(audio_url), lap, timeout=75, retries=2)
+            ok = _download_file(str(audio_url), lap)
+            # 报告音频下载进度（每个音频 5%）
+            audio_progress = 10 + int((i / max(total_shots, 1)) * 60)
+            report_progress(audio_progress, f"下载音频 {i+1}/{total_shots}...")
             print(f"[jianying_export] 镜头{i} 音频: url={'有' if audio_url else '无'} → 文件={audio_filename} → 下载={'成功' if ok else '失败'} {'(' + str(audio_url)[:80] + ')' if audio_url else ''}", file=sys.stderr, flush=True)
             if ok:
                 row["audio_abs"] = _safe_abs_for_jianying(lap)
+                row["audio_client_path"] = _material_path_for_client(row["audio_abs"])
                 probe_us = _ffprobe_duration_us(row["audio_abs"])
                 # 以文件实测为准；客户端 audioDurationSec 多为文案估算，取 max 会把时间线拉长得远超真实波形（见 pyJianYingDraft：片段时长应对齐素材）。
                 if probe_us:
@@ -1510,12 +1646,6 @@ def create_draft_on_mac(
                 if ad and int(ad) > 0:
                     row["duration_us"] = int(ad)
             else:
-                download_issues.append({
-                    "shot": i,
-                    "kind": "audio",
-                    "url": str(audio_url)[:240],
-                    "reason": "download_failed_after_retries",
-                })
                 # 下载失败但客户端提供了时长估算（如前端 TTS），以此作时长兜底
                 if client_audio_us and int(client_audio_us) > 0:
                     row["audio_duration_us"] = int(client_audio_us)
@@ -1524,15 +1654,29 @@ def create_draft_on_mac(
         prepared_shots.append(row)
         timeline_cursor += row["duration_us"]
 
-    _emit_progress(62, f"已处理 {total_shots} 个镜头，开始生成草稿 JSON...", progress_callback)
+        # 及时清理 shot 对象中的大数据字段，释放内存
+        if image_url and str(image_url).startswith('data:'):
+            shot["imageUrl"] = ""  # 清理 base64 数据
+        if audio_url and str(audio_url).startswith('data:'):
+            shot["audioUrl"] = ""  # 清理 base64 数据
+            shot["voiceoverAudioUrl"] = ""
+
+        # 每处理 10 个镜头强制垃圾回收
+        if (i + 1) % 10 == 0:
+            import gc
+            gc.collect()
 
     # 调试：汇总每个镜头的音频信息
     for i, r in enumerate(prepared_shots):
         print(f"[jianying_export] 镜头{i} 汇总: audio_abs={r.get('audio_abs','无')} audio_dur_us={r.get('audio_duration_us','无')} timeline_dur_us={r.get('duration_us','无')}", file=sys.stderr, flush=True)
 
+    report_progress(72, "所有镜头处理完成，开始生成剪映 JSON...")
+    report_progress(78, "写入草稿 JSON 文件...")
+    print(f"[jianying_export] 所有镜头处理完成，共 {len(prepared_shots)} 个镜头，开始生成剪映 JSON...", file=sys.stderr, flush=True)
+
     total_duration = timeline_cursor
 
-    _emit_progress(65, "写入草稿文件...", progress_callback)
+    report_progress(82, "生成草稿内容...")
 
     lv59_script = _build_lv59_main_script(
         draft_id=draft_id,
@@ -1558,7 +1702,6 @@ def create_draft_on_mac(
     materials_count = len(lv59_script.get("materials", {}).get("videos", [])) + len(
         lv59_script.get("materials", {}).get("audios", [])
     )
-    _emit_progress(75, f"写入 {materials_count} 个素材记录...", progress_callback)
 
     # ---- draft_meta_info.json ----
     meta_info = {
@@ -1626,7 +1769,6 @@ def create_draft_on_mac(
     meta_path = os.path.join(draft_folder, "draft_meta_info.json")
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta_info, f, ensure_ascii=False, indent=2)
-    _emit_progress(80, "写入元数据配置...", progress_callback)
 
     # ---- draft_settings（INI 格式）----
     draft_settings_path = os.path.join(draft_folder, "draft_settings")
@@ -1715,6 +1857,144 @@ def create_draft_on_mac(
     with open(os.path.join(timeline_dir, "attachment_pc_common.json"), "w", encoding="utf-8") as f:
         json.dump(attach_pc, f, ensure_ascii=False, indent=2)
 
+    # ---- media_only 模式：只保留媒体文件，跳过草稿 JSON ----
+    if media_only:
+        print(f"[jianying_export] media_only 模式：已保存 {len(prepared_shots)} 个镜头的媒体文件", file=sys.stderr, flush=True)
+        # 计算总时长（用于后续合并）
+        total_dur = 0
+        for ps in prepared_shots:
+            total_dur += ps.get("duration_us", 0)
+        return {
+            "draft_id": None,
+            "draft_name": draft_folder_name,
+            "draft_folder": draft_folder,
+            "content_path": None,
+            "total_duration": total_dur,
+            "shots_count": len(prepared_shots),
+            "materials_count": materials_count,
+            "platform": "macOS",
+            "media_only": True,
+        }
+
+    # ---- 检查是否需要追加到已有草稿（分批合并模式）----
+    append_mode = False
+    existing_draft_info = None
+    existing_draft_folder = None
+
+    if output_dir:
+        # 检查持久化目录是否已有草稿
+        existing_draft_path = os.path.join(output_dir, draft_folder_name)
+        existing_info_path = os.path.join(existing_draft_path, "draft_content.json")
+
+        if os.path.exists(existing_info_path):
+            try:
+                with open(existing_info_path, "r", encoding="utf-8") as f:
+                    existing_draft_info = json.load(f)
+                existing_draft_folder = existing_draft_path
+                append_mode = True
+                print(f"[jianying_export] 追加模式：发现已有草稿 {existing_draft_path}，将追加 {len(prepared_shots)} 个镜头", file=sys.stderr, flush=True)
+            except Exception as e:
+                print(f"[jianying_export] 读取已有草稿失败: {e}，将创建新草稿", file=sys.stderr, flush=True)
+
+    # ---- 追加模式：合并到已有草稿 ----
+    if append_mode and existing_draft_info:
+        # 读取已有的 materials 和 tracks
+        existing_materials = existing_draft_info.get("materials", {})
+        existing_tracks = existing_draft_info.get("tracks", [])
+
+        # 追加新的 materials
+        new_materials = lv59_script.get("materials", {})
+        for mat_type in ["videos", "images", "audios"]:
+            if mat_type in new_materials:
+                if mat_type not in existing_materials:
+                    existing_materials[mat_type] = []
+                # 去重后追加（基于 id）
+                existing_ids = {m.get("id") for m in existing_materials.get(mat_type, [])}
+                for mat in new_materials[mat_type]:
+                    if mat.get("id") not in existing_ids:
+                        existing_materials[mat_type].append(mat)
+
+        # 追加新的 tracks（假设都在主轨道）
+        # 找到时间线末尾
+        timeline_end_us = 0
+        for track in existing_tracks:
+            for segment in track.get("segments", []):
+                end_us = segment.get("start_time_us", 0) + segment.get("duration_us", 0)
+                timeline_end_us = max(timeline_end_us, end_us)
+
+        # 更新新片段的 start_us
+        new_tracks = lv59_script.get("tracks", [])
+        for track in new_tracks:
+            for segment in track.get("segments", []):
+                if "start_time_us" in segment:
+                    segment["start_time_us"] += timeline_end_us
+                else:
+                    segment["start_time_us"] = timeline_end_us
+
+        # 合并 tracks
+        if new_tracks:
+            existing_tracks.extend(new_tracks)
+
+        # 重新计算总时长
+        new_end_us = 0
+        for track in existing_tracks:
+            for segment in track.get("segments", []):
+                end_us = segment.get("start_time_us", 0) + segment.get("duration_us", 0)
+                new_end_us = max(new_end_us, end_us)
+        total_duration = new_end_us
+
+        # 更新 draft_content.json
+        merged_script = {
+            **existing_draft_info,
+            "materials": existing_materials,
+            "tracks": existing_tracks,
+            "duration": total_duration,
+        }
+
+        content_path = existing_info_path
+        root_info_path = os.path.join(existing_draft_folder, "draft_info.json")
+
+        with open(root_info_path, "w", encoding="utf-8") as f:
+            json.dump(merged_script, f, ensure_ascii=False, indent=2)
+        with open(content_path, "w", encoding="utf-8") as f:
+            json.dump(merged_script, f, ensure_ascii=False, indent=2)
+
+        # 更新 Timelines 目录
+        if os.path.exists(os.path.join(existing_draft_folder, "Timelines")):
+            for timeline_file in os.listdir(os.path.join(existing_draft_folder, "Timelines")):
+                if timeline_file.endswith(".json") and timeline_file.startswith("draft_"):
+                    timeline_path = os.path.join(existing_draft_folder, "Timelines", timeline_file)
+                    with open(timeline_path, "w", encoding="utf-8") as f:
+                        json.dump(merged_script, f, ensure_ascii=False, indent=2)
+
+        # 更新 meta info
+        meta_path = os.path.join(existing_draft_folder, "draft_meta_info.json")
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta_info = json.load(f)
+                meta_info["update_time"] = _timestamp_us()
+                meta_info["duration"] = total_duration
+                meta_info["tm_duration"] = total_duration
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump(meta_info, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                print(f"[jianying_export] 更新 meta info 失败: {e}", file=sys.stderr, flush=True)
+
+        print(f"[jianying_export] 追加完成：共 {total_duration / 1_000_000:.1f}s，{len(existing_tracks)} 条轨道", file=sys.stderr, flush=True)
+
+        return {
+            "draft_id": existing_draft_info.get("id") or draft_id,
+            "draft_name": draft_folder_name,
+            "draft_folder": existing_draft_folder,
+            "content_path": content_path,
+            "total_duration": total_duration,
+            "shots_count": len(prepared_shots),
+            "materials_count": len(existing_materials.get("videos", [])) + len(existing_materials.get("audios", [])),
+            "platform": "macOS",
+            "merged": True,
+        }
+
     # ---- 草稿封面（生成纯色占位图）----
     try:
         _generate_cover(draft_folder, width, height)
@@ -1730,8 +2010,6 @@ def create_draft_on_mac(
         "shots_count": len(shots),
         "materials_count": materials_count,
         "platform": "macOS",
-        "download_issues": download_issues,
-        "download_issue_count": len(download_issues),
     }
 
 
@@ -1745,39 +2023,26 @@ def batch_export(
     output_path: str = None,
     random_transitions: bool = False,
     random_filters: bool = False,
-    progress_callback: callable = None,
+    path_map_root: str = None,
+    force_draft_folder_name: str = None,
+    zip_part_suffix: str = None,
+    # 持久化支持
+    batch_id: str = None,
+    is_final_batch: bool = True,
+    media_only: bool = False,
 ) -> dict:
     """
     跨平台批量导出。
     macOS：下载媒体 + 生成草稿 JSON + 打开剪映。
     Windows：使用 pyJianYingDraft（如可用）。
+
+    force_draft_folder_name: 分批导出时用于统一目录结构
+    zip_part_suffix: 分批导出时添加到 ZIP 文件名的后缀，如 "_part1"
+    batch_id: 批次 ID（用于持久化存储目录）
+    is_final_batch: 是否为最后一组（最后一组才生成完整草稿和打包）
+    media_only: 是否只保存媒体文件（用于分批中间组）
     """
     system = get_platform()
-
-    # ── 导出前检查磁盘空间，不足则自动清理 ─────────────────────────
-    disk_ok, disk_free = check_disk_space()
-    if not disk_ok:
-        print(f"[WARN] 磁盘空间不足 ({disk_free:.1f}MB)，开始清理...", file=sys.stderr, flush=True)
-        if progress_callback:
-            try:
-                progress_callback(3, "空间不足，清理缓存...")
-            except Exception:
-                pass
-        freed = cleanup_temp_files()
-        print(f"[INFO] 清理完成，释放 {freed:.1f}MB", file=sys.stderr, flush=True)
-        # 再次检查
-        disk_ok2, disk_free2 = check_disk_space()
-        if not disk_ok2 and disk_free2 < 50:
-            return {
-                "success": False,
-                "platform": system,
-                "draft_name": draft_name,
-                "shots_count": len(shots),
-                "resolution": resolution,
-                "fps": fps,
-                "message": f"磁盘空间不足 ({disk_free2:.1f}MB)，清理后仍不够，请手动清理",
-                "error": "insufficient_disk_space",
-            }
 
     # 解析分辨率
     if "x" in resolution:
@@ -1799,51 +2064,129 @@ def batch_export(
         "fps": fps,
     }
 
-    if system == "Darwin":
+    if system in ("Darwin", "Linux"):
         try:
+            # Linux (Railway)：确定输出目录
+            if system == "Linux" and batch_id:
+                # 使用持久化存储目录
+                output_dir = get_batch_dir(batch_id)
+                print(f"[jianying-server] Railway 持久化目录: {output_dir}", file=sys.stderr, flush=True)
+            elif output_path:
+                output_dir = output_path
+            else:
+                output_dir = None
+            
             draft_result = create_draft_on_mac(
                 draft_name=draft_name,
                 shots=shots,
-                output_dir=output_path,
+                output_dir=output_dir,
                 fps=fps,
                 width=w,
                 height=h,
                 random_transitions=random_transitions,
                 random_filters=random_filters,
-                progress_callback=progress_callback,
+                path_map_root=path_map_root,
+                force_draft_folder_name=force_draft_folder_name,
+                media_only=media_only,
             )
             result.update(draft_result)
-            _emit_progress(88, "准备启动剪映...", progress_callback)
 
-            # 打开剪映
-            open_msg = _open_jianying_pro()
-            result["open_jianying"] = open_msg
-            _emit_progress(92, "在 Finder 中显示...", progress_callback)
+            if system == "Darwin":
+                # 仅 macOS 才尝试打开剪映和 Finder
+                open_msg = _open_jianying_pro()
+                result["open_jianying"] = open_msg
 
-            # 在 Finder 中显示
-            try:
-                _reveal_in_finder(draft_result["draft_folder"])
-                result["reveal_folder"] = "已在 Finder 中显示"
-            except Exception:
-                result["reveal_folder"] = "Finder 显示失败"
+                try:
+                    _reveal_in_finder(draft_result["draft_folder"])
+                    result["reveal_folder"] = "已在 Finder 中显示"
+                except Exception:
+                    result["reveal_folder"] = "Finder 显示失败"
+
+                result["message"] = (
+                    f"✅ 剪映草稿已生成！\n"
+                    f"📁 {draft_result['draft_folder']}\n"
+                    f"📹 {draft_result['shots_count']} 个镜头\n"
+                    f"🖼 {draft_result.get('materials_count', 0)} 个媒体文件\n"
+                    f"⏱ {draft_result['total_duration']/1_000_000:.1f}s\n"
+                    f"{open_msg}\n"
+                    f"💡 请在剪映中打开该草稿 → 导出视频"
+                )
+            else:
+                # Linux（Railway）：生成标准草稿目录 + ZIP，供 macOS/Windows 下载后导入剪映
+                # Railway 环境：先检查磁盘空间
+                disk_ok, disk_free = check_disk_space()
+                if not disk_ok:
+                    print(f"[jianying-server] 磁盘空间不足: {disk_free:.1f}MB < {RAILWAY_MIN_DISK_SPACE_MB}MB，尝试清理临时文件", file=sys.stderr, flush=True)
+                    cleanup_temp_files(preserve_patterns=[batch_id] if batch_id else None)
+                    disk_ok, disk_free = check_disk_space()
+                result["disk_space_mb"] = disk_free
+
+                # media_only 模式：只保存媒体文件，不打包
+                if media_only:
+                    print(f"[jianying-server] media_only 模式：已保存 {draft_result.get('shots_count', 0)} 个镜头的媒体文件到 {draft_result.get('draft_folder', '')}", file=sys.stderr, flush=True)
+                    result["message"] = f"✅ 媒体文件已保存（media_only 模式）"
+                    result["success"] = True
+                    return result
+
+                zip_path = None
+                zip_error_msg = None
+                try:
+                    # Railway 环境：先清理临时文件再打包
+                    if system == "Linux":
+                        cleanup_temp_files(preserve_patterns=[batch_id] if batch_id else None)
+
+                    # 再次检查空间（留 50MB 余量）
+                    space_ok, _ = check_disk_space(50)
+                    if not space_ok:
+                        raise Exception(f"磁盘空间不足，无法创建 ZIP。当前可用: {disk_free:.1f}MB")
+
+                    # 构建 ZIP 文件名（支持分批后缀）
+                    zip_name_base = draft_result["draft_name"]
+                    if zip_part_suffix:
+                        zip_name_base = f"{zip_name_base}{zip_part_suffix}"
+                    zip_base = os.path.join(os.path.dirname(draft_result["draft_folder"]), zip_name_base)
+                    report_progress(92, "创建 ZIP 包...")
+                    zip_path = shutil.make_archive(zip_base, 'zip', root_dir=draft_result["draft_folder"])
+                    result["zip_path"] = zip_path
+                    result["zip_size_mb"] = os.path.getsize(zip_path) / (1024 * 1024)
+                    report_progress(98, f"ZIP 创建成功: {result['zip_size_mb']:.1f}MB")
+                    print(f"[jianying-server] ZIP 创建成功: {result['zip_size_mb']:.1f}MB", file=sys.stderr, flush=True)
+                except Exception as _zip_err:
+                    zip_error_msg = str(_zip_err)
+                    result["zip_error"] = zip_error_msg
+                    print(f"[jianying-server] ZIP 创建失败: {zip_error_msg}", file=sys.stderr, flush=True)
+                    # Railway 上 ZIP 失败不一定是致命错误，草稿目录已生成
+                    if draft_result.get("draft_folder"):
+                        result["message"] = (
+                            f"✅ 剪映草稿目录已生成（ZIP 打包失败: {zip_error_msg}）\n"
+                            f"📁 {draft_result['draft_folder']}\n"
+                            f"📹 {draft_result['shots_count']} 个镜头\n"
+                            f"🖼 {draft_result.get('materials_count', 0)} 个媒体文件\n"
+                            f"⏱ {draft_result['total_duration']/1_000_000:.1f}s\n"
+                            f"💡 可直接在剪映中打开草稿目录，或手动打包为 ZIP"
+                        )
+                        result["success"] = True
+                    else:
+                        result["message"] = f"❌ 磁盘空间不足：{disk_free:.1f}MB，导出终止"
+                        result["success"] = False
+                else:
+                    result["message"] = (
+                        f"✅ Linux 已生成剪映标准草稿目录\n"
+                        f"📁 {draft_result['draft_folder']}\n"
+                        f"📹 {draft_result['shots_count']} 个镜头\n"
+                        f"🖼 {draft_result.get('materials_count', 0)} 个媒体文件\n"
+                        f"⏱ {draft_result['total_duration']/1_000_000:.1f}s\n"
+                        + (f"📦 ZIP: {zip_path}\n" if zip_path else "")
+                        + f"💡 请下载 ZIP 后解压到本机剪映草稿目录"
+                    )
 
             result["success"] = True
-            _emit_progress(100, "导出完成!", progress_callback)
-            result["message"] = (
-                f"✅ 剪映草稿已生成！\n"
-                f"📁 {draft_result['draft_folder']}\n"
-                f"📹 {draft_result['shots_count']} 个镜头\n"
-                f"🖼 {draft_result.get('materials_count', 0)} 个媒体文件\n"
-                f"⏱ {draft_result['total_duration']/1_000_000:.1f}s\n"
-                f"{open_msg}\n"
-                f"💡 请在剪映中打开该草稿 → 导出视频"
-            )
         except Exception as e:
             import traceback
             result["success"] = False
             result["error"] = str(e)
             result["traceback"] = traceback.format_exc()
-            result["message"] = f"❌ macOS 草稿生成失败：{e}"
+            result["message"] = f"❌ {system} 草稿生成失败：{e}"
 
     else:  # Windows
         try:
@@ -1871,54 +2214,6 @@ def batch_export(
     return result
 
 
-# ---- 磁盘空间管理（Railway / 本地通用）───────────────────────────────────
-RAILWAY_MIN_DISK_SPACE_MB = 100
-
-def check_disk_space(min_mb: int = RAILWAY_MIN_DISK_SPACE_MB) -> tuple[bool, float]:
-    """检查磁盘空间是否足够，返回 (够用, 可用空间MB)"""
-    try:
-        if platform.system() == "Windows":
-            import ctypes
-            free_bytes = ctypes.c_ulonglong(0)
-            ctypes.windll.kernel32.GetDiskFreeSpaceExW(ctypes.c_wchar_p(os.getcwd()), None, None, ctypes.pointer(free_bytes))
-            free_mb = free_bytes.value / (1024 * 1024)
-        else:
-            stat = os.statvfs(os.getcwd())
-            free_mb = (stat.f_bavail * stat.f_frsize) / (1024 * 1024)
-        return free_mb >= min_mb, free_mb
-    except Exception:
-        return True, 0  # 检查失败时默认通过
-
-
-def cleanup_temp_files(temp_dir: str = None) -> float:
-    """清理临时文件，返回释放的空间大小（MB）"""
-    freed_mb = 0.0
-    try:
-        if temp_dir is None:
-            temp_dir = tempfile.gettempdir()
-        patterns = ["media_*.mp3", "media_*.jpg", "media_*.png", "media_*.mp4", "draft_*", "*.tmp"]
-        cleaned = 0
-        total_size = 0
-        for p in patterns:
-            try:
-                for f in Path(temp_dir).glob(p):
-                    try:
-                        fsize = os.path.getsize(f)
-                        os.remove(f)
-                        cleaned += 1
-                        total_size += fsize
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-        freed_mb = total_size / (1024 * 1024)
-        if cleaned > 0:
-            print(f"[CLEANUP] 已清理 {cleaned} 个临时文件，释放 {freed_mb:.1f}MB", file=sys.stderr, flush=True)
-    except Exception as e:
-        print(f"[CLEANUP] 清理失败: {e}", file=sys.stderr, flush=True)
-    return freed_mb
-
-
 # ---- 命令行调试入口 ----
 if __name__ == "__main__":
     import argparse, sys as _sys
@@ -1928,34 +2223,11 @@ if __name__ == "__main__":
     parser.add_argument("--name", type=str, default="测试草稿", help="草稿名称")
     parser.add_argument("--shots", type=str, default="[]", help="镜头 JSON（命令行参数方式）")
     parser.add_argument("--shots-json-stdin", action="store_true", help="镜头 JSON 从 stdin 读取（避免 E2BIG）")
+    parser.add_argument("--progress-callback", action="store_true", help="通过 stdout 报告进度")
     parser.add_argument("--resolution", type=str, default="1920x1080")
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--output", type=str, default=None)
-    parser.add_argument("--progress-callback", action="store_true", help="启用进度输出到 stderr")
-    parser.add_argument("--check-disk", action="store_true", help="检查磁盘空间")
-    parser.add_argument("--cleanup", action="store_true", help="清理缓存文件")
     args = parser.parse_args()
-
-    # ── 磁盘空间检查 ────────────────────────────────────────────────────
-    if args.check_disk:
-        ok, free_mb = check_disk_space()
-        status = "OK" if ok else "LOW"
-        print(json.dumps({
-            "ok": ok,
-            "free_mb": round(free_mb, 2),
-            "message": f"{status}: {free_mb:.1f}MB 可用",
-        }, ensure_ascii=False))
-        _sys.exit(0 if ok else 1)
-
-    # ── 清理缓存 ───────────────────────────────────────────────────────
-    if args.cleanup:
-        freed = cleanup_temp_files()
-        print(json.dumps({
-            "success": True,
-            "freed_mb": round(freed, 2),
-            "message": f"清理完成，释放 {freed:.1f}MB",
-        }, ensure_ascii=False))
-        _sys.exit(0)
 
     if args.list_json:
         print(json.dumps({"error": "list_drafts 需要完全磁盘访问权限"}, ensure_ascii=False))
@@ -1968,37 +2240,27 @@ if __name__ == "__main__":
             stdin_data = json.loads(stdin_raw)
             shots = stdin_data.get("shots", [])
             output_path = stdin_data.get("outputPath") or args.output
+            path_map_root = stdin_data.get("pathMapRoot")
+            force_draft_folder_name = stdin_data.get("forceDraftFolderName")
+            zip_part_suffix = stdin_data.get("zipPartSuffix")  # 分批导出时添加到 ZIP 文件名的后缀
+            batch_id = stdin_data.get("batchId")  # 批次 ID（用于持久化存储）
+            is_final_batch = bool(stdin_data.get("isFinalBatch", True))  # 是否为最后一组
+            media_only = bool(stdin_data.get("mediaOnly", False))  # 是否只保存媒体文件
             rnd_tr = bool(stdin_data.get("randomTransitions"))
             rnd_fx = bool(stdin_data.get("randomVideoEffects"))
+            # 启用进度回调
+            if args.progress_callback:
+                set_progress_callback(lambda p, s: report_progress(p, s))
         else:
             shots = json.loads(args.shots)
             output_path = args.output
+            path_map_root = None
+            force_draft_folder_name = None
+            zip_part_suffix = None
+            batch_id = None
+            is_final_batch = True
+            media_only = False
             rnd_tr = rnd_fx = False
-
-        # ── 导出前检查磁盘空间，不足则自动清理 ─────────────────────────
-        _emit_progress(2, "检查磁盘空间...", _progress_callback)
-        disk_ok, disk_free = check_disk_space()
-        if not disk_ok:
-            print(f"[WARN] 磁盘空间不足 ({disk_free:.1f}MB)，开始清理...", file=_sys.stderr, flush=True)
-            _emit_progress(3, "空间不足，清理缓存...", _progress_callback)
-            freed = cleanup_temp_files()
-            print(f"[INFO] 清理完成，释放 {freed:.1f}MB", file=_sys.stderr, flush=True)
-            # 再次检查
-            disk_ok2, disk_free2 = check_disk_space()
-            if not disk_ok2 and disk_free2 < 50:  # 至少 50MB 才能继续
-                result = {
-                    "success": False,
-                    "platform": system,
-                    "draft_name": args.name,
-                    "shots_count": len(shots),
-                    "resolution": args.resolution,
-                    "fps": args.fps,
-                    "message": f"磁盘空间不足 ({disk_free2:.1f}MB)，清理后仍不够，请手动清理",
-                    "error": "insufficient_disk_space",
-                }
-                print(json.dumps(result, ensure_ascii=False))
-                _sys.exit(1)
-
         result = batch_export(
             draft_name=args.name,
             shots=shots,
@@ -2007,6 +2269,11 @@ if __name__ == "__main__":
             output_path=output_path,
             random_transitions=rnd_tr,
             random_filters=rnd_fx,
-            progress_callback=_emit_progress if args.progress_callback else None,
+            path_map_root=path_map_root,
+            force_draft_folder_name=force_draft_folder_name,
+            zip_part_suffix=zip_part_suffix,
+            batch_id=batch_id,
+            is_final_batch=is_final_batch,
+            media_only=media_only,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))

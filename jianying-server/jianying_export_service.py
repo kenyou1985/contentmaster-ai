@@ -1926,7 +1926,10 @@ def create_draft_on_mac(
         new_tracks = lv59_script.get("tracks", [])
         for track in new_tracks:
             for segment in track.get("segments", []):
-                segment["start_time_us"] += timeline_end_us
+                if "start_time_us" in segment:
+                    segment["start_time_us"] += timeline_end_us
+                else:
+                    segment["start_time_us"] = timeline_end_us
 
         # 合并 tracks
         if new_tracks:
