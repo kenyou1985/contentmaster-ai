@@ -464,7 +464,7 @@ async function railwayExportAsync(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...payload, returnZip: true }),
-        signal: AbortSignal.timeout(120000), // 2 分钟，大数据上传需要更长时间
+        signal: AbortSignal.timeout(600000), // 10 分钟，足够上传大 payload + 后端处理
       });
 
       const responseText = await startRes.text().catch(() => '');
@@ -794,12 +794,12 @@ async function submitAndWait(
     returnZip: true,
   };
 
-  // 提交任务（44 个镜头 base64 数据较大，需要更长上传时间）
+  // 提交任务（12 个镜头 base64 数据较大，需要更长上传+处理时间）
   const startRes = await fetch(`${railwayBase}/export/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(120000), // 2 分钟，避免上传超时
+    signal: AbortSignal.timeout(600000), // 10 分钟超时，足够上传 + 处理
   });
 
   const startText = await startRes.text().catch(() => '');
