@@ -548,7 +548,9 @@ async function pollForResult(
     await sleep(2000);
 
     try {
-      const statusRes = await fetch(`${pollBase}/export/status/${encodeURIComponent(taskId)}`);
+      const statusRes = await fetch(`${pollBase}/export/status/${encodeURIComponent(taskId)}`, {
+        signal: AbortSignal.timeout(60000), // 1 分钟超时，避免 Railway 代理中断
+      });
 
       if (!statusRes.ok) {
         const errText = await statusRes.text().catch(() => '');
