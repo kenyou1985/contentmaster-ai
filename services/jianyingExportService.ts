@@ -828,15 +828,30 @@ async function submitAndWait(
 
 /**
  * 构建 ZIP 下载 URL
+ * 确保不会重复拼接 /api/jianying 路径
  */
 function buildZipDownloadUrl(result: JianyingExportResult, railwayBase: string): string | null {
   const rawUrl = result.zip_download_url;
   if (!rawUrl) return null;
 
+  // 已经是完整 URL，直接返回
   if (/^https?:\/\//i.test(rawUrl)) return rawUrl;
 
-  const baseOrigin = new URL(railwayBase).origin;
-  return rawUrl.startsWith('/') ? `${baseOrigin}${rawUrl}` : `${baseOrigin}/${rawUrl}`;
+  // 清理 railwayBase 末尾斜杠，避免双重路径
+  const base = railwayBase.replace(/\/$/, '');
+
+  // rawUrl 可能是 /api/jianying/download/xxx.zip
+  // railwayBase 可能是 https://xxx.up.railway.app/api/jianying
+  // 正确拼接：https://xxx.up.railway.app/api/jianying/download/xxx.zip
+  if (rawUrl.startsWith('/')) {
+    // 如果 rawUrl 以 /api/jianying 开头，且 base 已包含该路径，则去掉重复前缀
+    if (rawUrl.startsWith('/api/jianying') && base.includes('/api/jianying')) {
+      const suffix = rawUrl.replace(/^\/api\/jianying/, '');
+      return suffix.startsWith('/') ? `${base}${suffix}` : `${base}/${suffix}`;
+    }
+    return `${base}${rawUrl}`;
+  }
+  return `${base}/${rawUrl}`;
 }
 
 /**
