@@ -58,6 +58,10 @@ export interface JianyingExportOptions {
   randomVideoEffects?: boolean;
   /** 分批导出时，强制使用该名称作为 ZIP 内草稿目录名（不含 part 后缀） */
   forceDraftFolderName?: string;
+  /** 分批导出时，添加到 ZIP 文件名的后缀，如 "_part1" */
+  zipPartSuffix?: string;
+  /** 分批导出时，保留草稿目录用于后续合并（不清理临时文件） */
+  keepDraftFolder?: boolean;
 }
 
 export interface JianyingDraftInfo {
@@ -640,10 +644,11 @@ async function pollForResult(
 // ============================================================
 
 /**
- * 分多批导出（大批量镜头场景）
- * 策略：每批独立处理，最后合并成一个 ZIP 下载
+ * 分多批导出（大批量镜头场景）- 合并模式
+ * 策略：每批下载媒体资源，最后合并成一个完整的剪映草稿 JSON 并打包单个 ZIP
  * - 分批避免请求体超过 Railway 100MB 限制
- * - 后端合并所有批次 ZIP，最终只下载 1 个合并后的 ZIP
+ * - 后端合并所有批次的草稿目录，生成统一的草稿 JSON
+ * - 最终只下载 1 个合并后的 ZIP
  */
 async function exportJianyingDraftInMultipleBatches(
   options: JianyingExportOptions,
@@ -663,73 +668,61 @@ async function exportJianyingDraftInMultipleBatches(
     throw new Error('分批导出仅支持 Railway 模式');
   }
 
-  const batchZipFilenames: string[] = [];
+  // 收集所有批次的草稿目录路径（用于后续合并）
+  const batchDraftFolders: string[] = [];
 
   // 分批导出时，强制所有批次使用统一的目录名（不含 part 后缀）
-  // 这样 ZIP 合并后目录结构一致
   const unifiedDraftFolderName = options.draftName.replace(/[^a-zA-Z0-9\u4e00-\u9fa5_-]/g, '_');
 
   // 依次导出每批
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i];
+    const partIndex = i + 1;
     const progressStart = 5 + (i / batchCount) * 80;
     const progressEnd = 5 + ((i + 1) / batchCount) * 80;
 
-    onProgress?.(Math.round(progressStart), `分批导出: 第 ${i + 1}/${batchCount} 批 (${batch.length} 个镜头)...`);
+    onProgress?.(Math.round(progressStart), `分批导出: 第 ${partIndex}/${batchCount} 批 (${batch.length} 个镜头)...`);
 
     const batchResult = await submitAndWait(
       railwayBase,
-      `${options.draftName}_part${i + 1}`,
+      `${options.draftName}_part${partIndex}`,
       batch,
       { ...options, forceDraftFolderName: unifiedDraftFolderName },
       progressStart,
       progressEnd,
-      onProgress
+      onProgress,
+      partIndex
     );
 
     if (!batchResult.success) {
       throw new Error(`第 ${i + 1} 批导出失败: ${batchResult.error || batchResult.message}`);
     }
 
-    // 收集 ZIP 文件名（用于后续合并）
-    const zipUrl = batchResult.zip_download_url || '';
-    if (zipUrl) {
-      // 从 URL 中提取文件名
-      const filename = decodeURIComponent(zipUrl.split('/').pop() || '');
-      batchZipFilenames.push(filename);
+    // 收集草稿目录路径（用于后续合并）
+    if (batchResult.draft_folder) {
+      batchDraftFolders.push(batchResult.draft_folder);
     }
   }
 
   // 所有批次处理完成，调用后端合并接口
-  onProgress?.(85, `合并 ${batchCount} 个批次 ZIP...`);
+  onProgress?.(85, `合并 ${batchCount} 个批次草稿...`);
 
-  // 预先构建所有批次的下载 URLs（用于前端显示 Part1、Part2 等标签）
-  const buildBatchUrls = (): Array<{ filename: string; url: string }> => {
-    return batchZipFilenames.map((filename, idx) => {
-      let zipUrl: string;
-      if (railwayBase.includes('/api/jianying')) {
-        zipUrl = `${railwayBase}/download/${encodeURIComponent(filename)}`;
-      } else {
-        zipUrl = `${railwayBase}/api/jianying/download/${encodeURIComponent(filename)}`;
-      }
-      return {
-        filename,
-        url: zipUrl,
-        // 标记是第几个批次
-        partLabel: `Part ${idx + 1}`,
-      };
-    });
-  };
+  if (batchDraftFolders.length === 0) {
+    throw new Error('没有找到草稿目录，无法合并');
+  }
 
   try {
-    const mergedFilename = `${options.draftName.replace(/[^a-zA-Z0-9\u4e00-\u9fa5_-]/g, '_')}_merged_${Date.now()}.zip`;
+    // 调用新的合并接口：合并所有草稿目录成一个完整的草稿并打包 ZIP
+    const mergedFilename = `${unifiedDraftFolderName}_${Date.now()}.zip`;
 
-    const mergeRes = await fetch(`${railwayBase}/api/jianying/export/merge-zip`, {
+    const mergeRes = await fetch(`${railwayBase}/api/jianying/export/merge-drafts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        zipFiles: batchZipFilenames,
-        mergedFilename,
+        draftName: options.draftName,
+        draftFolders: batchDraftFolders,
+        resolution: options.resolution || '1920x1080',
+        fps: options.fps || 30,
       }),
       signal: AbortSignal.timeout(600000), // 10 分钟合并超时
     });
@@ -749,26 +742,20 @@ async function exportJianyingDraftInMultipleBatches(
     // 修复下载链接：避免重复拼接 /api/jianying
     let mergedUrl = mergeResult.zip_download_url || '';
     if (mergedUrl.startsWith('/api/jianying') && railwayBase.includes('/api/jianying')) {
-      // 去掉 /api/jianying 前缀，直接拼接到 railwayBase
       const suffix = mergedUrl.replace(/^\/api\/jianying/, '');
       mergedUrl = suffix.startsWith('/')
         ? `${railwayBase}${suffix}`
         : `${railwayBase}/${suffix}`;
     } else if (mergedUrl.startsWith('/') && !mergedUrl.startsWith('/api/')) {
-      // 纯路径，如 /download/xxx
       mergedUrl = `${railwayBase}${mergedUrl}`;
     }
-    // 否则保持原样（可能是完整 URL 或已经是正确格式）
 
     // 触发下载合并后的单个 ZIP
     if (mergedUrl) {
       triggerDownload(mergedUrl, mergedFilename);
     }
 
-    onProgress?.(100, '导出完成！已下载合并后的 ZIP');
-
-    // 构建所有批次的 URLs 用于前端显示 Part1、Part2 标签
-    const allPartUrls = buildBatchUrls();
+    onProgress?.(100, '导出完成！已下载合并后的单个 ZIP');
 
     return {
       success: true,
@@ -780,40 +767,36 @@ async function exportJianyingDraftInMultipleBatches(
       message: `分批导出完成：共 ${totalShots} 个镜头，分为 ${batchCount} 批，已合并为 1 个 ZIP`,
       usedRailway: true,
       zip_download_url: mergedUrl,
-      _batched: true,
+      // 合并模式：不显示多批次按钮，只显示单个下载
+      _batched: false, // 设为 false，这样前端只显示单个下载按钮
       _batchCount: batchCount,
       _mergedZip: mergedFilename,
-      // 返回所有批次的下载链接（用于前端显示 Part1、Part2 标签）
-      _batchZipUrls: allPartUrls.map(item => item.url),
-      _batchPartLabels: allPartUrls.map(item => item.partLabel),
+      _batchZipUrls: [mergedUrl], // 单个 ZIP
+      _batchPartLabels: ['下载草稿'],
     };
   } catch (e: any) {
     console.error('[JianyingExport] 合并失败，降级为分批下载:', e.message);
-    // 降级：分批下载（保留原有行为）
+    // 合并失败时降级为分批下载（原有行为）
     onProgress?.(90, '合并失败，改用分批下载...');
 
-    // 收集所有批次的下载链接
     const allBatchUrls: string[] = [];
+    const partLabels: string[] = [];
 
-    for (let i = 0; i < batchZipFilenames.length; i++) {
-      const filename = batchZipFilenames[i];
-      // 修复：避免重复拼接 /api/jianying
+    for (let i = 0; i < batchDraftFolders.length; i++) {
+      const partIdx = i + 1;
+      const filename = `${unifiedDraftFolderName}_part${partIdx}.zip`;
       let zipUrl: string;
       if (railwayBase.includes('/api/jianying')) {
-        // railwayBase 已包含 /api/jianying，直接拼接路径
         zipUrl = `${railwayBase}/download/${encodeURIComponent(filename)}`;
       } else {
-        // railwayBase 不包含 /api/jianying，需要拼接完整路径
         zipUrl = `${railwayBase}/api/jianying/download/${encodeURIComponent(filename)}`;
       }
       allBatchUrls.push(zipUrl);
+      partLabels.push(`Part ${partIdx}`);
       triggerDownload(zipUrl, filename);
     }
 
     onProgress?.(100, '分批导出完成（降级模式）');
-
-    // 构建 Part 标签
-    const partLabels = allBatchUrls.map((_, idx) => `Part ${idx + 1}`);
 
     return {
       success: true,
@@ -826,7 +809,7 @@ async function exportJianyingDraftInMultipleBatches(
       usedRailway: true,
       _batched: true,
       _batchCount: batchCount,
-      _batchZipUrls: allBatchUrls, // 返回所有批次的下载链接
+      _batchZipUrls: allBatchUrls,
       _batchPartLabels: partLabels,
     };
   }
@@ -844,9 +827,13 @@ async function submitAndWait(
   options: JianyingExportOptions,
   progressStart: number,
   progressEnd: number,
-  onProgress?: (progress: number, message: string) => void
+  onProgress?: (progress: number, message: string) => void,
+  partIndex?: number
 ): Promise<JianyingExportResult> {
   const shotsProcessed = await embedAudioDataUrlsForJianyingExport(shots, true);
+
+  // 构建 ZIP 后缀（如 "_part1"、"_part2"）
+  const zipPartSuffix = partIndex !== undefined ? `_part${partIndex}` : (options.zipPartSuffix || null);
 
   const payload = {
     draftName,
@@ -857,6 +844,8 @@ async function submitAndWait(
     pathMapRoot: options.pathMapRoot || null,
     // 分批导出时强制使用统一的目录名，避免 ZIP 内目录结构不一致
     forceDraftFolderName: options.forceDraftFolderName || null,
+    // 分批导出时添加到 ZIP 文件名的后缀
+    zipPartSuffix,
     returnZip: true,
   };
 

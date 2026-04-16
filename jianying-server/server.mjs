@@ -673,6 +673,83 @@ app.get('/api/jianying/download/:filename', (req, res) => {
   }
 });
 
+// ── 合并多个剪映草稿目录（分批导出场景）────────────────────────────────────
+// 分批导出的镜头资源合并成一个完整的草稿 JSON，最后打包成单个 ZIP
+app.post('/api/jianying/export/merge-drafts', async (req, res) => {
+  try {
+    const { draftName, draftFolders, resolution = '1920x1080', fps = 30 } = req.body;
+    
+    if (!draftName) {
+      return res.status(400).json({ error: '缺少草稿名称' });
+    }
+    if (!Array.isArray(draftFolders) || draftFolders.length < 1) {
+      return res.status(400).json({ error: '至少需要1个草稿目录' });
+    }
+
+    console.log(`[jianying-server] 开始合并 ${draftFolders.length} 个草稿目录...`);
+
+    // 调用 Python 脚本合并草稿
+    const pyCmd = existsSync('/usr/bin/python3') ? '/usr/bin/python3' : 'python3';
+    const mergeScript = join(__dirname, 'merge_drafts.py');
+    
+    if (!existsSync(mergeScript)) {
+      return res.status(500).json({ error: '合并脚本不存在' });
+    }
+
+    const mergedFilename = `${draftName.replace(/[^a-zA-Z0-9\u4e00-\u9fa5_-]/g, '_')}_${Date.now()}.zip`;
+    
+    const child = spawn(pyCmd, [
+      mergeScript,
+      '--name', draftName,
+      '--output', mergedFilename,
+      '--resolution', resolution,
+      '--fps', String(fps),
+      ...draftFolders
+    ], {
+      timeout: 600_000, // 10 分钟合并超时
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+
+    await new Promise((resolve, reject) => {
+      child.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`合并失败: ${stderr}`));
+      });
+      child.on('error', reject);
+    });
+
+    // 检查合并后的 ZIP
+    const mergedPath = resolve(__dirname, 'exports', mergedFilename);
+    if (!existsSync(mergedPath)) {
+      throw new Error('合并后的 ZIP 文件不存在');
+    }
+
+    // 缓存到 recentZipPathByName
+    recentZipPathByName.set(mergedFilename, mergedPath);
+
+    // 返回合并后的下载 URL
+    const downloadUrl = `/api/jianying/download/${encodeURIComponent(mergedFilename)}`;
+    console.log(`[jianying-server] 合并完成: ${mergedFilename}`);
+
+    res.json({
+      success: true,
+      mergedFilename,
+      zip_download_url: downloadUrl,
+      zip_size_mb: (await fs.promises.stat(mergedPath)).size / (1024 * 1024),
+      draft_count: draftFolders.length,
+    });
+  } catch (e) {
+    console.error('[jianying-server] 草稿合并失败:', e);
+    res.status(500).json({ error: e.message || '合并失败' });
+  }
+});
+
 // ── 合并多个 ZIP 文件（分批导出场景）──────────────────────────────────────
 app.post('/api/jianying/export/merge-zip', async (req, res) => {
   try {

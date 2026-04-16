@@ -1379,6 +1379,9 @@ def create_draft_on_mac(
     random_filters: bool = False,
     path_map_root: str = None,
     force_draft_folder_name: str = None,
+    # 追加模式：继续已有草稿目录的导出
+    append_to_draft: str = None,
+    append_timeline_offset: int = 0,
 ) -> dict:
     """
     创建剪映草稿：
@@ -1387,6 +1390,8 @@ def create_draft_on_mac(
       3. 写入根目录 draft_info.json 与 draft_content.json（剪映 5.9 主时间线格式）
 
     force_draft_folder_name: 强制使用该名称作为草稿目录名（分批导出时用于统一目录结构）
+    append_to_draft: 追加模式，传入已有草稿目录路径，新镜头将从 append_timeline_offset 开始
+    append_timeline_offset: 追加模式下，新镜头开始的时间线偏移（微秒）
     """
     # 调试信息必须写 stderr，stdout 仅用于 JSON（否则 Node 会把整段 stdout 当响应体）
     for i, shot in enumerate(shots):
@@ -1829,6 +1834,7 @@ def batch_export(
     random_filters: bool = False,
     path_map_root: str = None,
     force_draft_folder_name: str = None,
+    zip_part_suffix: str = None,
 ) -> dict:
     """
     跨平台批量导出。
@@ -1836,6 +1842,7 @@ def batch_export(
     Windows：使用 pyJianYingDraft（如可用）。
 
     force_draft_folder_name: 分批导出时用于统一目录结构
+    zip_part_suffix: 分批导出时添加到 ZIP 文件名的后缀，如 "_part1"
     """
     system = get_platform()
 
@@ -1917,7 +1924,11 @@ def batch_export(
                     if not space_ok:
                         raise Exception(f"磁盘空间不足，无法创建 ZIP。当前可用: {disk_free:.1f}MB")
 
-                    zip_base = os.path.join(os.path.dirname(draft_result["draft_folder"]), draft_result["draft_name"])
+                    # 构建 ZIP 文件名（支持分批后缀）
+                    zip_name_base = draft_result["draft_name"]
+                    if zip_part_suffix:
+                        zip_name_base = f"{zip_name_base}{zip_part_suffix}"
+                    zip_base = os.path.join(os.path.dirname(draft_result["draft_folder"]), zip_name_base)
                     report_progress(92, "创建 ZIP 包...")
                     zip_path = shutil.make_archive(zip_base, 'zip', root_dir=draft_result["draft_folder"])
                     result["zip_path"] = zip_path
@@ -2015,6 +2026,7 @@ if __name__ == "__main__":
             output_path = stdin_data.get("outputPath") or args.output
             path_map_root = stdin_data.get("pathMapRoot")
             force_draft_folder_name = stdin_data.get("forceDraftFolderName")
+            zip_part_suffix = stdin_data.get("zipPartSuffix")  # 分批导出时添加到 ZIP 文件名的后缀
             rnd_tr = bool(stdin_data.get("randomTransitions"))
             rnd_fx = bool(stdin_data.get("randomVideoEffects"))
             # 启用进度回调
@@ -2025,6 +2037,7 @@ if __name__ == "__main__":
             output_path = args.output
             path_map_root = None
             force_draft_folder_name = None
+            zip_part_suffix = None
             rnd_tr = rnd_fx = False
         result = batch_export(
             draft_name=args.name,
@@ -2036,5 +2049,6 @@ if __name__ == "__main__":
             random_filters=rnd_fx,
             path_map_root=path_map_root,
             force_draft_folder_name=force_draft_folder_name,
+            zip_part_suffix=zip_part_suffix,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
