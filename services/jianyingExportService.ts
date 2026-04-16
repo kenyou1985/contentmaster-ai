@@ -307,8 +307,8 @@ export async function exportJianyingDraft(
   const returnZip = shouldUseJianyingZipDownload();
   onProgress?.(5, '准备导出...');
 
-  // 判断是否分批：Railway 模式且超过 50 个镜头（避免请求体过大）
-  const BATCH_THRESHOLD_SHOTS = 50;
+  // 判断是否分批：Railway 模式且超过 20 个镜头（避免请求体超过 100MB 限制）
+  const BATCH_THRESHOLD_SHOTS = 20;
   if (returnZip && options.shots.length > BATCH_THRESHOLD_SHOTS) {
     console.log(`[JianyingExport] 镜头数 ${options.shots.length} > ${BATCH_THRESHOLD_SHOTS}，分批导出（每批最多12个镜头）`);
     return await exportJianyingDraftInMultipleBatches(options, onProgress);
@@ -637,14 +637,16 @@ async function pollForResult(
 
 /**
  * 分多批导出（大批量镜头场景）
- * 按每批最多 12 个镜头拆分，避免请求体超过 Railway 100MB 限制
+ * 策略：每批独立处理，最后合并成一个 ZIP 下载
+ * - 分批避免请求体超过 Railway 100MB 限制
+ * - 后端合并所有批次 ZIP，最终只下载 1 个合并后的 ZIP
  */
 async function exportJianyingDraftInMultipleBatches(
   options: JianyingExportOptions,
   onProgress?: (progress: number, message: string) => void
 ): Promise<JianyingExportResult> {
   const totalShots = options.shots.length;
-  const BATCH_SIZE = 12; // 每批最多 12 个镜头
+  const BATCH_SIZE = 12; // 每批最多 12 个镜头（避免请求体过大）
   const batchCount = Math.ceil(totalShots / BATCH_SIZE);
   const batches: JianyingShot[][] = [];
 
@@ -657,14 +659,13 @@ async function exportJianyingDraftInMultipleBatches(
     throw new Error('分批导出仅支持 Railway 模式');
   }
 
-  const batchResults: JianyingExportResult[] = [];
-  const batchZipUrls: string[] = [];
+  const batchZipFilenames: string[] = [];
 
   // 依次导出每批
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i];
-    const progressStart = 5 + (i / batchCount) * 90;
-    const progressEnd = 5 + ((i + 1) / batchCount) * 90;
+    const progressStart = 5 + (i / batchCount) * 80;
+    const progressEnd = 5 + ((i + 1) / batchCount) * 80;
 
     onProgress?.(Math.round(progressStart), `分批导出: 第 ${i + 1}/${batchCount} 批 (${batch.length} 个镜头)...`);
 
@@ -682,32 +683,91 @@ async function exportJianyingDraftInMultipleBatches(
       throw new Error(`第 ${i + 1} 批导出失败: ${batchResult.error || batchResult.message}`);
     }
 
-    batchResults.push(batchResult);
-
-    // 构建 ZIP 下载 URL
-    const zipUrl = buildZipDownloadUrl(batchResult, railwayBase);
+    // 收集 ZIP 文件名（用于后续合并）
+    const zipUrl = batchResult.zip_download_url || '';
     if (zipUrl) {
-      batchZipUrls.push(zipUrl);
-      // 触发下载
-      triggerDownload(zipUrl, `${options.draftName}_part${i + 1}.zip`);
+      // 从 URL 中提取文件名
+      const filename = decodeURIComponent(zipUrl.split('/').pop() || '');
+      batchZipFilenames.push(filename);
     }
   }
 
-  onProgress?.(100, '分批导出完成！已触发所有 ZIP 下载');
+  // 所有批次处理完成，调用后端合并接口
+  onProgress?.(85, `合并 ${batchCount} 个批次 ZIP...`);
 
-  return {
-    success: true,
-    platform: 'jianying',
-    draft_name: options.draftName,
-    shots_count: totalShots,
-    resolution: options.resolution || '1920x1080',
-    fps: options.fps || 30,
-    message: `分批导出完成：共 ${totalShots} 个镜头，分为 ${batchCount} 批独立 ZIP（已触发下载）`,
-    usedRailway: true,
-    _batched: true,
-    _batchCount: batchCount,
-    _batchZipUrls: batchZipUrls,
-  };
+  try {
+    const mergedFilename = `${options.draftName.replace(/[^a-zA-Z0-9\u4e00-\u9fa5_-]/g, '_')}_merged_${Date.now()}.zip`;
+
+    const mergeRes = await fetch(`${railwayBase}/api/jianying/export/merge-zip`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        zipFiles: batchZipFilenames,
+        mergedFilename,
+      }),
+      signal: AbortSignal.timeout(300000), // 5 分钟合并超时
+    });
+
+    if (!mergeRes.ok) {
+      const errText = await mergeRes.text().catch(() => '');
+      throw new Error(`合并失败 (${mergeRes.status}): ${errText}`);
+    }
+
+    const mergeResult = await mergeRes.json();
+    if (!mergeResult.success) {
+      throw new Error(mergeResult.error || '合并失败');
+    }
+
+    onProgress?.(95, '合并完成，触发下载...');
+
+    // 触发下载合并后的单个 ZIP
+    const mergedUrl = mergeResult.zip_download_url;
+    if (mergedUrl) {
+      triggerDownload(mergedUrl, mergedFilename);
+    }
+
+    onProgress?.(100, '导出完成！已下载合并后的 ZIP');
+
+    return {
+      success: true,
+      platform: 'jianying',
+      draft_name: options.draftName,
+      shots_count: totalShots,
+      resolution: options.resolution || '1920x1080',
+      fps: options.fps || 30,
+      message: `分批导出完成：共 ${totalShots} 个镜头，分为 ${batchCount} 批，已合并为 1 个 ZIP`,
+      usedRailway: true,
+      zip_download_url: mergedUrl,
+      _batched: true,
+      _batchCount: batchCount,
+      _mergedZip: mergedFilename,
+    };
+  } catch (e: any) {
+    console.error('[JianyingExport] 合并失败，降级为分批下载:', e.message);
+    // 降级：分批下载（保留原有行为）
+    onProgress?.(90, '合并失败，改用分批下载...');
+
+    for (let i = 0; i < batchZipFilenames.length; i++) {
+      const filename = batchZipFilenames[i];
+      const zipUrl = `${railwayBase}/api/jianying/download/${encodeURIComponent(filename)}`;
+      triggerDownload(zipUrl, filename);
+    }
+
+    onProgress?.(100, '分批导出完成（降级模式）');
+
+    return {
+      success: true,
+      platform: 'jianying',
+      draft_name: options.draftName,
+      shots_count: totalShots,
+      resolution: options.resolution || '1920x1080',
+      fps: options.fps || 30,
+      message: `分批导出完成：共 ${totalShots} 个镜头，分为 ${batchCount} 批独立 ZIP`,
+      usedRailway: true,
+      _batched: true,
+      _batchCount: batchCount,
+    };
+  }
 }
 
 /**

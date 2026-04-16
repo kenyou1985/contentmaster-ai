@@ -15,6 +15,7 @@ import { spawn } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { join, dirname, basename, resolve } from 'path';
 import { fileURLToPath } from 'url';
+import { promises as fs } from 'fs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -667,6 +668,81 @@ app.get('/api/jianying/download/:filename', (req, res) => {
     res.download(zipPath, filename);
   } catch (e) {
     res.status(500).json({ error: e.message || 'download failed' });
+  }
+});
+
+// ── 合并多个 ZIP 文件（分批导出场景）──────────────────────────────────────
+app.post('/api/jianying/export/merge-zip', async (req, res) => {
+  try {
+    const { zipFiles, mergedFilename } = req.body;
+    if (!Array.isArray(zipFiles) || zipFiles.length < 2) {
+      return res.status(400).json({ error: '至少需要2个ZIP文件才能合并' });
+    }
+    if (!mergedFilename || !mergedFilename.endsWith('.zip')) {
+      return res.status(400).json({ error: '无效的合并文件名' });
+    }
+
+    // 查找所有 ZIP 文件的完整路径
+    const zipPaths = zipFiles.map((filename) => {
+      const candidates = [];
+      const remembered = recentZipPathByName.get(filename);
+      if (remembered) candidates.push(resolve(remembered));
+      candidates.push(resolve('/root/Movies/JianyingPro/User Data/Projects/com.lveditor.draft', filename));
+      candidates.push(resolve(__dirname, 'exports', filename));
+      const found = candidates.find((p) => existsSync(p));
+      if (!found) throw new Error(`ZIP 文件未找到: ${filename}`);
+      return found;
+    });
+
+    // 使用 Python 脚本合并 ZIP（避免 Node 层依赖）
+    const mergeScript = join(__dirname, 'merge_zips.py');
+    if (!existsSync(mergeScript)) {
+      return res.status(500).json({ error: '合并脚本不存在' });
+    }
+
+    const pyCmd = existsSync('/usr/bin/python3') ? '/usr/bin/python3' : 'python3';
+    const args = [mergeScript, '--output', mergedFilename, ...zipPaths];
+
+    const child = spawn(pyCmd, args, {
+      timeout: 300_000, // 5 分钟合并超时
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+
+    await new Promise((resolve, reject) => {
+      child.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`合并失败: ${stderr}`));
+      });
+      child.on('error', reject);
+    });
+
+    // 合并后的 ZIP 路径
+    const mergedPath = resolve(__dirname, 'exports', mergedFilename);
+    if (!existsSync(mergedPath)) {
+      throw new Error('合并后的 ZIP 文件不存在');
+    }
+
+    // 缓存到 recentZipPathByName
+    recentZipPathByName.set(mergedFilename, mergedPath);
+
+    // 返回合并后的下载 URL
+    const downloadUrl = `/api/jianying/download/${encodeURIComponent(mergedFilename)}`;
+    res.json({
+      success: true,
+      mergedFilename,
+      zip_download_url: downloadUrl,
+      zip_size_mb: (await fs.promises.stat(mergedPath)).size / (1024 * 1024),
+      sourceCount: zipFiles.length,
+    });
+  } catch (e) {
+    console.error('[jianying-server] ZIP 合并失败:', e);
+    res.status(500).json({ error: e.message || '合并失败' });
   }
 });
 
