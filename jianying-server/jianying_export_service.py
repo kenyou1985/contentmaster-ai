@@ -1452,12 +1452,22 @@ def create_draft_on_mac(
     else:
         safe_name = "".join(c for c in draft_name if c not in '/\\:*?"<>|').strip() or "未命名"
     draft_folder_name = safe_name
+
+    # 检查是否追加模式（已有草稿目录）
+    append_mode_init = False
+    if batch_id and output_dir:
+        existing_check = os.path.join(output_dir, draft_folder_name, "draft_content.json")
+        if os.path.exists(existing_check):
+            append_mode_init = True
+
     draft_folder = os.path.join(output_dir, draft_folder_name)
-    counter = 1
-    while os.path.exists(draft_folder):
-        draft_folder_name = f"{safe_name}_{counter}"
-        draft_folder = os.path.join(output_dir, draft_folder_name)
-        counter += 1
+    # 非追加模式时，如果目录已存在则添加后缀
+    if not append_mode_init:
+        counter = 1
+        while os.path.exists(draft_folder):
+            draft_folder_name = f"{safe_name}_{counter}"
+            draft_folder = os.path.join(output_dir, draft_folder_name)
+            counter += 1
 
     def _ensure_dirs():
         os.makedirs(draft_folder, exist_ok=True)
@@ -1857,6 +1867,122 @@ def create_draft_on_mac(
             "materials_count": materials_count,
             "platform": "macOS",
             "media_only": True,
+        }
+
+    # ---- 检查是否需要追加到已有草稿（分批合并模式）----
+    append_mode = False
+    existing_draft_info = None
+    existing_draft_folder = None
+
+    if batch_id and output_dir:
+        # 检查持久化目录是否已有草稿
+        existing_draft_path = os.path.join(output_dir, draft_folder_name)
+        existing_info_path = os.path.join(existing_draft_path, "draft_content.json")
+
+        if os.path.exists(existing_info_path):
+            try:
+                with open(existing_info_path, "r", encoding="utf-8") as f:
+                    existing_draft_info = json.load(f)
+                existing_draft_folder = existing_draft_path
+                append_mode = True
+                print(f"[jianying_export] 追加模式：发现已有草稿 {existing_draft_path}，将追加 {len(prepared_shots)} 个镜头", file=sys.stderr, flush=True)
+            except Exception as e:
+                print(f"[jianying_export] 读取已有草稿失败: {e}，将创建新草稿", file=sys.stderr, flush=True)
+
+    # ---- 追加模式：合并到已有草稿 ----
+    if append_mode and existing_draft_info:
+        # 读取已有的 materials 和 tracks
+        existing_materials = existing_draft_info.get("materials", {})
+        existing_tracks = existing_draft_info.get("tracks", [])
+
+        # 追加新的 materials
+        new_materials = lv59_script.get("materials", {})
+        for mat_type in ["videos", "images", "audios"]:
+            if mat_type in new_materials:
+                if mat_type not in existing_materials:
+                    existing_materials[mat_type] = []
+                # 去重后追加（基于 id）
+                existing_ids = {m.get("id") for m in existing_materials.get(mat_type, [])}
+                for mat in new_materials[mat_type]:
+                    if mat.get("id") not in existing_ids:
+                        existing_materials[mat_type].append(mat)
+
+        # 追加新的 tracks（假设都在主轨道）
+        # 找到时间线末尾
+        timeline_end_us = 0
+        for track in existing_tracks:
+            for segment in track.get("segments", []):
+                end_us = segment.get("start_time_us", 0) + segment.get("duration_us", 0)
+                timeline_end_us = max(timeline_end_us, end_us)
+
+        # 更新新片段的 start_us
+        new_tracks = lv59_script.get("tracks", [])
+        for track in new_tracks:
+            for segment in track.get("segments", []):
+                segment["start_time_us"] += timeline_end_us
+
+        # 合并 tracks
+        if new_tracks:
+            existing_tracks.extend(new_tracks)
+
+        # 重新计算总时长
+        new_end_us = 0
+        for track in existing_tracks:
+            for segment in track.get("segments", []):
+                end_us = segment.get("start_time_us", 0) + segment.get("duration_us", 0)
+                new_end_us = max(new_end_us, end_us)
+        total_duration = new_end_us
+
+        # 更新 draft_content.json
+        merged_script = {
+            **existing_draft_info,
+            "materials": existing_materials,
+            "tracks": existing_tracks,
+            "duration": total_duration,
+        }
+
+        content_path = existing_info_path
+        root_info_path = os.path.join(existing_draft_folder, "draft_info.json")
+
+        with open(root_info_path, "w", encoding="utf-8") as f:
+            json.dump(merged_script, f, ensure_ascii=False, indent=2)
+        with open(content_path, "w", encoding="utf-8") as f:
+            json.dump(merged_script, f, ensure_ascii=False, indent=2)
+
+        # 更新 Timelines 目录
+        if os.path.exists(os.path.join(existing_draft_folder, "Timelines")):
+            for timeline_file in os.listdir(os.path.join(existing_draft_folder, "Timelines")):
+                if timeline_file.endswith(".json") and timeline_file.startswith("draft_"):
+                    timeline_path = os.path.join(existing_draft_folder, "Timelines", timeline_file)
+                    with open(timeline_path, "w", encoding="utf-8") as f:
+                        json.dump(merged_script, f, ensure_ascii=False, indent=2)
+
+        # 更新 meta info
+        meta_path = os.path.join(existing_draft_folder, "draft_meta_info.json")
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta_info = json.load(f)
+                meta_info["update_time"] = _timestamp_us()
+                meta_info["duration"] = total_duration
+                meta_info["tm_duration"] = total_duration
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump(meta_info, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                print(f"[jianying_export] 更新 meta info 失败: {e}", file=sys.stderr, flush=True)
+
+        print(f"[jianying_export] 追加完成：共 {total_duration / 1_000_000:.1f}s，{len(existing_tracks)} 条轨道", file=sys.stderr, flush=True)
+
+        return {
+            "draft_id": existing_draft_info.get("id") or draft_id,
+            "draft_name": draft_folder_name,
+            "draft_folder": existing_draft_folder,
+            "content_path": content_path,
+            "total_duration": total_duration,
+            "shots_count": len(prepared_shots),
+            "materials_count": len(existing_materials.get("videos", [])) + len(existing_materials.get("audios", [])),
+            "platform": "macOS",
+            "merged": True,
         }
 
     # ---- 草稿封面（生成纯色占位图）----
