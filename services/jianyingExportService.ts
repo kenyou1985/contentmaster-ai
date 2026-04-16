@@ -711,7 +711,34 @@ async function exportJianyingDraftInMultipleBatches(
     // 保存批次结果
     batchResults.push(batchResult);
 
+    // 如果当前批次失败，检查是否有已成功的批次
     if (!batchResult.success) {
+      console.warn(`[JianyingExport] 第 ${i + 1} 批导出失败，尝试返回已成功的批次结果`);
+      
+      // 如果不是第一批次失败，尝试返回已成功的批次
+      if (batchResults.length > 1) {
+        const successfulResults = batchResults.filter(r => r.success);
+        if (successfulResults.length > 0) {
+          // 返回第一个成功批次的结果作为降级
+          const fallbackResult = successfulResults[0];
+          return {
+            success: true,
+            platform: 'jianying',
+            draft_name: options.draftName,
+            shots_count: successfulResults.reduce((sum, r) => sum + (r.shots_count || 0), 0),
+            resolution: options.resolution || '1920x1080',
+            fps: options.fps || 30,
+            message: `部分导出成功（${successfulResults.length}/${batchCount} 批），建议重新尝试完整导出`,
+            usedRailway: true,
+            zip_download_url: fallbackResult?.zip_download_url || '',
+            draft_folder: fallbackResult?.draft_folder || '',
+            _batched: true,
+            _batchCount: batchCount,
+            _batchZipUrls: fallbackResult?.zip_download_url ? [fallbackResult.zip_download_url] : [],
+            _batchPartLabels: [`Part ${batchResults.indexOf(fallbackResult) + 1}`],
+          };
+        }
+      }
       throw new Error(`第 ${i + 1} 批导出失败: ${batchResult.error || batchResult.message}`);
     }
   }
@@ -761,59 +788,74 @@ async function submitAndWait(
   batchId?: string,
   isFinalBatch: boolean = true
 ): Promise<JianyingExportResult> {
-  const shotsProcessed = await embedAudioDataUrlsForJianyingExport(shots, true);
+  try {
+    const shotsProcessed = await embedAudioDataUrlsForJianyingExport(shots, true);
 
-  // 构建 ZIP 后缀（如 "_part1"、"_part2"）
-  const zipPartSuffix = partIndex !== undefined ? `_part${partIndex}` : (options.zipPartSuffix || null);
+    // 构建 ZIP 后缀（如 "_part1"、"_part2"）
+    const zipPartSuffix = partIndex !== undefined ? `_part${partIndex}` : (options.zipPartSuffix || null);
 
-  const payload = {
-    draftName,
-    shots: shotsProcessed,
-    resolution: options.resolution || '1920x1080',
-    fps: options.fps || 30,
-    outputPath: options.outputPath || null,
-    pathMapRoot: options.pathMapRoot || null,
-    // 分批导出时强制使用统一的目录名，避免 ZIP 内目录结构不一致
-    forceDraftFolderName: options.forceDraftFolderName || null,
-    // 分批导出时添加到 ZIP 文件名的后缀
-    zipPartSuffix,
-    // 持久化支持
-    batchId: batchId || options.batchId || null,
-    isFinalBatch,
-    mediaOnly: !isFinalBatch,
-    returnZip: true,
-  };
+    const payload = {
+      draftName,
+      shots: shotsProcessed,
+      resolution: options.resolution || '1920x1080',
+      fps: options.fps || 30,
+      outputPath: options.outputPath || null,
+      pathMapRoot: options.pathMapRoot || null,
+      // 分批导出时强制使用统一的目录名，避免 ZIP 内目录结构不一致
+      forceDraftFolderName: options.forceDraftFolderName || null,
+      // 分批导出时添加到 ZIP 文件名的后缀
+      zipPartSuffix,
+      // 持久化支持
+      batchId: batchId || options.batchId || null,
+      isFinalBatch,
+      mediaOnly: !isFinalBatch,
+      returnZip: true,
+    };
 
-  // 提交任务（12 个镜头 base64 数据较大，需要更长上传+处理时间）
-  const startRes = await fetch(`${railwayBase}/export/start`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(600000), // 10 分钟超时，足够上传 + 处理
-  });
+    onProgress?.(Math.round(progressStart), `提交第 ${partIndex || 1} 批任务到 Railway...`);
 
-  const startText = await startRes.text().catch(() => '');
-  const startObj = tryParseJsonObject(startText) as any;
+    // 提交任务（12 个镜头 base64 数据较大，需要更长上传+处理时间）
+    const startRes = await fetch(`${railwayBase}/export/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(600000), // 10 分钟超时，足够上传 + 处理
+    });
 
-  if (!startRes.ok || !startObj?.taskId) {
-    const errDetail = startObj?.error || startObj?.message || startText.slice(0, 300);
-    throw new Error(`任务提交失败: ${errDetail}`);
+    const startText = await startRes.text().catch(() => '');
+    const startObj = tryParseJsonObject(startText) as any;
+
+    if (!startRes.ok || !startObj?.taskId) {
+      const errDetail = startObj?.error || startObj?.message || startText.slice(0, 300);
+      throw new Error(`任务提交失败: ${errDetail}`);
+    }
+
+    const taskId = startObj.taskId;
+    console.log(`[JianyingExport] 批次任务已提交，taskId: ${taskId}`);
+
+    // 轮询结果（映射进度区间）
+    const result = await pollForResult(taskId, railwayBase, true, options, (p, m) => {
+      const scaled = Math.round(progressStart + (p / 100) * (progressEnd - progressStart));
+      onProgress?.(scaled, m);
+    });
+
+    if (!result.success) {
+      throw new Error(result.error || result.message);
+    }
+
+    return result;
+  } catch (e: any) {
+    console.error(`[JianyingExport] 批次 ${partIndex || 1} 执行失败:`, e.message);
+    // 返回失败结果而不是抛出异常，让调用方可以处理
+    return {
+      success: false,
+      error: e.message || '批次执行失败',
+      message: `第 ${partIndex || 1} 批导出失败: ${e.message}`,
+      platform: 'jianying',
+      draft_name: draftName,
+      shots_count: shots.length,
+    };
   }
-
-  const taskId = startObj.taskId;
-  console.log(`[JianyingExport] 批次任务已提交，taskId: ${taskId}`);
-
-  // 轮询结果（映射进度区间）
-  const result = await pollForResult(taskId, railwayBase, true, options, (p, m) => {
-    const scaled = Math.round(progressStart + (p / 100) * (progressEnd - progressStart));
-    onProgress?.(scaled, m);
-  });
-
-  if (!result.success) {
-    throw new Error(result.error || result.message);
-  }
-
-  return result;
 }
 
 /**
