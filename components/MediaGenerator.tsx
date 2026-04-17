@@ -1622,125 +1622,131 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       // 检测镜头开始（兼容：镜头1 / 镜头 1 / Shot 1 / shot-1）
       const shotMatch = trimmedLine.match(/^(?:[#>*\-\s]*)?(?:镜头|shot)\s*[-#:]?\s*(\d+)\b/i);
       if (shotMatch) {
-        // 保存上一个镜头的当前字段
-        if (currentShot && currentField && fieldContent.length > 0) {
-          const content = fieldContent.join('\n').trim();
-          if (currentField === 'imagePrompt') currentShot.imagePrompt = content;
-          else if (currentField === 'videoPrompt') currentShot.videoPrompt = content;
-          else if (currentField === 'caption') currentShot.caption = content;
-        }
-        fieldContent = [];
-        currentField = null;
-        
-        // 保存上一个镜头
-        if (currentShot && currentShot.number) {
-          parsedShots.push(currentShot as Shot);
-        }
-        
-        // 创建新镜头
-        currentShot = {
-          id: `shot-${shotMatch[1]}`,
-          number: parseInt(shotMatch[1]),
-          caption: '',
-          imagePrompt: '',
-          videoPrompt: '',
-          shotType: '',
-          voiceOver: '',
-          soundEffect: '',
-          selected: false,
-        };
-        continue;
-      }
-      
-      // 如果当前有镜头，解析字段
-      if (currentShot) {
-        if (/^镜头文案[：:]/.test(trimmedLine)) {
-          if (currentField && fieldContent.length > 0) {
+          // 保存上一个镜头的当前字段
+          if (currentShot && currentField && fieldContent.length > 0) {
             const content = fieldContent.join('\n').trim();
             if (currentField === 'imagePrompt') currentShot.imagePrompt = content;
             else if (currentField === 'videoPrompt') currentShot.videoPrompt = content;
             else if (currentField === 'caption') currentShot.caption = content;
           }
           fieldContent = [];
-          currentField = 'caption';
-          const match = trimmedLine.match(/^镜头文案[：:]\s*(.+)/);
-          if (match && match[1]) {
-            // 提取引号内的内容
-            const captionMatch = match[1].match(/[""「"]([\s\S]*?)[""」"]/);
-            if (captionMatch) {
-              fieldContent.push(captionMatch[1]);
-            } else {
-              fieldContent.push(match[1]);
+          currentField = null;
+
+          // 保存上一个镜头
+          if (currentShot && currentShot.number) {
+            parsedShots.push(currentShot as Shot);
+          }
+
+          // 创建新镜头
+          currentShot = {
+            id: `shot-${shotMatch[1]}`,
+            number: parseInt(shotMatch[1]),
+            caption: '',
+            imagePrompt: '',
+            videoPrompt: '',
+            shotType: '',
+            voiceOver: '',
+            soundEffect: '',
+            selected: false,
+          };
+          continue;
+        }
+
+        // 如果当前有镜头，解析字段
+        if (currentShot) {
+          // 统一视频提示词标签检测（支持所有特殊语言变体）
+          // 模式1：标准中文及 Generator.tsx 中已有的变体
+          if (/^(?:视频提示词|视频提示詞|ვიდიო|ვიდეო|ভিডিও|ವೀಡಿಯೊ|वीडियो)[^\u4e00-\u9fff]*(?:提示词|prompt)?[：:]/i.test(trimmedLine) ||
+              /^(?:ვიდიო提示词|ვიდეო提示词|ভিডিও提示词|ವೀಡಿಯೊ提示词|वीडियो提示词)[：:]/i.test(trimmedLine) ||
+              // 模式2：视频提示词前缀+任意混合字符后缀+冒号（兜底所有混合语言变体）
+              /^(?:视频|ვიდიო|ვიდეო|ভিডিও|ವೀಡಿಯೊ|वीडियो|วิดีโอ|וידאו)[^\n:]*提示[^\n:]*[：:]/i.test(trimmedLine)) {
+            if (currentField && fieldContent.length > 0) {
+              const content = fieldContent.join('\n').trim();
+              if (currentField === 'imagePrompt') currentShot.imagePrompt = content;
+              else if (currentField === 'videoPrompt') currentShot.videoPrompt = content;
+              else if (currentField === 'caption') currentShot.caption = content;
             }
+            fieldContent = [];
+            currentField = 'videoPrompt';
+            // 提取标签后的内容（通用模式）
+            const match = trimmedLine.match(/^(?:视频提示词|视频提示詞|ვიდიო|ვიდეო|ভিডিও|ವೀಡಿಯೊ|वीडियो|ვიდიო提示词|ვიდეო提示词|ভিডিও提示词|ವೀಡಿಯೊ提示词|वीडियो提示词)[^\n:]*[：:]\s*(.+)/i) ||
+                          trimmedLine.match(/^(?:视频|ვიდიო|ვიდეო|ভিডিও|ವೀಡಿಯೊ|वीडियो|วิดีโอ|וידאו)[^\n:]*提示[^\n:]*[：:]\s*(.+)/i);
+            if (match && match[1]) fieldContent.push(match[1]);
+          } else if (/^镜头文案[：:]/.test(trimmedLine)) {
+            if (currentField && fieldContent.length > 0) {
+              const content = fieldContent.join('\n').trim();
+              if (currentField === 'imagePrompt') currentShot.imagePrompt = content;
+              else if (currentField === 'videoPrompt') currentShot.videoPrompt = content;
+              else if (currentField === 'caption') currentShot.caption = content;
+            }
+            fieldContent = [];
+            currentField = 'caption';
+            const match = trimmedLine.match(/^镜头文案[：:]\s*(.+)/);
+            if (match && match[1]) {
+              const captionMatch = match[1].match(/[""「"]([\s\S]*?)[""」"]/);
+              if (captionMatch) {
+                fieldContent.push(captionMatch[1]);
+              } else {
+                fieldContent.push(match[1]);
+              }
+            }
+          } else if (/^(?:图片提示词|圖片提示詞)[：:]/.test(trimmedLine)) {
+            if (currentField && fieldContent.length > 0) {
+              const content = fieldContent.join('\n').trim();
+              if (currentField === 'imagePrompt') currentShot.imagePrompt = content;
+              else if (currentField === 'videoPrompt') currentShot.videoPrompt = content;
+              else if (currentField === 'caption') currentShot.caption = content;
+            }
+            fieldContent = [];
+            currentField = 'imagePrompt';
+            const match = trimmedLine.match(/^(?:图片提示词|圖片提示詞)[：:]\s*(.+)/);
+            if (match && match[1]) fieldContent.push(match[1]);
+          } else if (/^景别[：:]/.test(trimmedLine) || /^景別[：:]/.test(trimmedLine)) {
+            if (currentField && fieldContent.length > 0) {
+              const content = fieldContent.join('\n').trim();
+              if (currentField === 'imagePrompt') currentShot.imagePrompt = content;
+              else if (currentField === 'videoPrompt') currentShot.videoPrompt = content;
+              else if (currentField === 'caption') currentShot.caption = content;
+            }
+            fieldContent = [];
+            currentField = null;
+            const match = trimmedLine.match(/^景别[：:]\s*(.+)/) || trimmedLine.match(/^景別[：:]\s*(.+)/);
+            if (match) currentShot.shotType = match[1];
+          } else if (/^(?:语音分镜|語音分鏡)[：:]/.test(trimmedLine)) {
+            if (currentField && fieldContent.length > 0) {
+              const content = fieldContent.join('\n').trim();
+              if (currentField === 'imagePrompt') currentShot.imagePrompt = content;
+              else if (currentField === 'videoPrompt') currentShot.videoPrompt = content;
+              else if (currentField === 'caption') currentShot.caption = content;
+            }
+            fieldContent = [];
+            currentField = null;
+            const match = trimmedLine.match(/^(?:语音分镜|語音分鏡)[：:]\s*(.+)/);
+            if (match) currentShot.voiceOver = match[1];
+          } else if (/^音效[：:]/.test(trimmedLine)) {
+            if (currentField && fieldContent.length > 0) {
+              const content = fieldContent.join('\n').trim();
+              if (currentField === 'imagePrompt') currentShot.imagePrompt = content;
+              else if (currentField === 'videoPrompt') currentShot.videoPrompt = content;
+              else if (currentField === 'caption') currentShot.caption = content;
+            }
+            fieldContent = [];
+            currentField = null;
+            const match = trimmedLine.match(/^音效[：:]\s*(.+)/);
+            if (match) currentShot.soundEffect = match[1];
+          } else if (currentField && trimmedLine) {
+            fieldContent.push(trimmedLine);
+          } else if (!trimmedLine) {
+            if (currentField && fieldContent.length > 0) {
+              const content = fieldContent.join('\n').trim();
+              if (currentField === 'imagePrompt') currentShot.imagePrompt = content;
+              else if (currentField === 'videoPrompt') currentShot.videoPrompt = content;
+              else if (currentField === 'caption') currentShot.caption = content;
+            }
+            currentField = null;
+            fieldContent = [];
           }
-        } else if (/^(?:图片提示词|圖片提示詞)[：:]/.test(trimmedLine)) {
-          if (currentField && fieldContent.length > 0) {
-            const content = fieldContent.join('\n').trim();
-            if (currentField === 'imagePrompt') currentShot.imagePrompt = content;
-            else if (currentField === 'videoPrompt') currentShot.videoPrompt = content;
-            else if (currentField === 'caption') currentShot.caption = content;
-          }
-          fieldContent = [];
-          currentField = 'imagePrompt';
-          const match = trimmedLine.match(/^(?:图片提示词|圖片提示詞)[：:]\s*(.+)/);
-          if (match && match[1]) fieldContent.push(match[1]);
-        } else if (/^(?:视频提示词|视频提示詞)[：:]/.test(trimmedLine)) {
-          if (currentField && fieldContent.length > 0) {
-            const content = fieldContent.join('\n').trim();
-            if (currentField === 'imagePrompt') currentShot.imagePrompt = content;
-            else if (currentField === 'videoPrompt') currentShot.videoPrompt = content;
-            else if (currentField === 'caption') currentShot.caption = content;
-          }
-          fieldContent = [];
-          currentField = 'videoPrompt';
-          const match = trimmedLine.match(/^(?:视频提示词|视频提示詞)[：:]\s*(.+)/);
-          if (match && match[1]) fieldContent.push(match[1]);
-        } else if (/^景别[：:]/.test(trimmedLine) || /^景別[：:]/.test(trimmedLine)) {
-          if (currentField && fieldContent.length > 0) {
-            const content = fieldContent.join('\n').trim();
-            if (currentField === 'imagePrompt') currentShot.imagePrompt = content;
-            else if (currentField === 'videoPrompt') currentShot.videoPrompt = content;
-            else if (currentField === 'caption') currentShot.caption = content;
-          }
-          fieldContent = [];
-          currentField = null;
-          const match = trimmedLine.match(/^景别[：:]\s*(.+)/) || trimmedLine.match(/^景別[：:]\s*(.+)/);
-          if (match) currentShot.shotType = match[1];
-        } else if (/^(?:语音分镜|語音分鏡)[：:]/.test(trimmedLine)) {
-          if (currentField && fieldContent.length > 0) {
-            const content = fieldContent.join('\n').trim();
-            if (currentField === 'imagePrompt') currentShot.imagePrompt = content;
-            else if (currentField === 'videoPrompt') currentShot.videoPrompt = content;
-            else if (currentField === 'caption') currentShot.caption = content;
-          }
-          fieldContent = [];
-          currentField = null;
-          const match = trimmedLine.match(/^(?:语音分镜|語音分鏡)[：:]\s*(.+)/);
-          if (match) currentShot.voiceOver = match[1];
-        } else if (/^音效[：:]/.test(trimmedLine)) {
-          if (currentField && fieldContent.length > 0) {
-            const content = fieldContent.join('\n').trim();
-            if (currentField === 'imagePrompt') currentShot.imagePrompt = content;
-            else if (currentField === 'videoPrompt') currentShot.videoPrompt = content;
-            else if (currentField === 'caption') currentShot.caption = content;
-          }
-          fieldContent = [];
-          currentField = null;
-          const match = trimmedLine.match(/^音效[：:]\s*(.+)/);
-          if (match) currentShot.soundEffect = match[1];
-        } else if (currentField && trimmedLine) {
-          fieldContent.push(trimmedLine);
-        } else if (!trimmedLine) {
-          if (currentField && fieldContent.length > 0) {
-            const content = fieldContent.join('\n').trim();
-            if (currentField === 'imagePrompt') currentShot.imagePrompt = content;
-            else if (currentField === 'videoPrompt') currentShot.videoPrompt = content;
-            else if (currentField === 'caption') currentShot.caption = content;
-          }
-          currentField = null;
-          fieldContent = [];
         }
-      }
     }
     
     // 保存最后一个字段
