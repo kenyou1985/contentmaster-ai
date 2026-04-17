@@ -1659,7 +1659,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           if (/^(?:视频提示词|视频提示詞|ვიდიო|ვიდეო|ভিডিও|ವೀಡಿಯೊ|वीडियो)[^\u4e00-\u9fff]*(?:提示词|prompt)?[：:]/i.test(trimmedLine) ||
               /^(?:ვიდიო提示词|ვიდეო提示词|ভিডিও提示词|ವೀಡಿಯೊ提示词|वीडियो提示词)[：:]/i.test(trimmedLine) ||
               // 模式2：视频提示词前缀+任意混合字符后缀+冒号（兜底所有混合语言变体）
-              /^(?:视频|ვიდიო|ვიდეო|ভিডিও|ವೀಡಿಯೊ|वीडियो|วิดีโอ|וידאו)[^\n:]*提示[^\n:]*[：:]/i.test(trimmedLine)) {
+              /^(?:视频|ვიდიო|ვიდეო|ভিডিও|ವೀಡಿಯೊ|वीडियो|วิดีโอ|וידאו)[^\n:]*提示[^\n:]*[：:]/i.test(trimmedLine) ||
+              // 模式3：英文 Video prompts 标签
+              /^Video prompts[：:]/i.test(trimmedLine)) {
             if (currentField && fieldContent.length > 0) {
               const content = fieldContent.join('\n').trim();
               if (currentField === 'imagePrompt') currentShot.imagePrompt = content;
@@ -1670,7 +1672,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             currentField = 'videoPrompt';
             // 提取标签后的内容（通用模式）
             const match = trimmedLine.match(/^(?:视频提示词|视频提示詞|ვიდიო|ვიდეო|ভিডিও|ವೀಡಿಯೊ|वीडियो|ვიდიო提示词|ვიდეო提示词|ভিডিও提示词|ವೀಡಿಯೊ提示词|वीडियो提示词)[^\n:]*[：:]\s*(.+)/i) ||
-                          trimmedLine.match(/^(?:视频|ვიდიო|ვიდეო|ভিডিও|ವೀಡಿಯೊ|वीडियो|วิดีโอ|וידאו)[^\n:]*提示[^\n:]*[：:]\s*(.+)/i);
+                          trimmedLine.match(/^(?:视频|ვიდიო|ვიდეო|ভিডিও|ವೀಡಿಯೊ|वीडियो|วิดีโอ|וידאו)[^\n:]*提示[^\n:]*[：:]\s*(.+)/i) ||
+                          trimmedLine.match(/^Video prompts[：:]\s*(.+)/i);
             if (match && match[1]) fieldContent.push(match[1]);
           } else if (/^镜头文案[：:]/.test(trimmedLine)) {
             if (currentField && fieldContent.length > 0) {
@@ -1690,7 +1693,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                 fieldContent.push(match[1]);
               }
             }
-          } else if (/^(?:图片提示词|圖片提示詞)[：:]/.test(trimmedLine)) {
+          } else if (/^(?:图片提示词|圖片提示詞|Image prompts)[：:]/.test(trimmedLine)) {
             if (currentField && fieldContent.length > 0) {
               const content = fieldContent.join('\n').trim();
               if (currentField === 'imagePrompt') currentShot.imagePrompt = content;
@@ -1699,7 +1702,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             }
             fieldContent = [];
             currentField = 'imagePrompt';
-            const match = trimmedLine.match(/^(?:图片提示词|圖片提示詞)[：:]\s*(.+)/);
+            const match = trimmedLine.match(/^(?:图片提示词|圖片提示詞|Image prompts)[：:]\s*(.+)/);
             if (match && match[1]) fieldContent.push(match[1]);
           } else if (/^景别[：:]/.test(trimmedLine) || /^景別[：:]/.test(trimmedLine)) {
             if (currentField && fieldContent.length > 0) {

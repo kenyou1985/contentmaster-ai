@@ -1150,6 +1150,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
         .replace(/(?:^|\n)\s*चित्र提示词\s*[:：]\s*/gim, '图片提示词:')
         .replace(/(?:^|\n)\s*चित्र提示词\b/gim, '图片提示词:')
         .replace(/(?:^|\n)\s*चित्र\b/gim, '')
+        // 统一英文 Image prompts 标签
+        .replace(/(?:^|\n)\s*Image prompts\s*[:：]\s*/gim, '图片提示词:')
         // 统一视频标签：清除所有乱码变体（含格鲁吉亚语 ვიდიო、孟加拉语 ভিডিও、卡纳达语 ವೀಡಿಯೊ、印地语 वीडियो）
         .replace(/(?:^|\n)\s*ვიდიო\s*prompt\s*[:：]\s*/gim, '视频提示词:')
         .replace(/(?:^|\n)\s*ვიდიო\s*[:：]\s*/gim, '视频提示词:')
@@ -1177,6 +1179,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
         .replace(/(?:^|\n)\s*वीडियो\b/gim, '')
         // 通用兜底：所有语言前缀的视频提示词（允许中间有任意混合字符）
         .replace(/(?:^|\n)\s*(?:视频|ვიდიო|ვიდეო|ভিডিও|ವೀಡಿಯೊ|वीडियो|ვიდიო|ვიდეო)[^\n:]*提示[^\n:]*\s*[:：]\s*/gim, '视频提示词:')
+        // 统一英文 Video prompts 标签
+        .replace(/(?:^|\n)\s*Video prompts\s*[:：]\s*/gim, '视频提示词:')
         // 修复换行问题：确保标签之间有换行（支持无空格或有多空格的情况）
         // 图片提示词 和 视频提示词 之间
         .replace(/(图片提示词[：:]\s*)([^\n视频提示词景别语音分镜音效]*)(\s*)(视频提示词[：:])/g, '$1$2\n$4')
@@ -1259,7 +1263,7 @@ ${segmentsPrompt}
 镜头 1
 镜头文案:（直接使用上面的【镜头 1 原文段落】原文，一字不差）
 图片提示词:（根据镜头1原文推理画面描述，语言与原文一致）
-视频提示词:（运镜描述，语言与原文一致）
+Video prompts:（运镜描述，语言与原文一致）
 景别:全景/中景/特写
 语音分镜:${isEnglishScript ? 'Narrator' : '旁白'}
 音效:环境音或无
