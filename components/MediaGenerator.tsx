@@ -3808,7 +3808,10 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
   const isMainWorkspace = activeWorkspaceTabId === 'main';
   const selectedCount = tableShots.filter((s) => s.selected).length;
-  const generatingCount = tableShots.filter((s) => s.imageGenerating || s.videoGenerating || s.voiceGenerating).length;
+  // 分别计算各类型正在生成的数量，支持并行操作
+  const imageGeneratingCount = tableShots.filter((s) => s.imageGenerating).length;
+  const videoGeneratingCount = tableShots.filter((s) => s.videoGenerating).length;
+  const voiceGeneratingCount = tableShots.filter((s) => s.voiceGenerating).length;
   const selectedVideoModelConfig = VIDEO_MODELS.find((m) => m.id === selectedVideoModel);
   const isSelectedJimengVideoModel = !!selectedVideoModelConfig?.isJimengVideo;
   const videoModelDurationHint = (selectedVideoModelConfig?.supportedDurations || [])
@@ -4252,7 +4255,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             <div className="flex items-center gap-1 border-r border-slate-700 pr-2 mr-1">
               <button
                 onClick={handleBatchGenerateImages}
-                disabled={generatingCount > 0}
+                disabled={imageGeneratingCount > 0}
                 className="flex items-center gap-1 px-2 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
                 title="批量生成图片"
               >
@@ -4261,7 +4264,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               </button>
               <button
                 onClick={handleBatchGenerateVideos}
-                disabled={generatingCount > 0}
+                disabled={videoGeneratingCount > 0}
                 className="flex items-center gap-1 px-2 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
                 title="批量生成视频"
               >
@@ -4270,7 +4273,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               </button>
               <button
                 onClick={handleBatchGenerateVoice}
-                disabled={generatingCount > 0}
+                disabled={voiceGeneratingCount > 0}
                 className="flex items-center gap-1 px-2 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
                 title="批量生成语音"
               >
@@ -4377,7 +4380,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             />
             <button
               onClick={() => handleOneClickPipeline()}
-              disabled={oneClickRunning || generatingCount > 0}
+              disabled={oneClickRunning || imageGeneratingCount + videoGeneratingCount + voiceGeneratingCount > 0}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs font-semibold rounded-lg shadow-lg transition-all disabled:opacity-50"
             >
               {oneClickRunning ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />}
