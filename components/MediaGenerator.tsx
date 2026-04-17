@@ -2857,11 +2857,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   };
 
   // RunningHub 任务状态轮询（返回 Promise，await 可等待视频真正生成完毕）
-  // 轮询间隔 30 秒，最大次数 600（约 3 小时），支持长时间生成的视频任务
+  // 轮询间隔 3 秒，最大次数 200（约 10 分钟），任务进行中会持续等待
   const pollRunningHubTaskStatus = async (
     taskId: string,
     shotId: string,
-    maxAttempts: number = 600,  // 600 * 30s = 3 小时
+    maxAttempts: number = 50,  // 50 * 30s = 25 分钟
     onHubProgress?: (percent: number) => void
   ): Promise<void> => {
     let attempts = 0;
@@ -2974,6 +2974,23 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             }
             onHubProgress?.(100);
             return;
+          } else if (result.status === 'RUNNING' || result.status === 'running' ||
+                     result.status === 'PENDING' || result.status === 'pending' ||
+                     result.status === 'PROCESSING' || result.status === 'processing') {
+            // 任务进行中，等待后继续轮询（每次查询间隔 30 秒）
+            const progress = result.progress || 0;
+            if (progress !== lastProgress) {
+              lastProgress = progress;
+              lastProgressChangeTime = Date.now();
+            }
+            // 进度冻结超时保护
+            if (progress > 0 && Date.now() - lastProgressChangeTime > FROZEN_TIMEOUT_MS) {
+              appendTerminalLog('VideoGen', `${shotLabel()}: 任务进度 ${progress}% 超过 30 分钟无变化，强制结束`);
+              toast.error(`视频生成任务卡死（进度 ${progress}% 超过 30 分钟无变化），请重新生成`, 8000);
+              updateShot(shotId, { videoGenerating: false });
+              return;
+            }
+            await new Promise(r => setTimeout(r, 30000));
           } else if (result.status === 'SUCCESS' || result.status === 'completed' || result.status === 'success') {
             // 状态完成但无URL，尝试从data中提取
             if (result.data) {
@@ -3029,33 +3046,6 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               videoFailedReason: result.error || '视频生成失败'
             });
             return;
-          } else if (result.status === 'SUCCESS' || result.status === 'completed' || result.status === 'success') {
-            const progress = result.progress || 0;
-            // 基础轮询间隔 30 秒
-            let pollInterval = 30000;
-
-            // 进度接近完成时缩短间隔
-            if (progress >= 90) {
-              pollInterval = 10000;  // 90%+ 时 10 秒
-            } else if (progress >= 50) {
-              pollInterval = 20000;  // 50%+ 时 20 秒
-            }
-
-            // 先更新进度记录（防止首次变化 0→55 时错误触发冻结检测）
-            if (progress !== lastProgress) {
-              lastProgress = progress;
-              lastProgressChangeTime = Date.now();
-            }
-
-            // 进度冻结超时保护：进度不变超过 30 分钟且无 URL，视为任务卡死
-            if (progress > 0 && Date.now() - lastProgressChangeTime > FROZEN_TIMEOUT_MS) {
-              appendTerminalLog('VideoGen', `${shotLabel()}: 任务进度 ${progress}% 超过 30 分钟无变化，强制结束`);
-              toast.error(`视频生成任务卡死（进度 ${progress}% 超过 30 分钟无变化），请重新生成`, 8000);
-              updateShot(shotId, { videoGenerating: false });
-              return;
-            }
-
-            await new Promise(r => setTimeout(r, pollInterval));
           }
         } else {
           consecutiveErrors++;
@@ -3085,7 +3075,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   };
 
   /** 轮询 RunningHub 任务直至拿到产出 URL（视频/音频），间隔 30 秒 */
-  const pollRunningHubForMediaUrl = async (taskId: string, maxAttempts = 600): Promise<string> => {
+  const pollRunningHubForMediaUrl = async (taskId: string, maxAttempts = 50): Promise<string> => {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (attempt > 0) await new Promise(r => setTimeout(r, 30000));
       const result = await checkRunningHubTaskStatus(runningHubApiKey, taskId);
@@ -3603,7 +3593,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             8000
           );
           
-          await pollRunningHubTaskStatus(result.taskId, shot.id, 180, opts?.onVideoHubProgress);
+          await pollRunningHubTaskStatus(result.taskId, shot.id, 50, opts?.onVideoHubProgress);  // 50 * 30s ≈ 25 分钟
         } else {
           // 成功但没有taskId和videoUrl，可能是响应格式问题
           appendTerminalLog('VideoGen', `镜头${shot.number}: 响应异常 — 无 taskId 与 videoUrl`);
