@@ -1575,6 +1575,9 @@ def create_draft_on_mac(
 
     # ---- 第一阶段：收集所有媒体 URL（支持 data:URL 和远程 URL）----
     # data:URL 在前端已转为 base64，可直接写入本地文件，无需网络下载
+    total_shots = len(shots)
+    report_progress(5, f"开始处理 {total_shots} 个镜头...")
+    print(f"[jianying_export] 开始处理 {total_shots} 个镜头...", file=sys.stderr, flush=True)
     media_urls: list[dict] = []
     for i, shot in enumerate(shots):
         base_dur = int(float(shot.get("duration", 5)) * 1_000_000)
@@ -1611,7 +1614,7 @@ def create_draft_on_mac(
     data_url_map: dict[int, dict[str, str]] = {}  # {shot_index: {"image": dest, "audio": dest}}
 
     report_progress(5, f"收集媒体文件 URL...")
-    print(f"[jianying_export] 开始处理 {total_shots} 个镜头...", file=sys.stderr, flush=True)
+    print(f"[jianying_export] 第一阶段：收集 {total_shots} 个镜头的媒体 URL...", file=sys.stderr, flush=True)
 
     for entry in media_urls:
         i = entry["index"]
