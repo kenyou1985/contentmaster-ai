@@ -286,14 +286,16 @@ export const fetchOpenApiV2Query = async (
   return data && typeof data === 'object' ? data : null;
 };
 
-/** 轮询 OpenAPI v2 任务直到拿到媒体 URL 或失败/超时 */
+/** 轮询 OpenAPI v2 任务直到拿到媒体 URL 或失败/超时
+ * 视频生成较慢，默认间隔 30 秒，最大 3 小时
+ */
 const pollOpenApiV2ForOutputUrls = async (
   apiKey: string,
   taskId: string,
   opts?: { maxMs?: number; intervalMs?: number }
 ): Promise<string[]> => {
-  const maxMs = opts?.maxMs ?? 600_000;
-  const intervalMs = opts?.intervalMs ?? 3000;
+  const maxMs = opts?.maxMs ?? 3 * 60 * 60 * 1000;  // 默认 3 小时
+  const intervalMs = opts?.intervalMs ?? 30000;  // 默认 30 秒
   const t0 = Date.now();
 
   // 辅助函数：尝试 get-outputs 获取 URL
@@ -1093,12 +1095,13 @@ export const createIndexTts2VoiceoverTask = async (
 
 /**
  * 轮询直至任务产出媒体 URL（配音常为 wav/flac/mp3，视频为 mp4）
+ * 配音一般较快，间隔 10 秒，最大 30 分钟
  */
 const pollRunningHubUntilMediaUrl = async (
   apiKey: string,
   taskId: string,
-  maxAttempts = 120,
-  intervalMs = 2500
+  maxAttempts = 180,  // 180 * 10s = 30 分钟
+  intervalMs = 10000  // 10 秒
 ): Promise<string> => {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (attempt > 0) await new Promise((r) => setTimeout(r, intervalMs));

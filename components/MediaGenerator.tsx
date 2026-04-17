@@ -2857,10 +2857,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   };
 
   // RunningHub 任务状态轮询（返回 Promise，await 可等待视频真正生成完毕）
+  // 轮询间隔 30 秒，最大次数 600（约 3 小时），支持长时间生成的视频任务
   const pollRunningHubTaskStatus = async (
     taskId: string,
     shotId: string,
-    maxAttempts: number = 180,
+    maxAttempts: number = 600,  // 600 * 30s = 3 小时
     onHubProgress?: (percent: number) => void
   ): Promise<void> => {
     let attempts = 0;
@@ -2876,7 +2877,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       return n != null ? `镜头${n}` : `shotId=${shotId.slice(0, 8)}…`;
     };
 
-    appendTerminalLog('VideoGen', `${shotLabel()}: 轮询任务 ${taskId}（最多 ${maxAttempts} 次）`);
+    appendTerminalLog('VideoGen', `${shotLabel()}: 轮询任务 ${taskId}（最多 ${maxAttempts} 次，每 30 秒）`);
 
     while (attempts < maxAttempts) {
       attempts++;
@@ -2926,8 +2927,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           lastStatus = result.status || '';
           lastProgress = result.progress || 0;
           onHubProgress?.(lastProgress);
-          if (attempts === 1 || attempts % 12 === 0) {
-            appendTerminalLog('VideoGen', `${shotLabel()}: 查询 #${attempts} · ${lastStatus || '进行中'} · 进度 ${lastProgress}%`);
+          if (attempts === 1 || attempts % 4 === 0) {
+            appendTerminalLog('VideoGen', `${shotLabel()}: 查询 #${attempts}/${maxAttempts} · ${lastStatus || '进行中'} · 进度 ${lastProgress}%`);
           }
 
           console.log(`[MediaGenerator] RunningHub 任务 ${taskId} 状态: ${result.status}, 进度: ${result.progress}%`);
@@ -3017,7 +3018,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             }
             // 状态完成但无URL，继续轮询（可能URL还在生成中）
             console.log('[MediaGenerator] 任务状态为SUCCESS但无URL，继续轮询获取URL');
-            await new Promise(r => setTimeout(r, 5000));
+            await new Promise(r => setTimeout(r, 30000));
           } else if (result.status === 'FAILED' || result.status === 'failed' || result.status === 'error') {
             appendTerminalLog('VideoGen', `${shotLabel()}: 任务失败 — ${result.error || '未知错误'}`);
             toast.error(`视频生成失败: ${result.error || '未知错误'}`, 6000);
@@ -3030,12 +3031,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             return;
           } else if (result.status === 'SUCCESS' || result.status === 'completed' || result.status === 'success') {
             const progress = result.progress || 0;
-            let pollInterval = 5000;
+            // 基础轮询间隔 30 秒
+            let pollInterval = 30000;
 
+            // 进度接近完成时缩短间隔
             if (progress >= 90) {
-              pollInterval = 3000;
+              pollInterval = 10000;  // 90%+ 时 10 秒
             } else if (progress >= 50) {
-              pollInterval = 4000;
+              pollInterval = 20000;  // 50%+ 时 20 秒
             }
 
             // 先更新进度记录（防止首次变化 0→55 时错误触发冻结检测）
@@ -3063,7 +3066,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             return;
           }
           console.warn(`[MediaGenerator] RunningHub 查询任务状态失败 (${consecutiveErrors}/${maxConsecutiveErrors}):`, result.error);
-          await new Promise(r => setTimeout(r, 5000));
+          await new Promise(r => setTimeout(r, 30000));
         }
       } catch (error: any) {
         consecutiveErrors++;
@@ -3076,15 +3079,15 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           return;
         }
 
-        await new Promise(r => setTimeout(r, 5000));
+        await new Promise(r => setTimeout(r, 30000));
       }
     }
   };
 
-  /** 轮询 RunningHub 任务直至拿到产出 URL（视频/音频） */
-  const pollRunningHubForMediaUrl = async (taskId: string, maxAttempts = 120): Promise<string> => {
+  /** 轮询 RunningHub 任务直至拿到产出 URL（视频/音频），间隔 30 秒 */
+  const pollRunningHubForMediaUrl = async (taskId: string, maxAttempts = 600): Promise<string> => {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (attempt > 0) await new Promise(r => setTimeout(r, 2500));
+      if (attempt > 0) await new Promise(r => setTimeout(r, 30000));
       const result = await checkRunningHubTaskStatus(runningHubApiKey, taskId);
       if (result.success === false && String(result.status).toUpperCase() === 'FAILED') {
         throw new Error(result.error || '任务失败');
@@ -3426,7 +3429,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
         let finalUrl = '';
         let finalStatus = '';
-        const maxAttempts = 120;
+        const maxAttempts = 720;  // 720 * 5s = 60 分钟
         for (let i = 0; i < maxAttempts; i++) {
           const polled = await queryJimengVideoTask(submit.taskId, { sessionId: jimengSessionId });
           finalStatus = polled.status || '';
