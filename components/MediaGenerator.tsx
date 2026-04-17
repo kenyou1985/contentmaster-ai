@@ -3812,6 +3812,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const imageGeneratingCount = tableShots.filter((s) => s.imageGenerating).length;
   const videoGeneratingCount = tableShots.filter((s) => s.videoGenerating).length;
   const voiceGeneratingCount = tableShots.filter((s) => s.voiceGenerating).length;
+  const generatingCount = imageGeneratingCount + videoGeneratingCount + voiceGeneratingCount;
   const selectedVideoModelConfig = VIDEO_MODELS.find((m) => m.id === selectedVideoModel);
   const isSelectedJimengVideoModel = !!selectedVideoModelConfig?.isJimengVideo;
   const videoModelDurationHint = (selectedVideoModelConfig?.supportedDurations || [])
