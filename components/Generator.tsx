@@ -1131,8 +1131,26 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     const cleanOutput = (text: string): string =>
       text
         .replace(/\[TYPE:[^\]]+\]\s*/g, '')
-        // 统一视频标签：清除所有乱码变体（含格鲁吉亚语 ვიდიო、孟加拉语 ভিডিও）
-        .replace(/^\s*(?:video\s*prompt|video\s*提示词)\s*[:：]\s*/gim, '视频提示词:')
+        // 统一图片标签：清除所有乱码变体（卡纳达语 ಚಿತ್ರ、孟加拉语 ছবি、印地语 चित्र 等）
+        .replace(/(?:^|\n)\s*ಚಿತ್ರ\s*prompt\s*[:：]\s*/gim, '图片提示词:')
+        .replace(/(?:^|\n)\s*ಚಿತ್ರ\s*[:：]\s*/gim, '图片提示词:')
+        .replace(/(?:^|\n)\s*ಚಿತ್ರ\s*提示词\s*[:：]\s*/gim, '图片提示词:')
+        .replace(/(?:^|\n)\s*ಚಿತ್ರ提示词\s*[:：]\s*/gim, '图片提示词:')
+        .replace(/(?:^|\n)\s*ಚಿತ್ರ提示词\b/gim, '图片提示词:')
+        .replace(/(?:^|\n)\s*ಚಿತ್ರ\b/gim, '')
+        .replace(/(?:^|\n)\s*ছবি\s*prompt\s*[:：]\s*/gim, '图片提示词:')
+        .replace(/(?:^|\n)\s*ছবি\s*[:：]\s*/gim, '图片提示词:')
+        .replace(/(?:^|\n)\s*ছবি\s*提示词\s*[:：]\s*/gim, '图片提示词:')
+        .replace(/(?:^|\n)\s*ছবি提示词\s*[:：]\s*/gim, '图片提示词:')
+        .replace(/(?:^|\n)\s*ছবি提示词\b/gim, '图片提示词:')
+        .replace(/(?:^|\n)\s*ছবি\b/gim, '')
+        .replace(/(?:^|\n)\s*चित्र\s*prompt\s*[:：]\s*/gim, '图片提示词:')
+        .replace(/(?:^|\n)\s*चित्र\s*[:：]\s*/gim, '图片提示词:')
+        .replace(/(?:^|\n)\s*चित्र\s*提示词\s*[:：]\s*/gim, '图片提示词:')
+        .replace(/(?:^|\n)\s*चित्र提示词\s*[:：]\s*/gim, '图片提示词:')
+        .replace(/(?:^|\n)\s*चित्र提示词\b/gim, '图片提示词:')
+        .replace(/(?:^|\n)\s*चित्र\b/gim, '')
+        // 统一视频标签：清除所有乱码变体（含格鲁吉亚语 ვიდიო、孟加拉语 ভিডিও、卡纳达语 ವೀಡಿಯೊ、印地语 वीडियो）
         .replace(/(?:^|\n)\s*ვიდიო\s*prompt\s*[:：]\s*/gim, '视频提示词:')
         .replace(/(?:^|\n)\s*ვიდიო\s*[:：]\s*/gim, '视频提示词:')
         .replace(/(?:^|\n)\s*ვიდიო\s*提示词\s*[:：]\s*/gim, '视频提示词:')
@@ -1145,6 +1163,27 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
         .replace(/(?:^|\n)\s*ভিডিও提示词\s*[:：]\s*/gim, '视频提示词:')
         .replace(/(?:^|\n)\s*ভিডিও提示词\b/gim, '视频提示词:')
         .replace(/(?:^|\n)\s*ভিডিও\b/gim, '')
+        .replace(/(?:^|\n)\s*ವೀಡಿಯೊ\s*prompt\s*[:：]\s*/gim, '视频提示词:')
+        .replace(/(?:^|\n)\s*ವೀಡಿಯೊ\s*[:：]\s*/gim, '视频提示词:')
+        .replace(/(?:^|\n)\s*ವೀಡಿಯೊ\s*提示词\s*[:：]\s*/gim, '视频提示词:')
+        .replace(/(?:^|\n)\s*ವೀಡಿಯೊ提示词\s*[:：]\s*/gim, '视频提示词:')
+        .replace(/(?:^|\n)\s*ವೀಡಿಯೊ提示词\b/gim, '视频提示词:')
+        .replace(/(?:^|\n)\s*ವೀಡಿಯೊ\b/gim, '')
+        .replace(/(?:^|\n)\s*वीडियो\s*prompt\s*[:：]\s*/gim, '视频提示词:')
+        .replace(/(?:^|\n)\s*वीडियो\s*[:：]\s*/gim, '视频提示词:')
+        .replace(/(?:^|\n)\s*वीडियो\s*提示词\s*[:：]\s*/gim, '视频提示词:')
+        .replace(/(?:^|\n)\s*वीडियो提示词\s*[:：]\s*/gim, '视频提示词:')
+        .replace(/(?:^|\n)\s*वीडियो提示词\b/gim, '视频提示词:')
+        .replace(/(?:^|\n)\s*वीडियो\b/gim, '')
+        // 修复换行问题：确保图片提示词和视频提示词之间有换行
+        // 模式：图片提示词:内容 (无换行直接到) 视频提示词: 或 景别:
+        .replace(/(图片提示词[：:][^\n]*)(\s+)(视频提示词[：:])/g, '$1\n$3')
+        .replace(/(图片提示词[：:][^\n]*)(\s+)(景别[：:])/g, '$1\n$3')
+        .replace(/(视频提示词[：:][^\n]*)(\s+)(景别[：:])/g, '$1\n$3')
+        .replace(/(视频提示词[：:][^\n]*)(\s+)(语音分镜[：:])/g, '$1\n$3')
+        .replace(/(景别[：:][^\n]*)(\s+)(语音分镜[：:])/g, '$1\n$3')
+        .replace(/(语音分镜[：:][^\n]*)(\s+)(音效[：:])/g, '$1\n$3')
+        // 统一换行
         .replace(/\n{3,}/g, '\n\n')
         .trim();
 
