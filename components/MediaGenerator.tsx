@@ -1654,14 +1654,15 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
         // 如果当前有镜头，解析字段
         if (currentShot) {
-          // 统一视频提示词标签检测（支持所有特殊语言变体）
-          // 模式1：标准中文及 Generator.tsx 中已有的变体
-          if (/^(?:视频提示词|视频提示詞|ვიდიო|ვიდეო|ভিডিও|ವೀಡಿಯೊ|वीडियो)[^\u4e00-\u9fff]*(?:提示词|prompt)?[：:]/i.test(trimmedLine) ||
-              /^(?:ვიდიო提示词|ვიდეო提示词|ভিডিও提示词|ವೀಡಿಯೊ提示词|वीडियो提示词)[：:]/i.test(trimmedLine) ||
-              // 模式2：视频提示词前缀+任意混合字符后缀+冒号（兜底所有混合语言变体）
-              /^(?:视频|ვიდიო|ვიდეო|ভিডিও|ವೀಡಿಯೊ|वीडियो|วิดีโอ|וידאו)[^\n:]*提示[^\n:]*[：:]/i.test(trimmedLine) ||
-              // 模式3：英文 Video prompts 标签
-              /^Video prompts[：:]/i.test(trimmedLine)) {
+          // 统一视频提示词标签检测（支持所有特殊语言变体及英文 prompts 复数）
+          // 模式1：标准中文/特殊语言前缀 + 提示词/prompt/prompts + 冒号
+          if (/^(?:视频提示词|视频提示詞|ვიდიო|ვიდეო|ვიდო|ভিডিও|ವೀಡಿಯೊ|वीडियो)[^\u4e00-\u9fff]*(?:提示词|prompt(?:s)?)?[：:]/i.test(trimmedLine) ||
+              // 模式2：特殊语言前缀 + 中文提示词 紧邻（无空格）
+              /^(?:ვიდიო提示词|ვიდეო提示词|ვიდო提示词|ভিডিও提示词|ವೀಡಿಯೊ提示词|वीडियो提示词)[：:]/i.test(trimmedLine) ||
+              // 模式3：视频前缀 + 任意混合字符 + 提示词/prompts + 冒号（兜底未预见变体）
+              /^(?:视频|ვიდიო|ვიდეო|ვიდო|ভিডিও|ವೀಡಿಯೊ|वीडियो|วิดีโอ|וידאו)[^\n:]*\s*(?:提示词|prompt(?:s)?)[^\n:]*[：:]/i.test(trimmedLine) ||
+              // 模式4：英文 Video prompts / Video prompt 标签
+              /^Video prompts?[：:]/i.test(trimmedLine)) {
             if (currentField && fieldContent.length > 0) {
               const content = fieldContent.join('\n').trim();
               if (currentField === 'imagePrompt') currentShot.imagePrompt = content;
@@ -1670,10 +1671,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             }
             fieldContent = [];
             currentField = 'videoPrompt';
-            // 提取标签后的内容（通用模式）
-            const match = trimmedLine.match(/^(?:视频提示词|视频提示詞|ვიდიო|ვიდეო|ভিডিও|ವೀಡಿಯೊ|वीडियो|ვიდიო提示词|ვიდეო提示词|ভিডিও提示词|ವೀಡಿಯೊ提示词|वीडियो提示词)[^\n:]*[：:]\s*(.+)/i) ||
-                          trimmedLine.match(/^(?:视频|ვიდიო|ვიდეო|ভিডিও|ವೀಡಿಯೊ|वीडियो|วิดีโอ|וידאו)[^\n:]*提示[^\n:]*[：:]\s*(.+)/i) ||
-                          trimmedLine.match(/^Video prompts[：:]\s*(.+)/i);
+            // 提取标签后的内容（通用模式，覆盖所有变体）
+            const match = trimmedLine.match(/^(?:视频提示词|视频提示詞|ვიდიო|ვიდეო|ვიდო|ভিডিও|ವೀಡಿಯೊ|वीडियो)[^\u4e00-\u9fff]*(?:提示词|prompt(?:s)?)?[：:]\s*(.+)/i) ||
+                          trimmedLine.match(/^(?:ვიდიო提示词|ვიდეო提示词|ვიდო提示词|ভিডিও提示词|ವೀಡಿಯೊ提示词|वीडियो提示词)[：:]\s*(.+)/i) ||
+                          trimmedLine.match(/^(?:视频|ვიდიო|ვიდეო|ვიდო|ভিডিও|ವೀಡಿಯೊ|वीडियो|วิดีโอ|וידאו)[^\n:]*\s*(?:提示词|prompt(?:s)?)[^\n:]*[：:]\s*(.+)/i) ||
+                          trimmedLine.match(/^Video prompts?[：:]\s*(.+)/i);
             if (match && match[1]) fieldContent.push(match[1]);
           } else if (/^镜头文案[：:]/.test(trimmedLine)) {
             if (currentField && fieldContent.length > 0) {
