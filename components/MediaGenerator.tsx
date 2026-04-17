@@ -831,7 +831,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   /** 批量打包 ZIP（图片 / 音频 / 视频）进行中，避免重复点击 */
   const [batchZipBusy, setBatchZipBusy] = useState(false);
 
-  // shots 转 JianyingShot[]
+  // shots 转 JianyingShot[]，导出前将图片URL转为 data:URL 避免临时链接过期
   const shotsToJianying = (sList: Shot[]): JianyingShot[] =>
     sList.map((s) => {
       const rawAudio = s.voiceAudioUrl?.trim();
@@ -859,6 +859,96 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       };
     });
 
+  // 导出前预处理：将图片 URL 转为 data:URL，避免即梦临时链接过期
+  const prepareShotsForExport = async (sList: Shot[]): Promise<JianyingShot[]> => {
+    const prepared = shotsToJianying(sList);
+    // 收集所有需要转换的图片 URL
+    const imageUrlsToConvert = new Set<string>();
+    for (const shot of prepared) {
+      if (shot.imageUrl && !shot.imageUrl.startsWith('data:')) {
+        imageUrlsToConvert.add(shot.imageUrl);
+      }
+      for (const url of shot.imageUrls || []) {
+        if (url && !url.startsWith('data:')) {
+          imageUrlsToConvert.add(url);
+        }
+      }
+    }
+
+    if (imageUrlsToConvert.size === 0) {
+      return prepared; // 全部已是 data:URL，无需转换
+    }
+
+    // 批量转换为 data:URL
+    setJianyingExportMessage(`正在缓存 ${imageUrlsToConvert.size} 张图片...`);
+    const urlToDataUrl = new Map<string, string>();
+    const convertPromises = Array.from(imageUrlsToConvert).map(async (url) => {
+      try {
+        const dataUrl = await urlToDataUrlFallback(url);
+        urlToDataUrl.set(url, dataUrl);
+      } catch {
+        // 转换失败时保留原始 URL
+        urlToDataUrl.set(url, url);
+      }
+    });
+    await Promise.all(convertPromises);
+
+    // 替换 prepared 中的 URL
+    for (const shot of prepared) {
+      if (shot.imageUrl && !shot.imageUrl.startsWith('data:')) {
+        shot.imageUrl = urlToDataUrl.get(shot.imageUrl) || shot.imageUrl;
+      }
+      if (shot.imageUrls) {
+        shot.imageUrls = shot.imageUrls.map((url) => {
+          if (!url || url.startsWith('data:')) return url;
+          return urlToDataUrl.get(url) || url;
+        });
+      }
+    }
+    return prepared;
+  };
+
+  // URL 转 data:URL（fetch + canvas 方案，兼容跨域图片）
+  const urlToDataUrlFallback = async (url: string): Promise<string> => {
+    // 已经是 data:URL
+    if (url.startsWith('data:')) return url;
+    // blob: URL 直接返回（浏览器内存中的临时对象）
+    if (url.startsWith('blob:')) return url;
+
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    } catch {
+      // fetch 失败时尝试 canvas 方案
+      return new Promise((resolve, reject) => {
+        const img = new window.Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth || img.width;
+          canvas.height = img.naturalHeight || img.height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) { reject(new Error('canvas ctx 失败')); return; }
+          ctx.drawImage(img, 0, 0);
+          try {
+            resolve(canvas.toDataURL('image/png'));
+          } catch {
+            reject(new Error('toDataURL 失败'));
+          }
+        };
+        img.onerror = () => reject(new Error('图片加载失败'));
+        img.src = url;
+      });
+    }
+  };
+
   const performExportToJianying = async (exportShots: Shot[], exportDraftName: string, settings?: { randomEffectBundle?: boolean; randomTransitions?: boolean; randomFilters?: boolean }): Promise<boolean> => {
     setIsExportingToJianying(true);
     setLastJianyingDownloadUrl('');
@@ -871,10 +961,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       const exportOutputPath = jianyingOutputDir || undefined;
       const exportPathMapRoot = jianyingOutputDir || undefined;
 
+      // 导出前预处理：将图片 URL 转为 data:URL，避免即梦临时链接过期导致图片丢失
+      setJianyingExportMessage('预处理媒体文件...');
+      const preparedShots = await prepareShotsForExport(exportShots);
+
       const result = await exportJianyingDraft(
         {
           draftName: exportDraftName,
-          shots: shotsToJianying(exportShots),
+          shots: preparedShots,
           outputPath: exportOutputPath,
           pathMapRoot: exportPathMapRoot,
           randomTransitions: settings?.randomTransitions ?? jyRandomTransitions,

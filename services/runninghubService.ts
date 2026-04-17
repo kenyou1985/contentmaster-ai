@@ -147,37 +147,96 @@ const tryParseJson = (raw: string): any => {
 /** 从 OpenAPI v2 query / 提交响应的 results 中取输出 URL（视频任务优先 mp4；TTS 多为 wav/mp3） */
 export const extractUrlsFromOpenApiV2Results = (body: any): string[] => {
   const results = body?.results ?? body?.data?.results;
-  if (!Array.isArray(results) || results.length === 0) return [];
-
   const collected: string[] = [];
-  const visit = (r: any) => {
-    if (!r || typeof r !== 'object') return;
-    for (const k of ['url', 'outputUrl', 'fileUrl', 'downloadUrl', 'path']) {
-      const v = r[k];
+
+  // 方法1：从 results 数组提取
+  if (Array.isArray(results) && results.length > 0) {
+    const visit = (r: any) => {
+      if (!r || typeof r !== 'object') return;
+      for (const k of ['url', 'outputUrl', 'fileUrl', 'downloadUrl', 'path', 'videoUrl', 'audioUrl']) {
+        const v = r[k];
+        if (typeof v === 'string' && v.trim()) collected.push(v.trim());
+      }
+      if (typeof r.fileName === 'string' && r.fileName.trim()) collected.push(r.fileName.trim());
+      if (Array.isArray(r.outputs)) r.outputs.forEach(visit);
+      if (Array.isArray(r.files)) r.files.forEach(visit);
+    };
+    results.forEach(visit);
+  }
+
+  // 方法2：从 body.data 提取（不同 API 响应格式）
+  const data = body?.data ?? body;
+  if (data) {
+    // 直接字段
+    for (const k of ['url', 'outputUrl', 'fileUrl', 'downloadUrl', 'path', 'videoUrl', 'audioUrl', 'output_url']) {
+      const v = data[k];
+      if (typeof v === 'string' && v.trim()) collected.push(v.trim());
+      // 数组格式
+      if (Array.isArray(v)) {
+        v.forEach((item: any) => {
+          if (typeof item === 'string' && item.trim()) collected.push(item.trim());
+          if (typeof item === 'object' && item) {
+            for (const sk of ['url', 'outputUrl', 'fileUrl', 'path']) {
+              const sv = item[sk];
+              if (typeof sv === 'string' && sv.trim()) collected.push(sv.trim());
+            }
+          }
+        });
+      }
+    }
+
+    // files / outputs 数组
+    const mediaArrays = data.files || data.outputs || data.data || [];
+    if (Array.isArray(mediaArrays)) {
+      mediaArrays.forEach((item: any) => {
+        if (!item || typeof item !== 'object') return;
+        for (const k of ['url', 'outputUrl', 'fileUrl', 'path', 'fileName', 'videoUrl']) {
+          const v = item[k];
+          if (typeof v === 'string' && v.trim()) collected.push(v.trim());
+        }
+      });
+    }
+
+    // video / audio 对象
+    if (data.video) {
+      const v = data.video;
+      if (typeof v === 'string' && v.trim()) collected.push(v.trim());
+      if (typeof v === 'object') {
+        for (const k of ['url', 'outputUrl', 'fileUrl', 'path']) {
+          const sv = v[k];
+          if (typeof sv === 'string' && sv.trim()) collected.push(sv.trim());
+        }
+      }
+    }
+    if (data.audio) {
+      const a = data.audio;
+      if (typeof a === 'string' && a.trim()) collected.push(a.trim());
+      if (typeof a === 'object') {
+        for (const k of ['url', 'outputUrl', 'fileUrl', 'path']) {
+          const sv = a[k];
+          if (typeof sv === 'string' && sv.trim()) collected.push(sv.trim());
+        }
+      }
+    }
+  }
+
+  // 方法3：从 body 顶层提取
+  if (collected.length === 0) {
+    for (const k of ['url', 'outputUrl', 'fileUrl', 'downloadUrl', 'path', 'videoUrl', 'audioUrl', 'output_url']) {
+      const v = body?.[k];
       if (typeof v === 'string' && v.trim()) collected.push(v.trim());
     }
-    if (typeof r.fileName === 'string' && r.fileName.trim()) collected.push(r.fileName.trim());
-    if (Array.isArray(r.outputs)) r.outputs.forEach(visit);
-    if (Array.isArray(r.files)) r.files.forEach(visit);
-  };
-  results.forEach(visit);
+  }
 
+  // 去重
   const seen = new Set<string>();
   const urls = collected.filter((u) => {
     if (seen.has(u)) return false;
     seen.add(u);
     return true;
   });
-  if (urls.length === 0) {
-    for (const k of ['url', 'outputUrl', 'output_url']) {
-      const v = body?.[k];
-      if (typeof v === 'string' && v.trim()) {
-        urls.push(v.trim());
-        break;
-      }
-    }
-  }
 
+  // 优先返回 mp4
   const mp4s = urls.filter((u) => /\.mp4(\?|#|$)/i.test(u));
   return mp4s.length > 0 ? mp4s : urls;
 };
@@ -237,6 +296,37 @@ const pollOpenApiV2ForOutputUrls = async (
   const intervalMs = opts?.intervalMs ?? 3000;
   const t0 = Date.now();
 
+  // 辅助函数：尝试 get-outputs 获取 URL
+  const tryGetOutputs = async (): Promise<string[]> => {
+    try {
+      const r = await fetch(`${BASE_URL}/task/openapi/get-outputs`, {
+        method: 'POST',
+        headers: makeHeaders(apiKey),
+        body: JSON.stringify({ apiKey, taskId }),
+      });
+      if (!r.ok) return [];
+      const raw = await r.text();
+      try {
+        const data = JSON.parse(raw);
+        // 优先使用增强的 extractUrlsFromOpenApiV2Results
+        const urls = extractUrlsFromOpenApiV2Results(data);
+        if (urls.length > 0) return urls;
+        // 兜底：从 data.files / data.outputs 提取
+        const files = data.data?.files || data.data?.outputs || data.files || data.outputs || [];
+        if (Array.isArray(files) && files.length > 0) {
+          const results: string[] = [];
+          for (const f of files) {
+            if (f?.url) results.push(f.url);
+            if (f?.fileUrl) results.push(f.fileUrl);
+            if (f?.fileName) results.push(f.fileName);
+          }
+          if (results.length > 0) return results;
+        }
+      } catch { /* ignore */ }
+    } catch { /* ignore */ }
+    return [];
+  };
+
   while (Date.now() - t0 < maxMs) {
     await new Promise((res) => setTimeout(res, intervalMs));
     const data = await fetchOpenApiV2Query(apiKey, taskId);
@@ -251,13 +341,20 @@ const pollOpenApiV2ForOutputUrls = async (
     const st = String(data.status || '').toUpperCase();
 
     if (st === 'SUCCESS') {
-      const urls = extractUrlsFromOpenApiV2Results(data);
+      // 首次 query 提取 URL
+      let urls = extractUrlsFromOpenApiV2Results(data);
       if (urls.length > 0) return urls;
-      // 任务 SUCCESS 但首次 query 未拿到 URL，立即尝试 get-outputs 获取
-      // 注意：pollOpenApiV2ForOutputUrls 被图片生成调用，未暴露 doOutputs，需用 fetchOpenApiV2Query 重试
+      // 二次 query 重试
       const retryData = await fetchOpenApiV2Query(apiKey, taskId);
-      const retryUrls = extractUrlsFromOpenApiV2Results(retryData || data);
-      if (retryUrls.length > 0) return retryUrls;
+      urls = extractUrlsFromOpenApiV2Results(retryData || {});
+      if (urls.length > 0) return urls;
+      // 尝试 get-outputs
+      urls = await tryGetOutputs();
+      if (urls.length > 0) return urls;
+      // 三次 query（兜底）
+      const retry2 = await fetchOpenApiV2Query(apiKey, taskId);
+      urls = extractUrlsFromOpenApiV2Results(retry2 || {});
+      if (urls.length > 0) return urls;
     }
     if (st === 'FAILED') {
       throw new Error(String(errMsg || '任务失败'));
@@ -1333,9 +1430,14 @@ export const checkTaskStatus = async (
           };
         }
         // RunningHub 任务状态为 SUCCESS 但首次 query 未拿到 URL
-        // 立即尝试 get-outputs 获取 URL（避免轮询超时后才拿到结果）
+        // 尝试 get-outputs 获取 URL
         const out = await doOutputs();
-        const outUrl = extractFromResults(out.data) || extractFromData(out.data);
+        let outUrl = extractFromResults(out.data) || extractFromData(out.data);
+        // 尝试 extractUrlsFromOpenApiV2Results 提取（支持更多格式）
+        if (!outUrl) {
+          const urls = extractUrlsFromOpenApiV2Results(out.data || {});
+          outUrl = urls[0];
+        }
         if (outUrl) {
           return {
             success: true,
@@ -1344,6 +1446,19 @@ export const checkTaskStatus = async (
             status: 'SUCCESS',
             progress: 100,
             url: resolveRunningHubOutputUrl(outUrl),
+          };
+        }
+        // 再次用 extractUrlsFromOpenApiV2Results 从原始 q 提取（兜底）
+        const finalUrls = extractUrlsFromOpenApiV2Results(q);
+        const finalUrl = finalUrls[0];
+        if (finalUrl) {
+          return {
+            success: true,
+            data: q,
+            taskId,
+            status: 'SUCCESS',
+            progress: 100,
+            url: resolveRunningHubOutputUrl(finalUrl),
           };
         }
         // 任务成功但 URL 提取失败，告知调用方继续轮询以获取完整结果
