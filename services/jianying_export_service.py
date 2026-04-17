@@ -192,6 +192,100 @@ def _safe_filename(url: str) -> str:
     return name
 
 
+def _download_file(url: str, dest_path: str, timeout: int = 120, max_retries: int = 3) -> bool:
+    """下载文件到本地，支持 http/https/data:，默认 120s 超时+3次重试"""
+    import time as _time
+
+    for attempt in range(max_retries):
+        try:
+            if url.startswith('data:'):
+                # data:image/png;base64,iVBORw0KG...
+                header, data = url.split(',', 1)
+                import base64
+                # 提取 mime type
+                mime_match = re.search(r'data:([^;]+)', header)
+                ext = '.png'
+                if mime_match:
+                    mime = mime_match.group(1)
+                    ext_map = {
+                        'image/png': '.png',
+                        'image/jpeg': '.jpg',
+                        'image/jpg': '.jpg',
+                        'image/gif': '.gif',
+                        'image/webp': '.webp',
+                        'audio/wav': '.wav',
+                        'audio/mpeg': '.mp3',
+                        'audio/mp3': '.mp3',
+                        'audio/mp4': '.m4a',
+                        'audio/x-m4a': '.m4a',
+                        'audio/flac': '.flac',
+                        'audio/ogg': '.ogg',
+                        'video/mp4': '.mp4',
+                        'video/quicktime': '.mov',
+                        'video/webm': '.webm',
+                    }
+                    ext = ext_map.get(mime, ext)
+                # 如果文件没有扩展名，加上推断的扩展名
+                if '.' not in os.path.basename(dest_path):
+                    dest_path += ext
+                binary_data = base64.b64decode(data)
+                with open(dest_path, 'wb') as f:
+                    f.write(binary_data)
+                return True
+
+            # HTTP/HTTPS 下载
+            import urllib.request
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            }
+            # 常见站点的特殊 headers
+            if 'runninghub.cn' in url.lower():
+                headers['Referer'] = 'https://www.runninghub.cn/'
+                timeout = max(timeout, 180)
+            elif 'yunwu.ai' in url.lower():
+                headers['Referer'] = 'https://yunwu.ai/'
+            elif 'jianying' in url.lower():
+                headers['Referer'] = 'https://lv.ulikecom.com/'
+
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                content_type = response.headers.get('Content-Type', '')
+                # 根据 Content-Type 自动推断扩展名
+                if '.' not in os.path.basename(dest_path):
+                    ct_map = {
+                        'image/png': '.png',
+                        'image/jpeg': '.jpg',
+                        'image/jpg': '.jpg',
+                        'image/gif': '.gif',
+                        'image/webp': '.webp',
+                        'video/mp4': '.mp4',
+                        'video/quicktime': '.mov',
+                        'audio/wav': '.wav',
+                        'audio/wave': '.wav',
+                        'audio/x-wav': '.wav',
+                        'audio/mpeg': '.mp3',
+                        'audio/mp3': '.mp3',
+                        'audio/mp4': '.m4a',
+                        'audio/x-m4a': '.m4a',
+                        'audio/flac': '.flac',
+                        'audio/ogg': '.ogg',
+                    }
+                    ext = ct_map.get(content_type.split(';')[0].strip(), '')
+                    if ext:
+                        dest_path += ext
+                with open(dest_path, 'wb') as f:
+                    shutil.copyfileobj(response, f)
+            return True
+        except Exception as e:
+            last_err = e
+            if attempt < max_retries - 1:
+                wait = (attempt + 1) * 2  # 2s, 4s, 6s
+                print(f"[WARN] 下载失败 {url} (尝试 {attempt+1}/{max_retries}): {e}，{wait}s 后重试...", file=sys.stderr)
+                _time.sleep(wait)
+    print(f"[WARN] 下载最终失败 {url}: {last_err}", file=sys.stderr)
+    return False
+
+
 def _download_batch_parallel(
     url_list: list[tuple[str, str]],
     max_workers: int = 8,
