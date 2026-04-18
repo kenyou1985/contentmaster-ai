@@ -1656,12 +1656,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         if (currentShot) {
           // 统一视频提示词标签检测（支持所有特殊语言变体及英文 prompts 复数）
           // 模式1：标准中文/特殊语言前缀 + 提示词/prompt/prompts + 冒号
-          if (/^(?:视频提示词|视频提示詞|ვიდიო|ვიდეო|ვიდო|ভিডিও|ವೀಡಿಯೊ|वीडियो)[^\u4e00-\u9fff]*(?:提示词|prompt(?:s)?)?[：:]/i.test(trimmedLine) ||
+          if (/^(?:视频提示词|视频提示詞|ვიდიო|ვიდეო|ვიდო|ვიდ|ভিডিও|ವೀಡಿಯೊ|वीडियो)[^\u4e00-\u9fff]*(?:提示词|prompt(?:s)?)?[：:]/i.test(trimmedLine) ||
               // 模式2：特殊语言前缀 + 中文提示词 紧邻（无空格）
               /^(?:ვიდიო提示词|ვიდეო提示词|ვიდო提示词|ভিডিও提示词|ವೀಡಿಯೊ提示词|वीडियो提示词)[：:]/i.test(trimmedLine) ||
               // 模式3：视频前缀 + 任意混合字符 + 提示词/prompts + 冒号（兜底未预见变体）
-              /^(?:视频|ვიდიო|ვიდეო|ვიდო|ভিডিও|ವೀಡಿಯೊ|वीडियो|วิดีโอ|וידאו)[^\n:]*\s*(?:提示词|prompt(?:s)?)[^\n:]*[：:]/i.test(trimmedLine) ||
-              // 模式4：英文 Video prompts / Video prompt 标签
+              /^(?:视频|ვიდიო|ვიდეო|ვიდო|ვიდ|ভিডিও|ವೀಡಿಯೊ|वीडियो|วิดีโอ|וידאו)[^\n:]*\s*(?:提示词|prompt(?:s)?)[^\n:]*[：:]/i.test(trimmedLine) ||
+              // 模式4：格鲁吉亚语视频前缀后接任意混合字符再接中文提示（超级兜底，覆盖极其混乱的 AI 乱码组合如 ვიდჰიო提示ჭიკ）
+              /^ვიდ[^\n:]*提示[^\n:]*[：:]/i.test(trimmedLine) ||
+              // 模式5：英文 Video prompts / Video prompt 标签
               /^Video prompts?[：:]/i.test(trimmedLine)) {
             if (currentField && fieldContent.length > 0) {
               const content = fieldContent.join('\n').trim();
@@ -1672,9 +1674,10 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             fieldContent = [];
             currentField = 'videoPrompt';
             // 提取标签后的内容（通用模式，覆盖所有变体）
-            const match = trimmedLine.match(/^(?:视频提示词|视频提示詞|ვიდიო|ვიდეო|ვიდო|ভিডিও|ವೀಡಿಯೊ|वीडियो)[^\u4e00-\u9fff]*(?:提示词|prompt(?:s)?)?[：:]\s*(.+)/i) ||
+            const match = trimmedLine.match(/^(?:视频提示词|视频提示詞|ვიდიო|ვიდეო|ვიდო|ვიდ|ভিডিও|ವೀಡಿಯೊ|वीडियো)[^\u4e00-\u9fff]*(?:提示词|prompt(?:s)?)?[：:]\s*(.+)/i) ||
                           trimmedLine.match(/^(?:ვიდიო提示词|ვიდეო提示词|ვიდო提示词|ভিডিও提示词|ವೀಡಿಯೊ提示词|वीडियो提示词)[：:]\s*(.+)/i) ||
-                          trimmedLine.match(/^(?:视频|ვიდიო|ვიდეო|ვიდო|ভিডিও|ವೀಡಿಯೊ|वीडियो|วิดีโอ|וידאו)[^\n:]*\s*(?:提示词|prompt(?:s)?)[^\n:]*[：:]\s*(.+)/i) ||
+                          trimmedLine.match(/^(?:视频|ვიდიო|ვიდეო|ვიდო|ვიდ|ভিডিও|ವೀಡಿಯೊ|वीडियो|วิดีโอ|וידאו)[^\n:]*\s*(?:提示词|prompt(?:s)?)[^\n:]*[：:]\s*(.+)/i) ||
+                          trimmedLine.match(/^ვიდ[^\n:]*提示[^\n:]*[：:]\s*(.+)/i) ||
                           trimmedLine.match(/^Video prompts?[：:]\s*(.+)/i);
             if (match && match[1]) fieldContent.push(match[1]);
           } else if (/^镜头文案[：:]/.test(trimmedLine)) {
@@ -5105,14 +5108,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                   <div className="flex flex-col gap-1 items-end pr-2">
                     <button
                       onClick={async () => {
+                        if (shot.imageGenerating) return;
                         try {
                           await handleGenerateImage(shot, true);
                         } catch (error: any) {
                           toast.error(`图片生成失败: ${error.message || '未知错误'}`, 6000);
                         }
                       }}
-                      disabled={shot.imageGenerating}
-                      className="text-[10px] px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded disabled:opacity-50 whitespace-nowrap"
+                      className="text-[10px] px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded whitespace-nowrap"
                       title="重新绘图"
                     >
                       重新繪圖
