@@ -1859,28 +1859,24 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
         return false;
       }
 
-      // 中医玄学改写：强制校验9节课框架完整，避免只输出第一节就收尾
+      // 中医玄学改写：强制校验内容充实度，避免只输出开头就收尾
+      // 新版已移除"第X节课"固定标记，改为检测内容完整性和充实度
       if (mode === ToolMode.REWRITE && niche === NicheType.TCM_METAPHYSICS) {
-        const hasStartLine = text.includes('好了，我们开始上课。') || text.includes('好了，我们開始上課。');
+        const hasOpening = /各位老友们好.*倪海厦/.test(text);
+        const hasStartLine = /好了.*我们开始上课/.test(text);
+        if (!hasOpening) return false;
         if (!hasStartLine) return false;
-        if (!hasAllNineLessons(text)) return false;
         
-        // 中医玄学改写特殊判断：
-        // 1. 字数必须 >= 7500字（确保内容充实）
-        // 2. 字数 <= 8500字（防止过长导致强制截断）
-        // 3. 第9节课必须存在且有实质内容
         const tcmMinLength = 7500;
         const tcmMaxLength = 8500;
         const hasMinLength = length >= tcmMinLength;
         const hasMaxLength = length <= tcmMaxLength;
         
-        // 检查第9节课是否有实质内容（不只是标题）
-        // 原文8512字时9节课平均每节约945字，"第9课+500字"只验证了约50%内容 → 改为比例：第9课位置之后的内容应占全文至少40%，即 ninthLessonIndex < length * 0.6
-        const ninthLessonIndex = text.indexOf('第九节课') !== -1 ? text.indexOf('第九节课') :
-                                text.indexOf('第九堂课') !== -1 ? text.indexOf('第九堂课') : -1;
-        const hasNinthLessonContent = ninthLessonIndex !== -1 && ninthLessonIndex < length * 0.6;
+        // 新版检查：末尾300字包含收尾关键词才认为有实质性结尾
+        const tail = text.slice(-300);
+        const hasRealEnding = /下课|下期再见|下期再見|散会|散會|好了.*话讲完了/.test(tail);
         
-        console.log(`[isContentComplete] 中医玄学改写检查: 字数=${length}, 最小=${tcmMinLength}, 最大=${tcmMaxLength}, 9节课=${hasAllNineLessons(text)}, 第9课有内容=${hasNinthLessonContent}`);
+        console.log(`[isContentComplete] 中医玄学改写检查: 字数=${length}, 最小=${tcmMinLength}, 最大=${tcmMaxLength}, 有开场白=${hasOpening}, 有开始语=${hasStartLine}, 有实质结尾=${hasRealEnding}`);
         
         if (!hasMinLength) {
           console.log(`[isContentComplete] 字数不足 ${tcmMinLength} 字，需要继续生成`);
@@ -1890,12 +1886,11 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
           console.log(`[isContentComplete] 字数超过 ${tcmMaxLength} 字，内容过长`);
           return false;
         }
-        if (!hasNinthLessonContent) {
-          console.log(`[isContentComplete] 第9节课内容不足，需要继续生成`);
+        if (!hasRealEnding) {
+          console.log(`[isContentComplete] 没有实质性结尾，需要继续生成`);
           return false;
         }
         
-        // 满足所有条件后才允许收尾
         return hasProperEnding && notTruncated;
       }
       
@@ -2231,15 +2226,15 @@ ${inputSection}
 【中医玄学改写特殊规则（必须严格遵守）】
 ⚠️ 本次任务是中医玄学（倪海厦风格）改写，目标是生成约8000字的完整课程内容。
 1. **字数要求**：输出字数必须在 7500-8500 字之间，不得少于 7500 字，也不得超过 8500 字。
-2. **9节课完整输出**：必须按顺序完整输出9节课（第一节课 ~ 第九节课），每节课都要有实质性内容。
-3. **禁止提前收尾**：
-   - ⚠️ **绝对不能在只完成部分课时（如第1-2节）时就使用收尾语**
-   - 只有在第9节课完整输出后，才允许使用"下期再见"、"下课"等收尾语
-   - 在9节课未完成之前，任何"好了"、"到这里"、"散了"等暗示性词语都是提前收尾
-4. **课时内容充实**：每个课时至少需要500-800字的内容，不能敷衍了事。
-5. **自然过渡**：课时与课时之间必须自然衔接，过渡自然流畅。
-6. **开场白**：必须以"各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。"开头。
-7. **课程标记**：每节课必须以"第一节课："、"第二节课："..."第九节课："开头。
+2. **禁止课程编号标记**：⚠️ 全文禁止出现"第一节课："、"第二节课："..."第九节课："等固定标签——这是导致重复的根源！改为自然段落过渡，每节之间用过渡句承接。
+3. **禁止重复开场白**：全文只允许出现一次"各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。"，且只在文章最开头出现一次。
+4. **禁止重复过渡语**：全文只允许出现一次"好了，我们开始上课。"，放在引子与正文之间。
+5. **禁止重复自我纠正故事**：全文只允许出现一次"我年轻时候也铁齿，有年交运日偏要去爬山，结果摔了一跤，膝盖肿了半个月。"
+6. **语气词限量**："我跟你讲""你听懂没有""说真的"全文各不超过3次；"我讲到这里，你可能觉得""你们不要笑"全文各不超过2次。
+7. **案例限量**：全文只使用1-2个案例，要有具体人名/地名/细节，禁止泛化（如"属龙中年男人"改为具体描述）。
+8. **禁止提前收尾**：未满7500字前禁止出现"下课""下期再见""今天就讲到这"等收尾语。
+9. **结尾风格**：结尾用倪海厦霸气收尾，如"好了，我话讲完了，信不信随你。下课！"——禁止"晚安"。
+10. **开场白**：必须以"各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。"开头，引子结束后原样输出"好了，我们开始上课。"。
 ` : '';
 
                 return `### 任务指令：文本洗稿與像素級改編${tcmRewritePrompt}
@@ -2578,6 +2573,44 @@ ${inputSection}
         const currentLength = currentContent.length;
         
         if (mode === ToolMode.REWRITE || mode === ToolMode.POLISH) {
+            // 中医玄学改写续写（放在最前面，优先级最高）
+            if (niche === NicheType.TCM_METAPHYSICS) {
+                const tcmMin = Math.floor(originalLength * 0.9);
+                const tcmMax = Math.floor(originalLength * 1.1);
+                const progress = (currentLength / tcmMin * 100).toFixed(0);
+                const needsMore = currentLength < tcmMin;
+                // 检测已出现的关键词，用于强制去重
+                const hasOpening = /各位老友们好.*倪海厦/.test(currentContent);
+                const hasStartClass = /好了.*我们开始上课/.test(currentContent);
+                const hasClimbingStory = /有年交运日偏要去爬山/.test(currentContent);
+                const openingBlock = hasOpening ? '' : '\n⚠️ 禁止重复开场白！"各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。"只允许出现一次。';
+                const startClassBlock = hasStartClass ? '' : '\n⚠️ 禁止重复"好了，我们开始上课"，此句只允许出现一次。';
+                const climbingBlock = hasClimbingStory ? '\n⚠️ 禁止重复"有年交运日偏要去爬山"故事——此故事全文只允许出现一次！' : '';
+                return `继续完成倪海厦中医玄学风格轻度改写，无缝衔接上文。${openingBlock}${startClassBlock}${climbingBlock}
+
+【已完成部分（末尾）】
+${context}
+
+【字数统计】
+- 原文：${originalLength} 字
+- 目标：${tcmMin}–${tcmMax} 字（允许±10%）
+- 已完成：${currentLength} 字（${progress}%）
+- ${needsMore ? `⚠️ 还需要约 ${tcmMin - currentLength} 字` : '✓ 字数已达标，可收尾'}
+
+【续写规则（重要）】
+${needsMore ?
+`⚠️ **字数严重不足，严禁使用任何收尾语！**
+- 未满 ${tcmMin} 字前禁止"下课""下期再见""今天就到这"等收尾语
+- 直接自然衔接上文，继续以倪海厦口吻改写
+- 禁止输出"第一节课："、"第二节课："等固定标签——改为自然段落过渡
+- 禁止整段重复上文已讲过的内容（面相、生肖、案例等）` :
+`✓ 字数已达标，请写完通透结语后收束全文：
+- 用倪海厦霸气风格收尾（如"好了，我话讲完了，信不信随你。下课！"）
+- 全文仅允许出现一次收尾语，禁止重复`}
+- **TTS 纯净输出**：禁止方括号、括号内提示、**/* 等符号
+- 直接续写正文，不要任何占位词`;
+            }
+
             // 易经改写续写
             if (niche === NicheType.YI_JING_METAPHYSICS) {
                 const yjRewriteMin = Math.floor(originalLength * 0.9);
@@ -3558,20 +3591,22 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                     }
                 }
                 
-                // 中医玄学改写特判：字数已达标且已输出9节课 + 收尾关键词 → 立即强制收尾，不再续写
+                // 中医玄学改写特判：字数达标 + 收尾关键词 → 强制收尾
+                // 注意：新版已移除"第X节课"标记，改用自然段落，改为检测内容完整性
                 if (taskMode === ToolMode.REWRITE && taskNiche === NicheType.TCM_METAPHYSICS) {
                     const tcmLen = localOutput.length;
                     const tcmMinLen = Math.floor(originalLength * 0.9);
                     const tcmMaxLen = Math.floor(originalLength * 1.1);
-                    if (tcmLen >= tcmMinLen && tcmLen <= tcmMaxLen && hasAllNineLessons(localOutput)) {
+                    if (tcmLen >= tcmMinLen && tcmLen <= tcmMaxLen) {
                         const tcmClosingKeywords = [
                             /下期再见/i, /下期再見/i, /下课/i, /下課/i,
                             /今天就到这/i, /今天就到這/i, /咱们下期再见/i,
                             /咱們下期再見/i, /散会/i, /散會/i,
                             /点个赞.*订阅.*转发/s, /點個讚.*訂閱.*轉發/s,
+                            /信不信随你.*下课/s, /好了.*话讲完了.*下课/s,
                         ];
                         if (tcmClosingKeywords.some(kw => kw.test(localOutput))) {
-                            console.log('[Tools] TCM rewrite: 字数达标+9课+收尾关键词，强制退出续写循环');
+                            console.log('[Tools] TCM rewrite: 字数达标+收尾关键词，强制退出续写循环');
                             break;
                         }
                     }

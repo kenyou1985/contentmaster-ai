@@ -277,6 +277,50 @@ const TCM_DIET_HEALTH_PROMPT = `
 输出格式：纯文本，每行一个标题，不要编号，不要解释。
 `;
 
+
+const TCM_COMMON_SCRIPT_RULES = `
+【倪海厦脚本铁律（所有中医玄学子模式通用·最高优先级）】
+
+一、禁止重复
+1. "各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。"此句全文只出现一次，在文章最开头，禁止重复。
+2. "好了，我们开始上课。"此句全文只出现一次，禁止重复。
+3. 每节课只讲一遍，不重复上一节已讲过的内容（生肖、面相、案例等）。
+4. 同一案例故事全文只讲一次，不重复。
+
+二、口语打断与自我纠正（全文至少出现3处）
+- 自我纠正："我讲到这里，你可能觉得……不对，等等，我说的是……"
+- 时间模糊："大概是2018年，还是2019年？记不太清了，反正就是那阵子。"
+- 立场自嘲："我年轻时候也铁齿，有年交运日偏要去爬山，结果摔了一跤，膝盖肿了半个月。"
+- 语气打断："你说你不信？行，你继续不信，我讲完你自己掂量。"
+- 停顿句："说真的，我这话难听，但是不骗你。"
+- 无奈感叹："你们不要笑，这种事情我见太多了，有时候我自己回想起来也觉得……真的，说不下去了。"
+- 省略式："我跟你讲，有时候我自己在诊所里也……唉算了，不说这个了。"
+
+三、语气与节奏
+1. 段落长短必须不均匀：允许单句成段（如"你听懂没有？"单独一行），也允许3-5句的稍长段落。
+2. 句子要有跳跃感：可以突然转折、不解释原因、留下半句话。
+3. 禁止完美对称的"总分总"结构。
+4. "我跟你讲""你听懂没有""说真的"等语气词全文不超过5次，过度使用会让文章失去真实感。
+
+四、案例要求
+1. 每个案例必须有1-2个尴尬的、个人化的真实细节（如"他那天还多吃了几口红烧肉""他太太在旁边直接拆穿"）。
+2. 禁止"属龙中年男人""属猴阿伯"这种泛化模板描述，要具体化。
+3. 正面案例（听了劝→好转）与负面案例（不听劝→出事）各至少一个。
+4. 全文案例不超过2个，珍惜篇幅，不要堆砌。
+
+五、结尾要求
+1. 结尾禁止"晚安"——倪海厦风格是"好了，今天就讲到这儿。你们自己看着办，别到时候又来找我哭。下课！"或"好了，我话讲完了，信不信随你。下课！"
+2. 禁止在结尾前突然又插入重复的开场白。
+3. 结尾必须体现倪海厦的霸气收尾：不客气、直接、不煽情。
+
+六、课程结构
+1. 先写开场白（一次）+ 引子段落，引子结束原样输出"好了，我们开始上课。"
+2. 按5节课或7节课结构自然推进，每节约500-900字。
+3. 前4节（或前6节）先写透，最后一节自然收束。
+4. 禁止在每节开头写"第一节课：紧急通报"等固定标签，改为自然过渡段落。
+5. 未满约7000字前禁止出现最后一节标题；未满约7500字前禁止节目收尾语。
+`;
+
 // ==========================================
 // 2. PSYCHOLOGY SYSTEM & PROMPTS
 // ==========================================
@@ -1620,7 +1664,8 @@ export const TCM_SUB_MODES: Record<TcmSubModeId, SubModeConfig> = {
     requiresInput: false,
     optionalInput: true,
     inputPlaceholder: '可選：輸入關鍵詞 (如: 房事禁忌)',
-    prompt: TCM_KARMA_EROTIC_PROMPT
+    prompt: TCM_KARMA_EROTIC_PROMPT,
+    scriptPromptTemplate: TCM_COMMON_SCRIPT_RULES
   },
   [TcmSubModeId.FACE_READING]: {
     id: TcmSubModeId.FACE_READING,
@@ -1630,7 +1675,8 @@ export const TCM_SUB_MODES: Record<TcmSubModeId, SubModeConfig> = {
     requiresInput: false,
     optionalInput: true,
     inputPlaceholder: '可選：輸入面相特徵 (如: 斷眉)',
-    prompt: TCM_FACE_READING_PROMPT
+    prompt: TCM_FACE_READING_PROMPT,
+    scriptPromptTemplate: TCM_COMMON_SCRIPT_RULES
   },
   [TcmSubModeId.FENG_SHUI]: {
     id: TcmSubModeId.FENG_SHUI,
@@ -1640,17 +1686,19 @@ export const TCM_SUB_MODES: Record<TcmSubModeId, SubModeConfig> = {
     requiresInput: false,
     optionalInput: true,
     inputPlaceholder: '可選：輸入家居佈局 (如: 穿堂煞)',
-    prompt: TCM_FENG_SHUI_PROMPT
+    prompt: TCM_FENG_SHUI_PROMPT,
+    scriptPromptTemplate: TCM_COMMON_SCRIPT_RULES
   },
   [TcmSubModeId.TCM_DEBUNK]: {
     id: TcmSubModeId.TCM_DEBUNK,
     title: '中医闢謠：经方與西医',
     subtitle: '倪師视角痛批西医治療謬誤',
-    icon: AlertOctagon, // Corrected from OctagonAlert to AlertOctagon
+    icon: AlertOctagon,
     requiresInput: false,
     optionalInput: true,
     inputPlaceholder: '可選：輸入病症或療法 (如: 化療)',
-    prompt: TCM_DEBUNK_PROMPT
+    prompt: TCM_DEBUNK_PROMPT,
+    scriptPromptTemplate: TCM_COMMON_SCRIPT_RULES
   },
   [TcmSubModeId.DIET_HEALTH]: {
     id: TcmSubModeId.DIET_HEALTH,
@@ -1660,7 +1708,8 @@ export const TCM_SUB_MODES: Record<TcmSubModeId, SubModeConfig> = {
     requiresInput: false,
     optionalInput: true,
     inputPlaceholder: '可選：輸入食材/症狀 (如: 高血壓)',
-    prompt: TCM_DIET_HEALTH_PROMPT
+    prompt: TCM_DIET_HEALTH_PROMPT,
+    scriptPromptTemplate: TCM_COMMON_SCRIPT_RULES
   }
 };
 
@@ -2058,6 +2107,7 @@ export const SCRIPT_MODE_SYSTEM = `你是一个全领域万能短视频分镜生
 /**
  * 将各赛道 prompt 中「固定 10 条选题」的表述替换为用户选择数量，并追加数量铁律（策划选题专用）。
  */
+export { TCM_COMMON_SCRIPT_RULES };
 export function applyTopicCountToPrompt(prompt: string, count: number): string {
   const n = Math.min(50, Math.max(1, Math.floor(Number(count)) || 5));
   let p = prompt;
