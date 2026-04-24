@@ -1,26 +1,50 @@
 /**
  * AI 内容检测服务（多语言支持）
- * 基于多个维度检测文本中是否存在 AI 生成特征
- * 评估维度：结构、词汇、句式、流畅度等
+ * 评估文本的「人类感」程度：分数越高越像真人写的
+ * 评分范围：0-10 分
+ * 等级：较弱(0-4) / 一般(5-6) / 优秀(7-10)
+ *
+ * 评分维度（共10个，权重分配）：
+ *   D1  模板词清洁度     权重10%   每千字0.5个以内=100分，>4个=0分
+ *   D2  口语词密度      权重10%   每千字6个以上=100分，<1个=0分
+ *   D3  句式多样性      权重10%   CV系数>0.35=100分，<0.12=0分
+ *   D4  段落不均匀度    权重8%    CV系数>0.25=100分，<0.1=0分
+ *   D5  第一人称主体    权重12%   占比>8%=100分，<1%=0分
+ *   D6  具体细节锚点    权重12%   >=5个=100分，0个=0分
+ *   D7  自嘲/口语打断  权重10%   >=3次=100分，0次=0分
+ *   D8  硬广结尾检测   权重8%    有硬广=0分，有自然结尾=100分
+ *   D9  故事结构多样性  权重10%   重复度<20%=100分，>60%=0分
+ *   D10 名字一致性     权重10%   全文同一动物名=100分，出现2种不同名字=0分
  */
 
-export type AiStrengthLevel = 'weak' | 'medium' | 'strong';
+export type AiStrengthLevel = 'strong' | 'medium' | 'weak';
 
 export interface AiDetectionResult {
-  /** AI 味强度等级 */
   level: AiStrengthLevel;
-  /** 得分 (0-100)，越高表示 AI 味越重 */
+  /** 人类感得分 (0-10)，越高表示越像真人写的 */
   score: number;
-  /** 检测维度详情 */
+  /** 10个检测维度详情（均表示人类感质量，越高越好） */
   dimensions: {
-    /** 模板词检测 (0-100) */
+    /** D1 模板词清洁度 (0-100) */
     templateWords: number;
-    /** 句式一致性检测 (0-100) */
-    sentencePattern: number;
-    /** 流畅度检测 (0-100) */
-    fluency: number;
-    /** 人类特征检测 (0-100, 越高表示越有人味) */
-    humanFeatures: number;
+    /** D2 口语词密度 (0-100) */
+    colloquialDensity: number;
+    /** D3 句式多样性 (0-100) */
+    sentenceVariation: number;
+    /** D4 段落不均匀度 (0-100) */
+    paragraphVariation: number;
+    /** D5 第一人称主体 (0-100) */
+    firstPersonVoice: number;
+    /** D6 具体细节锚点 (0-100) */
+    concreteDetails: number;
+    /** D7 自嘲/口语打断 (0-100) */
+    selfDeprecation: number;
+    /** D8 硬广结尾检测 (0-100) */
+    endingQuality: number;
+    /** D9 故事结构多样性 (0-100) */
+    storyStructure: number;
+    /** D10 名字一致性 (0-100)：同一动物名=100，出现2种不同名字=0分 */
+    nameConsistency: number;
   };
   /** 具体问题列表 */
   issues: string[];
@@ -28,11 +52,11 @@ export interface AiDetectionResult {
   suggestions: string[];
 }
 
-/**
- * AI 模板词列表（多语言）
- */
+// ============================================================
+// 词库
+// ============================================================
+
 const AI_TEMPLATE_WORDS: Record<string, string[]> = {
-  // 中文
   zh: [
     '首先', '其次', '再次', '最后', '因此', '然而', '但是', '所以',
     '综上所述', '总而言之', '总的说来', '总的来说', '整体而言',
@@ -41,14 +65,16 @@ const AI_TEMPLATE_WORDS: Record<string, string[]> = {
     '从某种意义上说', '从某种程度上讲', '在很大程度上',
     '一方面...另一方面', '一方面...同时',
     '第一', '第二', '第三', '第四', '第五',
-    '一方面', '另一方面', '与此同时',
+    '另一方面', '与此同时',
     '换句话说', '也就是说', '即是说',
     '简而言之', '简单来说', '说白了',
     '事实上', '实际上', '其实',
     '一般来说', '通常情况下', '一般情况下', '通常来说',
     '通过以上分析', '通过上述讨论', '基于以上观点',
+    '综上所述', '总而言之', '总结来说',
+    '可以看出', '由此可见', '不难发现', '可以发现',
+    '客观来说', '主观来讲', '从客观角度看',
   ],
-  // 英文
   en: [
     'firstly', 'secondly', 'furthermore', 'moreover', 'therefore', 'thus',
     'in conclusion', 'to summarize', 'in summary', 'additionally', 'lastly',
@@ -57,33 +83,30 @@ const AI_TEMPLATE_WORDS: Record<string, string[]> = {
     'ultimately', 'basically', 'clearly', 'obviously', 'undoubtedly',
     'it goes without saying', 'needless to say', 'as previously stated',
     'it cannot be denied', 'there is no doubt', 'without question',
+    'in fact', 'as a matter of fact', 'for the most part',
+    'it is interesting to note', 'it is safe to say',
   ],
-  // 韩文
   ko: [
     '먼저', '또한', '따라서', '그러나', '하지만', '그리고', '이것은', '이러한',
     '나아가', '더 나아가', '결론적으로', '요약하면', '결과적으로',
   ],
-  // 日文
   ja: [
     'まず', '次に', 'さらに', 'したがって', 'しかし', 'だが', 'そして',
     'これは', 'このような', '要するに', 'まとめると', '結論として',
     '確かに', '明らかに', '当然ながら',
   ],
-  // 西班牙文
   es: [
     'primero', 'en primer lugar', 'segundo', 'en segundo lugar', 'además', 'así mismo',
     'por lo tanto', 'por consiguiente', 'sin embargo', 'no obstante', 'pero',
-    'en conclusión', 'en resumen', 'en síntesis', 'finalmente', 'por último',
+    'en conclusion', 'en resumen', 'en síntesis', 'finalmente', 'por último',
     'esto es', 'es decir', 'en otras palabras', 'a saber',
   ],
-  // 德文
   de: [
     'zunächst', 'erstens', 'zweitens', 'drittens', 'schließlich', 'zuletzt',
     'darüber hinaus', 'außerdem', 'ebenso', 'deshalb', 'daher', 'folglich',
     'jedoch', 'aber', 'nichtsdestotrotz', 'im Übrigen', 'zusammenfassend',
     'alles in allem', 'kurz gesagt', 'mit anderen Worten', 'das heißt',
   ],
-  // 法文
   fr: [
     'premièrement', 'deuxièmement', 'troisièmement', 'enfin', 'pour finir',
     'de plus', 'en outre', 'également', 'par conséquent', 'donc',
@@ -93,11 +116,7 @@ const AI_TEMPLATE_WORDS: Record<string, string[]> = {
   ],
 };
 
-/**
- * 人类口语/情感词列表（多语言）
- */
 const HUMAN_COLLOQUIAL_WORDS: Record<string, string[]> = {
-  // 中文
   zh: [
     '嘛', '呢', '吧', '呀', '啊', '哦', '哈', '呃', '嗯',
     '说实话', '讲真的', '其实吧', '你懂的', '说白了',
@@ -107,38 +126,41 @@ const HUMAN_COLLOQUIAL_WORDS: Record<string, string[]> = {
     '挺', '蛮', '还', '挺不错的', '其实挺',
     '被坑过', '说实话挺香', '真的挺烦', '有点无语',
     '我家', '我之前', '我当时', '我自己',
+    '就这样吧', '好吧', '行吧', '算了', '不急',
+    '你呢', '你也', '我也是', '对吧',
+    '写到这里', '写到这儿', '写到这了',
+    '你懂吧', '你懂吗', '懂的吧',
+    '不说了', '好了不说了', '唉', '哎',
+    '我跟你说', '你知道吗', '你可能不信',
+    '反正', '反正我', '不管怎样',
+    '有点想', '差点', '差一点',
   ],
-  // 英文
   en: [
     'honestly', 'you know', 'I feel like', 'it seems like', 'maybe', 'probably',
     'actually', 'basically', 'literally', 'kind of', 'sort of',
     'I guess', 'I suppose', 'well', 'right', 'so', 'oh',
     'you see', 'I mean', 'to be honest', 'to tell you the truth',
     'anyway', 'whatever', 'like', 'you know what I mean',
+    "I've got to be honest", "I can't believe", "come on",
   ],
-  // 韩文
   ko: [
     '솔직히', '음', '그냥', '아마도', '어쩌면', '뭔가', '있잖아',
     '글쎄', '근데', '그런데', '야', '저기', '확실히',
   ],
-  // 日文
   ja: [
     '正直', '说实话', 'うーん', 'まあ', 'ちょっと', 'なんか', 'ある意味',
     'そう言えば', '要するに', 'つまり', 'だって', 'でも', 'ね',
   ],
-  // 西班牙文
   es: [
     'honestamente', 'a decir verdad', 'bueno', 'verás', 'es que',
     'quizás', 'tal vez', 'probablemente', 'me parece que',
     'o sea', 'en fin', 'ya', 'mira',
   ],
-  // 德文
   de: [
     'ehrlich gesagt', 'ich meine', 'na ja', 'also', 'weißt du',
     'vielleicht', 'wahrscheinlich', 'ich glaube', 'ich denke',
     'im Grunde', 'eigentlich', 'doch',
   ],
-  // 法文
   fr: [
     'honnêtement', 'à vrai dire', 'eh bien', 'tu sais', 'en fait',
     'peut-être', 'probablement', 'il me semble', 'je crois',
@@ -147,29 +169,72 @@ const HUMAN_COLLOQUIAL_WORDS: Record<string, string[]> = {
   ],
 };
 
-/**
- * 检测语言
- */
+const SELF_DEPRECATION_WORDS: Record<string, string[]> = {
+  zh: [
+    '其实我也不知道', '写到这里突然觉得', '好我好像跑题了',
+    '算了不改了', '说实话我也不知道', '唉我这人就是这样',
+    '觉得自己有点夸张', '心里骂自己', '写出来觉得自己',
+    '好奇怪', '好像在说教', '有点不好意思',
+    '算了', '随便吧', '就这样', '不好意思',
+    '自己都嫌', '太矫情', '没出息', '太肉麻',
+    '连自己都觉得', '太容易被',
+  ],
+  en: [
+    'I hate how that sounds', 'I mean not completely', 'not sure why',
+    'okay that is not quite right', 'I do not know', 'come to think of it',
+    'wait actually', 'sorry for', 'I guess I', 'that sounds ridiculous',
+    'which is ridiculous', 'feel embarrassed', 'embarrassingly',
+    'I laugh because', 'I hate that', 'not impressive', 'kind of silly',
+    'honestly ridiculous', 'which is embarrassing', 'okay I am being',
+    'pretty pathetic', 'so embarrassing', 'kind of pathetic',
+  ],
+  ko: ['솔직히 말이야', '어색하게', '웃기게', '부끄러워서'],
+  ja: ['変だけど', '恥ずかしながら', '情けないけど'],
+  es: ['qué verguenza', 'qué ridículo', 'perdón por', 'aunque suena'],
+  de: ['peinlich', 'sorry für', 'naja eigentlich', 'ich schäme mich'],
+  fr: ['honte à moi', "c'est ridicule", 'désolé pour', 'pas très impressionnante'],
+};
+
+const HARD_SELL_PATTERNS: Record<string, RegExp[]> = {
+  zh: [
+    /请点赞.*订阅/,
+    /喜欢本文/,
+    /如果觉得.*收获/,
+    /请关注.*频道/,
+    /订阅.*点赞/,
+    /一键三连/,
+  ],
+  en: [
+    /please\s+like\s+and\s+subscribe/i,
+    /like\s+and\s+subscribe\s+to\s+my\s+channel/i,
+    /subscribe\s+to\s+my\s+channel/i,
+    /if\s+this\s+resonated\s+with\s+you[,，]\s*please/i,
+    /don'?t\s+forget\s+to\s+subscribe/i,
+    /smash\s+the\s+like/i,
+  ],
+  ko: [/좋아요와\s*구독/i],
+  ja: [/いいね.*登録/i],
+  es: [/like.*suscr/i],
+  de: [/liken.*abonnieren/i],
+  fr: [/aimer.*abonn/i],
+};
+
+// ============================================================
+// 语言检测
+// ============================================================
+
 function detectLanguage(text: string): string {
-  // 统计各种语言的字符
   const chineseChars = (text.match(/[\u4e00-\u9fff]/g) || []).length;
   const koreanChars = (text.match(/[\uac00-\ud7af]/g) || []).length;
   const japaneseChars = (text.match(/[\u3040-\u309f\u30a0-\u30ff]/g) || []).length;
-
   const totalChars = text.length;
-
   if (chineseChars / totalChars > 0.3) return 'zh';
   if (koreanChars / totalChars > 0.3) return 'ko';
   if (japaneseChars / totalChars > 0.3) return 'ja';
-
-  // 默认使用英文
   return 'en';
 }
 
-/**
- * 获取语言对应的 AI 模板词
- */
-function getAiTemplateWords(lang: string): string[] {
+function getWords(lang: string, dict: Record<string, string[]>): string[] {
   const langMap: Record<string, string> = {
     zh: 'zh', zh_cn: 'zh', zh_tw: 'zh',
     en: 'en', english: 'en',
@@ -179,62 +244,12 @@ function getAiTemplateWords(lang: string): string[] {
     de: 'de', german: 'de',
     fr: 'fr', french: 'fr',
   };
-  const key = langMap[lang] || lang;
-  return AI_TEMPLATE_WORDS[key] || AI_TEMPLATE_WORDS.en || [];
+  return dict[langMap[lang] || lang] || dict.en || [];
 }
 
-/**
- * 获取语言对应的人类口语词
- */
-function getHumanColloquialWords(lang: string): string[] {
-  const langMap: Record<string, string> = {
-    zh: 'zh', zh_cn: 'zh', zh_tw: 'zh',
-    en: 'en', english: 'en',
-    ko: 'ko', korean: 'ko',
-    ja: 'ja', japanese: 'ja',
-    es: 'es', spanish: 'es',
-    de: 'de', german: 'de',
-    fr: 'fr', french: 'fr',
-  };
-  const key = langMap[lang] || lang;
-  return HUMAN_COLLOQUIAL_WORDS[key] || HUMAN_COLLOQUIAL_WORDS.en || [];
-}
-
-/**
- * 检测文本中的 AI 味（多语言）
- * @param text 待检测的文本
- * @param lang 语言代码（可选，自动检测）
- * @returns 检测结果
- */
-export function detectAiFeatures(text: string, lang?: string): AiDetectionResult {
-  if (!text || !text.trim()) {
-    return {
-      level: 'weak',
-      score: 0,
-      dimensions: {
-        templateWords: 0,
-        sentencePattern: 0,
-        fluency: 0,
-        humanFeatures: 0,
-      },
-      issues: [],
-      suggestions: ['文本为空，无法检测'],
-    };
-  }
-
-  // 自动检测语言或使用指定语言
-  const detectedLang = lang || detectLanguage(text);
-  const templateWords = getAiTemplateWords(detectedLang);
-  const humanWords = getHumanColloquialWords(detectedLang);
-
-  const issues: string[] = [];
-  const suggestions: string[] = [];
-
-  // 1. 检测模板词
-  let templateWordCount = 0;
-  const foundTemplateWords: string[] = [];
-  for (const word of templateWords) {
-    // 中文使用宽松匹配（避免 \b 对中文无效的问题）
+function countWords(text: string, wordList: string[]): number {
+  let total = 0;
+  for (const word of wordList) {
     let regex: RegExp;
     if (/[\u4e00-\u9fff]/.test(word)) {
       regex = new RegExp(word, 'gi');
@@ -242,108 +257,317 @@ export function detectAiFeatures(text: string, lang?: string): AiDetectionResult
       regex = new RegExp('\\b' + word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'gi');
     }
     const matches = text.match(regex);
-    if (matches) {
-      templateWordCount += matches.length;
-      foundTemplateWords.push(word);
-    }
+    if (matches) total += matches.length;
   }
-  const textLength = text.replace(/\s/g, '').length;
-  const templateWordDensity = (templateWordCount / Math.max(textLength / 1000, 1));
-  const templateWordsScore = Math.min(100, Math.round(templateWordDensity * 200));
+  return total;
+}
 
-  if (templateWordDensity > 5) {
-    issues.push(`模板词过多（${templateWordCount}个）`);
+function coefficientOfVariation(values: number[]): number {
+  if (values.length < 2) return 0;
+  const avg = values.reduce((a, b) => a + b, 0) / values.length;
+  if (avg === 0) return 0;
+  const variance = values.reduce((sum, v) => sum + Math.pow(v - avg, 2), 0) / values.length;
+  return Math.sqrt(variance) / avg;
+}
+
+// 线性插值 helper
+function lerp(value: number, from: number, to: number, outFrom: number, outTo: number): number {
+  if (value <= from) return outFrom;
+  if (value >= to) return outTo;
+  return outFrom + ((value - from) / (to - from)) * (outTo - outFrom);
+}
+
+// ============================================================
+// 核心检测函数
+// ============================================================
+
+export function detectAiFeatures(text: string, lang?: string): AiDetectionResult {
+  const issues: string[] = [];
+  const suggestions: string[] = [];
+  const textLength = text.replace(/\s/g, '').length;
+
+  if (!text || !text.trim() || textLength < 50) {
+    return {
+      level: 'strong',
+      score: 0,
+      dimensions: {
+        templateWords: 0, colloquialDensity: 0, sentenceVariation: 0,
+        paragraphVariation: 0, firstPersonVoice: 0, concreteDetails: 0,
+        selfDeprecation: 0, endingQuality: 0, storyStructure: 0, nameConsistency: 100,
+      },
+      issues: ['文本为空或过短，无法评估'],
+      suggestions: ['请输入足够长的文本内容进行检测'],
+    };
+  }
+
+  const lang_ = lang || detectLanguage(text);
+  const templateWords = getWords(lang_, AI_TEMPLATE_WORDS);
+  const humanWords = getWords(lang_, HUMAN_COLLOQUIAL_WORDS);
+  const selfDepWords = getWords(lang_, SELF_DEPRECATION_WORDS);
+  const hardSellPatterns = HARD_SELL_PATTERNS[lang_] || HARD_SELL_PATTERNS.en || [];
+
+  // ============================================================
+  // D1: 模板词清洁度 (权重 10%)
+  // 每千字超过4个=0分，0个=100分
+  // ============================================================
+  const templateCount = countWords(text, templateWords);
+  const templateDensity = templateCount / Math.max(textLength / 1000, 1);
+  const D1 = Math.min(100, Math.max(0, Math.round(lerp(templateDensity, 4, 0.5, 0, 100))));
+  if (templateDensity > 2) {
+    issues.push(`模板词偏多（每千字${templateDensity.toFixed(1)}个）`);
     suggestions.push('删除"首先""其次""总而言之"等模板词，改用自然过渡');
   }
 
-  // 2. 检测 AI 句式模式（简化版）
-  const aiPatternCount = 0;
-  const aiPatternScore = Math.min(100, Math.round((aiPatternCount / Math.max(textLength / 500, 1)) * 150));
+  // ============================================================
+  // D2: 口语词密度 (权重 10%)
+  // 每千字6个以上=100分，低于1个=0分
+  // ============================================================
+  const humanCount = countWords(text, humanWords);
+  const humanDensity = humanCount / Math.max(textLength / 1000, 1);
+  const D2 = Math.min(100, Math.round(lerp(humanDensity, 1, 6, 0, 100)));
+  if (humanDensity < 3) {
+    issues.push(`口语特征词不足（每千字${humanDensity.toFixed(1)}个）`);
+    suggestions.push('添加口语词、个人视角、小情绪等人类特征');
+  }
 
-  // 3. 检测流畅度（连续相同长度句子比例）
+  // ============================================================
+  // D3: 句式多样性 (权重 10%)
+  // CV系数 <0.12=0分，>0.35=100分
+  // ============================================================
   const sentences = text.split(/[。！？；\n.!?]/).filter(s => s.trim().length > 5);
-  if (sentences.length > 5) {
+  let D3 = 20; // 默认低分
+  if (sentences.length >= 5) {
     const sentenceLengths = sentences.map(s => s.replace(/\s/g, '').length);
-    const avgLength = sentenceLengths.reduce((a, b) => a + b, 0) / sentenceLengths.length;
-    const variance = sentenceLengths.reduce((sum, len) => sum + Math.pow(len - avgLength, 2), 0) / sentenceLengths.length;
-    const stdDev = Math.sqrt(variance);
-    const variationCoefficient = avgLength > 0 ? stdDev / avgLength : 1;
-    const fluencyScore = Math.max(0, Math.round((1 - variationCoefficient) * 100));
-
-    if (variationCoefficient < 0.3 && sentences.length > 10) {
-      issues.push('句式过于统一，缺乏自然变化');
+    const cv = coefficientOfVariation(sentenceLengths);
+    D3 = Math.min(100, Math.max(0, Math.round(lerp(cv, 0.12, 0.35, 0, 100))));
+    if (cv < 0.18 && sentences.length > 10) {
+      issues.push('句式过于工整统一，缺乏自然变化');
       suggestions.push('增加长短句交替，打破规律性');
     }
   }
 
-  // 4. 检测人类特征词
-  let humanWordCount = 0;
-  const foundHumanWords: string[] = [];
-  for (const word of humanWords) {
-    // 中文使用宽松匹配（避免 \b 对中文无效的问题）
-    let regex: RegExp;
-    if (/[\u4e00-\u9fff]/.test(word)) {
-      regex = new RegExp(word, 'gi');
-    } else {
-      regex = new RegExp('\\b' + word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'gi');
-    }
-    const matches = text.match(regex);
-    if (matches) {
-      humanWordCount += matches.length;
-      foundHumanWords.push(word);
-    }
-  }
-
-  // 计算每千字口语词密度
-  const humanWordDensity = (humanWordCount / Math.max(textLength / 1000, 1));
-  // 人类特征词密度评分：每千字4个口语词为良好（40%密度），每千字8个为优秀（80%密度）
-  // 口语词密度评分范围 0-100
-  const humanFeaturesScore = Math.min(100, Math.round(Math.min(humanWordDensity / 5, 1) * 100));
-
-  // 低于每千字2个口语词才报告问题（更宽松）
-  if (humanWordDensity < 2) {
-    issues.push('人类口语特征较少');
-    suggestions.push('添加口语词、个人视角、小情绪等人类特征');
-  }
-
-  // 5. 计算综合得分
-  // 调整权重：人类口语特征权重提高，模板词权重降低
-  const templateWeight = 0.25;
-  const patternWeight = 0.15;
-  const humanWeight = 0.45;  // 提高人类口语权重
-  const structureWeight = 0.15;
-
-  // 段落变化检测
+  // ============================================================
+  // D4: 段落不均匀度 (权重 8%)
+  // CV <0.1=0分，>0.25=100分
+  // ============================================================
   const paragraphs = text.split(/\n\n+/).filter(p => p.trim().length > 20);
-  let paraVariation = 1;
-  if (paragraphs.length > 2) {
+  let D4 = 30; // 默认低分
+  if (paragraphs.length >= 3) {
     const paraLengths = paragraphs.map(p => p.replace(/\s/g, '').length);
-    const avgParaLen = paraLengths.reduce((a, b) => a + b) / paraLengths.length;
-    const paraVariance = paraLengths.reduce((sum, len) => sum + Math.pow(len - avgParaLen, 2), 0) / paraLengths.length;
-    const paraStdDev = Math.sqrt(paraVariance);
-    paraVariation = avgParaLen > 0 ? paraStdDev / avgParaLen : 1;
-
-    if (paraVariation < 0.15 && paragraphs.length > 3) {
-      issues.push('段落长度过于均匀，缺乏自然变化');
+    const cv = coefficientOfVariation(paraLengths);
+    D4 = Math.min(100, Math.max(0, Math.round(lerp(cv, 0.1, 0.25, 0, 100))));
+    if (cv < 0.15 && paragraphs.length > 4) {
+      issues.push('段落长度过于均匀，像工整模板');
     }
   }
 
-  const structureScore = Math.round(paraVariation * 100);
-  // 人类口语词越多，AI味越低
-  const humanAiScore = 100 - humanFeaturesScore;
+  // ============================================================
+  // D5: 第一人称主体 (权重 12%)
+  // 占比 <1%=0分，>8%=100分
+  // ============================================================
+  let D5 = 0;
+  let firstPersonCount = 0;
+  if (lang_ === 'en') {
+    firstPersonCount = (text.match(/\bI\b/g) || []).length;
+    const totalWords = text.split(/\s+/).length;
+    const fpRatio = firstPersonCount / Math.max(totalWords, 1);
+    D5 = Math.min(100, Math.round(lerp(fpRatio, 0.01, 0.08, 0, 100)));
+  } else {
+    firstPersonCount = (text.match(/我/g) || []).length;
+    const totalChars = text.replace(/\s/g, '').length;
+    const fpRatio = firstPersonCount / Math.max(totalChars, 1);
+    D5 = Math.min(100, Math.round(lerp(fpRatio, 0.01, 0.06, 0, 100)));
+  }
+  if (D5 < 40) {
+    issues.push('第一人称主体性不足，文章更像在说教而非分享');
+    suggestions.push('多使用"我"的视角，分享自己的真实经历');
+  }
 
-  const finalScore = Math.round(
-    templateWordsScore * templateWeight +
-    aiPatternScore * patternWeight +
-    humanAiScore * humanWeight +
-    structureScore * structureWeight
-  );
+  // ============================================================
+  // D6: 具体细节锚点 (权重 12%)
+  // 检测：具体时间、具体名字、具体地点、具体动作/对话
+  // 0个=0分，>=5个=100分
+  // ============================================================
+  const detailsFound: string[] = [];
 
-  // 确定等级（统一标准：<= 30 弱，<= 60 中，> 60 强）
+  if (lang_ === 'en') {
+    if (/last\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i.test(text)) detailsFound.push('具体星期几');
+    if (/\d{1,2}:\d{2}\s*(am|pm)/i.test(text)) detailsFound.push('具体时间');
+    if (/last\s+(january|february|march|april|may|june|july|august|september|october|november|december)/i.test(text)) detailsFound.push('具体月份');
+    if (/\b\d{4}\b/.test(text)) detailsFound.push('具体年份');
+    if (/flopped|flopping|curled|circled|lifted his|pressed|breathing slowly|sighed|heaved|nodded|looked up|turned away/i.test(text)) detailsFound.push('具体动作');
+    const petNames = text.match(/\b(Bean|Momo|Junie|Muffin|Mochi|Charlie|Max|Buddy|Ollie|Luna|Bella|Taco|Noodle|Fudge|Biscuit)\b/gi) || [];
+    if (petNames.length > 0) detailsFound.push('宠物名:' + petNames[0]);
+    if (/sat (?:down )?(?:on|in|next to|beside|against)/i.test(text)) detailsFound.push('具体姿势');
+    if (/said[,，]?\s*[""][^""]+[""]/i.test(text)) detailsFound.push('具体对话');
+  } else {
+    if (/上周[一二三四五六日]|这周三|上个月|去年|今年|凌晨[零一二三四五六点]+|半夜|傍晚|前天|昨天/.test(text)) detailsFound.push('具体时间');
+    if (/叫[^\s，、。]+/.test(text)) detailsFound.push('具体名字');
+    if (/厨房|客厅|卧室|沙发|地板|床上|门口|窗边|书桌|阳台|洗碗池|柜子/.test(text)) detailsFound.push('具体地点');
+    if (/叹气|翻白眼|骂自己|骂了一句|好想笑|鼻子发酸|心里一软|眼眶热|手在抖/.test(text)) detailsFound.push('具体情绪');
+    if (/说[：:""]/.test(text)) detailsFound.push('具体对话');
+  }
+
+  // 评分：>=5个=100分，4个=85分，3个=70分，2个=45分，1个=20分，0个=0分
+  const detailTable: Record<number, number> = { 0: 0, 1: 20, 2: 45, 3: 70, 4: 85 };
+  const D6 = detailTable[detailsFound.length] ?? (detailsFound.length >= 5 ? 100 : 0);
+  if (detailsFound.length < 2) {
+    issues.push(`具体细节不足（仅检测到${detailsFound.length}个锚点）`);
+    suggestions.push('加入具体时间（上周三凌晨两点）、具体名字（我家狗叫XX）、具体地点和对话');
+  }
+
+  // ============================================================
+  // D7: 自嘲/口语打断 (权重 10%)
+  // >=3次=100分，0次=0分
+  // ============================================================
+  let selfDepCount = countWords(text, selfDepWords);
+  let selfInterruptCount = selfDepCount;
+  if (lang_ === 'en') {
+    const interruptPatterns = [
+      /\bwait\b/i, /\bI mean\b/i, /\bactually\b(?! not)/i,
+      /\bnot sure why\b/i, /\bcome to think of it\b/i,
+      /\bI guess\b/i, /\bI suppose\b/i,
+      /\bokay\b(?! I)/i,
+    ];
+    for (const p of interruptPatterns) {
+      const m = text.match(p);
+      if (m) selfInterruptCount += m.length;
+    }
+  } else {
+    const interruptPatterns = [
+      /其实我也不知道/, /写到这里/, /好我好像/, /算了不改了/,
+      /说实话我/, /唉我/, /好像在说教/, /有点不好意思/,
+      /觉得自己/, /心里骂/, /好奇怪/, /算了[，]?/, /随便吧/,
+      /自己都嫌/, /太矫情/, /没出息/, /太肉麻/,
+      /连自己都觉得/, /太容易被/,
+    ];
+    for (const p of interruptPatterns) {
+      if (p.test(text)) selfInterruptCount++;
+    }
+  }
+  // >=3次=100分，2次=60分，1次=25分，0次=0分
+  const depTable: Record<number, number> = { 0: 0, 1: 25, 2: 60, 3: 100 };
+  const D7 = depTable[Math.min(selfInterruptCount, 3)] ?? 100;
+  if (D7 < 50) {
+    issues.push('缺乏口语打断和自嘲表达，文章过于完美工整');
+    suggestions.push('加入"说实话我也不知道"或自嘲句来增加真实感');
+  }
+
+  // ============================================================
+  // D8: 硬广结尾检测 (权重 8%)
+  // ============================================================
+  const lastSentences = text.split(/[。！？\n.!?]/).filter(s => s.trim().length > 3).slice(-4);
+  const lastText = lastSentences.join(' ');
+  let hasHardSell = false;
+  for (const pattern of hardSellPatterns) {
+    if (pattern.test(lastText)) { hasHardSell = true; break; }
+  }
+  let D8 = 50;
+  if (hasHardSell) {
+    D8 = 0;
+    issues.push('结尾使用硬广CTA（"请点赞订阅"等）');
+    suggestions.push('结尾改为随意自然的收尾，如"Good night"或"睡了"');
+  } else {
+    if (lang_ === 'en') {
+      if (/good\s*night|anyway[,，]?\s*(my|the)|time\s+to\s+(sleep|go)|I\s+should\s+go/i.test(lastText)) D8 = 100;
+    } else {
+      if (/晚安|睡了|就这样吧|不急|写完了|打呼噜|关灯了|去睡了/i.test(lastText)) D8 = 100;
+    }
+  }
+
+  // ============================================================
+  // D9: 故事结构多样性 (权重 10%)
+  // ============================================================
+  let D9 = 60; // 默认中等
+  if (lang_ === 'en') {
+    const storyOpeners = text.match(
+      /(I\s+remember\s+[^.!?]{0,80}[.!?]|There\s+was\s+[^.!?]{0,80}[.!?]|One\s+time\s+[^.!?]{0,80}[.!?]|I\s+had\s+[^.!?]{0,80}[.!?]|After\s+[^.!?]{0,80}[.!?]|That\s+[^.!?]{0,80}[.!?])/gi
+    ) || [];
+    const uniqueOpeners = new Set(storyOpeners.map(o => o.split(/\s+/).slice(0, 4).join(' ')));
+    const repetitionRatio = 1 - uniqueOpeners.size / Math.max(storyOpeners.length, 1);
+    if (storyOpeners.length >= 4) {
+      D9 = Math.min(100, Math.max(0, Math.round(lerp(repetitionRatio, 0.6, 0.15, 0, 100))));
+      if (repetitionRatio > 0.5) {
+        issues.push(`故事开场方式重复度高（${storyOpeners.length}个故事仅${uniqueOpeners.size}种开场）`);
+      }
+    }
+  } else {
+    const storyOpeners = text.match(
+      /(我记得[^.!?]{0,60}[.!?]|有一次[^.!?]{0,60}[.!?]|那天[^.!?]{0,60}[.!?]|后来[^.!?]{0,60}[.!?]|那之后[^.!?]{0,60}[.!?]|上周[^.!?]{0,60}[.!?])/gi
+    ) || [];
+    const uniqueOpeners = new Set(storyOpeners.map(o => o.slice(0, 8)));
+    const repetitionRatio = 1 - uniqueOpeners.size / Math.max(storyOpeners.length, 1);
+    if (storyOpeners.length >= 3) {
+      D9 = Math.min(100, Math.max(0, Math.round(lerp(repetitionRatio, 0.6, 0.15, 0, 100))));
+      if (repetitionRatio > 0.5) {
+        issues.push('故事开场方式重复度高');
+      }
+    }
+  }
+
+  // ============================================================
+  // D10: 名字一致性 (权重 10%) —— 新增
+  // 同一动物名全文贯穿=100分，出现2种不同名字=0分
+  // ============================================================
+  let D10 = 100; // 默认一致
+  // 检测狗名不一致（出现多个不同的狗名）
+  if (lang_ === 'en') {
+    const dogNames = text.match(/\b(Bean|Momo|Junie|Muffin|Mochi|Charlie|Max|Buddy|Ollie|Luna|Bella|Taco|Noodle|Fudge|Biscuit)\b/gi) || [];
+    const uniqueDogNames = [...new Set(dogNames.map(n => n.toLowerCase()))];
+    if (uniqueDogNames.length >= 2) {
+      D10 = 0;
+      issues.push(`狗名前后不一致：出现了${uniqueDogNames.length}个不同的名字（${uniqueDogNames.join('、')}）`);
+      suggestions.push('全文统一使用同一个狗名，不要中途换名字');
+    }
+  } else {
+    // 中文章检测常见的狗名词汇
+    const dogNamePatterns = text.match(/狗[名称叫]([^\s，、。\n]{1,6})|叫([^\s，、。\n]{1,6})(?:狗|那只)/g) || [];
+    const dogNameDirect = text.match(/([^\s，、。\n]{1,6})(?:这会儿|在打呼噜|趴在|睡着了)/g) || [];
+    // 收集所有被提到的狗名
+    const allDogNames: string[] = [];
+    for (const m of dogNamePatterns) {
+      const match = m.match(/叫([^\s，、。\n]{1,6})/);
+      if (match) allDogNames.push(match[1]);
+    }
+    for (const m of dogNameDirect) {
+      const name = m.replace(/(?:这会儿|在打呼噜|趴在|睡着了)/, '').trim();
+      if (name.length >= 2) allDogNames.push(name);
+    }
+    const uniqueDogNames = [...new Set(allDogNames)];
+    if (uniqueDogNames.length >= 2) {
+      D10 = 0;
+      issues.push(`狗名前后不一致：出现了${uniqueDogNames.length}个不同的名字（${uniqueDogNames.join('、')}）`);
+      suggestions.push('全文统一使用同一个狗名，不要中途换名字');
+    }
+  }
+
+  // ============================================================
+  // 综合得分
+  //
+  // 公式：score = floor((加权平均分 - 零分维度数 * 50 + 5) / 10)
+  //
+  // 效果：
+  // - 全部100分 → (100 - 0 + 5) / 10 = 10.5 → floor → 10... 太高了
+  // 改：score = floor((加权平均分 - 零分维度数 * 50 - 5) / 10)
+  // - 全部100分 → (100 - 0 - 5) / 10 = 9.5 → floor → 9分
+  // - D10=0，其余100 → (90 - 50 - 5) / 10 = 3.5 → floor → 3分
+  // - 9个100 + 1个80 → (98 - 0 - 5) / 10 = 9.3 → floor → 9分
+  // - 全部80分 → (80 - 0 - 5) / 10 = 7.5 → floor → 7分
+  // - 全部60分 → (60 - 0 - 5) / 10 = 5.5 → floor → 5分
+  // - 全部50分 → (50 - 0 - 5) / 10 = 4.5 → floor → 4分
+  // - 全部30分 → (30 - 0 - 5) / 10 = 2.5 → floor → 2分
+  // ============================================================
+  const dims = [D1, D2, D3, D4, D5, D6, D7, D8, D9, D10];
+  const weights = [0.10, 0.10, 0.10, 0.08, 0.12, 0.12, 0.10, 0.08, 0.10, 0.10];
+
+  const weightedSum = dims.reduce((sum, d, i) => sum + d * weights[i], 0);
+  const zeroCount = dims.filter(d => d === 0).length;
+  const humanScore = Math.max(0, Math.floor((weightedSum - zeroCount * 50 - 5) / 10));
+
   let level: AiStrengthLevel;
-  if (finalScore <= 30) {
+  if (humanScore >= 7) {
     level = 'weak';
-  } else if (finalScore <= 60) {
+  } else if (humanScore >= 5) {
     level = 'medium';
   } else {
     level = 'strong';
@@ -351,21 +575,24 @@ export function detectAiFeatures(text: string, lang?: string): AiDetectionResult
 
   return {
     level,
-    score: Math.min(100, finalScore),
+    score: humanScore,
     dimensions: {
-      templateWords: templateWordsScore,
-      sentencePattern: aiPatternScore,
-      fluency: 100 - aiPatternScore,
-      humanFeatures: 100 - humanFeaturesScore,
+      templateWords: D1,
+      colloquialDensity: D2,
+      sentenceVariation: D3,
+      paragraphVariation: D4,
+      firstPersonVoice: D5,
+      concreteDetails: D6,
+      selfDeprecation: D7,
+      endingQuality: D8,
+      storyStructure: D9,
+      nameConsistency: D10,
     },
-    issues,
+    issues: [...new Set(issues)],
     suggestions: [...new Set(suggestions)],
   };
 }
 
-/**
- * 快速本地 AI 味检测（不使用 AI 模型）
- */
 export function quickLocalAiDetection(text: string): AiDetectionResult {
   return detectAiFeatures(text);
 }

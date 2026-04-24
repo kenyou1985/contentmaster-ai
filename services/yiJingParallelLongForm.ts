@@ -179,14 +179,16 @@ ${unitNote}
 1. 共 **${segmentCount}** 章；全片合并后目标约 **${T} 字**（允许合理偏差），每章 min_chars / max_chars 需合理分摊，单章约 ${perLo}–${perHi}（在 JSON 里逐章给出，max_chars - min_chars ≤ 600）。
 2. ${opts.logicBlueprint}
 3. 每章必须包含：
-   - title：章标题（4–12 字）
+   - title：章标题（4–12 字，**禁止**使用「第X章」「第一章」「第三章」等章节编号，只能是自然的短句标题，如「深夜的客厅」「被看见的瞬间」）
    - min_chars / max_chars：整数
    - core_brief：本章要讲透的论点与素材方向（50–120 字）
    - opening_echo：**从上一章收束语义自然承接**的开头提示（第1章填空字符串 ""）；约 40–80 字，供写稿时嵌入开篇
    - closing_snippet_hint：本章结尾希望出现的收束语义摘要（40–80 字），供下一章 opening_echo 使用
-   - bridge_to_next：本章末 1–2 句过渡到下一章的提示（最后一章写总结升华）
+   - bridge_to_next：本章末 1–2 句过渡到下一章的自然过渡提示（最后一章写总结升华）
 
-4. 只输出 **一个 JSON 对象**，不要 Markdown、不要注释。键名必须完全一致：
+4. **章节编号禁止**：严格禁止输出任何「第1章」「第二章」「第一部分」「Section 1」「Chapter 3」等带编号的章节标记。所有章节标题必须是纯自然短句，不含数字编号。
+
+5. 只输出 **一个 JSON 对象**，不要 Markdown、不要注释。键名必须完全一致：
 {
   "core_theme": "string",
   "logic_line": "string",
@@ -264,18 +266,17 @@ export function buildParallelSegmentUserPrompt(
     ? `【本章字数】英文正文有效字符（含空格与标点）尽量控制在 ${chapter.min_chars}–${chapter.max_chars} 之间；如字数略有偏差可以接受，**内容完整性优先**。`
     : `【本章字数】有效字符尽量在 ${chapter.min_chars}–${chapter.max_chars} 字范围内；字数略有偏差可接受，**内容完整性优先**。`;
 
-  // 最后一章（结语）：必须包含互动引导 CTA
   const lastChapterInstruction = isLast
     ? (isEnglishOutput
-        ? `\n\n【结语必须包含互动引导 CTA】\n- 结尾段末尾必须紧跟一条英文互动引导 CTA，例如：\n  "If this resonated with you, please like and subscribe to my channel."\n  或 "Feel free to share your thoughts in the comments below."\n- CTA 必须自然融入结语，不能生硬拼接；禁止加粗、禁止 Markdown。`
-        : `\n\n【结语必须包含互动引导 CTA】\n- 结尾段末尾必须紧跟一条中文互动引导 CTA，例如：\n  "请点赞并订阅我的频道。"\n  或 "如果这篇文章对你有收获，欢迎在评论区聊聊你的想法。"\n- CTA 必须自然融入结语，不能生硬拼接；禁止加粗、禁止 Markdown。`)
+        ? `\n\n【结语收尾方式（英文内容）】\n- 英文内容**禁止**使用「please like and subscribe to my channel」等营销腔结尾。\n- 根据文章主题选择对应动物的结尾（猫主题用猫结尾，狗主题用狗结尾）：\n  - 猫主题："Anyway, my cat is snoring now. Good night." / "Okay, my cat is asleep on my lap. I should probably move." / "My cat just flopped over. Time to sleep, I guess."\n  - 狗主题："Anyway, my dog is snoring now. Good night." / "Okay, my dog is asleep against my leg. I should probably move." / "My dog just flopped over. Time to sleep, I guess."\n- 禁止加粗、禁止 Markdown。`
+        : `\n\n【结语收尾方式（中文内容）】\n- 中文内容**禁止**使用「请点赞并订阅我的频道」等营销腔结尾。\n- 推荐收尾方式（任选其一，融入结语段落末尾）：\n  - 「写完了。狗/猫在打呼噜，我也睡了。希望你今晚睡个好觉。」\n  - 「好吧，我写到这儿也累了。你也在学慢慢来吧。我们都是。不急。」\n  - 「就这样吧。关了灯，猫/狗在旁边，你也睡吧。晚安。」\n- 禁止加粗、禁止 Markdown。`)
     : '';
 
   return `【总选题】${topic}
 【全文主题】${coreTheme}
 【逻辑主线】${logicLine}
 
-【当前章节】${chapterIndex + 1} / ${totalChapters} — ${chapter.title}
+【本章】${chapter.title}
 ${charRule}
 
 【本章核心】${chapter.core_brief}
@@ -370,7 +371,7 @@ export function buildParallelMergeUserPrompt(
    - ❌ 禁止截断任何段落
    - ❌ 禁止合并或拆分句子
    - ❌ 禁止替换词语
-   - ❌ 禁止修改末尾 CTA
+   - ❌ 禁止修改末尾自然结尾
 
 6. ${lengthRule}
 

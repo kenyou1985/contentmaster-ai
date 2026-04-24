@@ -234,7 +234,7 @@ import {
   mindfulMergeCharClamp,
 } from '../services/mindfulScriptPostProcess';
 
-function clampSystemSummary(raw: string, maxLen = 960): string {
+function clampSystemSummary(raw: string, maxLen = 1600): string {
   const s = raw.replace(/\s+/g, ' ').trim();
   return s.length > maxLen ? `${s.slice(0, maxLen)}…` : s;
 }
@@ -327,8 +327,8 @@ function getParallelPipelineBundle(
       ? '你是治愈心理学频道的制作人，负责生成中文 TTS 口播脚本。'
       : 'You are the lead producer for a faceless YouTube healing-psychology channel (cat/dog/human emotional metaphors). Plan and write for **English** TTS.';
     mergeEditorLine = isZhOutput
-      ? '你是资深编辑，合并中文口播脚本，保持温暖、口语化、心理咨询师风格的表达。结尾固定为：请点赞并订阅我的频道。'
-      : 'You are a senior editor merging English voice-over scripts; keep warm, spoken, therapist-like English. End with a simple subscribe line: say "my channel", never the brand name.';
+      ? '你是资深编辑，合并中文口播脚本，保持温暖、口语化、真诚的叙事风格。中文内容应以第一人称「我」为中心，分享真实经历，段落长短不一，允许口语打断和自嘲。禁止使用「请点赞并订阅我的频道」等营销腔结尾。结尾应为随意、自嘲或开放式的自然收尾。'
+      : 'You are a senior editor merging English voice-over scripts; keep warm, spoken, authentic English like a real person sharing their experience. Use first-person "I" as the dominant voice, not "you" or "your body". Allow for natural imperfections, self-corrections, and uneven paragraph lengths. Never add a "Please like and subscribe" CTA — preserve any casual ending that sounds like a friend saying goodnight.';
   }
 
   const voiceRules = `1. 严格遵循下列「频道创作铁律摘要」与人设。\n2. 禁止【】、[] 舞台提示、禁止「模块一/第一节」等露骨章节标、禁止 Markdown 标题层级、避免纯列表骨架。\n【频道创作铁律摘要】\n${clampSystemSummary(nicheConfig.systemInstruction)}`;
@@ -507,8 +507,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
   // 多语言 CTA 结尾语映射
   const MINDFUL_LANGUAGE_CTAS: Record<MindfulLanguage, { cta: string; ctaRegex: RegExp }> = {
-    'zh': { cta: '请点赞并订阅我的频道。', ctaRegex: /请点赞并订阅我的频道/ },
-    'en': { cta: 'Please like and subscribe to my channel.', ctaRegex: /please like and subscribe to my channel/i },
+    'zh': { cta: '写完了。狗/猫在打呼噜，我也睡了。希望你今晚睡个好觉。', ctaRegex: /(希望[^\n。！？]*睡个好觉|你也不是一个人|一起慢慢来|不急|我也睡了|晚安|就这样吧)$/ },
+    'en': { cta: 'Anyway, my dog is snoring now. Good night.', ctaRegex: /(?:my dog is snoring|Good night|Time to sleep|my dog is asleep|I should go)$/i },
     'ko': { cta: '좋아요와 구독 부탁드립니다.', ctaRegex: /좋아요와 구독/i },
     'ja': { cta: 'いいねと登録をお願いします。', ctaRegex: /いいね.*登録/i },
     'es': { cta: 'Por favor, dale like y suscríbete a mi canal.', ctaRegex: /like.*suscr/i },
@@ -1777,7 +1777,7 @@ ${segmentSourceText}
   }, []);
 
   const emptyYiJingChapter = (i: number): YiJingChapterPlan => ({
-    title: `第 ${i + 1} 章（请修改标题）`,
+    title: `段落 ${i + 1}（请修改为自然标题）`,
     min_chars: 800,
     max_chars: 1200,
     core_brief: '',
@@ -2072,18 +2072,34 @@ ${segmentSourceText}
         norm = truncateMindfulScript(norm, MINDFUL_EN_SCRIPT_CHARS_MAX);
       }
 
-      // 提取并保留文末 CTA（互动引导）
+      // 检测文章主题：猫还是狗，用于生成匹配的结尾正则
+      const catKeywords = /\b(cat|kitten|meow|purr|whisker|feline)\b/i;
+      const dogKeywords = /\b(dog|puppy|paw|canine|woof|pet)\b/i;
+      const articleAnimal = catKeywords.test(norm) && !dogKeywords.test(norm) ? 'cat' : 'dog';
+
+      // 提取并保留文末自然结尾（根据主题动态选择 animal）
       const ctaPatterns = [
-        // 英文 CTA - 更宽松的匹配
-        /(If this resonated with you,?\s*(?:please\s+)?(?:like\s+and\s+subscribe|subscribe\s+to\s+my\s+channel)[^.]*(?:\.)?\s*)$/i,
-        /(please\s+(?:like\s+and\s+)?subscribe\s+to\s+my\s+channel[^.]*(?:\.)?\s*)$/i,
-        /(like\s+and\s+subscribe\s+to\s+my\s+channel[^.]*(?:\.)?\s*)$/i,
-        /(subscribe\s+to\s+my\s+channel[^.]*(?:\.)?\s*)$/i,
-        // 中文 CTA - 使用捕获组
+        // 英文自然收尾（随意/晚安式，无 animal 关键词）
+        /((?:Anyway[,\s][^\n]{0,80}(?:Good night|Time to sleep|I should go)[^\n]{0,40}?)\s*)$/i,
+        // 英文自然收尾（animal 相关）
+        articleAnimal === 'cat'
+          ? /((?:My cat[^\n]{0,80}(?:snoring|asleep|flopped|pillow|curled)[^\n]{0,40}?)\s*)$/i
+          : /((?:My dog[^\n]{0,80}(?:snoring|asleep|flopped|pillow|curled)[^\n]{0,40}?)\s*)$/i,
+        articleAnimal === 'cat'
+          ? /((?:Okay[,\s][^\n]{0,80}(?:asleep|nap|rest|purring)[^\n]{0,40}?)\s*)$/i
+          : /((?:Okay[,\s][^\n]{0,80}(?:asleep|nap|rest)[^\n]{0,40}?)\s*)$/i,
+        /((?:Good night[^\n]{0,60})\s*)$/i,
+        /((?:Time to (?:sleep|go)[^\n]{0,40})\s*)$/i,
+        // 中文自然收尾
+        /((?:希望[^\n。！？]{0,60}[。！？]?)\s*)$/i,
+        /((?:[^\n。！？]*(?:你也不是一个人|至少我懂|一起慢慢来|不急|我也睡了|晚安)[^\n。！？]{0,60}[。！？]?)\s*)$/i,
+        /((?:[^\n。！？]*(?:写到这儿|写到这|写到这了)[^\n。！？]{0,60}[。！？]?)\s*)$/i,
+        /((?:[^\n。！？]*(?:就这样吧|好吧|行吧)[^\n。！？]{0,60}[。！？]?)\s*)$/i,
+        // 英文旧订阅CTA（向后兼容）
+        /(If this resonated with you[^\n]{0,100}\s*)$/i,
+        /(please\s+(?:like\s+and\s+)?subscribe[^\n]{0,60}\s*)$/i,
+        // 中文硬广CTA（向后兼容）
         /((?:请点赞|喜欢本文|如果觉得有收获)[^\n。！？]{0,100}[。！？]?)\s*$/i,
-        /((?:评论区|留言区|留言)[^\n。！？]{0,100}[。！？]?)\s*$/i,
-        /((?:咱们下期|下期继续)[^\n。！？]{0,100}[。！？]?)\s*$/i,
-        /((?:转发给|分享给)[^\n。！？]{0,100}[。！？]?)\s*$/i,
       ];
       let savedCta = '';
       for (const pattern of ctaPatterns) {
@@ -2097,7 +2113,7 @@ ${segmentSourceText}
       // 如果没有匹配到 CTA，尝试从末尾提取最后一段
       if (!savedCta && norm.length > 50) {
         const lastParagraph = norm.split(/\n\n+/).filter(p => p.trim()).pop() || '';
-        const ctaKeywords = ['like and subscribe', 'subscribe to my channel', 'please like', 'if this resonated', '请点赞', '喜欢本文', '如果觉得'];
+        const ctaKeywords = ['snoring', 'Good night', 'Time to sleep', 'asleep on my lap', 'I should go', 'flopped over', '请点赞', '喜欢本文', '如果觉得'];
         for (const keyword of ctaKeywords) {
           if (lastParagraph.toLowerCase().includes(keyword.toLowerCase())) {
             savedCta = lastParagraph.trim();
@@ -2118,7 +2134,7 @@ ${segmentSourceText}
         }
         return [{ topic: sel[0].title, content: norm }];
       });
-      pushYiJingLog(`合并完成，终稿约 ${norm.length} 字` + (savedCta ? '（已保留末尾CTA）' : ''));
+      pushYiJingLog(`合并完成，终稿约 ${norm.length} 字` + (savedCta ? '（已保留末尾自然结尾）' : ''));
 
       // ===== 原创爆款模块：去AI味清洗 + AI味检测 =====
       pushYiJingLog('[去AI味] 开始内容清洗...');
@@ -2163,7 +2179,7 @@ ${segmentSourceText}
           // 如果保留了 CTA 但去 AI 味后丢失了，则添加回来
           if (savedCta && !hasCtaInResult) {
             cleanedPolish = cleanedPolish.trim() + '\n\n' + savedCta;
-            pushYiJingLog('[去AI味] 已补充保留的末尾 CTA');
+            pushYiJingLog('[去AI味] 已补充保留的末尾自然结尾');
           }
 
           if (!/[。！？.!?]$/.test(cleanedPolish.trim())) {
@@ -2192,29 +2208,31 @@ ${segmentSourceText}
         pushYiJingLog(`[去AI味] ❌ 清洗失败: ${e?.message || e}`);
       }
 
-      // AI 味检测
-      pushYiJingLog('[AI检测] 开始检测内容 AI 味...');
+      // 人类感检测
+      pushYiJingLog('[人类感检测] 开始检测内容人类感...');
       setYiJingIsRunningAiDetection(true);
       try {
         const detection = detectAiFeatures(norm);
         setYiJingAiDetection(detection);
-        pushYiJingLog(`[AI检测] 完成 - AI 味等级: ${detection.level === 'weak' ? '弱' : detection.level === 'medium' ? '中' : '强'} (${detection.score}分)`);
+        pushYiJingLog(`[人类感检测] 完成 - 人类感 ${detection.score}/10分 (${detection.level === 'weak' ? '优秀' : detection.level === 'medium' ? '一般' : '较弱'})`);
         if (detection.issues.length > 0) {
           detection.issues.slice(0, 3).forEach(issue => {
-            pushYiJingLog(`[AI检测] 问题: ${issue}`);
+            pushYiJingLog(`[人类感检测] 问题: ${issue}`);
           });
         }
         if (antiAiSuccess) {
           const polishingResult = antiAiPolishingResultRef;
           if (polishingResult?.isEffective) {
-            pushYiJingLog('[AI检测] ✅ 验证通过：AI 去味清洗已成功执行');
+            pushYiJingLog('[人类感检测] ✅ 清洗效果良好');
           } else {
-            pushYiJingLog('[AI检测] ⚠️ 验证通过但口语词添加较少，建议再次清洗');
+            pushYiJingLog('[人类感检测] ⚠️ 清洗完成但口语特征增加较少');
           }
         }
         if (detection.level === 'strong') {
-          pushYiJingLog('[AI检测] ⚠️ AI 味过强，建议点击"重新去AI味"按钮再次清洗');
-          toast.warning('AI 味检测为"强"，建议继续清洗', 5000);
+          pushYiJingLog('[人类感检测] ⚠️ 人类感较弱（<5分），建议点击"重新去AI味"按钮再次清洗');
+          toast.warning('人类感检测为"较弱"，建议继续清洗', 5000);
+        } else {
+          pushYiJingLog('[人类感检测] ✅ 人类感良好（≥5分），内容可发布');
         }
       } catch (e: any) {
         pushYiJingLog(`[AI检测] 检测失败: ${e?.message || e}`);
@@ -2311,12 +2329,12 @@ ${segmentSourceText}
         // 重新检测
         const detection = detectAiFeatures(cleanedPolish);
         setYiJingAiDetection(detection);
-        pushYiJingLog(`[AI检测] 重新检测完成 - AI 味等级: ${detection.level === 'weak' ? '弱' : detection.level === 'medium' ? '中' : '强'} (${detection.score}分)`);
+        pushYiJingLog(`[人类感检测] 重新检测完成 - 人类感 ${detection.score}/10分 (${detection.level === 'weak' ? '优秀' : detection.level === 'medium' ? '一般' : '较弱'})`);
 
         if (detection.level === 'strong') {
-          toast.warning('AI 味仍为"强"，可继续清洗', 5000);
+          toast.warning('人类感仍为"较弱"，可继续清洗', 5000);
         } else {
-          toast.success(`AI 味检测为"${detection.level === 'weak' ? '弱' : '中'}"，清洗效果良好`, 5000);
+          toast.success(`人类感检测为"${detection.level === 'weak' ? '优秀' : '一般'}"，清洗效果良好`, 5000);
         }
       } else {
         pushYiJingLog('[去AI味] 清洗返回为空');
@@ -2772,18 +2790,34 @@ ${segmentSourceText}
             finalText = truncateMindfulScript(finalText, MINDFUL_EN_SCRIPT_CHARS_MAX);
           }
 
-          // 提取并保留文末 CTA（互动引导）
+          // 检测文章主题：猫还是狗，用于生成匹配的结尾正则
+          const catKeywordsBatch = /\b(cat|kitten|meow|purr|whisker|feline)\b/i;
+          const dogKeywordsBatch = /\b(dog|puppy|paw|canine|woof|pet)\b/i;
+          const articleAnimalBatch = catKeywordsBatch.test(finalText) && !dogKeywordsBatch.test(finalText) ? 'cat' : 'dog';
+
+          // 提取并保留文末自然结尾（根据主题动态选择 animal）
           const ctaPatterns = [
-            // 英文 CTA - 更宽松的匹配
-            /(If this resonated with you,?\s*(?:please\s+)?(?:like\s+and\s+subscribe|subscribe\s+to\s+my\s+channel)[^.]*(?:\.)?\s*)$/i,
-            /(please\s+(?:like\s+and\s+)?subscribe\s+to\s+my\s+channel[^.]*(?:\.)?\s*)$/i,
-            /(like\s+and\s+subscribe\s+to\s+my\s+channel[^.]*(?:\.)?\s*)$/i,
-            /(subscribe\s+to\s+my\s+channel[^.]*(?:\.)?\s*)$/i,
-            // 中文 CTA - 使用捕获组
+            // 英文自然收尾（随意/晚安式，无 animal 关键词）
+            /((?:Anyway[,\s][^\n]{0,80}(?:Good night|Time to sleep|I should go)[^\n]{0,40}?)\s*)$/i,
+            // 英文自然收尾（animal 相关）
+            articleAnimalBatch === 'cat'
+              ? /((?:My cat[^\n]{0,80}(?:snoring|asleep|flopped|pillow|curled)[^\n]{0,40}?)\s*)$/i
+              : /((?:My dog[^\n]{0,80}(?:snoring|asleep|flopped|pillow|curled)[^\n]{0,40}?)\s*)$/i,
+            articleAnimalBatch === 'cat'
+              ? /((?:Okay[,\s][^\n]{0,80}(?:asleep|nap|rest|purring)[^\n]{0,40}?)\s*)$/i
+              : /((?:Okay[,\s][^\n]{0,80}(?:asleep|nap|rest)[^\n]{0,40}?)\s*)$/i,
+            /((?:Good night[^\n]{0,60})\s*)$/i,
+            /((?:Time to (?:sleep|go)[^\n]{0,40})\s*)$/i,
+            // 中文自然收尾
+            /((?:希望[^\n。！？]{0,60}[。！？]?)\s*)$/i,
+            /((?:[^\n。！？]*(?:你也不是一个人|至少我懂|一起慢慢来|不急|我也睡了|晚安)[^\n。！？]{0,60}[。！？]?)\s*)$/i,
+            /((?:[^\n。！？]*(?:写到这儿|写到这|写到这了)[^\n。！？]{0,60}[。！？]?)\s*)$/i,
+            /((?:[^\n。！？]*(?:就这样吧|好吧|行吧)[^\n。！？]{0,60}[。！？]?)\s*)$/i,
+            // 英文旧订阅CTA（向后兼容）
+            /(If this resonated with you[^\n]{0,100}\s*)$/i,
+            /(please\s+(?:like\s+and\s+)?subscribe[^\n]{0,60}\s*)$/i,
+            // 中文硬广CTA（向后兼容）
             /((?:请点赞|喜欢本文|如果觉得有收获)[^\n。！？]{0,100}[。！？]?)\s*$/i,
-            /((?:评论区|留言区|留言)[^\n。！？]{0,100}[。！？]?)\s*$/i,
-            /((?:咱们下期|下期继续)[^\n。！？]{0,100}[。！？]?)\s*$/i,
-            /((?:转发给|分享给)[^\n。！？]{0,100}[。！？]?)\s*$/i,
           ];
           let savedCta = '';
           for (const pattern of ctaPatterns) {
@@ -2797,7 +2831,7 @@ ${segmentSourceText}
           // 如果没有匹配到 CTA，尝试从末尾提取最后一段
           if (!savedCta && finalText.length > 50) {
             const lastParagraph = finalText.split(/\n\n+/).filter(p => p.trim()).pop() || '';
-            const ctaKeywords = ['like and subscribe', 'subscribe to my channel', 'please like', 'if this resonated', '请点赞', '喜欢本文', '如果觉得'];
+            const ctaKeywords = ['snoring', 'Good night', 'Time to sleep', 'flopped', 'I should go', 'asleep', 'purring', '请点赞', '喜欢本文', '如果觉得'];
             for (const keyword of ctaKeywords) {
               if (lastParagraph.toLowerCase().includes(keyword.toLowerCase())) {
                 savedCta = lastParagraph.trim();
@@ -2808,7 +2842,7 @@ ${segmentSourceText}
 
           // ===== 自动生成流程：去AI味清洗 + AI味检测 =====
           pushYiJingLog('[去AI味] 开始深度去味改写（替换+添加）...');
-          pushYiJingLog(`[去AI味] 输入文本长度: ${(finalText || '').replace(/\s+/g, '').length} 字` + (savedCta ? '（已保留末尾CTA）' : ''));
+          pushYiJingLog(`[去AI味] 输入文本长度: ${(finalText || '').replace(/\s+/g, '').length} 字` + (savedCta ? '（已保留末尾自然结尾）' : ''));
 
           // 计算输出语言
           const isEnRevengeBatch = niche === NicheType.STORY_REVENGE && storyLanguage === StoryLanguage.ENGLISH;
@@ -2852,7 +2886,7 @@ ${segmentSourceText}
               }
               if (savedCta && !hasCtaInResult) {
                 cleanedPolish = cleanedPolish.trim() + '\n\n' + savedCta;
-                pushYiJingLog('[去AI味] 已补充保留的末尾 CTA');
+                pushYiJingLog('[去AI味] 已补充保留的末尾自然结尾');
               }
 
               if (!/[。！？.!?]$/.test(cleanedPolish.trim())) {
@@ -2872,27 +2906,27 @@ ${segmentSourceText}
             pushYiJingLog(`[去AI味] ❌ 清洗失败: ${e?.message || e}`);
           }
 
-          // AI 味检测
-          pushYiJingLog('[AI检测] 开始检测内容 AI 味...');
+          // 人类感检测
+          pushYiJingLog('[人类感检测] 开始检测内容人类感...');
           setYiJingIsRunningAiDetection(true);
           try {
             const detection = detectAiFeatures(finalText);
             setYiJingAiDetection(detection);
-            pushYiJingLog(`[AI检测] 完成 - AI 味等级: ${detection.level === 'weak' ? '弱' : detection.level === 'medium' ? '中' : '强'} (${detection.score}分)`);
+            pushYiJingLog(`[人类感检测] 完成 - 人类感 ${detection.score}/10分 (${detection.level === 'weak' ? '优秀' : detection.level === 'medium' ? '一般' : '较弱'})`);
             if (detection.issues.length > 0) {
               detection.issues.slice(0, 3).forEach(issue => {
-                pushYiJingLog(`[AI检测] 问题: ${issue}`);
+                pushYiJingLog(`[人类感检测] 问题: ${issue}`);
               });
             }
             if (antiAiSuccess) {
               if (antiAiPolishingResult?.isEffective) {
-                pushYiJingLog('[AI检测] ✅ 验证通过：AI 去味清洗已成功执行');
+                pushYiJingLog('[人类感检测] ✅ 清洗效果良好');
               } else {
-                pushYiJingLog('[AI检测] ⚠️ 验证通过但口语词添加较少，建议再次清洗');
+                pushYiJingLog('[人类感检测] ⚠️ 清洗完成但口语特征增加较少');
               }
             }
             if (detection.level === 'strong') {
-              pushYiJingLog('[AI检测] ⚠️ AI 味过强，建议点击"重新去AI味"按钮再次清洗');
+              pushYiJingLog('[人类感检测] ⚠️ 人类感较弱（<5分），建议点击"重新去AI味"按钮再次清洗');
             }
           } catch (e: any) {
             pushYiJingLog(`[AI检测] 检测失败: ${e?.message || e}`);
@@ -5312,7 +5346,7 @@ ${segmentSourceText}
                                       {parsedOutline.chapters.map((ch, i) => (
                                         <div key={i} className="rounded border border-slate-700/80 bg-black/30 p-2">
                                           <div className="text-[10px] text-cyan-300 font-medium mb-1">
-                                            第 {i + 1} 章 · {ch.title}
+                                            段落 {i + 1} · {ch.title}
                                           </div>
                                           <div className="text-[10px] text-slate-400 mb-1">
                                             {ch.min_chars}–{ch.max_chars} 字
@@ -5537,7 +5571,7 @@ ${segmentSourceText}
                                 className="rounded-lg border border-slate-700/80 bg-slate-950/60 p-3 space-y-2"
                               >
                                 <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <span className="text-[11px] text-slate-500">第 {i + 1} 章</span>
+                                  <span className="text-[11px] text-slate-500">段落 {i + 1}</span>
                                   {yiJingOutlineEditDraft.chapters.length > 1 && (
                                     <button
                                       type="button"
@@ -5661,7 +5695,7 @@ ${segmentSourceText}
                                 className="rounded-lg border border-slate-700/80 bg-slate-950/60 p-3 space-y-1.5"
                               >
                                 <div className="text-xs font-medium text-slate-100">
-                                  第 {i + 1} 章 · {ch.title}
+                                  段落 {i + 1} · {ch.title}
                                 </div>
                                 <div className="text-[11px] text-slate-500">
                                   建议字数：{ch.min_chars}～{ch.max_chars} 字
@@ -5835,7 +5869,8 @@ ${segmentSourceText}
                                 yiJingAiDetection.level === 'medium' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' :
                                 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
                               }`}>
-                                AI味:{yiJingAiDetection.level === 'weak' ? '弱' : yiJingAiDetection.level === 'medium' ? '中' : '强'} {yiJingAiDetection.score}分
+                                人类感:{yiJingAiDetection.score}/10分
+                                ({yiJingAiDetection.level === 'weak' ? '优秀' : yiJingAiDetection.level === 'medium' ? '一般' : '较弱'})
                               </span>
                             )}
                             {yiJingIsRunningAiDetection && (
@@ -5869,32 +5904,76 @@ ${segmentSourceText}
                             </button>
                           </div>
                         </div>
-                        {/* AI 味检测详情 */}
+                        {/* 人类感检测详情（10维度） */}
                         {yiJingAiDetection && (
                           <div className="mb-2 p-2 rounded bg-slate-900/60 border border-slate-800 space-y-1">
-                            <div className="flex gap-3 text-[9px]">
+                            {/* 维度1-5 */}
+                            <div className="grid grid-cols-5 gap-x-2 gap-y-0.5 text-[9px]">
                               <div className="flex items-center gap-1">
-                                <span className="text-slate-500">模板词:</span>
-                                <span className={yiJingAiDetection.dimensions.templateWords > 60 ? 'text-rose-400' : yiJingAiDetection.dimensions.templateWords > 30 ? 'text-amber-400' : 'text-emerald-400'}>
-                                  {yiJingAiDetection.dimensions.templateWords}%
+                                <span className="text-slate-500">D1模板:</span>
+                                <span className={yiJingAiDetection.dimensions.templateWords < 50 ? 'text-rose-400' : 'text-emerald-400'}>
+                                  {yiJingAiDetection.dimensions.templateWords}
                                 </span>
                               </div>
                               <div className="flex items-center gap-1">
-                                <span className="text-slate-500">句式:</span>
-                                <span className={yiJingAiDetection.dimensions.sentencePattern > 60 ? 'text-rose-400' : yiJingAiDetection.dimensions.sentencePattern > 30 ? 'text-amber-400' : 'text-emerald-400'}>
-                                  {yiJingAiDetection.dimensions.sentencePattern}%
+                                <span className="text-slate-500">D2口语:</span>
+                                <span className={yiJingAiDetection.dimensions.colloquialDensity < 50 ? 'text-rose-400' : 'text-emerald-400'}>
+                                  {yiJingAiDetection.dimensions.colloquialDensity}
                                 </span>
                               </div>
                               <div className="flex items-center gap-1">
-                                <span className="text-slate-500">人味:</span>
-                                <span className={yiJingAiDetection.dimensions.humanFeatures < 40 ? 'text-rose-400' : yiJingAiDetection.dimensions.humanFeatures < 70 ? 'text-amber-400' : 'text-emerald-400'}>
-                                  {100 - yiJingAiDetection.dimensions.humanFeatures}%
+                                <span className="text-slate-500">D3句式:</span>
+                                <span className={yiJingAiDetection.dimensions.sentenceVariation < 50 ? 'text-rose-400' : 'text-emerald-400'}>
+                                  {yiJingAiDetection.dimensions.sentenceVariation}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <span className="text-slate-500">D4段落:</span>
+                                <span className={yiJingAiDetection.dimensions.paragraphVariation < 50 ? 'text-rose-400' : 'text-emerald-400'}>
+                                  {yiJingAiDetection.dimensions.paragraphVariation}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <span className="text-slate-500">D5我称:</span>
+                                <span className={yiJingAiDetection.dimensions.firstPersonVoice < 50 ? 'text-rose-400' : 'text-emerald-400'}>
+                                  {yiJingAiDetection.dimensions.firstPersonVoice}
+                                </span>
+                              </div>
+                              {/* 维度6-10 */}
+                              <div className="flex items-center gap-1">
+                                <span className="text-slate-500">D6细节:</span>
+                                <span className={yiJingAiDetection.dimensions.concreteDetails < 50 ? 'text-rose-400' : 'text-emerald-400'}>
+                                  {yiJingAiDetection.dimensions.concreteDetails}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <span className="text-slate-500">D7自嘲:</span>
+                                <span className={yiJingAiDetection.dimensions.selfDeprecation < 50 ? 'text-rose-400' : 'text-emerald-400'}>
+                                  {yiJingAiDetection.dimensions.selfDeprecation}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <span className="text-slate-500">D8结尾:</span>
+                                <span className={yiJingAiDetection.dimensions.endingQuality < 50 ? 'text-rose-400' : 'text-emerald-400'}>
+                                  {yiJingAiDetection.dimensions.endingQuality}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <span className="text-slate-500">D9结构:</span>
+                                <span className={yiJingAiDetection.dimensions.storyStructure < 50 ? 'text-rose-400' : 'text-emerald-400'}>
+                                  {yiJingAiDetection.dimensions.storyStructure}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <span className="text-slate-500">D10狗名:</span>
+                                <span className={yiJingAiDetection.dimensions.nameConsistency < 50 ? 'text-rose-400' : 'text-emerald-400'}>
+                                  {yiJingAiDetection.dimensions.nameConsistency}
                                 </span>
                               </div>
                             </div>
                             {yiJingAiDetection.issues.length > 0 && yiJingAiDetection.level !== 'weak' && (
-                              <div className="text-[9px] text-slate-500">
-                                建议: {yiJingAiDetection.issues.slice(0, 2).join('; ')}
+                              <div className="text-[9px] text-amber-400">
+                                问题: {yiJingAiDetection.issues.slice(0, 2).join('; ')}
                               </div>
                             )}
                           </div>
@@ -6150,14 +6229,15 @@ ${segmentSourceText}
                                 </h3>
 
                                 <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
-                                    {/* AI 味检测显示 */}
+                                    {/* 人类感检测显示 */}
                                     {yiJingAiDetection && (
                                         <span className={`text-xs font-bold px-2 py-1 rounded ${
                                           yiJingAiDetection.level === 'weak' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' :
                                           yiJingAiDetection.level === 'medium' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' :
                                           'bg-rose-500/20 text-rose-300 border border-rose-500/40'
                                         }`}>
-                                          AI味:{yiJingAiDetection.level === 'weak' ? '弱' : yiJingAiDetection.level === 'medium' ? '中' : '强'} {yiJingAiDetection.score}分
+                                          人类感:{yiJingAiDetection.score}/10分
+                                          ({yiJingAiDetection.level === 'weak' ? '优秀' : yiJingAiDetection.level === 'medium' ? '一般' : '较弱'})
                                         </span>
                                     )}
                                     {yiJingIsRunningAiDetection && (
