@@ -292,6 +292,16 @@ function getParallelPipelineBundle(
     mergeEditorLine = '你是资深口播编辑，熟悉曾仕强讲学风格。';
   }
 
+
+  if (niche === NicheType.TCM_METAPHYSICS) {
+    logicBlueprint = PARALLEL_LOGIC_GENERIC;
+    channelLabel = '倪海厦中医玄学风格长视频口播';
+    contentKindOutline = '口播大纲';
+    contentKindMerge = '口播';
+    directorLine = '你是倪海厦教授风格的中医玄学长视频总编导。';
+    mergeEditorLine = '你是资深口播编辑，熟悉倪海厦讲学风格。';
+  }
+
   if (niche === NicheType.STORY_REVENGE) {
     channelLabel = `「复仇故事」${storyLanguage} 叙事`;
     contentKindOutline =
@@ -563,6 +573,34 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const [yiJingAiDetection, setYiJingAiDetection] = useState<AiDetectionResult | null>(null);
   const [yiJingIsRunningAiDetection, setYiJingIsRunningAiDetection] = useState(false);
   const [yiJingIsPolishing, setYiJingIsPolishing] = useState(false);
+  // ============================================================
+  // TCM 并行 Pipeline 状态（对齐易经赛道架构）
+  // ============================================================
+  const [tcmSegDrafts, setTcmSegDrafts] = useState<string[]>([]);
+  const [tcmSegStatus, setTcmSegStatus] = useState<('idle' | 'running' | 'done' | 'error')[]>([]);
+  const [tcmPipelineLogs, setTcmPipelineLogs] = useState<string[]>([]);
+  const [tcmMergedOutput, setTcmMergedOutput] = useState('');
+  const [tcmPipelineBusy, setTcmPipelineBusy] = useState(false);
+  const [tcmAiDetection, setTcmAiDetection] = useState<AiDetectionResult | null>(null);
+  const [tcmIsRunningAiDetection, setTcmIsRunningAiDetection] = useState(false);
+  const [tcmIsPolishing, setTcmIsPolishing] = useState(false);
+
+  const pushTcmLog = useCallback((line: string) => {
+    const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+    setTcmPipelineLogs((prev) => [...prev.slice(-220), `[${ts}] ${line}`]);
+  }, []);
+
+  const clearTcmPipelinePanel = useCallback(() => {
+    setTcmSegDrafts([]);
+    setTcmSegStatus([]);
+    setTcmMergedOutput('');
+    setTcmPipelineBusy(false);
+    setTcmAiDetection(null);
+    setTcmIsRunningAiDetection(false);
+    setTcmIsPolishing(false);
+    setTcmPipelineLogs([]);
+  }, []);
+
 
   type ParallelTopicStage = 'idle' | 'outline' | 'segments' | 'merge' | 'done' | 'error';
   type ParallelTopicRun = {
@@ -2221,7 +2259,7 @@ ${segmentSourceText}
           });
         }
         if (antiAiSuccess) {
-          const polishingResult = antiAiPolishingResultRef;
+          const polishingResult = antiAiPolishingResult;
           if (polishingResult?.isEffective) {
             pushYiJingLog('[人类感检测] ✅ 清洗效果良好');
           } else {
@@ -2347,6 +2385,214 @@ ${segmentSourceText}
       setYiJingIsPolishing(false);
     }
   }, [yiJingMergedOutput, apiKey, provider, pushYiJingLog, toast]);
+  // ============================================================
+  // TCM 并行 Pipeline 函数（对齐易经赛道架构）
+  // ============================================================
+
+  /** TCM 并行生成分段（5段，Promise.all 并行） */
+  const handleTcmRunSegments = useCallback(async () => {
+    const sel = topics.filter((t) => t.selected);
+    if (!sel[0]) {
+      toast.warning('请先选择一个选题');
+      return;
+    }
+    if (!apiKey?.trim()) {
+      toast.error('请先配置 API Key');
+      return;
+    }
+    initializeGemini(apiKey, { provider });
+    const config = NICHES[niche];
+    const sys = config.systemInstruction;
+    const bundle = getParallelPipelineBundle(
+      niche,
+      scriptLengthMode,
+      storyLanguage,
+      storyDuration,
+      config,
+      mindfulLanguage
+    );
+    const topicTitle = sel[0].title;
+    // 倪海厦风格5大模块
+    const chapters: YiJingChapterPlan[] = [
+      { title: '第一部分：直击痛点，反常识破局', min_chars: 800, max_chars: 1600, core_brief: '亲切开场+抛出错误做法+打破常识', opening_echo: '', closing_snippet_hint: '引出下一个规律', bridge_to_next: '讲完了第一部分，现在来看第二部分' },
+      { title: '第二部分：引入中医天道规律与阴阳转换', min_chars: 800, max_chars: 1600, core_brief: '引入阴阳/五行/时辰，讲解天道轮回、不可逆转的规律感', opening_echo: '刚才讲完了第一部分，现在来看第二部分', closing_snippet_hint: '故事推导出人性弱点', bridge_to_next: '讲完了第二部分，现在来看第三部分' },
+      { title: '第三部分：海量正反面故事对冲', min_chars: 800, max_chars: 1600, core_brief: '通过故事推导出人性弱点', opening_echo: '刚才讲完了第二部分，现在来看第三部分', closing_snippet_hint: '给出最落地的实操心法', bridge_to_next: '讲完了第三部分，现在来看第四部分' },
+      { title: '第四部分：给出最落地的实操心法', min_chars: 800, max_chars: 1600, core_brief: '列出3-5条极接地气建议，结合吃饭、说话、睡觉、交友细节', opening_echo: '刚才讲完了第三部分，现在来看第四部分', closing_snippet_hint: '升华境界，通透结语', bridge_to_next: '讲完了第四部分，现在来看第五部分' },
+      { title: '第五部分：升华境界，通透结语', min_chars: 800, max_chars: 1600, core_brief: '总结+倪海厦霸气金句收尾', opening_echo: '刚才讲完了第四部分，现在来看第五部分', closing_snippet_hint: '霸气收尾', bridge_to_next: '' },
+    ];
+    const n = 5;
+    setTcmPipelineBusy(true);
+    setTcmSegDrafts(Array(n).fill(''));
+    setTcmSegStatus(Array(n).fill('idle'));
+    pushTcmLog(`并行生成 ${n} 段（倪海厦风格）…`);
+    const segDone = new Set<number>();
+    setBatchProgress({ current: 0, total: n, hint: `并行生成 0/${n} 段` });
+
+    try {
+      const results = await Promise.all(
+        chapters.map(async (ch, idx) => {
+          setTcmSegStatus((prev) => {
+            const next = [...prev];
+            next[idx] = 'running';
+            return next;
+          });
+          pushTcmLog(`第 ${idx + 1}/${n} 段 开始（${ch.title}）…`);
+          try {
+            const user = buildParallelSegmentUserPrompt(
+              {
+                topic: topicTitle,
+                coreTheme: '中医玄学·倪海厦风格·直击痛点·故事对冲·落地实操',
+                logicLine: ch.description,
+                chapter: ch,
+                chapterIndex: idx,
+                totalChapters: n,
+              },
+              bundle.segment
+            );
+            let local = '';
+            await streamContentGeneration(user, sys, (c) => {
+              local += c;
+              setTcmSegDrafts((prev) => {
+                const arr = [...prev];
+                arr[idx] = local;
+                return arr;
+              });
+            }, undefined, { maxTokens: 8192, fallbackModelOnStall: 'deepseek-v4-flash' });
+            setTcmSegStatus((prev) => {
+              const next = [...prev];
+              next[idx] = 'done';
+              return next;
+            });
+            pushTcmLog(`第 ${idx + 1}/${n} 段 完成（约 ${local.length} 字）`);
+            segDone.add(idx);
+            setBatchProgress({
+              current: segDone.size,
+              total: n,
+              hint: `并行生成 ${segDone.size}/${n} 段`,
+            });
+            return local;
+          } catch (err: any) {
+            setTcmSegStatus((prev) => {
+              const next = [...prev];
+              next[idx] = 'error';
+              return next;
+            });
+            pushTcmLog(`第 ${idx + 1} 段 错误：${err?.message || err}`);
+            segDone.add(idx);
+            setBatchProgress({
+              current: segDone.size,
+              total: n,
+              hint: `并行生成 ${segDone.size}/${n} 段（含失败）`,
+            });
+            return `[本段生成失败：${err?.message || err}]`;
+          }
+        })
+      );
+      setTcmSegDrafts(results);
+      pushTcmLog('全部分段请求已结束');
+      setBatchProgress({ current: n, total: n, hint: '各段请求已结束' });
+    } finally {
+      setTcmPipelineBusy(false);
+      setTimeout(() => setBatchProgress(null), 900);
+    }
+  }, [
+    apiKey, provider, niche, scriptLengthMode, storyLanguage, storyDuration,
+    topics, pushTcmLog, toast,
+  ]);
+
+  /** TCM 合并终稿 */
+  const handleTcmMergeFinal = useCallback(async () => {
+    const sel = topics.filter((t) => t.selected);
+    if (!sel[0]) {
+      toast.warning('请先选择一个选题');
+      return;
+    }
+    const parts = tcmSegDrafts.filter((s) => s && s.trim());
+    if (parts.length === 0) {
+      toast.error('没有可合并的分段正文');
+      return;
+    }
+    if (!apiKey?.trim()) {
+      toast.error('请先配置 API Key');
+      return;
+    }
+    initializeGemini(apiKey, { provider });
+    setTcmPipelineBusy(true);
+    pushTcmLog('合并初稿 + 统一全文语气…');
+    setBatchProgress({ current: 0, total: 1, hint: '正在合并、统一语气…' });
+
+    try {
+      const bundle = getParallelPipelineBundle(
+        niche,
+        scriptLengthMode,
+        storyLanguage,
+        storyDuration,
+        NICHES[niche],
+        mindfulLanguage
+      );
+      const combined = parts.join('\n\n');
+      const merged = await collectStreamText(
+        buildParallelMergeUserPrompt(sel[0].title, combined, parallelTotalTargetChars, bundle.merge),
+        bundle.mergeSystem,
+        32768
+      );
+      let norm = merged.trim();
+
+      // 倪海厦风格统一后处理
+      norm = norm.replace(/^.*?各位老友们好[\s\S]*?倪海厦[。！？].*?/g, '各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。');
+      norm = norm.replace(/^.*?好了[\s\S]*?我们开始上课[。！？].*?/g, '');
+      norm = norm.replace(/^第[一二三四五六七八九十\d]+节课[:：]?\s*/gm, '');
+
+      setTcmMergedOutput(norm);
+      setBatchProgress({ current: 1, total: 1, hint: '合并完成' });
+      pushTcmLog(`合并完成，终稿约 ${norm.length} 字`);
+
+      // 去AI味
+      pushTcmLog('[去AI味] 开始内容清洗...');
+      setTcmIsPolishing(true);
+      let antiAiPolished = '';
+      try {
+        const result = await polishTextForAntiAi(norm, {
+          apiKey,
+          onLog: (msg) => pushTcmLog(`[去AI味] ${msg}`),
+          onChunk: (chunk) => { antiAiPolished = chunk; },
+          outputLanguage: 'zh' as const,
+        }, apiKey, { provider });
+        setTcmIsPolishing(false);
+        if (antiAiPolished.trim()) {
+          setTcmMergedOutput(antiAiPolished.trim());
+          pushTcmLog(`[去AI味] 清洗完成（约 ${antiAiPolished.length} 字）`);
+        }
+      } catch (e: any) {
+        setTcmIsPolishing(false);
+        pushTcmLog(`[去AI味] 跳过：${e?.message}`);
+      }
+
+      // 保存到 generatedContents
+      setGeneratedContents((prev) => {
+        if (prev.length === 0) return [{ topic: sel[0].title, content: antiAiPolished.trim() || norm }];
+        const next = [...prev];
+        const hit = next.findIndex((x) => x.topic === sel[0].title);
+        if (hit >= 0) {
+          next[hit] = { ...next[hit], content: antiAiPolished.trim() || norm };
+        } else {
+          next.push({ topic: sel[0].title, content: antiAiPolished.trim() || norm });
+        }
+        return next;
+      });
+
+      toast.success('TCM 并行文案生成完成');
+    } catch (e: any) {
+      pushTcmLog(`合并失败：${e?.message}`);
+      toast.error(`合并失败：${e?.message}`);
+    } finally {
+      setTcmPipelineBusy(false);
+    }
+  }, [
+    apiKey, provider, niche, scriptLengthMode, storyLanguage, storyDuration,
+    topics, tcmSegDrafts, parallelTotalTargetChars, pushTcmLog, toast, mindfulLanguage,
+  ]);
+
 
   const handleYiJingAutoPilot = useCallback(async (): Promise<boolean> => {
     const sel = topics.filter((t) => t.selected);
@@ -6004,7 +6250,7 @@ ${segmentSourceText}
                 <div className="flex justify-end">
                      <button 
                         onClick={handleBatchGenerate}
-                        disabled={status === GenerationStatus.WRITING || yiJingPipelineBusy}
+                        disabled={status === GenerationStatus.WRITING || yiJingPipelineBusy || tcmPipelineBusy}
                         className="w-full md:w-auto px-8 py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg shadow-emerald-900/20 flex items-center justify-center gap-2 transition-all transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:transform-none"
                     >
                         {status === GenerationStatus.WRITING || yiJingPipelineBusy ? (
@@ -6025,6 +6271,119 @@ ${segmentSourceText}
             </div>
         )}
 
+
+        {/* ============================================================
+            TCM 并行 Pipeline（对齐易经赛道架构）
+        ============================================================ */}
+        {niche === NicheType.TCM_METAPHYSICS && (
+            <div className="mt-8 p-5 bg-slate-800/50 border border-slate-700 rounded-xl animate-in fade-in duration-400">
+                <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2">
+                        <span className="text-lg">📿</span>
+                        <span className="text-slate-200 font-semibold text-sm">倪海厦·分段并行工作台</span>
+                    </div>
+                    <button
+                        onClick={clearTcmPipelinePanel}
+                        disabled={tcmPipelineBusy}
+                        className="px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 text-slate-400 hover:text-white rounded border border-slate-600 transition-colors disabled:opacity-40"
+                    >
+                        清空
+                    </button>
+                </div>
+
+                {/* 控制按钮行 */}
+                <div className="flex flex-wrap items-center gap-2 mb-4">
+                    <button
+                        onClick={() => void handleTcmRunSegments()}
+                        disabled={tcmPipelineBusy || topics.filter((t) => t.selected).length !== 1}
+                        className="px-4 py-2 rounded-lg bg-cyan-900/40 border border-cyan-600/50 text-cyan-200 text-sm hover:bg-cyan-900/60 disabled:opacity-40 transition-colors"
+                        title="只勾选1个选题后点击"
+                    >
+                        并行生成分段
+                    </button>
+                    <button
+                        onClick={() => void handleTcmMergeFinal()}
+                        disabled={tcmPipelineBusy || !tcmSegDrafts.some((s) => s && s.trim())}
+                        className="px-4 py-2 rounded-lg bg-violet-900/40 border border-violet-600/50 text-violet-200 text-sm hover:bg-violet-900/60 disabled:opacity-40 transition-colors"
+                    >
+                        合并最终文案
+                    </button>
+                    {topics.filter((t) => t.selected).length !== 1 && (
+                        <span className="text-[10px] text-amber-400/90">
+                            只勾选1个选题即可使用
+                        </span>
+                    )}
+                </div>
+
+                {/* 分段状态展示（5格，对齐易经赛道） */}
+                {tcmSegStatus.length > 0 && (
+                    <div className="grid grid-cols-1 sm:grid-cols-5 gap-3 mb-4">
+                        {tcmSegStatus.map((st, i) => {
+                            const label = ['第一部分：直击痛点', '第二部分：引入天道规律', '第三部分：正反故事对冲', '第四部分：落地实操心法', '第五部分：升华结语'][i] || `第${i + 1}段`;
+                            const draft = tcmSegDrafts[i] || '';
+                            return (
+                                <div
+                                    key={i}
+                                    className="rounded-lg border border-slate-700 bg-slate-900/80 p-3 flex flex-col min-h-[120px]"
+                                >
+                                    <div className="flex items-center justify-between gap-2 mb-2">
+                                        <span className="text-xs font-medium text-slate-300 truncate">
+                                            第{i + 1}段 · {label}
+                                        </span>
+                                        <span className={`text-[10px] shrink-0 ${
+                                            st === 'done' ? 'text-emerald-400'
+                                                : st === 'running' ? 'text-amber-400'
+                                                : st === 'error' ? 'text-red-400'
+                                                : 'text-slate-500'
+                                        }`}>
+                                            {st === 'done' ? '✓ 完成'
+                                                : st === 'running' ? '生成中…'
+                                                : st === 'error' ? '失败'
+                                                : '待生成'}
+                                        </span>
+                                    </div>
+                                    <div className="flex-1 overflow-hidden">
+                                        <pre className="text-[10px] text-slate-400 whitespace-pre-wrap break-all line-clamp-6 leading-relaxed max-h-[100px] overflow-y-auto">
+                                            {draft || '（暂无内容）'}
+                                        </pre>
+                                    </div>
+                                    {draft && (
+                                        <div className="text-[9px] text-slate-600 mt-1 text-right">
+                                            {draft.length}字
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+
+                {/* 终稿预览 */}
+                {tcmMergedOutput && (
+                    <div className="mt-4">
+                        <div className="flex items-center gap-2 mb-2">
+                            <span className="text-xs font-medium text-amber-400">终稿预览</span>
+                            <span className="text-[10px] text-slate-500">({tcmMergedOutput.length}字)</span>
+                        </div>
+                        <div className="bg-slate-900/80 rounded-lg p-3 border border-slate-700 max-h-[400px] overflow-y-auto">
+                            <pre className="text-xs text-slate-300 whitespace-pre-wrap leading-relaxed">
+                                {tcmMergedOutput}
+                            </pre>
+                        </div>
+                    </div>
+                )}
+
+                {/* 日志 */}
+                {tcmPipelineLogs.length > 0 && (
+                    <div className="mt-4">
+                        <div className="text-[10px] text-slate-500 mb-1">处理日志</div>
+                        <pre className="text-[10px] text-slate-600 bg-slate-900/50 rounded p-2 max-h-[120px] overflow-y-auto leading-relaxed whitespace-pre-wrap">
+                            {tcmPipelineLogs.join('\n')}
+                        </pre>
+                    </div>
+                )}
+            </div>
+        )}
         {/* 治愈心理学：动画分镜（选题与「分段并行工作台」见上方，与全赛道一致） */}
         {niche === NicheType.MINDFUL_PSYCHOLOGY && (
           <div className="mt-8 p-4 bg-slate-800/50 border border-slate-700 rounded-xl">
