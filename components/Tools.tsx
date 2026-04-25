@@ -861,7 +861,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     const failedSet = new Set<number>();
 
     for (let i = 1; i <= maxShot; i++) {
-      const blockRegex = new RegExp(`(?:^|\\n)\\s*(?:镜头|鏡頭)${i}\\s*[\\s\\S]*?(?=(?:\\n\\s*(?:镜头|鏡頭)\\d+\\s*$)|\\n\\s*\\[(?:角色信息|场景信息|場景信息)\\]|$)`, 'm');
+      const blockRegex = new RegExp(`(?:^|\\n)\s*(?:镜头|鏡頭)${i}\s*[\s\\S]*?(?=(?:\\n\s*(?:镜头|鏡頭)\\d+\s*$)|\\n\s*\\[(?:角色信息|场景信息|場景信息)\\]|$)`, 'm');
       const block = script.match(blockRegex)?.[0] || '';
       if (!block) continue;
 
@@ -3055,14 +3055,14 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
 【当前段原文】
 ${seg}
 
-【强制规则】
+【强制规则——违反任意一条输出直接作废】
 1. 语气：倪海厦口吻，骂醒风格，直白犀利，大白话。
-2. 禁止开场白：第1段开头直接进入正文，不需要"各位老友们好…"（开场白由合并时统一添加）。
-3. 禁止章节标记：不得出现"第一节课："、"好了，我们开始上课"等标记。
-4. 字数：本段输出约${minLen}–${maxLen}字。
+2. 禁止任何开场白：严禁以"各位老友们好"、"好了，我们开始上课"、"我今天来跟大家讲"等任何招呼语开头，直接从正文第一句开始。
+3. 禁止章节标记：严禁出现"第一节课"、"第二课"、"第X节课"等标记。
+4. 字数：本段输出约${minLen}–${maxLen}字，不足或超量均为失败。
 5. 衔接：第2-5段开头用1-2句自然承接上文（如"我刚才讲了……，接下来……"）。
-6. TTS纯净：禁止**/*等Markdown符号，禁止括号内描述词。
-7. 直接输出正文，不要任何标题或分隔符。`;
+6. TTS纯净：严禁**/*等Markdown符号，严禁括号内描述词，严禁任何分隔符。
+7. 直接输出正文，从第一句正文开始，不要任何标题、引言或说明。`;
 
                         let local = '';
                         await streamContentGeneration(
@@ -3077,28 +3077,44 @@ ${seg}
                     })
                 );
 
-                // 清洗每段开头的重复标记
+                // 清洗每段开头的重复标记（\s=空白，[\s\S]=任意字符）
                 const cleaned = results.map((seg, idx) => {
                     let s = (seg || '').trim();
-                    s = s.replace(/^各位老友们好[\s\S]{0,80}倪海厦[。！？]\s*/g, '');
-                    s = s.replace(/^好了[\s\S]{0,30}我们开始上课[。！？]\s*/g, '');
-                    s = s.replace(/^第[一二三四五六七八九十\d]+节课[:：]?\s*/gm, '');
-                    return s;
+                    // 去除"各位老友们好……倪海厦。"类开场白（贪婪匹配到句号）
+                    s = s.replace(/^.*?各位老友们好[\s\S]*?倪海厦[。！？].*?/g, '');
+                    // 去除"好了……我们开始上课。"类过渡语
+                    s = s.replace(/^.*?好了[\s\S]*?我们开始上课[。！？].*?/g, '');
+                    // 去除"第X节课："标记
+                    s = s.replace(/^第[一二三四五六七八九十\\d]+节课[:：]?\s*/gm, '');
+                    // 去除段首可能残留的空行
+                    s = s.replace(/^(\\n\s*)+/, '');
+                    return s.trim();
                 });
 
-                // 合并5段为完整文章
-                const opening = '各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。\n\n诸位乡亲，';
-                const closing = '\n\n好了，我话讲完了，信不信随你。下课！';
-                const merged = opening + cleaned.join('\n\n') + closing;
+                // 合并5段为完整文章（用自然过渡句连接各段）
+                const merged = [
+                    '各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。今天我来跟大家讲一讲——',
+                    ...cleaned,
+                    '好了，我话讲完了，信不信随你。下课！',
+                ].join('\n\n');
 
-                localOutput = merged;
-                updateTask({ outputText: merged });
+                // 后处理：最终扫描，去除所有可能残留的开场白/过渡语/课程标记
+                // 后处理：最终扫描，去除所有可能残留的开场白/过渡语/课程标记
+                const postMerged = merged
+                    .replace(/^.*?各位老友们好[\s\\S]*?倪海厦[。！？].*?/g, '各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。')
+                    .replace(/^.*?好了[\s\\S]*?我们开始上课[。！？].*?/g, '')
+                    .replace(/^第[一二三四五六七八九十\\d]+节课[:：]?\s*/gm, '')
+                    .replace(/^(\\n\s*)+/gm, '\n')
+                    .trim();
+
+                localOutput = postMerged;
+                updateTask({ outputText: postMerged });
                 setGenerationProgress({ current: 100, total: 100 });
-                appendTerminal(`合并完成（共${merged.length}字）`);
+                appendTerminal(`合并完成（共${postMerged.length}字）`);
 
                 try {
                     const historyKey = getToolsHistoryKey(taskMode, taskNiche);
-                    saveHistory('tools', historyKey, merged, { input: taskInputText });
+                    saveHistory('tools', historyKey, postMerged, { input: taskInputText });
                 } catch {}
 
                 setIsGenerating(false);
