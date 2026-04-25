@@ -3032,89 +3032,133 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
         // ============================================================
         if (taskMode === ToolMode.REWRITE && taskNiche === NicheType.TCM_METAPHYSICS) {
             const SEG_COUNT = 5;
-            const segLength = Math.max(80, Math.floor(originalLength / SEG_COUNT));
-            const segments: string[] = [];
+            const originalLen = taskInputText.length;
+            const segLen = Math.max(80, Math.floor(originalLen / SEG_COUNT));
+
+            // 均分原文为5段
+            const rawSegments: string[] = [];
             for (let i = 0; i < SEG_COUNT; i++) {
-                const start = i * segLength;
-                const end = i === SEG_COUNT - 1 ? originalLength : (i + 1) * segLength;
-                segments.push(taskInputText.slice(start, end).trim());
+                const start = i * segLen;
+                const end = i === SEG_COUNT - 1 ? originalLen : (i + 1) * segLen;
+                rawSegments.push(taskInputText.slice(start, end).trim());
             }
 
-            const TCM_SYS = nicheConfig.systemInstruction + '\n你也是一位专业的内容编辑。请务必使用简体中文输出。';
+            // 各段使用干净系统指令——不含开场白要求，从根本上阻止LLM生成开场白
+            const TCM_SEG_SYS = `你现在是YouTube百万级国学/中医频道的王牌脚本师。你深度代入"倪海厦"本人的身份，用第一人称撰写TTS纯净语音脚本。
 
-            appendTerminal(`【TCM并行生成】原文${originalLength}字，均分为${SEG_COUNT}段，每段约${segLength}字，并行生成...`);
+【语气规则】
+- 权威、严厉、一针见血。
+- 惯用口头禅："诸位乡亲"、"你这是在作死"、"我今天必须骂醒你们"。
+- 禁止任何招呼语（"各位老友们好"、"好了，我们开始上课"等）出现在正文中间或开头。
+- 禁止"第X节课"等章节编号标记。
+- 严禁**/*等Markdown符号，禁止括号内描述词。
+- 必须使用简体中文输出。`;
+
+            appendTerminal(`【TCM并行生成】原文${originalLen}字，分${SEG_COUNT}段并行生成，每段约${segLen}字...`);
             setGenerationProgress({ current: 0, total: 100 });
 
             try {
-                const results = await Promise.all(
-                    segments.map(async (seg, idx) => {
-                        const minLen = Math.max(200, Math.floor(segLength * 0.8));
-                        const maxLen = Math.max(300, Math.floor(segLength * 1.2));
-                        const prompt = `### 任务指令：倪海厦中医玄学风格·第${idx + 1}/${SEG_COUNT}段改写
+                // 第一轮：并行生成5段正文（无开场白）
+                const firstRound = await Promise.all(
+                    rawSegments.map(async (seg, idx) => {
+                        const prevSeg = idx > 0 ? rawSegments[idx - 1] : '';
+                        const targetLen = Math.max(200, Math.floor(segLen * 1.0));
 
-【当前段原文】
+                        const prompt = `你是倪海厦，用第一人称写第 ${idx + 1}/${SEG_COUNT} 段内容。
+
+【原文对应段落】
 ${seg}
 
-【强制规则——违反任意一条输出直接作废】
-1. 语气：倪海厦口吻，骂醒风格，直白犀利，大白话。
-2. 禁止任何开场白：严禁以"各位老友们好"、"好了，我们开始上课"、"我今天来跟大家讲"等任何招呼语开头，直接从正文第一句开始。
-3. 禁止章节标记：严禁出现"第一节课"、"第二课"、"第X节课"等标记。
-4. 字数：本段输出约${minLen}–${maxLen}字，不足或超量均为失败。
-5. 衔接：第2-5段开头用1-2句自然承接上文（如"我刚才讲了……，接下来……"）。
-6. TTS纯净：严禁**/*等Markdown符号，严禁括号内描述词，严禁任何分隔符。
-7. 直接输出正文，从第一句正文开始，不要任何标题、引言或说明。`;
+【前段内容（仅用于衔接参考）】
+${prevSeg ? '前段：' + prevSeg.slice(0, 200) + '...' : '（无前段，这是第一段）'}
+
+【本段任务】
+1. 直接从第一句正文开始，不要任何开场白、招呼语或章节标记。
+2. 衔接前段：用1-2句带出前段核心论点（如"刚才我说了……，其实还有更严重的……"）。
+3. 本段核心：围绕原文段落展开论述，保持倪海厦口吻。
+4. 字数：约 ${targetLen} 字，自然结束即可，不需要收尾语。
+5. 最后一句引出下一段（如"还没完，我接着说……"），或第5段用倪海厦经典收尾。
+6. 纯正文输出，不要任何分隔符、标题或说明。`;
 
                         let local = '';
                         await streamContentGeneration(
                             prompt,
-                            TCM_SYS,
+                            TCM_SEG_SYS,
                             (chunk) => { local += chunk; },
                             'gpt-5.5',
                             { maxTokens: 8192, fallbackModelOnStall: 'deepseek-v4-flash' }
                         );
-                        appendTerminal(`第${idx + 1}/${SEG_COUNT}段完成（约${local.length}字）`);
+                        appendTerminal(`第${idx + 1}/${SEG_COUNT}段生成完成（约${local.length}字）`);
                         return local;
                     })
                 );
 
-                // 清洗每段开头的重复标记（\s=空白，[\s\S]=任意字符）
-                const cleaned = results.map((seg, idx) => {
+                // 清洗每段开头的开场白残留
+                const cleaned = firstRound.map((seg) => {
                     let s = (seg || '').trim();
-                    // 去除"各位老友们好……倪海厦。"类开场白（贪婪匹配到句号）
-                    s = s.replace(/^.*?各位老友们好[\s\S]*?倪海厦[。！？].*?/g, '');
-                    // 去除"好了……我们开始上课。"类过渡语
-                    s = s.replace(/^.*?好了[\s\S]*?我们开始上课[。！？].*?/g, '');
-                    // 去除"第X节课："标记
-                    s = s.replace(/^第[一二三四五六七八九十\\d]+节课[:：]?\s*/gm, '');
-                    // 去除段首可能残留的空行
-                    s = s.replace(/^(\\n\s*)+/, '');
+                    // 去掉段首的"各位老友..."类开场白
+                    s = s.replace(/^.*?各位老友们好[\s\S]*?倪海厦[。！？][\s\S]*?/g, '');
+                    // 去掉段首的"好了...开始上课"类过渡语
+                    s = s.replace(/^.*?好了[\s\S]*?我们开始上课[。！？][\s\S]*?/g, '');
+                    // 去掉"第X节课"标记
+                    s = s.replace(/^第[一二三四五六七八九十\d]+节课[:：]?[\s]*/gm, '');
+                    // 去掉段首空行
+                    s = s.replace(/^[\s]+/, '');
                     return s.trim();
                 });
 
-                // 合并5段为完整文章（用自然过渡句连接各段）
-                const merged = [
-                    '各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。今天我来跟大家讲一讲——',
-                    ...cleaned,
-                    '好了，我话讲完了，信不信随你。下课！',
-                ].join('\n\n');
+                // 合并：开场白 + 正文段落（用自然过渡句连接）
+                const opening = '各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。今天我来讲一个非常重要的事，你们一定要听完。\n\n好了，我们开始上课。\n\n';
+                const bodyParts: string[] = [opening];
+                for (let i = 0; i < cleaned.length; i++) {
+                    bodyParts.push(cleaned[i]);
+                    // 段间自然过渡（基于实际内容生成）
+                    if (i < cleaned.length - 1) {
+                        // 取本段最后一句核心内容
+                        const sentences = cleaned[i].split(/[。！？]/).filter(Boolean);
+                        const lastCore = sentences.length > 0 ? sentences[sentences.length - 1].trim().slice(-40) : '';
+                        // 取下段第一句核心内容
+                        const nextSentences = cleaned[i + 1].split(/[。！？]/).filter(Boolean);
+                        const nextCore = nextSentences.length > 0 ? nextSentences[0].trim().slice(0, 40) : '';
+                        if (lastCore && nextCore) {
+                            bodyParts.push(`刚才我说了${lastCore}，还有一点要补充——${nextCore}。`);
+                        }
+                    }
+                }
+                bodyParts.push('\n\n好了，我话讲完了，信不信随你。下课！');
 
-                // 后处理：最终扫描，去除所有可能残留的开场白/过渡语/课程标记
-                // 后处理：最终扫描，去除所有可能残留的开场白/过渡语/课程标记
-                const postMerged = merged
-                    .replace(/^.*?各位老友们好[\s\\S]*?倪海厦[。！？].*?/g, '各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。')
-                    .replace(/^.*?好了[\s\\S]*?我们开始上课[。！？].*?/g, '')
-                    .replace(/^第[一二三四五六七八九十\\d]+节课[:：]?\s*/gm, '')
-                    .replace(/^(\\n\s*)+/gm, '\n')
+                let merged = bodyParts.join('\n\n');
+
+                // 最终后处理：确保有且只有一个标准开场白在最开头，去除所有残留标记
+                const firstOpenIdx = merged.indexOf('各位老友们好');
+                if (firstOpenIdx > 0) {
+                    // 第一个开场白位置不是0，说明前面有残留，截断到它之前
+                    merged = merged.slice(firstOpenIdx);
+                } else if (firstOpenIdx === -1) {
+                    // 完全没有开场白，在最开头补上
+                    merged = '各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。\n\n' + merged;
+                }
+                // 去掉后续所有"各位老友..."、"好了..."、"第X节课"残留
+                merged = merged
+                    .replace(/^[\s]*各位老友们好[^\n]*倪海厦[^\n]*\n*/gm, '')
+                    .replace(/^[\s]*好了[^\n]*我们开始上课[^\n]*\n*/gm, '')
+                    .replace(/^第[一二三四五六七八九十\d]+节课[:：]?[\s]*/gm, '')
+                    .replace(/^[\n]{3,}/g, '\n\n')
                     .trim();
 
-                localOutput = postMerged;
-                updateTask({ outputText: postMerged });
+                // 确保开头是标准开场白
+                if (!merged.startsWith('各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。')) {
+                    merged = '各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。\n\n' + merged;
+                }
+
+                localOutput = merged;
+                updateTask({ outputText: merged });
                 setGenerationProgress({ current: 100, total: 100 });
-                appendTerminal(`合并完成（共${postMerged.length}字）`);
+                appendTerminal(`合并完成（共${merged.length}字）`);
 
                 try {
                     const historyKey = getToolsHistoryKey(taskMode, taskNiche);
-                    saveHistory('tools', historyKey, postMerged, { input: taskInputText });
+                    saveHistory('tools', historyKey, merged, { input: taskInputText });
                 } catch {}
 
                 setIsGenerating(false);
@@ -3127,533 +3171,6 @@ ${seg}
             }
         }
 
-
-        // 脚本模式：强制二段式（第一段先均分镜头文案，第二段逐镜头推理提示词）
-        if (taskMode === ToolMode.SCRIPT && !isRevengeScriptTask) {
-            const targetShots = scriptShotMode === 'custom'
-              ? Math.min(100, Math.max(10, scriptShotCount))
-              : Math.min(60, Math.ceil(originalLength / 250));
-            const segments = segmentTextByShots(taskInputText, targetShots);
-
-            // 先准备默认角色/场景，避免前置提取阻塞导致二段式不开始输出
-            let roleSceneBlock = '[角色信息]\n[名称]讲述者\n[别名]旁白\n[描述]中年华人讲述者，黑色中式长衫，神情冷峻克制，直视镜头，面部细节清晰，高对比电影光影，暗红与深蓝色调，写实风格，超清质感。\n\n[名称]主要人物\n[别名]无\n[描述]根据原文提取的关键人物，形象写实，服装与神态贴合剧情，电影级光影与构图，面部细节清晰，超清质感。\n\n[场景信息]\n[名称]场景-叙事空间\n[别名]无\n[描述]中式室内叙事空间，书架与木质桌案，低照度环境，局部暖光勾边，空气中轻微尘埃与雾化层次，压抑紧张氛围，电影级构图，超清细节。';
-            let primaryRole = '讲述者';
-            console.log('[Tools][TwoStage] 已进入二段式流程，先按默认角色开始输出');
-
-            // 角色/场景提取加超时，防止卡住主流程
-            try {
-              const roleScenePrompt = `请从以下原文中提取主要角色与主要场景，并严格按模板输出（简体中文）。\n\n关键要求（必须遵守）：\n1) [描述]必须写成可直接用于文生图/文生视频的大模型提示词风格，不要解释性文案。\n2) 角色描述需包含：年龄段、性别、外貌、服装、神态、镜头感、光线/色调、风格关键词。\n3) 场景描述需包含：空间结构、关键物件、光线、氛围、色调、镜头感、风格关键词。\n4) 禁止输出“负责…承担…”“用于…”等说明句。
-5) 只允许输出从原文中可识别的真实角色与场景，禁止新增“核心男性角色/核心女性角色/主角A”等自定义模板名称。\n\n输出模板：\n[角色信息]\n[名称]角色名\n[别名]别名1，别名2（没有写无）\n[描述]（提示词风格，至少50字）\n\n[场景信息]\n[名称]场景名\n[别名]无\n[描述]（提示词风格，至少30字）\n\n原文：\n${taskInputText}`;
-              let roleSceneRaw = '';
-              await Promise.race([
-                streamContentGeneration(roleScenePrompt, systemInstruction, (chunk) => {
-                  roleSceneRaw += chunk;
-                }),
-                new Promise((_, reject) =>
-                  setTimeout(() => reject(new Error('角色场景提取超时')), 12000)
-                ),
-              ]);
-
-              if (roleSceneRaw.trim()) {
-                roleSceneBlock = roleSceneRaw.trim();
-                const firstRole = roleSceneBlock.match(/\[名称\]\s*([^\n\r]+)/)?.[1]?.trim();
-                if (firstRole) primaryRole = firstRole;
-                console.log('[Tools][TwoStage] 角色场景提取成功，主角色:', primaryRole);
-              }
-            } catch (e) {
-              console.warn('[Tools][TwoStage] 角色场景提取超时或失败，使用默认角色场景', e);
-            }
-
-            const stagedShots = segments.map((seg, idx) => ({
-              shotNo: idx + 1,
-              role: primaryRole,
-              caption: seg,
-              imagePrompt: '生成中',
-              videoPrompt: '生成中',
-              shotType: '生成中',
-              voice: primaryRole,
-              sfx: '生成中',
-            }));
-
-            const renderShots = () => stagedShots
-              .map((s) => `镜头${s.shotNo}\n镜头文案: ${s.role || '讲述者'}-平静："${s.caption}"\n图片提示词: ${s.imagePrompt || '生成中'}\n视频提示词: ${s.videoPrompt || '生成中'}\n景别: ${s.shotType || '生成中'}\n语音分镜: ${s.voice || s.role || '讲述者'}\n音效: ${s.sfx || '生成中'}`)
-              .join('\n\n');
-
-            localOutput = renderShots();
-            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
-            setGenerationProgress({ current: 3, total: 100 });
-
-            let success = 0;
-            let failed = 0;
-            const shotStatus: Array<'pending' | 'success' | 'failed'> = new Array(segments.length).fill('pending');
-            const mainFailCount = new Array(segments.length).fill(0);
-            const backupFailCount = new Array(segments.length).fill(0);
-            const buildShotProgressHint = () => {
-              const pending = Math.max(0, segments.length - success - failed);
-              const failedShotNos = shotStatus
-                .map((s, idx) => (s === 'failed' ? idx + 1 : 0))
-                .filter(Boolean);
-              const failedText = failedShotNos.length > 0
-                ? `，失败镜头：${failedShotNos.join('、')}`
-                : '';
-              return `镜头提示词进度：成功 ${success}，失败 ${failed}，待处理 ${pending}（总数 ${segments.length}）${failedText}`;
-            };
-
-            const getCharacterAnchorHint = (captionText: string) => {
-              const t = (captionText || '').replace(/\s+/g, '');
-              const female = /晚礼服|女子|女性|女孩|女人|高跟鞋|她/.test(t);
-              const male = /疯子|男人|男性|西装|血污|满手鲜血|他/.test(t);
-
-              if (female && !male) {
-                return {
-                  key: '主要女性角色',
-                  prefix: '主要女性角色（长发、服装贴合剧情、神情隐忍压抑）',
-                  rule: '若镜头涉及女性人物，请统一使用“主要女性角色（长发、服装贴合剧情、神情隐忍压抑）”作为人物锚点。',
-                };
-              }
-              if (male && !female) {
-                return {
-                  key: '主要男性角色',
-                  prefix: '主要男性角色（高大、服装略显破损或凌乱、眼神失控绝望）',
-                  rule: '若镜头涉及男性人物，请统一使用“主要男性角色（高大、服装略显破损或凌乱、眼神失控绝望）”作为人物锚点。',
-                };
-              }
-              return {
-                key: '',
-                prefix: '',
-                rule: '若镜头出现人物，请复用同一人物锚点命名；图片提示词以场景、空间、环境、物件为主，人物不主导画面。',
-              };
-            };
-
-            const updateProgressBySuccess = () => {
-              const raw = segments.length > 0 ? Math.round((success / segments.length) * 100) : 0;
-              const percent = Math.max(3, raw);
-              setGenerationProgress({ current: percent, total: 100 });
-              setShotPromptProgress({ success, failed, hint: buildShotProgressHint() });
-            };
-
-            const inferStyleProfile = (text: string) => {
-              const t = text || '';
-              if (/九紫|离火|天象|命理|五行|风水|易经|黄历|壬子|丙午/.test(t)) {
-                return {
-                  styleName: '玄学警示纪实风',
-                  tone: '压迫、克制、警示',
-                  color: '暗红、冷黑、低饱和',
-                  motion: '缓慢推进为主，少量平移',
-                };
-              }
-              if (/都市|职场|创业|金融|股市|投资/.test(t)) {
-                return {
-                  styleName: '都市现实风',
-                  tone: '紧张、冷静、现实',
-                  color: '冷灰、霓虹点缀',
-                  motion: '推镜+横移',
-                };
-              }
-              return {
-                styleName: '写实叙事风',
-                tone: '克制、真实、沉浸',
-                color: '自然低饱和',
-                motion: '缓慢推进',
-              };
-            };
-
-            const styleProfile = inferStyleProfile(taskInputText);
-
-            const enforceSceneDominantPrompt = (raw: string, shotNo: number) => {
-              let p = (raw || '')
-                .replace(/(?:一位|一个|一名)?讲述者[^，。；]*[，。；]?/g, '')
-                .replace(/(?:一位|一个|一名)?旁白[^，。；]*[，。；]?/g, '')
-                .replace(/(?:一位|一个|一名)?人物[^，。；]*入镜[^，。；]*[，。；]?/g, '')
-                .replace(/人物主导[^，。；]*[，。；]?/g, '')
-                .replace(/站在[^，。；]*[，。；]?/g, '')
-                .replace(/立于[^，。；]*[，。；]?/g, '')
-                .replace(/\s{2,}/g, ' ')
-                .replace(/[，,]{2,}/g, '，')
-                .trim();
-
-              // 第1镜头允许轻微人物出场；后续镜头默认纯场景空间环境
-              if (shotNo > 1) {
-                p = p
-                  .replace(/主要男性角色（[^）]+）[，,]?/g, '')
-                  .replace(/主要女性角色（[^）]+）[，,]?/g, '')
-                  .replace(/一名[^，。；]*(男人|女人|人物)[^，。；]*[，。；]?/g, '')
-                  .replace(/一位[^，。；]*(男人|女人|人物)[^，。；]*[，。；]?/g, '')
-                  .trim();
-              }
-
-              if (!/场景|空间|环境|光线|氛围|构图|天气|材质|物件|建筑|室内|室外|地面|墙面|走廊|窗/.test(p)) {
-                p = `场景空间主导，环境叙事氛围，关键物件与光线层次清晰，${p}`;
-              }
-
-              p = p.replace(/^中景[,，]\s*/,'').trim();
-              return p || '场景空间主导，环境叙事氛围，关键物件与光线层次清晰';
-            };
-
-            const buildVideoPromptFromShot = (caption: string, imagePrompt: string) => {
-              const core = (imagePrompt || '')
-                .replace(/^场景空间主导，环境叙事氛围[，,]?\s*/,'')
-                .replace(/^图生视频[:：]?/,'')
-                .trim();
-
-              const c = (caption || '').replace(/\s+/g, '');
-              const hasSnow = /雪|风雪|暴雪|寒风|冰/.test(c + core);
-              const hasBanquet = /晚宴|宴会|酒杯|宾客/.test(c + core);
-              const hasAlley = /暗巷|巷|走廊|狭窄|废弃/.test(c + core);
-              const hasTension = /崩溃|绝望|窒息|压抑|血|追|慌/.test(c + core);
-
-              const motion = hasTension
-                ? '镜头缓慢平移并轻微推进'
-                : hasAlley
-                  ? '镜头低速推进并短幅横移'
-                  : '镜头缓慢平移扫过环境';
-
-              const dynamicParts: string[] = [];
-              if (hasBanquet) dynamicParts.push('以慢动作捕捉宾客交头接耳的细节');
-              if (hasSnow) dynamicParts.push('窗外风雪掠过形成冷暖对比');
-              if (hasAlley) dynamicParts.push('阴影与水渍反光轻微起伏');
-              if (dynamicParts.length === 0) dynamicParts.push('光影与空气颗粒产生轻微动态');
-
-              return `${motion}，${core}。${dynamicParts.join('，')}。`;
-            };
-
-            const failedShotIndexes: number[] = [];
-            const backgroundRetryTasks: Array<Promise<void>> = [];
-            let twoStageFinalized = false;
-            const runInferForShot = async (i: number, modelName?: string) => {
-              const shotNo = i + 1;
-              if (twoStageFinalized) return;
-              if (shotStatus[i] === 'success') return;
-              if (shotStatus[i] === 'failed' && (mainFailCount[i] + backupFailCount[i] >= 3)) return;
-              const caption = segments[i];
-              setShotPromptProgress({
-                success,
-                failed,
-                hint: `正在推理镜头${shotNo}/${segments.length}的图片/视频提示词...；${buildShotProgressHint()}`,
-              });
-
-              let inferenceRaw = '';
-              const roleFromCaption = stagedShots[i]?.role || primaryRole || '讲述者';
-              const visualRule = shotNo <= 2
-                ? '前2个镜头可用于人物出场交代，但场景信息必须充分。'
-                : '从本镜头开始，图片提示词必须以场景/空间/物件/氛围为主，人物仅允许简短出现（建议不超过1个短分句），禁止人物肖像主导。';
-              const characterAnchor = getCharacterAnchorHint(caption);
-              const inferPrompt = `你是分镜提示词引擎。请仅基于该镜头文案，先推理图片提示词，再基于图片提示词推理图生视频提示词，并补齐景别、语音分镜、音效。\n\n全局风格：${styleProfile.styleName}；色调：${styleProfile.color}；节奏：${styleProfile.motion}；情绪：${styleProfile.tone}。\n\n硬性要求：\n1) 全部字段必须使用简体中文，禁止任何英文单词。\n2) 语音分镜只能输出“角色名”，不得输出口播文案内容。\n3) 语音分镜必须与镜头文案里的角色一致，本镜头固定为：${roleFromCaption}。\n4) ${visualRule}\n5) 图片提示词必须以“场景、空间、环境、物件、光线、天气、材质、构图”描述为主。\n6) ${characterAnchor.rule}\n7) 除镜头1外，图片提示词禁止出现“讲述者站在/立于/入镜/侧影”等人物入镜句式。\n8) 视频提示词按 Wan2.2 风格输出：简洁、2-3句、每句一个视觉动作，不要长串堆砌。\n9) 视频提示词禁止出现“保持一致/主体不改/风格不变/画面要点”等说明词。
-10) 禁止输出规则说明句，只输出可直接用于生成的提示词内容。\n\n镜头${shotNo}文案：${caption}\n\n请严格只输出以下5行（不要任何解释）：\n图片提示词: ...\n视频提示词: ...\n景别: ...\n语音分镜: ${roleFromCaption}\n音效: ...`;
-
-              try {
-                await Promise.race([
-                  streamContentGeneration(inferPrompt, systemInstruction, (chunk) => {
-                    inferenceRaw += chunk;
-                  }, modelName),
-                  new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('单镜头提示词推理超时')), 35000)
-                  ),
-                ]);
-
-                const roleFromCaption = stagedShots[i]?.role || primaryRole || '讲述者';
-                const imagePromptRaw = inferenceRaw.match(/(?:图片提示词|圖片提示词)[：:]\s*([^\n\r]+)/)?.[1]?.trim() || '中景, 根据镜头文案提炼核心场景元素, 环境叙事氛围';
-                const videoPromptRaw = inferenceRaw.match(/视频提示词[：:]\s*([^\n\r]+)/)?.[1]?.trim() || '镜头缓慢平移扫过环境，捕捉关键动作与光影变化。焦点过渡到核心场景，形成压迫与情绪张力。'
-                const shotTypeRaw = (inferenceRaw.match(/(?:景别|景別)[：:]\s*([^\n\r]+)/)?.[1]?.trim() || '中景');
-                const sfxRaw = (inferenceRaw.match(/音效[：:]\s*([^\n\r]+)/)?.[1]?.trim() || '背景环境音');
-
-                const sanitizeZh = (t: string) => {
-                  let x = t || '';
-                  x = x.replace(/\b(\d+)s\b/gi, '$1秒');
-                  x = x.replace(/[A-Za-z]+/g, '');
-                  x = x.replace(/\s{2,}/g, ' ').trim();
-                  return x || '生成中';
-                };
-
-                let imagePrompt = sanitizeZh(imagePromptRaw)
-                  .replace(/仅作辅助点缀/g, '')
-                  .replace(/人物不能主导/g, '')
-                  .replace(/保持一致/g, '')
-                  .replace(/作为人物锚点描述/g, '')
-                  .replace(/若镜头涉及[^，。]*[，。]?/g, '')
-                  .trim();
-
-                imagePrompt = enforceSceneDominantPrompt(imagePrompt, shotNo);
-
-                // 人物锚点一致性：同一人物跨镜头尽量使用一致描述，便于后续角色提取合并
-                const needAnchorByCaption = /她|他|女子|男人|晚礼服|西装|高跟鞋|女性|男性/.test(caption);
-                const anchorAllowed = shotNo <= 2 || needAnchorByCaption;
-                if (characterAnchor.prefix && anchorAllowed && !imagePrompt.includes(characterAnchor.key)) {
-                  imagePrompt = `${characterAnchor.prefix}，${imagePrompt}`;
-                }
-
-                // 锚定频率控制：同一角色每3个镜头最多显式锚定1次（全局通用）
-                const roleWindow = 3;
-                const roleKey = characterAnchor.key;
-                if (!((runInferForShot as any)._roleAnchorLastShotMap)) {
-                  (runInferForShot as any)._roleAnchorLastShotMap = new Map<string, number>();
-                }
-                const roleAnchorLastShotMap = (runInferForShot as any)._roleAnchorLastShotMap as Map<string, number>;
-                if (roleKey && imagePrompt.includes(roleKey)) {
-                  const lastShot = roleAnchorLastShotMap.get(roleKey) || 0;
-                  if (shotNo - lastShot < roleWindow && shotNo > 2) {
-                    imagePrompt = imagePrompt
-                      .replace(/主要男性角色（[^）]+）[，,]?/g, '')
-                      .replace(/主要女性角色（[^）]+）[，,]?/g, '')
-                      .trim();
-                  } else {
-                    roleAnchorLastShotMap.set(roleKey, shotNo);
-                  }
-                }
-
-                // 从第3镜头开始压制人物主导：尽量以场景/空间/环境叙事为核心
-                if (shotNo > 2) {
-                  imagePrompt = imagePrompt
-                    .replace(/主要男性角色（[^）]+）[，,]?/g, '')
-                    .replace(/主要女性角色（[^）]+）[，,]?/g, '')
-                    .replace(/一名[^，。；]*男人[，,]?/g, '')
-                    .replace(/一位[^，。；]*女子[，,]?/g, '')
-                    .replace(/人物特写[^，。；]*[，,]?/g, '')
-                    .replace(/\s{2,}/g, ' ')
-                    .trim();
-
-                  if (!/场景|空间|环境|巷|街|路灯|门|窗|墙|地面|积雪|风雪|光线|阴影|走廊|室内|室外|建筑/.test(imagePrompt)) {
-                    imagePrompt = `场景空间主导，环境叙事氛围，${imagePrompt}`;
-                  }
-                }
-                let videoPrompt = sanitizeZh(videoPromptRaw)
-                  .replace(/保持一致|主体不改|风格不变|画面要点|图生视频/g, '')
-                  .replace(/\s{2,}/g, ' ')
-                  .trim();
-
-                // Wan2.2：视频提示词保持简洁，优先2-3句
-                if (!videoPrompt || videoPrompt.length < 18) {
-                  videoPrompt = buildVideoPromptFromShot(caption, imagePrompt);
-                }
-                if (videoPrompt.length > 140) {
-                  const parts = videoPrompt.split(/[。！？]/).map(s => s.trim()).filter(Boolean).slice(0, 3);
-                  videoPrompt = `${parts.join('。')}。`;
-                }
-                const shotType = sanitizeZh(shotTypeRaw) || '中景';
-                const voice = roleFromCaption; // 强制与镜头文案角色一致，只输出角色
-                const sfx = sanitizeZh(sfxRaw);
-
-                stagedShots[i] = { ...stagedShots[i], imagePrompt, videoPrompt, shotType, voice, sfx };
-                const prevStatus = shotStatus[i];
-                if (prevStatus === 'failed') {
-                  failed = Math.max(0, failed - 1);
-                }
-                if (prevStatus !== 'success') {
-                  success += 1;
-                }
-                shotStatus[i] = 'success';
-                console.log(`[Tools][TwoStage] 镜头${shotNo}提示词完成`);
-
-                localOutput = renderShots();
-                updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
-
-                updateProgressBySuccess();
-              } catch (e) {
-                const isBackupModel = modelName === 'gpt-5.4-mini';
-                if (isBackupModel) {
-                  backupFailCount[i] += 1;
-                } else {
-                  mainFailCount[i] += 1;
-                }
-
-                const roleFromCaption = stagedShots[i]?.role || primaryRole || '讲述者';
-
-                if (!isBackupModel && mainFailCount[i] >= 1) {
-                  // 主模型首失败后，立即并行触发备用模型；主流程继续下一个镜头
-                  const retryTask = runInferForShot(i, 'gpt-5.4-mini').catch(() => {});
-                  backgroundRetryTasks.push(retryTask);
-                }
-
-                if (mainFailCount[i] + backupFailCount[i] >= 3) {
-                  const prevStatus = shotStatus[i];
-                  if (prevStatus === 'success') {
-                    success = Math.max(0, success - 1);
-                  }
-                  if (prevStatus !== 'failed') {
-                    failed += 1;
-                  }
-                  shotStatus[i] = 'failed';
-                  failedShotIndexes.push(i);
-                  console.warn(`[Tools][TwoStage] 镜头${shotNo}提示词失败，达到总重试上限(3次)，使用兜底占位`, e);
-                  stagedShots[i] = {
-                    ...stagedShots[i],
-                    imagePrompt: '中景, 根据镜头文案提炼核心场景元素, 环境叙事氛围',
-                    videoPrompt: '8秒: 根据镜头文案呈现场景与动作重点, 固定机位',
-                    shotType: '中景',
-                    voice: roleFromCaption,
-                    sfx: '背景环境音',
-                  };
-                  localOutput = renderShots();
-                  updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
-                  updateProgressBySuccess();
-                } else {
-                  setShotPromptProgress({
-                    success,
-                    failed,
-                    hint: `镜头${shotNo}重试中（累计${mainFailCount[i] + backupFailCount[i]}/3）...；${buildShotProgressHint()}`,
-                  });
-                }
-              }
-            }
-
-            const concurrency = 50;
-            for (let start = 0; start < segments.length; start += concurrency) {
-              const batch = Array.from({ length: Math.min(concurrency, segments.length - start) }, (_, k) => start + k);
-              await Promise.all(batch.map((idx) => runInferForShot(idx)));
-            }
-
-            // 第一轮后自动重试失败镜头（最多3轮）
-            const maxRetryRounds = 3;
-            for (let round = 1; round <= maxRetryRounds && failedShotIndexes.length > 0; round++) {
-              const retryTargets = Array.from(new Set(failedShotIndexes.splice(0)));
-              setShotPromptProgress({
-                success,
-                failed,
-                hint: `第${round}轮自动重试失败镜头：${retryTargets.map(x => x + 1).join('、')}；${buildShotProgressHint()}`,
-              });
-              for (let start = 0; start < retryTargets.length; start += concurrency) {
-                const batch = retryTargets.slice(start, start + concurrency);
-                await Promise.all(batch.map((idx) => runInferForShot(idx)));
-              }
-            }
-
-            updateProgressBySuccess();
-
-            // 等待所有并行备用重试任务结束，避免后续覆盖掉末尾角色/场景信息
-            if (backgroundRetryTasks.length > 0) {
-              await Promise.allSettled(backgroundRetryTasks);
-            }
-            twoStageFinalized = true;
-
-            // 拼接角色信息与场景信息（确保末尾不缺失，且描述为提示词风格）
-            const roleSceneFallback = '[角色信息]\n[名称]讲述者\n[别名]旁白\n[描述]中年华人讲述者，黑色中式长衫，神情冷峻克制，直视镜头，面部细节清晰，高对比电影光影，暗红与深蓝色调，写实风格，超清质感。\n\n[名称]主要人物\n[别名]无\n[描述]东亚人物写实风格，服装与神态贴合剧情，面部细节清晰，电影级光影与构图，色调克制，超清质感。\n\n[场景信息]\n[名称]场景-叙事空间\n[别名]无\n[描述]中式室内叙事空间，书架与木质桌案，低照度环境，局部暖光勾边，空气中轻微尘埃与雾化层次，压抑紧张氛围，电影级构图，超清细节。';
-
-            const extractRoleSceneByCrossRef = async () => {
-              // 构建包含角色和文案上下文的完整信息
-              const shotContext = stagedShots
-                .map((s) => `镜头${s.shotNo} [语音分镜: ${s.voice || s.role || '讲述者'}] [镜头文案片段: ${s.caption.substring(0, 100)}${s.caption.length > 100 ? '...' : ''}] 图片提示词: ${s.imagePrompt}`)
-                .join('\n');
-
-              // 提取所有出现在语音分镜中的角色
-              const allRoles = Array.from(new Set(
-                stagedShots
-                  .map(s => (s.voice || s.role || '讲述者').trim())
-                  .filter(Boolean)
-              ));
-
-              const roleSceneCrossPrompt = `请基于【原文】、【各镜头语音分镜角色】和【各镜头图片提示词】联合提取“主要人物角色信息”和“场景信息”。\n\n硬性规则：
-【重要】必须包含的角色：
-${allRoles.map(r => `- ${r}`).join('\n')}
-⚠️ 以上角色均来自镜头语音分镜，必须在[角色信息]中逐一输出，不能遗漏任何一个！
-
-1) 只输出模板，不要解释、不要说明文字。
-2) [角色信息]中必须包含上述所有角色（至少包含${allRoles.length}个角色），不得遗漏。\n3) 女性角色命名优先使用“主要女性角色”，男性角色命名优先使用“主要男性角色”。\n4) 角色描述必须与镜头中锚定写法一致：\n   - 主要女性角色（长发、服装贴合剧情、神情隐忍压抑）\n   - 主要男性角色（高大、服装略显破损或凌乱、眼神失控绝望）\n5) [描述]必须是可直接用于文生图/文生视频的提示词风格，不得出现“根据原文提取”“负责/用于/承担/说明”等说明性措辞。\n6) 场景描述要体现：空间结构、关键物件、光线、氛围、色调、风格关键词。\n7) 女性线索关键词：晚礼服、女子、女性、她、女孩、女人；男性线索关键词：男人、男性、他、疯子男人。\n\n输出模板（严格）：\n[角色信息]\n[名称]角色名\n[别名]别名（没有写无）\n[描述]提示词描述\n\n[名称]角色名2\n[别名]别名（没有写无）\n[描述]提示词描述\n\n[场景信息]\n[名称]场景名\n[别名]无\n[描述]提示词描述\n\n[名称]场景名2\n[别名]无\n[描述]提示词描述\n\n【原文】\n${taskInputText}\n\n【各镜头语音分镜角色与图片提示词】\n${shotContext}`;
-
-              let crossRaw = '';
-              await Promise.race([
-                streamContentGeneration(roleSceneCrossPrompt, systemInstruction, (chunk) => {
-                  crossRaw += chunk;
-                }, 'gpt-5.4-mini'),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('角色场景交叉提取超时')), 18000)),
-              ]);
-
-              return crossRaw.trim();
-            };
-
-            const sanitizeRoleScenePromptStyle = (text: string) => {
-              if (!text || !/\[角色信息\]/.test(text) || !/\[(?:场景信息|場景信息)\]/.test(text)) {
-                return roleSceneFallback;
-              }
-              let out = text.replace(/\[場景信息\]/g, '[场景信息]').trim();
-
-              // 清理说明性措辞，保留提示词风格
-              out = out
-                .replace(/根据原文提取[^。\n]*[。\n]?/g, '')
-                .replace(/负责[^。\n]*[。\n]?/g, '')
-                .replace(/用于[^。\n]*[。\n]?/g, '')
-                .replace(/承担[^。\n]*[。\n]?/g, '')
-                .replace(/说明[^。\n]*[。\n]?/g, '');
-
-              // 兜底：若角色数量不足2或缺少女性/男性角色，则按镜头图片提示词线索补齐
-              const roleNameRegex = /^\[名称\]\s*([^\n\r]+)/gm;
-              const extractedRoleNames: string[] = [];
-              let m: RegExpExecArray | null;
-              while ((m = roleNameRegex.exec(out)) !== null) {
-                const name = (m[1] || '').trim();
-                if (name && !extractedRoleNames.includes(name)) extractedRoleNames.push(name);
-              }
-
-              const promptCorpus = stagedShots.map(s => `${s.caption} ${s.imagePrompt}`).join('\n');
-              const hasFemaleCue = /晚礼服|女子|女性|她|女孩|女人/.test(promptCorpus);
-              const hasMaleCue = /疯子男人|男人|男性|他/.test(promptCorpus);
-              const hasFemaleRoleInOut = /(女性|女子|女人|女孩|女主|她)/.test(out);
-              const hasMaleRoleInOut = /(男性|男人|男主|他|疯子男人)/.test(out);
-
-              const needFemaleRole = hasFemaleCue && !hasFemaleRoleInOut;
-              const needMaleRole = hasMaleCue && !hasMaleRoleInOut;
-
-              const needByCount = extractedRoleNames.length < 2;
-              if (needByCount || needFemaleRole || needMaleRole) {
-                const extraRoleBlocks: string[] = [];
-
-                if (needFemaleRole) {
-                  extraRoleBlocks.push('[名称]主要女性角色\n[别名]无\n[描述]黑色长发女性，身着单薄晚礼服，神情压抑克制，眼神坚决，面部细节清晰，电影级近景质感，冷暖对比光线，写实风格，超清。');
-                }
-
-                if (needMaleRole) {
-                  extraRoleBlocks.push('[名称]主要男性角色\n[别名]无\n[描述]高大男性，破损西装与疲惫神态，眼神失控与绝望并存，面部与手部细节清晰，电影级硬光阴影，冷色调写实风格，超清。');
-                }
-
-                const captionRoleNames = Array.from(new Set(
-                  stagedShots
-                    .map(s => (s.voice || s.role || '').trim())
-                    .filter(Boolean)
-                    .filter(n => !['讲述者', '旁白', '解说'].includes(n))
-                )).slice(0, 4);
-
-                const genericRoleBlocks = captionRoleNames
-                  .filter(n => !extractedRoleNames.includes(n))
-                  .slice(0, 2)
-                  .map(n => `[名称]${n}\n[别名]无\n[描述]东亚人物写实风格，服装与神态贴合剧情，面部细节清晰，电影级光影与构图，色调克制，超清质感。`);
-
-                const toAppend = [...extraRoleBlocks, ...genericRoleBlocks]
-                  .filter(Boolean)
-                  .join('\n\n');
-
-                if (toAppend) {
-                  out = out.replace(/\[角色信息\]/, `[角色信息]\n${toAppend}\n`);
-                }
-              }
-
-              return out.trim() || roleSceneFallback;
-            };
-
-            let roleSceneMerged = roleSceneBlock;
-            try {
-              const cross = await extractRoleSceneByCrossRef();
-              if (cross) roleSceneMerged = cross;
-            } catch (e) {
-              console.warn('[Tools][TwoStage] 角色场景交叉提取失败，回退到已有结果', e);
-            }
-
-            const normalizedRoleScene = sanitizeRoleScenePromptStyle(roleSceneMerged || roleSceneBlock);
-            localOutput = `${renderShots()}\n\n${normalizedRoleScene}`.trim();
-            updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
-            updateProgressBySuccess();
-
-            // 二段式完成后保存历史
-            try {
-              const historyKey = getToolsHistoryKey(taskMode, taskNiche);
-              saveHistory('tools', historyKey, localOutput, { input: taskInputText });
-            } catch {}
-
-            try {
-              localStorage.setItem('lastGeneratedScript', localOutput);
-            } catch {}
-
-            return;
-        }
-        
         // 生成初始内容
         const initialPrompt = generateInitialPrompt(taskMode, originalLength);
         await streamContentGeneration(initialPrompt, systemInstruction, (chunk) => {
