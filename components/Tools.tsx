@@ -2035,6 +2035,68 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     } else {
       shotSegmentsRef.current = null;
     }
+    // 中医玄学专用：流式输出去重，防止LLM在续写时重复生成完整文章结构
+    const deduplicateStreamingOutput = (text: string): string => {
+      if (!text || taskNiche !== NicheType.TCM_METAPHYSICS) return text;
+
+      // 策略A：检测第二个"各位老友"出现位置，只保留第一个
+      const openingRe = /各位老友们好[\s\S]{0,100}倪海厦[。！？]/;
+      const firstOpeningMatch = openingRe.exec(text);
+      if (firstOpeningMatch) {
+        const secondPos = text.indexOf('各位老友们好', firstOpeningMatch.index + 1);
+        if (secondPos !== -1) {
+          // 找到第二个开场白：保留第一个，删除第二个及其后到第一个正文结束之间的内容
+          const afterSecond = text.slice(secondPos);
+          // 在第一个开场白后找到"好了，我们开始上课。"的第二次出现
+          const afterFirst = text.slice(firstOpeningMatch.index + firstOpeningMatch[0].length);
+          const secondStartClass = afterFirst.indexOf('好了，我们开始上课');
+          if (secondStartClass !== -1) {
+            const firstEndClass = afterFirst.indexOf('好了，我们开始上课');
+            // 只保留第一个完整结构，删除后续的重复结构
+            const keepEnd = firstOpeningMatch.index + firstOpeningMatch[0].length + secondStartClass;
+            const restAfterFirst = afterFirst.slice(secondStartClass);
+            // 检查restAfterFirst是否看起来像一个完整的新文章开头
+            if (/^各位老友们/.test(restAfterFirst) || /^好了，我们开始上课/.test(restAfterFirst)) {
+              // 这是一段新文章的过渡语，保留但去掉新文章的开场白
+              const newArticleStart = restAfterFirst.search(/[^\s]/);
+              if (newArticleStart !== -1 && newArticleStart < 50) {
+                // 第二个"开始上课"后面紧跟新内容，很可能是新文章，直接截断
+                return text.slice(0, keepEnd).trim();
+              }
+            }
+          }
+        }
+      }
+
+      // 策略B：检测重复段落（完整的开场+过渡+正文循环）
+      // 如果"好了，我们开始上课"出现超过1次，说明有多次课程开头
+      const startClassMatches = text.match(/好了，我们开始上课/g);
+      if (startClassMatches && startClassMatches.length > 1) {
+        // 找到第二个"好了，我们开始上课"的位置
+        const firstSC = text.indexOf('好了，我们开始上课');
+        const secondSC = text.indexOf('好了，我们开始上课', firstSC + 1);
+        if (secondSC !== -1) {
+          // 在第二个"好了"之前的内容是完整的，保留
+          // 去掉第二个"好了"之后的所有内容（可能包含新文章）
+          return text.slice(0, secondSC).trim();
+        }
+      }
+
+      // 策略C：检测并去除末尾的"文章重复片段"（以"各位老友们好"开头到末尾的片段）
+      const lastOpeningIdx = text.lastIndexOf('各位老友们好');
+      const firstOpeningIdx = text.indexOf('各位老友们好');
+      if (lastOpeningIdx > firstOpeningIdx && lastOpeningIdx > text.length - 500) {
+        // 末尾出现新的开场白，说明LLM又开了一篇，截断到第一个开场白之前
+        const firstSCAfter = text.indexOf('好了，我们开始上课');
+        if (firstSCAfter !== -1 && lastOpeningIdx > firstSCAfter + 50) {
+          // 新文章已经开始，截断
+          return text.slice(0, lastOpeningIdx).trim();
+        }
+      }
+
+      return text;
+    };
+
     const MAX_CONTINUATIONS = scriptShotMode === 'custom'
       ? Math.min(30, Math.max(10, dynamicTargetShots))
       : 10; // 与金融等脚本赛道一致，并缩短无效循环时间
@@ -3757,7 +3819,19 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
                 const tcmContinuationTimeout = (taskMode === ToolMode.REWRITE && taskNiche === NicheType.TCM_METAPHYSICS)
                     ? { firstChunkTimeoutMs: 30_000 } : undefined;
                 await streamContentGeneration(continuePrompt, systemInstruction, (chunk) => {
-                    localOutput += chunk;
+                    // 中医玄学模式：对新chunk执行去重，防止LLM在续写时重复生成完整文章结构
+                    // 每次只处理"已累计输出 + 新chunk"的末尾部分（策略：检测第二个开场白出现就截断）
+                    if (taskNiche === NicheType.TCM_METAPHYSICS) {
+                      const prevLen = localOutput.length;
+                      localOutput += chunk;
+                      const deduped = deduplicateStreamingOutput(localOutput);
+                      if (deduped.length < localOutput.length) {
+                        console.log(`[Tools] TCM去重：${localOutput.length} → ${deduped.length} 字，移除重复文章片段`);
+                      }
+                      localOutput = deduped;
+                    } else {
+                      localOutput += chunk;
+                    }
                     updateTask({ outputText: cleanMarkdownFormat(localOutput, taskMode, taskNiche) });
                     
                     // 实时更新生成进度（基于内容长度）
