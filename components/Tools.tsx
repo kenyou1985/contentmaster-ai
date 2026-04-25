@@ -3553,6 +3553,90 @@ ${allRoles.map(r => `- ${r}`).join('\n')}
             return;
         }
         
+        // ============================================================
+        // TCM REWRITE：使用并行分段生成（对齐易经命理赛道，彻底解决重复问题）
+        // ============================================================
+        if (taskMode === ToolMode.REWRITE && taskNiche === NicheType.TCM_METAPHYSICS) {
+            const SEG_COUNT = 5;
+            const segLength = Math.max(80, Math.floor(originalLength / SEG_COUNT));
+            const segments: string[] = [];
+            for (let i = 0; i < SEG_COUNT; i++) {
+                const start = i * segLength;
+                const end = i === SEG_COUNT - 1 ? originalLength : (i + 1) * segLength;
+                segments.push(taskInputText.slice(start, end).trim());
+            }
+
+            const TCM_SYS = nicheConfig.systemInstruction + '\n你也是一位专业的内容编辑。请务必使用简体中文输出。';
+
+            appendTerminal(`【TCM并行生成】原文${originalLength}字，均分为${SEG_COUNT}段，每段约${segLength}字，并行生成...`);
+            setGenerationProgress({ current: 0, total: 100 });
+
+            try {
+                const results = await Promise.all(
+                    segments.map(async (seg, idx) => {
+                        const minLen = Math.max(200, Math.floor(segLength * 0.8));
+                        const maxLen = Math.max(300, Math.floor(segLength * 1.2));
+                        const prompt = `### 任务指令：倪海厦中医玄学风格·第${idx + 1}/${SEG_COUNT}段改写
+
+【当前段原文】
+${seg}
+
+【强制规则】
+1. 语气：倪海厦口吻，骂醒风格，直白犀利，大白话。
+2. 禁止开场白：第1段开头直接进入正文，不需要"各位老友们好…"（开场白由合并时统一添加）。
+3. 禁止章节标记：不得出现"第一节课："、"好了，我们开始上课"等标记。
+4. 字数：本段输出约${minLen}–${maxLen}字。
+5. 衔接：第2-5段开头用1-2句自然承接上文（如"我刚才讲了……，接下来……"）。
+6. TTS纯净：禁止**/*等Markdown符号，禁止括号内描述词。
+7. 直接输出正文，不要任何标题或分隔符。`;
+
+                        let local = '';
+                        await streamContentGeneration(
+                            prompt,
+                            TCM_SYS,
+                            (chunk) => { local += chunk; },
+                            'gpt-5.5',
+                            { maxTokens: 8192 }
+                        );
+                        appendTerminal(`第${idx + 1}/${SEG_COUNT}段完成（约${local.length}字）`);
+                        return local;
+                    })
+                );
+
+                // 清洗每段开头的重复标记
+                const cleaned = results.map((seg, idx) => {
+                    let s = (seg || '').trim();
+                    s = s.replace(/^各位老友们好[\s\S]{0,80}倪海厦[。！？]\s*/g, '');
+                    s = s.replace(/^好了[\s\S]{0,30}我们开始上课[。！？]\s*/g, '');
+                    s = s.replace(/^第[一二三四五六七八九十\d]+节课[:：]?\s*/gm, '');
+                    return s;
+                });
+
+                // 合并5段为完整文章
+                const opening = '各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。\n\n诸位乡亲，';
+                const closing = '\n\n好了，我话讲完了，信不信随你。下课！';
+                const merged = opening + cleaned.join('\n\n') + closing;
+
+                localOutput = merged;
+                updateTask({ outputText: merged });
+                setGenerationProgress({ current: 100, total: 100 });
+                appendTerminal(`合并完成（共${merged.length}字）`);
+
+                try {
+                    const historyKey = getToolsHistoryKey(taskMode, taskNiche);
+                    saveHistory('tools', historyKey, merged, { input: taskInputText });
+                } catch {}
+
+                setIsGenerating(false);
+                return;
+            } catch (e: any) {
+                appendTerminal(`TCM并行生成错误：${e?.message}`);
+                updateTask({ outputText: `生成失败：${e?.message}` });
+                setIsGenerating(false);
+                return;
+            }
+        }
+
         // 生成初始内容
         const initialPrompt = generateInitialPrompt(taskMode, originalLength);
         await streamContentGeneration(initialPrompt, systemInstruction, (chunk) => {
