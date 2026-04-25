@@ -2579,14 +2579,31 @@ ${inputSection}
                 const tcmMax = Math.floor(originalLength * 1.1);
                 const progress = (currentLength / tcmMin * 100).toFixed(0);
                 const needsMore = currentLength < tcmMin;
-                // 检测已出现的关键词，用于强制去重
-                const hasOpening = /各位老友们好.*倪海厦/.test(currentContent);
-                const hasStartClass = /好了.*我们开始上课/.test(currentContent);
-                const hasClimbingStory = /有年交运日偏要去爬山/.test(currentContent);
-                const openingBlock = hasOpening ? '' : '\n⚠️ 禁止重复开场白！"各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。"只允许出现一次。';
-                const startClassBlock = hasStartClass ? '' : '\n⚠️ 禁止重复"好了，我们开始上课"，此句只允许出现一次。';
-                const climbingBlock = hasClimbingStory ? '\n⚠️ 禁止重复"有年交运日偏要去爬山"故事——此故事全文只允许出现一次！' : '';
-                return `继续完成倪海厦中医玄学风格轻度改写，无缝衔接上文。${openingBlock}${startClassBlock}${climbingBlock}
+                
+                // 强制检测重复开场：搜索已输出内容中是否有第二个"各位老友"
+                const allOpeningMatches = currentContent.match(/各位老友们好[\s\S]{0,50}倪海厦/g);
+                const duplicateOpenings = allOpeningMatches ? allOpeningMatches.length : 0;
+                
+                // 强制检测重复"开始上课"
+                const allStartMatches = currentContent.match(/好了[\s\S]{0,30}我们开始上课/g);
+                const duplicateStarts = allStartMatches ? allStartMatches.length : 0;
+                
+                // 强制检测重复"爬山摔跤"故事段落
+                const allClimbingMatches = currentContent.match(/我年轻时候也铁齿[\s\S]{0,200}膝盖肿了半个月/g);
+                const duplicateClimbing = allClimbingMatches ? allClimbingMatches.length : 0;
+                
+                const dupWarning = duplicateOpenings > 1
+                    ? `\n\n【严重警告】检测到重复开场白出现${duplicateOpenings}次！继续生成时必须**完全跳过开场白部分**，从正文内容继续！禁止再次输出"各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。"！`
+                    : '';
+                const startWarning = duplicateStarts > 1
+                    ? `\n【严重警告】检测到重复过渡语出现${duplicateStarts}次！禁止再次输出"好了，我们开始上课。"！`
+                    : '';
+                const climbWarning = duplicateClimbing > 1
+                    ? `\n【严重警告】检测到重复自我故事出现${duplicateClimbing}次！禁止再次讲"有年交运日偏要去爬山"故事！`
+                    : '';
+                
+                return `继续完成倪海厦中医玄学风格轻度改写，从上文的最后一句**无缝衔接**，继续正文内容。
+${dupWarning}${startWarning}${climbWarning}
 
 【已完成部分（末尾）】
 ${context}
@@ -2595,18 +2612,21 @@ ${context}
 - 原文：${originalLength} 字
 - 目标：${tcmMin}–${tcmMax} 字（允许±10%）
 - 已完成：${currentLength} 字（${progress}%）
-- ${needsMore ? `⚠️ 还需要约 ${tcmMin - currentLength} 字` : '✓ 字数已达标，可收尾'}
+${needsMore ? `- ⚠️ 还需要约 ${tcmMin - currentLength} 字` : '- ✓ 字数已达标，可收尾'}
 
-【续写规则（重要）】
+【强制续写规则】
 ${needsMore ?
 `⚠️ **字数严重不足，严禁使用任何收尾语！**
-- 未满 ${tcmMin} 字前禁止"下课""下期再见""今天就到这"等收尾语
-- 直接自然衔接上文，继续以倪海厦口吻改写
-- 禁止输出"第一节课："、"第二节课："等固定标签——改为自然段落过渡
-- 禁止整段重复上文已讲过的内容（面相、生肖、案例等）` :
-`✓ 字数已达标，请写完通透结语后收束全文：
-- 用倪海厦霸气风格收尾（如"好了，我话讲完了，信不信随你。下课！"）
-- 全文仅允许出现一次收尾语，禁止重复`}
+1. **必须从上文最后一句继续**，不得重新开始或插入开场白
+2. **禁止输出开场白**：不得写"各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。"
+3. **禁止输出过渡语**：不得写"好了，我们开始上课。"
+4. **禁止输出章节标记**：不得写"第一课"、"第二课"、"第X节课"等
+5. **禁止重复自我故事**：不得再讲"有年交运日偏要去爬山"故事
+6. **禁止整段重复**：不得重复上文已讲过的案例或论点
+7. 直接自然衔接上文最后一句，以倪海厦口吻继续正文` :
+`✓ 字数已达标，请写完通透结语后收束全文。
+1. 用倪海厦霸气风格收尾（如"好了，我话讲完了，信不信随你。下课！"）
+2. 全文仅允许出现一次收尾语，禁止重复`}
 - **TTS 纯净输出**：禁止方括号、括号内提示、**/* 等符号
 - 直接续写正文，不要任何占位词`;
             }
@@ -4780,34 +4800,15 @@ ${next ? next.slice(0, 220) : '（无）'}`;
       });
 
       const mergeInstruction = niche === NicheType.TCM_METAPHYSICS
-        ? `【中医玄学赛道·合并输出格式·必须逐字执行】
-【必须严格遵循的输出格式】
-第一课
-各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。
-好了，我们开始上课。
-[第1课正文]
-
-第二课
-[在段首写一句承上启下的话，然后进入第2课正文]
-
-第三课
-[在段首写一句承上启下的话，然后进入第3课正文]
-
-第四课
-[在段首写一句承上启下的话，然后进入第4课正文]
-
-第五课
-[在段首写一句承上启下的话引向总结，然后进入第5课正文，最后做全文收尾升华]
-
-【硬性规则·违反则输出无效】
-1. 第1段：开头必须是"第一课"，然后是"各位老友们好..."，然后是"好了，我们开始上课。"
-2. 第2段：开头必须是"第二课"
-3. 第3段：开头必须是"第三课"
-4. 第4段：开头必须是"第四课"
-5. 第5段：开头必须是"第五课"
-6. 第2-5段禁止出现"各位老友们好..."
-7. 第2-5段禁止出现"好了，我们开始上课。"
-8. 只输出正文，不要任何解释`
+        ? `【中医玄学赛道·合并规则（倪海厦风格）】
+|
+|【强制合并规则·违反则输出无效】
+|1. 全篇只允许出现一次"各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。"
+|2. 全篇只允许出现一次"好了，我们开始上课。"
+|3. 禁止出现"第一课"、"第二课"、"第X节课"等章节标记——改为自然段落过渡
+|4. 禁止出现5段式结构，改为单一连贯篇章
+|5. 禁止重复开场白、自我纠正故事（"有年交运日偏要去爬山"等）、语气词
+|6. 只输出正文，不要任何章节编号或解释`
         : '';
 
       const cleanedMerged = mergeFiveSegments(cleanedSegmentsForMerge);
