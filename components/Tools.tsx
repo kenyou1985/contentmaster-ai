@@ -3595,8 +3595,8 @@ ${seg}
                             prompt,
                             TCM_SYS,
                             (chunk) => { local += chunk; },
-                            'gpt-5.5',
-                            { maxTokens: 8192 }
+                            'gpt-5.4-mini',
+                            { maxTokens: 8192, fallbackModelOnStall: 'deepseek-v4-flash' }
                         );
                         appendTerminal(`第${idx + 1}/${SEG_COUNT}段完成（约${local.length}字）`);
                         return local;
