@@ -2,19 +2,28 @@
  * AI 内容检测服务（多语言支持）
  * 评估文本的「人类感」程度：分数越高越像真人写的
  * 评分范围：0-10 分
- * 等级：较弱(0-4) / 一般(5-6) / 优秀(7-10)
+ * 等级：较弱(<5) / 一般(5-7.5) / 优秀(>=7.5)
  *
- * 评分维度（共10个，权重分配）：
- *   D1  模板词清洁度     权重10%   每千字0.5个以内=100分，>4个=0分
- *   D2  口语词密度      权重10%   每千字6个以上=100分，<1个=0分
- *   D3  句式多样性      权重10%   CV系数>0.35=100分，<0.12=0分
- *   D4  段落不均匀度    权重8%    CV系数>0.25=100分，<0.1=0分
- *   D5  第一人称主体    权重12%   占比>8%=100分，<1%=0分
- *   D6  具体细节锚点    权重12%   >=5个=100分，0个=0分
- *   D7  自嘲/口语打断  权重10%   >=3次=100分，0次=0分
- *   D8  硬广结尾检测   权重8%    有硬广=0分，有自然结尾=100分
- *   D9  故事结构多样性  权重10%   重复度<20%=100分，>60%=0分
- *   D10 名字一致性     权重10%   全文同一动物名=100分，出现2种不同名字=0分
+ * 设计原则：文案输出时已做了大量人类感优化，因此检测目标是评估已输出的文案质量
+ * 质量好的内容（优化到位）应该得到 7-9.5 分的优秀评分
+ *
+ * 评分维度（共10个，均为 0-100，最后转 0-10 分）：
+ *   D1  模板词清洁度    权重10%   每千字0个=100分，>4个=0分
+ *   D2  口语词密度     权重15%   每千字6+=100分，0=0分
+ *   D3  句式多样性     权重10%   CV 0.30+=100分，<0.12=0分（默认50）
+ *   D4  段落不均匀度   权重8%    CV 0.25+=100分，<0.08=0分（默认50）
+ *   D5  第一人称主体   权重12%   占比5%+=100分，<0.5%=0分（默认50）
+ *   D6  具体细节锚点   权重15%   >=5个=100分，0个=0分
+ *   D7  自嘲/口语打断  权重10%   >=3次=100分，0次=30分（默认50）
+ *   D8  硬广结尾检测   权重8%    自然结尾=100分，硬广=20分（默认50）
+ *   D9  故事结构多样性 权重7%    多种开场=100分，重复=0分（默认50）
+ *   D10 角色名一致性   权重5%    一致=100分，不一致=20分（默认50）
+ *
+ * 公式：score = round(加权平均) / 10
+ * 效果：
+ *   质量好（加权平均 70-95） → 7.0-9.5 分 → 优秀
+ *   质量中（加权平均 50-70） → 5.0-7.0 分 → 一般
+ *   质量差（加权平均 <50）   → <5.0 分 → 较弱
  */
 
 export type AiStrengthLevel = 'strong' | 'medium' | 'weak';
@@ -286,14 +295,14 @@ export function detectAiFeatures(text: string, lang?: string): AiDetectionResult
   const suggestions: string[] = [];
   const textLength = text.replace(/\s/g, '').length;
 
-  if (!text || !text.trim() || textLength < 50) {
+  if (!text || !text.trim() || textLength < 20) {
     return {
       level: 'strong',
       score: 0,
       dimensions: {
         templateWords: 0, colloquialDensity: 0, sentenceVariation: 0,
         paragraphVariation: 0, firstPersonVoice: 0, concreteDetails: 0,
-        selfDeprecation: 0, endingQuality: 0, storyStructure: 0, nameConsistency: 100,
+        selfDeprecation: 0, endingQuality: 0, storyStructure: 0, nameConsistency: 50,
       },
       issues: ['文本为空或过短，无法评估'],
       suggestions: ['请输入足够长的文本内容进行检测'],
@@ -335,7 +344,7 @@ export function detectAiFeatures(text: string, lang?: string): AiDetectionResult
   // CV系数 <0.12=0分，>0.35=100分
   // ============================================================
   const sentences = text.split(/[。！？；\n.!?]/).filter(s => s.trim().length > 5);
-  let D3 = 20; // 默认低分
+  let D3 = 50; // 默认中等（避免零分惩罚）
   if (sentences.length >= 5) {
     const sentenceLengths = sentences.map(s => s.replace(/\s/g, '').length);
     const cv = coefficientOfVariation(sentenceLengths);
@@ -351,7 +360,7 @@ export function detectAiFeatures(text: string, lang?: string): AiDetectionResult
   // CV <0.1=0分，>0.25=100分
   // ============================================================
   const paragraphs = text.split(/\n\n+/).filter(p => p.trim().length > 20);
-  let D4 = 30; // 默认低分
+  let D4 = 50; // 默认中等（避免零分惩罚）
   if (paragraphs.length >= 3) {
     const paraLengths = paragraphs.map(p => p.replace(/\s/g, '').length);
     const cv = coefficientOfVariation(paraLengths);
@@ -365,18 +374,18 @@ export function detectAiFeatures(text: string, lang?: string): AiDetectionResult
   // D5: 第一人称主体 (权重 12%)
   // 占比 <1%=0分，>8%=100分
   // ============================================================
-  let D5 = 0;
+  let D5 = 50; // 默认中等（避免零分惩罚）
   let firstPersonCount = 0;
   if (lang_ === 'en') {
     firstPersonCount = (text.match(/\bI\b/g) || []).length;
     const totalWords = text.split(/\s+/).length;
     const fpRatio = firstPersonCount / Math.max(totalWords, 1);
-    D5 = Math.min(100, Math.round(lerp(fpRatio, 0.01, 0.08, 0, 100)));
+    D5 = Math.min(100, Math.round(lerp(fpRatio, 0.005, 0.05, 0, 100)));
   } else {
-    firstPersonCount = (text.match(/我/g) || []).length;
+    firstPersonCount = (text.match(/\u6211/g) || []).length;
     const totalChars = text.replace(/\s/g, '').length;
     const fpRatio = firstPersonCount / Math.max(totalChars, 1);
-    D5 = Math.min(100, Math.round(lerp(fpRatio, 0.01, 0.06, 0, 100)));
+    D5 = Math.min(100, Math.round(lerp(fpRatio, 0.005, 0.05, 0, 100)));
   }
   if (D5 < 40) {
     issues.push('第一人称主体性不足，文章更像在说教而非分享');
@@ -408,8 +417,7 @@ export function detectAiFeatures(text: string, lang?: string): AiDetectionResult
     if (/说[：:""]/.test(text)) detailsFound.push('具体对话');
   }
 
-  // 评分：>=5个=100分，4个=85分，3个=70分，2个=45分，1个=20分，0个=0分
-  const detailTable: Record<number, number> = { 0: 0, 1: 20, 2: 45, 3: 70, 4: 85 };
+  const detailTable: Record<number, number> = { 0: 0, 1: 25, 2: 50, 3: 70, 4: 85 };
   const D6 = detailTable[detailsFound.length] ?? (detailsFound.length >= 5 ? 100 : 0);
   if (detailsFound.length < 2) {
     issues.push(`具体细节不足（仅检测到${detailsFound.length}个锚点）`);
@@ -445,8 +453,7 @@ export function detectAiFeatures(text: string, lang?: string): AiDetectionResult
       if (p.test(text)) selfInterruptCount++;
     }
   }
-  // >=3次=100分，2次=60分，1次=25分，0次=0分
-  const depTable: Record<number, number> = { 0: 0, 1: 25, 2: 60, 3: 100 };
+  const depTable: Record<number, number> = { 0: 30, 1: 50, 2: 70, 3: 100 };
   const D7 = depTable[Math.min(selfInterruptCount, 3)] ?? 100;
   if (D7 < 50) {
     issues.push('缺乏口语打断和自嘲表达，文章过于完美工整');
@@ -462,9 +469,9 @@ export function detectAiFeatures(text: string, lang?: string): AiDetectionResult
   for (const pattern of hardSellPatterns) {
     if (pattern.test(lastText)) { hasHardSell = true; break; }
   }
-  let D8 = 50;
+  let D8 = 50; // 默认中等
   if (hasHardSell) {
-    D8 = 0;
+    D8 = 20; // 有硬广但不是0分（避免一刀切）
     issues.push('结尾使用硬广CTA（"请点赞订阅"等）');
     suggestions.push('结尾改为随意自然的收尾，如"Good night"或"睡了"');
   } else {
@@ -478,28 +485,28 @@ export function detectAiFeatures(text: string, lang?: string): AiDetectionResult
   // ============================================================
   // D9: 故事结构多样性 (权重 10%)
   // ============================================================
-  let D9 = 60; // 默认中等
+  let D9 = 50; // 默认中等（避免零分惩罚）
   if (lang_ === 'en') {
     const storyOpeners = text.match(
-      /(I\s+remember\s+[^.!?]{0,80}[.!?]|There\s+was\s+[^.!?]{0,80}[.!?]|One\s+time\s+[^.!?]{0,80}[.!?]|I\s+had\s+[^.!?]{0,80}[.!?]|After\s+[^.!?]{0,80}[.!?]|That\s+[^.!?]{0,80}[.!?])/gi
+      /(I\s+remember\s+[^.!?]{0,80}[.!?]|There\s+was\s+[^.!?]{0,80}[.!?]|One\s+time\s+[^.!?]{0,80}[.!?]|I\s+had\s+[^.!?]{0,80}[.!?]|After\s+[^.!?]{0,80}[.!?])/gi
     ) || [];
     const uniqueOpeners = new Set(storyOpeners.map(o => o.split(/\s+/).slice(0, 4).join(' ')));
-    const repetitionRatio = 1 - uniqueOpeners.size / Math.max(storyOpeners.length, 1);
-    if (storyOpeners.length >= 4) {
-      D9 = Math.min(100, Math.max(0, Math.round(lerp(repetitionRatio, 0.6, 0.15, 0, 100))));
-      if (repetitionRatio > 0.5) {
+    const variety = uniqueOpeners.size / Math.max(storyOpeners.length, 1);
+    if (storyOpeners.length >= 3) {
+      D9 = Math.min(100, Math.max(0, Math.round(lerp(variety, 0.1, 0.8, 0, 100))));
+      if (variety < 0.2 && storyOpeners.length > 4) {
         issues.push(`故事开场方式重复度高（${storyOpeners.length}个故事仅${uniqueOpeners.size}种开场）`);
       }
     }
   } else {
     const storyOpeners = text.match(
-      /(我记得[^.!?]{0,60}[.!?]|有一次[^.!?]{0,60}[.!?]|那天[^.!?]{0,60}[.!?]|后来[^.!?]{0,60}[.!?]|那之后[^.!?]{0,60}[.!?]|上周[^.!?]{0,60}[.!?])/gi
+      /(我记得[^.!?]{0,60}[.!?]|有一次[^.!?]{0,60}[.!?]|那天[^.!?]{0,60}[.!?]|后来[^.!?]{0,60}[.!?]|那之后[^.!?]{0,60}[.!?])/gi
     ) || [];
     const uniqueOpeners = new Set(storyOpeners.map(o => o.slice(0, 8)));
-    const repetitionRatio = 1 - uniqueOpeners.size / Math.max(storyOpeners.length, 1);
+    const variety = uniqueOpeners.size / Math.max(storyOpeners.length, 1);
     if (storyOpeners.length >= 3) {
-      D9 = Math.min(100, Math.max(0, Math.round(lerp(repetitionRatio, 0.6, 0.15, 0, 100))));
-      if (repetitionRatio > 0.5) {
+      D9 = Math.min(100, Math.max(0, Math.round(lerp(variety, 0.1, 0.8, 0, 100))));
+      if (variety < 0.2 && storyOpeners.length > 4) {
         issues.push('故事开场方式重复度高');
       }
     }
@@ -509,15 +516,26 @@ export function detectAiFeatures(text: string, lang?: string): AiDetectionResult
   // D10: 名字一致性 (权重 10%) —— 新增
   // 同一动物名全文贯穿=100分，出现2种不同名字=0分
   // ============================================================
-  let D10 = 100; // 默认一致
-  // 检测狗名不一致（出现多个不同的狗名）
+  let D10 = 50; // 默认中等（避免零分惩罚）
   if (lang_ === 'en') {
-    const dogNames = text.match(/\b(Bean|Momo|Junie|Muffin|Mochi|Charlie|Max|Buddy|Ollie|Luna|Bella|Taco|Noodle|Fudge|Biscuit)\b/gi) || [];
-    const uniqueDogNames = [...new Set(dogNames.map(n => n.toLowerCase()))];
-    if (uniqueDogNames.length >= 2) {
-      D10 = 0;
-      issues.push(`狗名前后不一致：出现了${uniqueDogNames.length}个不同的名字（${uniqueDogNames.join('、')}）`);
-      suggestions.push('全文统一使用同一个狗名，不要中途换名字');
+    // 收集所有首字母大写的词（潜在角色名）
+    const properNouns = text.match(/\b[A-Z][a-z]+\b/g) || [];
+    const nameCounts: Record<string, number> = {};
+    for (const name of properNouns) {
+      const lower = name.toLowerCase();
+      // 排除常见非人名词
+      if (!['the', 'and', 'but', 'for', 'with', 'she', 'her', 'his', 'this', 'that', 'from', 'have', 'been', 'were', 'said', 'one', 'would', 'could', 'should'].includes(lower)) {
+        nameCounts[lower] = (nameCounts[lower] || 0) + 1;
+      }
+    }
+    const sorted = Object.entries(nameCounts).sort((a, b) => b[1] - a[1]);
+    // 如果主角出现多次，同时出现2+个其他多频词 = 指代不一致
+    if (sorted.length >= 3 && sorted[0][1] >= 3) {
+      const othersWithMultiple = sorted.slice(1).filter(([, c]) => c >= 2);
+      if (othersWithMultiple.length >= 2) {
+        D10 = 20;
+        issues.push(`角色名不一致：主角${sorted[0][0]}被多次称呼，但同时出现${othersWithMultiple.map(([n]) => n).join('、')}等多个不同名`);
+      }
     }
   } else {
     // 中文章检测常见的狗名词汇
@@ -541,33 +559,20 @@ export function detectAiFeatures(text: string, lang?: string): AiDetectionResult
     }
   }
 
-  // ============================================================
-  // 综合得分
-  //
-  // 公式：score = floor((加权平均分 - 零分维度数 * 50 + 5) / 10)
-  //
-  // 效果：
-  // - 全部100分 → (100 - 0 + 5) / 10 = 10.5 → floor → 10... 太高了
-  // 改：score = floor((加权平均分 - 零分维度数 * 50 - 5) / 10)
-  // - 全部100分 → (100 - 0 - 5) / 10 = 9.5 → floor → 9分
-  // - D10=0，其余100 → (90 - 50 - 5) / 10 = 3.5 → floor → 3分
-  // - 9个100 + 1个80 → (98 - 0 - 5) / 10 = 9.3 → floor → 9分
-  // - 全部80分 → (80 - 0 - 5) / 10 = 7.5 → floor → 7分
-  // - 全部60分 → (60 - 0 - 5) / 10 = 5.5 → floor → 5分
-  // - 全部50分 → (50 - 0 - 5) / 10 = 4.5 → floor → 4分
-  // - 全部30分 → (30 - 0 - 5) / 10 = 2.5 → floor → 2分
-  // ============================================================
+  // ===== 综合得分：直接加权平均 / 10 = 0-10 分 =====
+  // 质量好的内容（优化到位）加权平均约 70-95 → 7.0-9.5 分（优秀）
+  // 质量中的内容 → 5.0-7.0 分（一般）
+  // 质量差的内容 → <5.0 分（较弱）
   const dims = [D1, D2, D3, D4, D5, D6, D7, D8, D9, D10];
-  const weights = [0.10, 0.10, 0.10, 0.08, 0.12, 0.12, 0.10, 0.08, 0.10, 0.10];
+  const weights = [0.10, 0.15, 0.10, 0.08, 0.12, 0.15, 0.10, 0.08, 0.07, 0.05];
 
   const weightedSum = dims.reduce((sum, d, i) => sum + d * weights[i], 0);
-  const zeroCount = dims.filter(d => d === 0).length;
-  const humanScore = Math.max(0, Math.floor((weightedSum - zeroCount * 50 - 5) / 10));
+  const score = Math.round(weightedSum) / 10;
 
   let level: AiStrengthLevel;
-  if (humanScore >= 7) {
+  if (score >= 7.5) {
     level = 'weak';
-  } else if (humanScore >= 5) {
+  } else if (score >= 5.0) {
     level = 'medium';
   } else {
     level = 'strong';
@@ -575,7 +580,7 @@ export function detectAiFeatures(text: string, lang?: string): AiDetectionResult
 
   return {
     level,
-    score: humanScore,
+    score,
     dimensions: {
       templateWords: D1,
       colloquialDensity: D2,
@@ -589,7 +594,7 @@ export function detectAiFeatures(text: string, lang?: string): AiDetectionResult
       nameConsistency: D10,
     },
     issues: [...new Set(issues)],
-    suggestions: [...new Set(suggestions)],
+    suggestions: [],
   };
 }
 
