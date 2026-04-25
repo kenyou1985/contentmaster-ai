@@ -268,8 +268,8 @@ export function buildParallelSegmentUserPrompt(
 
   const lastChapterInstruction = isLast
     ? (isEnglishOutput
-        ? `\n\n【结语收尾方式（英文内容）】\n- 英文内容**禁止**使用「please like and subscribe to my channel」等营销腔结尾。\n- 根据文章主题选择对应动物的结尾（猫主题用猫结尾，狗主题用狗结尾）：\n  - 猫主题："Anyway, my cat is snoring now. Good night." / "Okay, my cat is asleep on my lap. I should probably move." / "My cat just flopped over. Time to sleep, I guess."\n  - 狗主题："Anyway, my dog is snoring now. Good night." / "Okay, my dog is asleep against my leg. I should probably move." / "My dog just flopped over. Time to sleep, I guess."\n- 禁止加粗、禁止 Markdown。`
-        : `\n\n【结语收尾方式（中文内容）】\n- 中文内容**禁止**使用「请点赞并订阅我的频道」等营销腔结尾。\n- 推荐收尾方式（任选其一，融入结语段落末尾）：\n  - 「写完了。狗/猫在打呼噜，我也睡了。希望你今晚睡个好觉。」\n  - 「好吧，我写到这儿也累了。你也在学慢慢来吧。我们都是。不急。」\n  - 「就这样吧。关了灯，猫/狗在旁边，你也睡吧。晚安。」\n- 禁止加粗、禁止 Markdown。`)
+        ? `\n\n【结语收尾方式（英文内容）】\n- 英文内容**禁止**使用「please like and subscribe」等营销腔结尾。\n- 推荐收尾方式（融入结语段落末尾，娓娓道来、自然收束）：\n  - "Well, I think that's enough for tonight. Good night, my friends."\n  - "That's my take for today. Take care, everyone."\n  - "Alright, I think you get the point by now. Rest well, my friends."\n- 禁止加粗、禁止 Markdown。`
+        : `\n\n【结语收尾方式（中文内容）】\n- 中文内容**禁止**使用「请点赞并订阅我的频道」等营销腔结尾。\n- 推荐收尾方式（融入结语段落末尾，娓娓道来、自然收束）：\n  - 「好了，我今天就讲到这里。各位朋友，我们下次再聊。晚安。」\n  - 「各位朋友，你仔细去想，是不是这个道理。我不说了，你自己悟。」\n  - 「好了，今天就到这里。各位朋友，保重。」\n- 禁止加粗、禁止 Markdown。`)
     : '';
 
   return `【总选题】${topic}

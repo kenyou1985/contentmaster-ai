@@ -573,6 +573,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const [yiJingAiDetection, setYiJingAiDetection] = useState<AiDetectionResult | null>(null);
   const [yiJingIsRunningAiDetection, setYiJingIsRunningAiDetection] = useState(false);
   const [yiJingIsPolishing, setYiJingIsPolishing] = useState(false);
+  const [showAiScoreModal, setShowAiScoreModal] = useState(false);
   // ============================================================
   // TCM 并行 Pipeline 状态（对齐易经赛道架构）
   // ============================================================
@@ -6110,14 +6111,16 @@ ${segmentSourceText}
                           <span className="text-xs font-medium text-amber-400/90 flex items-center gap-2">
                             合并后终稿预览
                             {yiJingAiDetection && (
-                              <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${
-                                yiJingAiDetection.level === 'weak' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' :
-                                yiJingAiDetection.level === 'medium' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' :
-                                'bg-rose-500/20 text-rose-300 border border-rose-500/40'
-                              }`}>
+                              <button
+                                onClick={() => setShowAiScoreModal(true)}
+                                className={`text-xs font-bold px-1.5 py-0.5 rounded cursor-pointer hover:opacity-80 ${
+                                  yiJingAiDetection.level === 'weak' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' :
+                                  yiJingAiDetection.level === 'medium' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' :
+                                  'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                                }}`}>
                                 人类感:{yiJingAiDetection.score}/10分
                                 ({yiJingAiDetection.level === 'weak' ? '优秀' : yiJingAiDetection.level === 'medium' ? '一般' : '较弱'})
-                              </span>
+                              </button>
                             )}
                             {yiJingIsRunningAiDetection && (
                               <span className="text-[10px] text-cyan-400 animate-pulse">检测中...</span>
@@ -6590,14 +6593,16 @@ ${segmentSourceText}
                                 <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
                                     {/* 人类感检测显示 */}
                                     {yiJingAiDetection && (
-                                        <span className={`text-xs font-bold px-2 py-1 rounded ${
-                                          yiJingAiDetection.level === 'weak' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' :
-                                          yiJingAiDetection.level === 'medium' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' :
-                                          'bg-rose-500/20 text-rose-300 border border-rose-500/40'
-                                        }`}>
+                                        <button
+                                          onClick={() => setShowAiScoreModal(true)}
+                                          className={`text-xs font-bold px-2 py-1 rounded cursor-pointer hover:opacity-80 ${
+                                            yiJingAiDetection.level === 'weak' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' :
+                                            yiJingAiDetection.level === 'medium' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' :
+                                            'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                                          }}`}>
                                           人类感:{yiJingAiDetection.score}/10分
                                           ({yiJingAiDetection.level === 'weak' ? '优秀' : yiJingAiDetection.level === 'medium' ? '一般' : '较弱'})
-                                        </span>
+                                        </button>
                                     )}
                                     {yiJingIsRunningAiDetection && (
                                         <span className="text-[10px] text-cyan-400 animate-pulse">检测中...</span>
@@ -6722,6 +6727,112 @@ ${segmentSourceText}
           }}
           title="脚本历史记录"
         />
+      )}
+
+      {/* 人类感打分分析弹窗 */}
+      {showAiScoreModal && yiJingAiDetection && (
+        <div
+          className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowAiScoreModal(false); }}
+        >
+          <div className="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-md max-h-[80vh] overflow-y-auto">
+            {/* 标题栏 */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700">
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-bold text-slate-200">人类感分析</span>
+                <span className={`text-xs font-bold px-2 py-0.5 rounded ${
+                  yiJingAiDetection.level === 'weak' ? 'bg-emerald-500/20 text-emerald-300' :
+                  yiJingAiDetection.level === 'medium' ? 'bg-amber-500/20 text-amber-300' :
+                  'bg-rose-500/20 text-rose-300'
+                }`}>
+                  {yiJingAiDetection.score}/10 分
+                  ({yiJingAiDetection.level === 'weak' ? '优秀' : yiJingAiDetection.level === 'medium' ? '一般' : '较弱'})
+                </span>
+              </div>
+              <button
+                onClick={() => setShowAiScoreModal(false)}
+                className="text-slate-400 hover:text-white text-lg leading-none"
+              >
+                ×
+              </button>
+            </div>
+
+            {/* 总分进度条 */}
+            <div className="px-4 pt-3 pb-1">
+              <div className="flex justify-between text-[10px] text-slate-400 mb-1">
+                <span>0</span><span>10</span>
+              </div>
+              <div className="h-3 bg-slate-800 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all ${
+                    yiJingAiDetection.score >= 7.5 ? 'bg-emerald-500' :
+                    yiJingAiDetection.score >= 5 ? 'bg-amber-500' : 'bg-rose-500'
+                  }`}
+                  style={{ width: `${(yiJingAiDetection.score / 10) * 100}%` }}
+                />
+              </div>
+            </div>
+
+            {/* 10维度详情 */}
+            <div className="px-4 py-3 space-y-1.5">
+              <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">维度得分</div>
+              {[
+                { key: 'templateWords', label: 'D1 模板词清洁度', desc: '每千字模板词越多分数越低' },
+                { key: 'colloquialDensity', label: 'D2 口语词密度', desc: '每千字口语词越多分数越高' },
+                { key: 'sentenceVariation', label: 'D3 句式多样性', desc: '句子长短变化越大越自然' },
+                { key: 'paragraphVariation', label: 'D4 段落不均匀度', desc: '段落长度差异越大越真实' },
+                { key: 'firstPersonVoice', label: 'D5 第一人称主体', desc: '"我"字占比越高越有代入感' },
+                { key: 'concreteDetails', label: 'D6 具体细节锚点', desc: '具体时间/地点/名字/动作越多越真实' },
+                { key: 'selfDeprecation', label: 'D7 自嘲/口语打断', desc: '自嘲句和口语打断越多越自然' },
+                { key: 'endingQuality', label: 'D8 结尾质量', desc: '自然结尾高分，硬广CTA低分' },
+                { key: 'storyStructure', label: 'D9 故事结构多样性', desc: '故事开场方式越多越不重复' },
+                { key: 'nameConsistency', label: 'D10 角色名一致性', desc: '全文同一角色名=高分，混乱=低分' },
+              ].map(({ key, label, desc }) => {
+                const value = (yiJingAiDetection.dimensions as any)[key] as number;
+                const isLow = value < 50;
+                return (
+                  <div key={key} className="flex items-center gap-2">
+                    <span className="text-[10px] text-slate-400 w-24 flex-shrink-0">{label}</span>
+                    <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${isLow ? 'bg-rose-500' : 'bg-emerald-500'}`}
+                        style={{ width: `${value}%` }}
+                      />
+                    </div>
+                    <span className={`text-[10px] font-bold w-7 text-right flex-shrink-0 ${isLow ? 'text-rose-400' : 'text-emerald-400'}`}>
+                      {value}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* 低分原因 */}
+            {yiJingAiDetection.issues.length > 0 && (
+              <div className="px-4 pb-4">
+                <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">低分原因</div>
+                <div className="space-y-1">
+                  {yiJingAiDetection.issues.map((issue, i) => (
+                    <div key={i} className="text-[10px] text-amber-400/80 flex items-start gap-1.5">
+                      <span className="text-amber-500 flex-shrink-0 mt-0.5">●</span>
+                      <span>{issue}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 底部关闭按钮 */}
+            <div className="px-4 pb-4 flex justify-center">
+              <button
+                onClick={() => setShowAiScoreModal(false)}
+                className="px-6 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs rounded-md transition-colors"
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
