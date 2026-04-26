@@ -5,6 +5,16 @@
  */
 
 import { streamContentGeneration, type StreamModelArgs } from './geminiService';
+import { CANDIDATE_NAMES as KNOWN_PET_NAMES } from './normalizePetNames';
+
+/** 常见非宠物名中文词（用于排除误检测） */
+const NON_PET_PATTERNS = new Set([
+  '什么', '这个', '那个', '自己', '我们', '他们', '这么', '那么',
+  '时候', '地方', '感觉', '知道', '觉得', '就是', '不是', '还是',
+  '真的', '应该', '可以', '没有', '一样', '一定',
+  '可能', '所以', '因为', '但是', '而且', '或者', '如果',
+  '而且', '而且是', '或者', '甚至', '是不', '不是',
+]);
 
 export interface AntiAiPolishingOptions {
   /** API Key（可选，函数内部使用全局 initializeGemini 设置） */
@@ -15,6 +25,10 @@ export interface AntiAiPolishingOptions {
   onChunk?: (text: string) => void;
   /** 输出语言，可选 */
   outputLanguage?: string;
+  /** 宠物名约束：合并后已统一的规范名，AI 改写时禁止替换成其他名字 */
+  petNameConstraint?: {
+    canonicalName: string;
+  };
 }
 
 /**
@@ -760,6 +774,38 @@ function getPromptForLanguage(language: string): string {
 }
 
 /**
+ * 强制执行宠物名约束：在返回结果前把所有非规范名字替换为规范名
+ * 这是一个绝对可靠的安全网，不依赖 AI 遵守指令
+ */
+function enforcePetNameConstraint(
+  result: string,
+  constraint: NonNullable<AntiAiPolishingOptions['petNameConstraint']>
+): string {
+  if (!constraint.canonicalName) return result;
+  // 用预设的候选宠物名列表做精确替换（不是 allNames，避免误检测词）
+  let fixed = result;
+  for (const name of KNOWN_PET_NAMES) {
+    if (name === constraint.canonicalName) continue;
+    // 精确子串替换，前后不能是汉字（避免把嵌入词的一部分替换掉）
+    let i = 0;
+    while ((i = fixed.indexOf(name, i)) !== -1) {
+      const before = i > 0 ? fixed[i - 1] : ' ';
+      const afterPos = i + name.length;
+      const after = afterPos < fixed.length ? fixed[afterPos] : ' ';
+      const beforeIsCN = /[\u4e00-\u9fff]/.test(before);
+      const afterIsCN = /[\u4e00-\u9fff]/.test(after);
+      if (!beforeIsCN && !afterIsCN) {
+        fixed = fixed.slice(0, i) + constraint.canonicalName + fixed.slice(i + name.length);
+        i += constraint.canonicalName.length;
+      } else {
+        i += name.length;
+      }
+    }
+  }
+  return fixed;
+}
+
+/**
  * 执行 AI 内容去味清洗（深度模式）
  * 多语言支持：根据 outputLanguage 选择对应的模板词和 Prompt
  */
@@ -768,7 +814,7 @@ export async function polishTextForAntiAi(
   options: AntiAiPolishingOptions,
   ...modelArgs: StreamModelArgs
 ): Promise<AntiAiPolishingResult> {
-  const { onLog, onChunk, apiKey, outputLanguage } = options;
+  const { onLog, onChunk, apiKey, outputLanguage, petNameConstraint } = options;
 
   if (!text || !text.trim()) {
     return { success: false, polishedText: '', error: '输入文本为空' };
@@ -802,6 +848,10 @@ export async function polishTextForAntiAi(
 
       // 构造 prompt
       let currentPrompt: string;
+      // 宠物名约束：只在系统指令中约束，不放入用户消息（避免被 AI 当正文输出）
+      const petNameSystemNote = petNameConstraint
+        ? ` | 宠物名铁律：全文宠物统一叫「${petNameConstraint.canonicalName}」，禁止换成其他名字。`
+        : '';
       if (attempt === 1) {
         currentPrompt = `${langPrompt}\n\n${text}`;
       } else {
@@ -814,11 +864,9 @@ export async function polishTextForAntiAi(
         currentPrompt = `${aggressivePrompt}\n\n${text}`;
       }
 
-      onLog?.(`[去AI味] 第${attempt}次改写中...`);
-
       const systemInstruction = attempt === 1
-        ? 'You are a content de-AI editor. Deeply rewrite the text, replace template words, add human colloquial features, do not delete original content.'
-        : 'You are a deep rewrite editor. Must thoroughly rewrite the text, add more colloquial words.';
+        ? 'You are a content de-AI editor. Deeply rewrite the text, replace template words, add human colloquial features, do not delete original content.' + petNameSystemNote
+        : 'You are a deep rewrite editor. Must thoroughly rewrite the text, add more colloquial words.' + petNameSystemNote;
 
       await streamContentGeneration(
         currentPrompt,
@@ -878,7 +926,7 @@ export async function polishTextForAntiAi(
         onLog?.(`[去AI味] ✅ 第${attempt}次改写达标`);
         return {
           success: true,
-          polishedText: result,
+          polishedText: petNameConstraint ? enforcePetNameConstraint(result, petNameConstraint) : result,
           isEffective: true,
           humanWordsAdded: evaluation.humanWordsAdded,
           humanWordsTarget: evaluation.humanWordsTarget
@@ -891,7 +939,7 @@ export async function polishTextForAntiAi(
           onLog?.(`[去AI味] 已达最大重试次数，使用最佳结果`);
           return {
             success: true,
-            polishedText: bestResult,
+            polishedText: petNameConstraint ? enforcePetNameConstraint(bestResult, petNameConstraint) : bestResult,
             isEffective: false,
             humanWordsAdded: bestEvaluation?.humanWordsAdded ?? 0,
             humanWordsTarget: bestEvaluation?.humanWordsTarget ?? 0
@@ -910,7 +958,7 @@ export async function polishTextForAntiAi(
   if (bestResult) {
     return {
       success: true,
-      polishedText: bestResult,
+      polishedText: petNameConstraint ? enforcePetNameConstraint(bestResult, petNameConstraint) : bestResult,
       isEffective: false,
       humanWordsAdded: bestEvaluation?.humanWordsAdded ?? 0,
       humanWordsTarget: bestEvaluation?.humanWordsTarget ?? 0

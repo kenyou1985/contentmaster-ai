@@ -76,8 +76,7 @@ const AI_TEMPLATE_WORDS: Record<string, string[]> = {
     '第一', '第二', '第三', '第四', '第五',
     '另一方面', '与此同时',
     '换句话说', '也就是说', '即是说',
-    '简而言之', '简单来说', '说白了',
-    '事实上', '实际上', '其实',
+    '简而言之', '简单来说',
     '一般来说', '通常情况下', '一般情况下', '通常来说',
     '通过以上分析', '通过上述讨论', '基于以上观点',
     '综上所述', '总而言之', '总结来说',
@@ -321,7 +320,7 @@ export function detectAiFeatures(text: string, lang?: string): AiDetectionResult
   // ============================================================
   const templateCount = countWords(text, templateWords);
   const templateDensity = templateCount / Math.max(textLength / 1000, 1);
-  const D1 = Math.min(100, Math.max(0, Math.round(lerp(templateDensity, 4, 0.5, 0, 100))));
+  const D1 = Math.min(100, Math.max(0, Math.round(lerp(templateDensity, 0, 4, 100, 0))));
   if (templateDensity > 2) {
     issues.push(`模板词偏多（每千字${templateDensity.toFixed(1)}个）`);
     suggestions.push('删除"首先""其次""总而言之"等模板词，改用自然过渡');
@@ -518,45 +517,170 @@ export function detectAiFeatures(text: string, lang?: string): AiDetectionResult
   // ============================================================
   let D10 = 50; // 默认中等（避免零分惩罚）
   if (lang_ === 'en') {
+    // 英文排除列表：所有句首大写的普通英文词（非宠物名）
+    const ENGLISH_STOPWORDS = new Set([
+      'i', 'me', 'my', 'myself', 'we', 'our', 'ours',
+      'you', 'your', 'he', 'she', 'it', 'they', 'them', 'their', 'his', 'her',
+      'this', 'that', 'these', 'those',
+      'what', 'which', 'who', 'whom', 'whose',
+      'a', 'an', 'the', 'some', 'any', 'no', 'not', 'none',
+      'but', 'and', 'or', 'nor', 'so', 'yet', 'for', 'yet',
+      'if', 'then', 'else', 'when', 'where', 'while', 'because', 'since', 'although', 'though',
+      'be', 'been', 'being', 'have', 'has', 'had', 'having', 'do', 'does', 'did', 'doing',
+      'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall', 'can',
+      'just', 'only', 'even', 'also', 'too', 'very', 'really', 'quite', 'rather',
+      'still', 'already', 'always', 'never', 'ever', 'once', 'now', 'then', 'later', 'soon',
+      'here', 'there', 'where', 'when', 'how', 'why',
+      'one', 'two', 'three', 'first', 'second', 'third',
+      'okay', 'ok', 'sure', 'yes', 'no', 'well', 'oh', 'ah', 'hey', 'hi', 'bye',
+      'actually', 'basically', 'literally', 'honestly', 'exactly', 'probably', 'maybe', 'perhaps',
+      'like', 'thing', 'things', 'way', 'ways', 'time', 'times', 'day', 'days', 'night',
+      'thing', 'things', 'sort', 'kind', 'part', 'parts', 'bit', 'lot', 'lots',
+      'much', 'more', 'most', 'less', 'least',
+      'back', 'again', 'away', 'over', 'down', 'up', 'off', 'out',
+      'come', 'came', 'get', 'got', 'make', 'made', 'take', 'took', 'see', 'saw',
+      'go', 'went', 'know', 'knew', 'think', 'thought', 'feel', 'felt', 'want', 'wanted',
+      'mean', 'meant', 'need', 'needed', 'try', 'tried', 'look', 'looked',
+      'say', 'said', 'tell', 'told', 'ask', 'asked', 'use', 'find', 'found',
+      'give', 'gave', 'keep', 'kept', 'let', 'put', 'seem', 'seemed',
+      'become', 'leave', 'left', 'call', 'called',
+      'fine', 'good', 'bad', 'big', 'small', 'old', 'new', 'long', 'last', 'next',
+      'same', 'different', 'whole', 'right', 'wrong', 'real', 'true', 'sure',
+      'late', 'early', 'fast', 'slow', 'quick', 'quiet', 'loud', 'soft', 'hard',
+      'warm', 'cold', 'hot', 'cool', 'nice', 'great', 'best', 'better',
+      'around', 'through', 'under', 'above', 'below', 'between', 'inside', 'outside',
+      'another', 'each', 'every', 'either', 'neither', 'both',
+      'home', 'work', 'place', 'room', 'house', 'floor', 'wall', 'door', 'window',
+      'morning', 'afternoon', 'evening', 'night', 'nighttime',
+      'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+      'january', 'february', 'march', 'april', 'may', 'june',
+      'july', 'august', 'september', 'october', 'november', 'december',
+      'spring', 'summer', 'autumn', 'winter',
+      'today', 'tomorrow', 'yesterday',
+      // 句首常见大写词（不是角色名）
+      'sometimes', 'somehow', 'someone', 'something',
+      'on', 'in', 'at', 'by', 'with', 'without', 'about', 'after', 'before',
+      'not', 'never', 'none', 'nothing', 'nowhere',
+      'just', 'only', 'even', 'still', 'already', 'yet',
+      'it', 'its', 'then', 'than', 'them', 'too', 'though',
+      'whatever', 'whenever', 'wherever', 'however', 'whoever',
+      'during', 'until', 'upon', 'within', 'without',
+      'instead', 'else', 'twice', 'hence', 'thus',
+      'anyway', 'anyhow', 'besides', 'whereas',
+      'brushing', 'bedtime', 'lamp', 'whereas',
+    ]);
     // 收集所有首字母大写的词（潜在角色名）
     const properNouns = text.match(/\b[A-Z][a-z]+\b/g) || [];
     const nameCounts: Record<string, number> = {};
     for (const name of properNouns) {
       const lower = name.toLowerCase();
-      // 排除常见非人名词
-      if (!['the', 'and', 'but', 'for', 'with', 'she', 'her', 'his', 'this', 'that', 'from', 'have', 'been', 'were', 'said', 'one', 'would', 'could', 'should'].includes(lower)) {
+      if (!ENGLISH_STOPWORDS.has(lower)) {
         nameCounts[lower] = (nameCounts[lower] || 0) + 1;
       }
     }
     const sorted = Object.entries(nameCounts).sort((a, b) => b[1] - a[1]);
-    // 如果主角出现多次，同时出现2+个其他多频词 = 指代不一致
+    // 如果主角出现3+次，同时出现2+个其他多频词 = 指代不一致
     if (sorted.length >= 3 && sorted[0][1] >= 3) {
-      const othersWithMultiple = sorted.slice(1).filter(([, c]) => c >= 2);
+      const othersWithMultiple = sorted.slice(1).filter(([, c]) => c >= 3);
       if (othersWithMultiple.length >= 2) {
         D10 = 20;
         issues.push(`角色名不一致：主角${sorted[0][0]}被多次称呼，但同时出现${othersWithMultiple.map(([n]) => n).join('、')}等多个不同名`);
+      } else {
+        D10 = 100; // 单名为主角，无多角色干扰
+      }
+    } else if (sorted.length >= 1 && sorted[0][1] >= 1) {
+      D10 = 100; // 单名场景，没有不一致问题
+    }
+    // sorted.length === 0：检测不到名字时不扣分（可能是纯人类主题），保持 D10=100
+  } else {
+    // 中文章检测宠物名一致性
+    // 策略：只匹配已知宠物候选名单词（精确匹配），避免误捕获普通词组
+    // 排除词：常见的非宠物名片段
+    const NON_PET_STOPWORDS = new Set([
+      '说实话', '我也', '其实', '真的', '好像', '可能', '感觉',
+      '就是', '不是', '还是', '这个', '那个', '什么', '自己',
+      '知道', '觉得', '好像', '这么', '那么', '怎么', '应该',
+      '可以', '没有', '一样', '一定', '其实', '真的', '可能',
+      '所以', '因为', '但是', '而且', '或者', '如果',
+      '像是', '像在', '像只', '像条', '像是', '煤球',
+      // 误触发的普通词组
+      '我坐正', '我坐就', '坐正好', '坐就是', '最后这', '只是这',
+      '最后', '只是', '只有', '坐正', '坐就', '坐好',
+    ]);
+
+    // 已知中文宠物候选名（用于精确匹配）
+    const CANDIDATE_PET_NAMES = new Set([
+      '小满', '年糕', '团子', '咪咪', '煤球', '肉包', '橘子', '阿橘',
+      '布丁', '果冻', '奶糖', '花花', '小白', '小灰', '小黑', '黑豆',
+      '豆豆', '阿黄', '来福', '旺财', '球球', '阿福', '大黄', '笨笨', '毛毛', '乐乐', '欢欢',
+      '糯米',  // 狗主题固定名
+      '小满',  // 猫主题固定名（重复不影响Set）
+    ]);
+
+    // 方式1：已知候选名单词精确匹配（前后边界检查）
+    const dogNameCandidateMatches: string[] = [];
+    for (const name of CANDIDATE_PET_NAMES) {
+      let i = 0;
+      while ((i = text.indexOf(name, i)) !== -1) {
+        const before = i > 0 ? text[i - 1] : ' ';
+        const afterPos = i + name.length;
+        const after = afterPos < text.length ? text[afterPos] : ' ';
+        const beforeIsCN = /[\u4e00-\u9fff]/.test(before);
+        const afterIsCN = /[\u4e00-\u9fff]/.test(after);
+        if (!beforeIsCN && !afterIsCN) {
+          dogNameCandidateMatches.push(name);
+        }
+        i += name.length;
       }
     }
-  } else {
-    // 中文章检测常见的狗名词汇
-    const dogNamePatterns = text.match(/狗[名称叫]([^\s，、。\n]{1,6})|叫([^\s，、。\n]{1,6})(?:狗|那只)/g) || [];
-    const dogNameDirect = text.match(/([^\s，、。\n]{1,6})(?:这会儿|在打呼噜|趴在|睡着了)/g) || [];
-    // 收集所有被提到的狗名
-    const allDogNames: string[] = [];
-    for (const m of dogNamePatterns) {
-      const match = m.match(/叫([^\s，、。\n]{1,6})/);
-      if (match) allDogNames.push(match[1]);
+
+    const STRICT_PET_NAME_STARTERS = new Set([
+      '小', '年', '团', '咪', '煤', '肉', '橘', '阿', '布', '果', '奶', '花',
+      '豆', '来', '旺', '球', '大', '笨', '毛', '乐', '欢', '糯', '梁', '像',
+    ]);
+    // 严格2字符宠物名（必须是以上面开头的才进入候选）
+    const STRICT_2CHAR_PET_NAMES = new Set([
+      '小满', '年糕', '团子', '咪咪', '煤球', '肉包', '橘子', '阿橘',
+      '布丁', '果冻', '奶糖', '花花', '豆豆', '阿黄', '来福', '旺财',
+      '球球', '阿福', '大黄', '笨笨', '毛毛', '乐乐', '欢欢', '糯米',
+      '梁子',
+    ]);
+
+    // 方式2：行为短语捕获（只接受严格候选名单词，防止误捕获"我坐正"等）
+    const dogNameBehaviorMatches: string[] = [];
+    const behaviorPatterns = [
+      /(?:^|[。！？\n，、])([\u4e00-\u9fff]{2,4})(?=这会儿|在打呼噜|在睡觉|趴在|睡着了|在打呼|把头|把下巴)/g,
+    ];
+    for (const pat of behaviorPatterns) {
+      pat.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = pat.exec(text)) !== null) {
+        const name = m[1];
+        if (
+          // 精确匹配已知候选名单词
+          CANDIDATE_PET_NAMES.has(name) ||
+          // 2字符严格名单（小/年来/团子 等开头）
+          STRICT_2CHAR_PET_NAMES.has(name) ||
+          // 2字符且首字是宠物常用名起始字（防止捕获"我坐正"等）
+          (name.length === 2 && STRICT_PET_NAME_STARTERS.has(name[0]))
+        ) {
+          dogNameBehaviorMatches.push(name);
+        }
+      }
     }
-    for (const m of dogNameDirect) {
-      const name = m.replace(/(?:这会儿|在打呼噜|趴在|睡着了)/, '').trim();
-      if (name.length >= 2) allDogNames.push(name);
-    }
+
+    // 合并所有发现的名字（只计入已知候选名单词）
+    const allDogNames = [...dogNameCandidateMatches, ...dogNameBehaviorMatches].filter(n => !NON_PET_STOPWORDS.has(n));
     const uniqueDogNames = [...new Set(allDogNames)];
+
     if (uniqueDogNames.length >= 2) {
       D10 = 0;
-      issues.push(`狗名前后不一致：出现了${uniqueDogNames.length}个不同的名字（${uniqueDogNames.join('、')}）`);
-      suggestions.push('全文统一使用同一个狗名，不要中途换名字');
+      issues.push(`宠物名前后不一致：出现了${uniqueDogNames.length}个不同的名字（${uniqueDogNames.join('、')}）`);
+      suggestions.push('全文统一使用同一个宠物名，不要中途换名字');
+    } else if (uniqueDogNames.length === 1) {
+      D10 = 100; // 完美：全文只有一个宠物名
     }
+    // D10 保持 50（默认值）：检测不到名字时不扣分（可能是纯人类主题）
   }
 
   // ===== 综合得分：直接加权平均 / 10 = 0-10 分 =====

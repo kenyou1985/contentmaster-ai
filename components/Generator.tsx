@@ -233,10 +233,48 @@ import {
   truncateMindfulScript,
   mindfulMergeCharClamp,
 } from '../services/mindfulScriptPostProcess';
+import { normalizePetNames, getPetNameStats, normalizeEnglishPetNames, cleanResidualEnglishInChinese } from '../services/normalizePetNames';
+import { translateToDisplayLanguage } from '../services/translateService';
 
 function clampSystemSummary(raw: string, maxLen = 1600): string {
   const s = raw.replace(/\s+/g, ' ').trim();
   return s.length > maxLen ? `${s.slice(0, maxLen)}…` : s;
+}
+
+/** 计算两个字符串的编辑距离（Levenshtein） */
+function levenshteinDistance(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+  );
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+/**
+ * 清理末尾重复段落（Levenshtein 相似度 > 85% 则删除倒数第二段）
+ */
+function removeDuplicateEndings(text: string): string {
+  const paragraphs = text.split(/\n\n+/).filter(p => p.trim());
+  if (paragraphs.length < 2) return text;
+  const last = paragraphs[paragraphs.length - 1];
+  const secondLast = paragraphs[paragraphs.length - 2];
+  const simNorm = (s: string) => s.replace(/\s+/g, ' ').replace(/[^a-zA-Z0-9\s\u4e00-\u9fff]/g, '').toLowerCase().trim();
+  const s1 = simNorm(secondLast);
+  const s2 = simNorm(last);
+  if (s1.length < 20 || s2.length < 20) return text;
+  const maxLen = Math.max(s1.length, s2.length);
+  if (1 - levenshteinDistance(s1, s2) / maxLen > 0.85) {
+    paragraphs.splice(paragraphs.length - 2, 1);
+    return paragraphs.join('\n\n');
+  }
+  return text;
 }
 
 /** 治愈心理学选题：去掉 * / **，竖线改「：」，英文与中文之间的半角冒号改全角「：」，保留【分类标签】 */
@@ -317,9 +355,9 @@ function getParallelPipelineBundle(
     niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
 
   if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
-    // 根据选择的语言确定输出语言
+    // 中文走英文 pipeline（避免宠物名错乱），其他语言也走英文
     const langMap: Record<MindfulLanguage, 'en' | 'zh'> = {
-      'en': 'en', 'zh': 'zh', 'ko': 'en', 'ja': 'en', 'es': 'en',
+      'en': 'en', 'zh': 'en', 'ko': 'en', 'ja': 'en', 'es': 'en',
       'de': 'en', 'hi': 'en', 'ru': 'en', 'pt': 'en', 'fr': 'en',
       'id': 'en', 'th': 'en'
     };
@@ -2111,6 +2149,12 @@ ${segmentSourceText}
         norm = truncateMindfulScript(norm, MINDFUL_EN_SCRIPT_CHARS_MAX);
       }
 
+      // 治愈心理学：英文宠物名一致性后处理（所有语言都走英文 pipeline）
+      if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+        norm = normalizeEnglishPetNames(norm);
+        norm = removeDuplicateEndings(norm);
+      }
+
       // 检测文章主题：猫还是狗，用于生成匹配的结尾正则
       const catKeywords = /\b(cat|kitten|meow|purr|whisker|feline)\b/i;
       const dogKeywords = /\b(dog|puppy|paw|canine|woof|pet)\b/i;
@@ -2140,6 +2184,25 @@ ${segmentSourceText}
         // 中文硬广CTA（向后兼容）
         /((?:请点赞|喜欢本文|如果觉得有收获)[^\n。！？]{0,100}[。！？]?)\s*$/i,
       ];
+      // 清理末尾重复段落（防止 AI 生成两段几乎相同的结尾）
+      const paragraphs = norm.split(/\n\n+/).filter(p => p.trim());
+      if (paragraphs.length >= 2) {
+        const last = paragraphs[paragraphs.length - 1];
+        const secondLast = paragraphs[paragraphs.length - 2];
+        const simNorm = (s: string) => s.replace(/\s+/g, ' ').replace(/[^a-zA-Z0-9\s\u4e00-\u9fff]/g, '').toLowerCase().trim();
+        const s1 = simNorm(secondLast);
+        const s2 = simNorm(last);
+        if (s1.length > 20 && s2.length > 20) {
+          const maxLen = Math.max(s1.length, s2.length);
+          const dist = levenshteinDistance(s1, s2);
+          if (1 - dist / maxLen > 0.85) {
+            paragraphs.splice(paragraphs.length - 2, 1);
+            norm = paragraphs.join('\n\n');
+            pushYiJingLog('[去重] 清理末尾重复段落完成');
+          }
+        }
+      }
+
       let savedCta = '';
       for (const pattern of ctaPatterns) {
         const match = norm.match(pattern);
@@ -2180,6 +2243,19 @@ ${segmentSourceText}
       pushYiJingLog(`[去AI味] 输入文本长度: ${(norm || '').replace(/\s+/g, '').length} 字`);
       pushYiJingLog('[去AI味] 正在调用 AI 模型进行深度去味改写...');
 
+      // 提取宠物名约束：中文走英文 pipeline，内容是英文，用英文名字约束
+      const petConstraint = niche === NicheType.MINDFUL_PSYCHOLOGY && effectiveLang === 'zh'
+        ? (() => {
+          const stats = getPetNameStats(norm);
+          if (stats.length === 0) return undefined;
+          // 找最高频的名字（出现次数相同则选最后出现的）
+          const canonical = stats.reduce((best, s) =>
+            s.count > best.count || (s.count === best.count && s.lastPos > best.lastPos) ? s : best, stats[0]);
+          // 只传规范名，不传 allNames 列表（allNames 包含大量误检测词）
+          return { canonicalName: canonical.name };
+        })()
+        : undefined;
+
       let antiAiPolished = '';
       let antiAiSuccess = false;
       let antiAiPolishingResult: Awaited<ReturnType<typeof polishTextForAntiAi>> | null = null;
@@ -2193,6 +2269,7 @@ ${segmentSourceText}
               antiAiPolished = chunk;
             },
             outputLanguage,
+            petNameConstraint: petConstraint,
           },
           apiKey,
           { provider }
@@ -2200,6 +2277,9 @@ ${segmentSourceText}
         antiAiSuccess = antiAiPolishingResult.success;
 
         const polishedLen = (antiAiPolished || '').replace(/\s+/g, '').length;
+            if (petConstraint) {
+              pushYiJingLog(`[宠物名约束] 规范名: ${petConstraint.canonicalName}，全文统一使用`);
+            }
         pushYiJingLog(`[去AI味] AI 返回结果长度: ${polishedLen} 字`);
 
         if (antiAiPolished.trim() && polishedLen > 0) {
@@ -2228,8 +2308,35 @@ ${segmentSourceText}
           const cleanedLen = (cleanedPolish || '').replace(/\s+/g, '').length;
           pushYiJingLog(`[去AI味] 清理残留后长度: ${cleanedLen} 字`);
 
-          norm = cleanedPolish;
-          setYiJingMergedOutput(norm);
+        norm = cleanedPolish;
+
+        // 治愈心理学：英文宠物名一致性后处理（所有语言都走英文 pipeline）
+        if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+          const beforeLen = norm.length;
+          norm = normalizeEnglishPetNames(norm);
+          if (norm.length !== beforeLen || norm !== cleanedPolish) {
+            pushYiJingLog('[宠物名清洗] 英文宠物名统一完成');
+          }
+        }
+
+        // 中文用户走英文 pipeline → 翻译成中文后显示
+        if (effectiveLang === 'zh') {
+          const translated = await translateToDisplayLanguage(norm, 'zh', (m) => pushYiJingLog(m));
+          if (translated && translated !== norm) {
+            norm = translated;
+            pushYiJingLog('[翻译] ✅ 中文翻译完成');
+          }
+          // 翻译后清理残留英文宠物词（my cat / my dog 等）
+          norm = normalizePetNames(norm);
+          norm = cleanResidualEnglishInChinese(norm);
+        }
+
+        // ===== 最终去重兜底（防止 AI 改写后仍产生重复结尾） =====
+        if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+          norm = removeDuplicateEndings(norm);
+        }
+
+        setYiJingMergedOutput(norm);
           setGeneratedContents((prev) => {
             const next = [...prev];
             const hit = next.findIndex((x) => x.topic === sel[0].title);
@@ -2338,34 +2445,72 @@ ${segmentSourceText}
     const outputLanguage: 'zh' | 'en' = isMindfulEnglish ? (effectiveLang === 'en' ? 'en' : 'zh') : (isEnRevenge ? 'en' : 'zh');
 
     try {
+      let textToPolish = yiJingMergedOutput;
+
+      // 中文用户：翻译成英文 → 去 AI 味 → 翻译回中文
+      if (effectiveLang === 'zh') {
+        pushYiJingLog('[重洗] 中文内容：翻译成英文后去 AI 味...');
+        textToPolish = await translateToDisplayLanguage(yiJingMergedOutput, 'en', (m) => pushYiJingLog(m));
+        if (textToPolish !== yiJingMergedOutput) {
+          pushYiJingLog(`[重洗] 翻译为英文完成，约${textToPolish.replace(/\s+/g, '').length}字`);
+        }
+      }
+
+      // 提取宠物名约束（英文文本上的宠物名检测更准确）
+      const petConstraint = niche === NicheType.MINDFUL_PSYCHOLOGY && effectiveLang === 'zh'
+        ? (() => {
+          const stats = getPetNameStats(textToPolish);
+          if (stats.length === 0) return undefined;
+          const canonical = stats.reduce((best, s) =>
+            s.count > best.count || (s.count === best.count && s.lastPos > best.lastPos) ? s : best, stats[0]);
+          return { canonicalName: canonical.name };
+        })()
+        : undefined;
+
       let antiAiPolished = '';
 
       await polishTextForAntiAi(
-        yiJingMergedOutput,
+        textToPolish,
         {
           apiKey,
           onLog: (msg) => pushYiJingLog(`[去AI味] ${msg}`),
           onChunk: (chunk) => {
             antiAiPolished = chunk;
           },
-          outputLanguage,
+          outputLanguage: effectiveLang === 'zh' ? 'en' : outputLanguage,
+          ...(petConstraint ? { petNameConstraint: petConstraint } : {}),
         },
         apiKey,
         { provider }
       );
 
       if (antiAiPolished.trim()) {
-        // 禁止删除 CTA！保留原文 CTA 完整性
         let cleanedPolish = antiAiPolished.trim();
+
+        // 治愈心理学：英文宠物名一致性后处理
+        if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+          cleanedPolish = normalizeEnglishPetNames(cleanedPolish);
+        }
 
         if (!/[。！？.!?]$/.test(cleanedPolish.trim())) {
           cleanedPolish = cleanedPolish.trim() + '。';
         }
 
+        // 中文用户：翻译回中文
+        if (effectiveLang === 'zh') {
+          const zhResult = await translateToDisplayLanguage(cleanedPolish, 'zh', (m) => pushYiJingLog(m));
+          if (zhResult && zhResult !== cleanedPolish) {
+            cleanedPolish = zhResult;
+            pushYiJingLog('[重洗] 翻译回中文完成');
+          }
+          // 翻译后清理残留英文宠物词
+          cleanedPolish = normalizePetNames(cleanedPolish);
+          cleanedPolish = cleanResidualEnglishInChinese(cleanedPolish);
+        }
+
         setYiJingMergedOutput(cleanedPolish);
         pushYiJingLog('[去AI味] 重新清洗完成');
 
-        // 重新检测
         const detection = detectAiFeatures(cleanedPolish);
         setYiJingAiDetection(detection);
         pushYiJingLog(`[人类感检测] 重新检测完成 - 人类感 ${detection.score}/10分 (${detection.level === 'weak' ? '优秀' : detection.level === 'medium' ? '一般' : '较弱'})`);
@@ -2385,7 +2530,7 @@ ${segmentSourceText}
     } finally {
       setYiJingIsPolishing(false);
     }
-  }, [yiJingMergedOutput, apiKey, provider, pushYiJingLog, toast]);
+  }, [yiJingMergedOutput, apiKey, provider, pushYiJingLog, toast, niche]);
   // ============================================================
   // TCM 并行 Pipeline 函数（对齐易经赛道架构）
   // ============================================================
@@ -2744,6 +2889,13 @@ ${segmentSourceText}
         if (mindfulLongAp) {
           norm = truncateMindfulScript(norm, MINDFUL_EN_SCRIPT_CHARS_MAX);
         }
+        // 治愈心理学中文：宠物名一致性后处理
+        const mindfulApLang = niche === NicheType.MINDFUL_PSYCHOLOGY
+          ? (mindfulLanguage || 'en')
+          : null;
+        if (mindfulApLang === 'zh') {
+          norm = normalizePetNames(norm);
+        }
 
         patchRun(topic.id, { status: 'done', stage: 'done', progress: 100 });
         appendRunLog(topic.id, `完成：终稿约 ${norm.length} 字`);
@@ -3036,6 +3188,13 @@ ${segmentSourceText}
           if (mindfulLong) {
             finalText = truncateMindfulScript(finalText, MINDFUL_EN_SCRIPT_CHARS_MAX);
           }
+          // 治愈心理学中文：宠物名一致性后处理
+          if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+            const batchLang = mindfulLanguage || 'en';
+            if (batchLang === 'zh') {
+              finalText = normalizePetNames(finalText);
+            }
+          }
 
           // 检测文章主题：猫还是狗，用于生成匹配的结尾正则
           const catKeywordsBatch = /\b(cat|kitten|meow|purr|whisker|feline)\b/i;
@@ -3066,7 +3225,26 @@ ${segmentSourceText}
             // 中文硬广CTA（向后兼容）
             /((?:请点赞|喜欢本文|如果觉得有收获)[^\n。！？]{0,100}[。！？]?)\s*$/i,
           ];
-          let savedCta = '';
+          // 清理末尾重复段落（防止 AI 生成两段几乎相同的结尾）
+          const paragraphs = finalText.split(/\n\n+/).filter(p => p.trim());
+          if (paragraphs.length >= 2) {
+            const last = paragraphs[paragraphs.length - 1];
+            const secondLast = paragraphs[paragraphs.length - 2];
+            const simNorm = (s: string) => s.replace(/\s+/g, ' ').replace(/[^a-zA-Z0-9\s\u4e00-\u9fff]/g, '').toLowerCase().trim();
+            const s1 = simNorm(secondLast);
+            const s2 = simNorm(last);
+            if (s1.length > 20 && s2.length > 20) {
+              const maxLen = Math.max(s1.length, s2.length);
+              const dist = levenshteinDistance(s1, s2);
+              if (1 - dist / maxLen > 0.85) {
+                paragraphs.splice(paragraphs.length - 2, 1);
+                finalText = paragraphs.join('\n\n');
+            pushYiJingLog('[去重] 清理末尾重复段落完成');
+          }
+        }
+      }
+
+      let savedCta = '';
           for (const pattern of ctaPatterns) {
             const match = finalText.match(pattern);
             if (match && match[1]) {
@@ -3097,6 +3275,17 @@ ${segmentSourceText}
           const effectiveLangBatch = mindfulLanguage || 'en';
           const outputLanguageBatch: 'zh' | 'en' = isMindfulEnglishBatch ? (effectiveLangBatch === 'en' ? 'en' : 'zh') : (isEnRevengeBatch ? 'en' : 'zh');
 
+          // 提取宠物名约束：中文走英文 pipeline，内容是英文，不需要宠物名约束
+          const petConstraintBatch = isMindfulEnglishBatch && effectiveLangBatch === 'zh'
+            ? (() => {
+              const stats = getPetNameStats(finalText);
+              if (stats.length === 0) return undefined;
+              const canonical = stats.reduce((best, s) =>
+                s.count > best.count || (s.count === best.count && s.lastPos > best.lastPos) ? s : best, stats[0]);
+              return { canonicalName: canonical.name };
+            })()
+            : undefined;
+
           let antiAiPolished = '';
           let antiAiSuccess = false;
           let antiAiPolishingResult: Awaited<ReturnType<typeof polishTextForAntiAi>> | null = null;
@@ -3110,6 +3299,7 @@ ${segmentSourceText}
                   antiAiPolished = chunk;
                 },
                 outputLanguage: outputLanguageBatch,
+                petNameConstraint: petConstraintBatch,
               },
               apiKey,
               { provider }
@@ -3117,6 +3307,9 @@ ${segmentSourceText}
             antiAiSuccess = antiAiPolishingResult.success;
 
             const polishedLen = (antiAiPolished || '').replace(/\s+/g, '').length;
+            if (petConstraintBatch) {
+              pushYiJingLog(`[宠物名约束] 规范名: ${petConstraintBatch.canonicalName}，全文统一使用`);
+            }
             pushYiJingLog(`[去AI味] AI 返回结果长度: ${polishedLen} 字`);
 
             if (antiAiPolished.trim() && polishedLen > 0) {
@@ -3144,6 +3337,24 @@ ${segmentSourceText}
               pushYiJingLog(`[去AI味] 清理残留后长度: ${cleanedLen} 字`);
 
               finalText = cleanedPolish;
+
+              // 治愈心理学：英文宠物名一致性后处理
+              if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+                finalText = normalizeEnglishPetNames(finalText);
+                finalText = removeDuplicateEndings(finalText);
+              }
+
+              // 中文走英文 pipeline → 翻译成中文
+              if (effectiveLangBatch === 'zh') {
+                const translated = await translateToDisplayLanguage(finalText, 'zh', (m) => pushYiJingLog(m));
+                if (translated && translated !== finalText) {
+                  finalText = translated;
+                  pushYiJingLog('[翻译] ✅ 中文翻译完成');
+                  // 翻译后清理残留英文宠物词
+                  finalText = normalizePetNames(finalText);
+                  finalText = cleanResidualEnglishInChinese(finalText);
+                }
+              }
               pushYiJingLog('[去AI味] ✅ 清洗完成');
               antiAiSuccess = true;
             } else {
