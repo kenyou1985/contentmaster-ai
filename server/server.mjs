@@ -7,7 +7,7 @@ import http from 'http';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -61,6 +61,30 @@ function runPythonStdin(args, stdinData, onProgress) {
       reject(new Error(`Python 脚本不存在: ${SCRIPT_PATH}`));
       return;
     }
+
+    let jsonFile = null;
+    let jsonStr;
+
+    // 尝试序列化 JSON，同时检测大小（V8 字符串限制 ~2GB）
+    const threshold = 200 * 1024 * 1024; // 200MB 保险阈值
+    try {
+      jsonStr = JSON.stringify(stdinData);
+      if (jsonStr.length > threshold) {
+        console.warn(`[server] JSON payload 过大 (${jsonStr.length} bytes)，写入临时文件`);
+        jsonFile = join('/tmp', `jianying_payload_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.json`);
+        writeFileSync(jsonFile, jsonStr, 'utf8');
+        const fileArgIdx = args.indexOf('--shots-json-stdin');
+        if (fileArgIdx >= 0) {
+          args = [...args.slice(0, fileArgIdx), '--shots-json-file', jsonFile, ...args.slice(fileArgIdx + 1)];
+        }
+        jsonStr = null; // 不走 stdin，走文件
+      }
+    } catch (err) {
+      // V8 无法序列化超大 JSON
+      reject(new Error(`Payload 过大，无法序列化: ${err.message}`));
+      return;
+    }
+
     const child = spawn('python3', [SCRIPT_PATH, ...args]);
 
     let killed = false;
@@ -90,26 +114,33 @@ function runPythonStdin(args, stdinData, onProgress) {
     });
     child.stderr.on('data', (d) => { stderr += d.toString(); });
 
-    // 通过 stdin 写入 JSON，避免命令行参数超限（E2BIG）
-    if (stdinData !== undefined) {
-      const jsonData = JSON.stringify(stdinData);
+    // 通过 stdin 写入 JSON（大 JSON 已写入临时文件，不走此处）
+    if (jsonStr !== undefined && jsonStr !== null) {
       const writable = child.stdin;
       writable.on('error', (err) => {
-        // EPIPE: Python 进程在写入完成前已退出，属于正常情况，忽略即可
         if (err.code !== 'EPIPE' && err.code !== 'ECONNRESET') {
           console.error(`[server] stdin write error: ${err.code} ${err.message}`);
         }
       });
       try {
-        writable.write(jsonData, () => {
+        writable.write(jsonStr, () => {
           writable.end();
         });
       } catch (err) {
-        // 写入时直接抛错（如管道已关闭），忽略
+        // 管道已关闭，忽略
       }
+    } else {
+      // 大 JSON 已写入文件，Python 通过文件读取，stdin 正常关闭
+      child.stdin.end();
     }
 
     child.on('close', (code) => {
+      // 清理临时 JSON 文件
+      if (jsonFile) {
+        try {
+          rmSync(jsonFile, { force: true });
+        } catch { /* ignore */ }
+      }
       clearTimeout(timer);
       if (killed) {
         reject(new Error('Python 进程超时（5分钟），可能被大文件阻塞'));
@@ -158,6 +189,94 @@ function runPython(args) {
   return runPythonStdin(args, undefined, null);
 }
 
+// ---- Data URL → Temp File 转换（避免超长 stdin JSON）----
+function extractDataUrlsToTempFiles(shots) {
+  const tempDir = join('/tmp', `jianying_data_${Date.now()}`);
+  mkdirSync(tempDir, { recursive: true });
+  const replacements = {}; // url → tempFilePath
+
+  const MIME_EXT = {
+    'image/png': '.png',
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/gif': '.gif',
+    'image/webp': '.webp',
+    'audio/mpeg': '.mp3',
+    'audio/mp3': '.mp3',
+    'audio/wav': '.wav',
+    'audio/ogg': '.ogg',
+    'audio/m4a': '.m4a',
+    'audio/aac': '.aac',
+    'video/mp4': '.mp4',
+    'video/quicktime': '.mov',
+    'video/webm': '.webm',
+    'video/x-m4v': '.m4v',
+  };
+
+  for (let i = 0; i < shots.length; i++) {
+    const shot = shots[i];
+    const fields = [
+      { key: 'imageUrl', sub: null },
+      { key: 'audioUrl', sub: null },
+      { key: 'voiceoverAudioUrl', sub: null },
+      { key: 'videoUrl', sub: null },
+    ];
+    for (const { key } of fields) {
+      let val = shot[key];
+      if (!val) {
+        // also check imageUrls array
+        if (key === 'imageUrl' && Array.isArray(shot.imageUrls) && shot.imageUrls.length > 0) {
+          val = shot.imageUrls[0];
+        }
+      }
+      if (!val || typeof val !== 'string') continue;
+      if (!val.startsWith('data:')) continue;
+      if (replacements[val]) continue; // already processed this exact URL
+
+      const headerMatch = val.match(/^data:([^;]+)/);
+      const mime = headerMatch ? headerMatch[1] : 'application/octet-stream';
+      const ext = MIME_EXT[mime] || '.bin';
+      const idx = Object.keys(replacements).length;
+      const fileName = `media_${String(idx).padStart(4, '0')}${ext}`;
+      const filePath = join(tempDir, fileName);
+
+      const commaIdx = val.indexOf(',');
+      const b64data = commaIdx >= 0 ? val.slice(commaIdx + 1) : val;
+      const buf = Buffer.from(b64data, 'base64');
+      writeFileSync(filePath, buf);
+      replacements[val] = filePath;
+    }
+  }
+
+  // Walk through shots and replace data URLs with file paths
+  const cleanedShots = JSON.parse(JSON.stringify(shots)); // deep clone
+  for (let i = 0; i < cleanedShots.length; i++) {
+    const shot = cleanedShots[i];
+    for (const key of ['imageUrl', 'audioUrl', 'voiceoverAudioUrl', 'videoUrl']) {
+      if (shot[key] && typeof shot[key] === 'string' && shot[key].startsWith('data:')) {
+        shot[key] = replacements[shot[key]] || shot[key];
+      }
+    }
+    if (Array.isArray(shot.imageUrls)) {
+      shot.imageUrls = shot.imageUrls.map(u =>
+        (u && typeof u === 'string' && u.startsWith('data:')) ? (replacements[u] || u) : u
+      );
+    }
+  }
+
+  return { cleanedShots, tempDir };
+}
+
+function cleanupTempDir(tempDir) {
+  try {
+    if (tempDir && tempDir.includes('/tmp/jianying_data_')) {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  } catch {
+    // ignore cleanup errors
+  }
+}
+
 async function runLocalExportJob(payload, taskId) {
   const {
     draftName = 'ContentMaster_Export',
@@ -186,26 +305,47 @@ async function runLocalExportJob(payload, taskId) {
 
   notify(5, '开始处理...');
 
-  const { code, stdout, stderr } = await runPythonStdin(
-    [
-      '--name', draftName,
-      '--shots-json-stdin',
-      '--resolution', resolution,
-      '--fps', String(fps),
-    ],
-    {
-      shots,
-      outputPath,
-      forceDraftFolderName,
-      randomTransitions,
-      randomVideoEffects,
-    },
-    (progress, stage) => {
-      // Python 进度回调：0-100 之间
-      const scaledProgress = Math.round(5 + progress * 0.9);
-      notify(scaledProgress, stage || '处理中...');
+  let tempDir = null;
+  let processedShots = shots;
+  if (shots.some(s => {
+    const vals = [s.imageUrl, s.audioUrl, s.voiceoverAudioUrl, s.videoUrl, ...(s.imageUrls || [])];
+    return vals.some(v => v && typeof v === 'string' && v.startsWith('data:'));
+  })) {
+    try {
+      const result = extractDataUrlsToTempFiles(shots);
+      processedShots = result.cleanedShots;
+      tempDir = result.tempDir;
+    } catch (e) {
+      console.warn(`[server] data URL 提取失败，使用原始数据: ${e.message}`);
     }
-  );
+  }
+
+  let pythonResult;
+  try {
+    pythonResult = await runPythonStdin(
+      [
+        '--name', draftName,
+        '--shots-json-stdin',
+        '--resolution', resolution,
+        '--fps', String(fps),
+      ],
+      {
+        shots: processedShots,
+        outputPath,
+        forceDraftFolderName,
+        randomTransitions,
+        randomVideoEffects,
+      },
+      (progress, stage) => {
+        const scaledProgress = Math.round(5 + progress * 0.9);
+        notify(scaledProgress, stage || '处理中...');
+      }
+    );
+  } finally {
+    if (tempDir) cleanupTempDir(tempDir);
+  }
+
+  const { code, stdout, stderr } = pythonResult;
 
   notify(95, '解析结果...');
 
@@ -317,10 +457,11 @@ async function handleRequest(req, res) {
 
   // POST /api/jianying/export/start  → 异步任务开始（新增）
   if (req.method === 'POST' && url.pathname === '/api/jianying/export/start') {
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; });
+    const chunks = [];
+    req.on('data', (chunk) => { chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
     req.on('end', async () => {
       try {
+        const body = Buffer.concat(chunks).toString('utf8');
         pruneOldTasks();
         const payload = JSON.parse(body);
         const shots = payload?.shots;
@@ -422,11 +563,27 @@ async function handleRequest(req, res) {
 
   // POST /api/jianying/export  → 导出草稿（同步版本，保持兼容）
   if (req.method === 'POST' && url.pathname === '/api/jianying/export') {
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; });
+    const chunks = [];
+    req.on('data', (chunk) => { chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
     req.on('end', async () => {
       try {
+        const body = Buffer.concat(chunks).toString('utf8');
         const payload = JSON.parse(body);
+        const rawShots = payload.shots || [];
+        let processedShots = rawShots;
+        let syncTempDir = null;
+        if (rawShots.some(s => {
+          const vals = [s.imageUrl, s.audioUrl, s.voiceoverAudioUrl, s.videoUrl, ...(s.imageUrls || [])];
+          return vals.some(v => v && typeof v === 'string' && v.startsWith('data:'));
+        })) {
+          try {
+            const result = extractDataUrlsToTempFiles(rawShots);
+            processedShots = result.cleanedShots;
+            syncTempDir = result.tempDir;
+          } catch (e) {
+            console.warn(`[server] data URL 提取失败，使用原始数据: ${e.message}`);
+          }
+        }
         const { code, stdout, stderr } = await runPythonStdin(
           [
             '--name', payload.draftName || '未命名',
@@ -435,13 +592,14 @@ async function handleRequest(req, res) {
             '--fps', String(payload.fps || 30),
           ],
           {
-            shots: payload.shots || [],
+            shots: processedShots,
             outputPath: payload.outputPath || null,
             randomTransitions: !!payload.randomTransitions,
             randomVideoEffects: !!payload.randomVideoEffects,
           },
           null // 不传 onProgress，同步接口不支持进度回调
         );
+        if (syncTempDir) cleanupTempDir(syncTempDir);
         if (code !== 0) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({

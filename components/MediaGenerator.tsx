@@ -859,48 +859,48 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       };
     });
 
-  // 导出前预处理：将图片 URL 转为 data:URL，避免即梦临时链接过期
+  // 导出前预处理：将 blob: URL 转为 data:URL（Python 无法访问 blob:）。
+  // HTTP URL 保持不变，让 Python 直接下载，避免 JSON 因 base64 过大而传输失败。
   const prepareShotsForExport = async (sList: Shot[]): Promise<JianyingShot[]> => {
     const prepared = shotsToJianying(sList);
-    // 收集所有需要转换的图片 URL
-    const imageUrlsToConvert = new Set<string>();
+    // 只收集需要转换的 blob: URL（保留 HTTP URL 让 Python 下载）
+    const blobUrlsToConvert = new Set<string>();
     for (const shot of prepared) {
-      if (shot.imageUrl && !shot.imageUrl.startsWith('data:')) {
-        imageUrlsToConvert.add(shot.imageUrl);
+      if (shot.imageUrl?.startsWith('blob:')) {
+        blobUrlsToConvert.add(shot.imageUrl);
       }
       for (const url of shot.imageUrls || []) {
-        if (url && !url.startsWith('data:')) {
-          imageUrlsToConvert.add(url);
+        if (url?.startsWith('blob:')) {
+          blobUrlsToConvert.add(url);
         }
       }
     }
 
-    if (imageUrlsToConvert.size === 0) {
-      return prepared; // 全部已是 data:URL，无需转换
+    if (blobUrlsToConvert.size === 0) {
+      return prepared; // 全部是 HTTP URL 或 data:URL，无需转换
     }
 
-    // 批量转换为 data:URL
-    setJianyingExportMessage(`正在缓存 ${imageUrlsToConvert.size} 张图片...`);
+    // 批量转换 blob: URL → data:URL
+    setJianyingExportMessage(`正在缓存 ${blobUrlsToConvert.size} 张 blob 图片...`);
     const urlToDataUrl = new Map<string, string>();
-    const convertPromises = Array.from(imageUrlsToConvert).map(async (url) => {
+    const convertPromises = Array.from(blobUrlsToConvert).map(async (url) => {
       try {
         const dataUrl = await urlToDataUrlFallback(url);
         urlToDataUrl.set(url, dataUrl);
       } catch {
-        // 转换失败时保留原始 URL
         urlToDataUrl.set(url, url);
       }
     });
     await Promise.all(convertPromises);
 
-    // 替换 prepared 中的 URL
+    // 替换 prepared 中的 blob: URL
     for (const shot of prepared) {
-      if (shot.imageUrl && !shot.imageUrl.startsWith('data:')) {
+      if (shot.imageUrl?.startsWith('blob:')) {
         shot.imageUrl = urlToDataUrl.get(shot.imageUrl) || shot.imageUrl;
       }
       if (shot.imageUrls) {
         shot.imageUrls = shot.imageUrls.map((url) => {
-          if (!url || url.startsWith('data:')) return url;
+          if (!url?.startsWith('blob:')) return url;
           return urlToDataUrl.get(url) || url;
         });
       }
@@ -908,13 +908,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     return prepared;
   };
 
-  // URL 转 data:URL（fetch + canvas 方案，兼容跨域图片）
+  // URL 转 data:URL（fetch + FileReader 方案，兼容跨域图片和 blob URL）
   const urlToDataUrlFallback = async (url: string): Promise<string> => {
     // 已经是 data:URL
     if (url.startsWith('data:')) return url;
-    // blob: URL 直接返回（浏览器内存中的临时对象）
-    if (url.startsWith('blob:')) return url;
-
+    // fetch + FileReader 方案（支持 http/https 和 blob: URL）
     try {
       const resp = await fetch(url);
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -926,7 +924,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         reader.readAsDataURL(blob);
       });
     } catch {
-      // fetch 失败时尝试 canvas 方案
+      // fetch 失败时尝试 canvas 方案（不支持 blob: URL）
       return new Promise((resolve, reject) => {
         const img = new window.Image();
         img.crossOrigin = 'anonymous';

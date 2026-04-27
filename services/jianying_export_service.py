@@ -193,11 +193,18 @@ def _safe_filename(url: str) -> str:
 
 
 def _download_file(url: str, dest_path: str, timeout: int = 120, max_retries: int = 3) -> bool:
-    """下载文件到本地，支持 http/https/data:，默认 120s 超时+3次重试"""
+    """下载文件到本地，支持 http/https/data:/tmp/文件路径，默认 120s 超时+3次重试"""
     import time as _time
 
     for attempt in range(max_retries):
         try:
+            # Node.js 层已把 data:URL 提取为临时文件（/tmp/jianying_data_xxx/...）
+            # 直接复制到目标路径，避免重复解码
+            if url.startswith('/tmp/jianying_data_'):
+                import shutil as _shutil
+                shutil.copy2(url, dest_path)
+                return True
+
             if url.startswith('data:'):
                 # data:image/png;base64,iVBORw0KG...
                 header, data = url.split(',', 1)
@@ -2450,6 +2457,7 @@ if __name__ == "__main__":
     parser.add_argument("--name", type=str, default="测试草稿", help="草稿名称")
     parser.add_argument("--shots", type=str, default="[]", help="镜头 JSON（命令行参数方式）")
     parser.add_argument("--shots-json-stdin", action="store_true", help="镜头 JSON 从 stdin 读取（避免 E2BIG）")
+    parser.add_argument("--shots-json-file", type=str, default=None, help="镜头 JSON 从文件读取（超大 payload 避免 V8 字符串限制）")
     parser.add_argument("--progress-callback", action="store_true", help="通过 stdout 报告进度")
     parser.add_argument("--resolution", type=str, default="1920x1080")
     parser.add_argument("--fps", type=int, default=30)
@@ -2461,10 +2469,16 @@ if __name__ == "__main__":
     elif args.list:
         print("list_drafts 需要完全磁盘访问权限")
     else:
-        # stdin 方式优先（大数据时避免 E2BIG）
-        if args.shots_json_stdin:
+        # stdin 方式或文件方式读取 JSON payload
+        stdin_data = None
+        if args.shots_json_file:
+            with open(args.shots_json_file, "r", encoding="utf-8") as f:
+                stdin_data = json.load(f)
+        elif args.shots_json_stdin:
             stdin_raw = _sys.stdin.read()
             stdin_data = json.loads(stdin_raw)
+        
+        if stdin_data is not None:
             shots = stdin_data.get("shots", [])
             output_path = stdin_data.get("outputPath") or args.output
             path_map_root = stdin_data.get("pathMapRoot")

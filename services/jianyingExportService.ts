@@ -218,9 +218,9 @@ function inferAudioMimeFromUrl(url: string): string | undefined {
 }
 
 /**
- * 导出前在浏览器拉取配音字节并转为 data: URL，Python 端可直接落盘，保证音轨与时长对齐。
- * Railway 环境（returnZip=true）直接传 URL，由服务端下载，避免大文件 base64 传输开销。
- * 但图片需要转为 base64，因为 Railway 服务器（海外）无法访问大陆的即梦域名。
+ * 导出前处理媒体 URL：blob: URL 必须转 base64（服务端无法访问 blob:）。
+ * HTTP URL 保持不变让服务端直接下载，避免 JSON 因 base64 过大而传输失败。
+ * Railway 环境下如遇下载失败（如大陆图片服务被海外访问），该镜头的媒体会缺失。
  */
 export async function embedAudioDataUrlsForJianyingExport(
   shots: JianyingShot[],
@@ -230,37 +230,38 @@ export async function embedAudioDataUrlsForJianyingExport(
   for (const s of shots) {
     let shot = { ...s };
 
-    // 处理图片：Railway 环境转 base64（服务器无法访问大陆的即梦域名）
-    // 需要处理 blob: 和 https: 两种 URL 格式
-    if (returnZip) {
-      const rawImage = shot.imageUrl?.trim() || (shot as any).imageUrls?.[0]?.trim();
-      if (rawImage && !rawImage.startsWith('data:')) {
-        try {
-          let dataUrl = rawImage;
-          // blob: URL 或 https: URL 都需要 fetch 并转换为 base64
-          if (rawImage.startsWith('blob:') || rawImage.startsWith('https:')) {
-            const r = await fetch(rawImage);
-            if (r.ok) {
-              const mime = r.headers.get('content-type')?.split(';')[0]?.trim() || 'image/png';
-              const data = await r.arrayBuffer();
-              dataUrl = `data:${mime};base64,${arrayBufferToBase64(data)}`;
-            }
+    // 处理图片：blob URL 必须转 base64（Python/Railway 无法访问 blob:）。
+    // HTTP URL 保持不变让 Python/Railway 直接下载。
+    // Railway 环境下如遇下载失败（如大陆图片服务被海外访问），该镜头的图片会缺失。
+    const rawImage = shot.imageUrl?.trim() || (shot as any).imageUrls?.[0]?.trim();
+    if (rawImage && !rawImage.startsWith('data:')) {
+      try {
+        let dataUrl = rawImage;
+        // 只转 blob: URL；HTTP URL 保持不变让服务端下载
+        if (rawImage.startsWith('blob:')) {
+          const r = await fetch(rawImage);
+          if (r.ok) {
+            const mime = r.headers.get('content-type')?.split(';')[0]?.trim() || 'image/png';
+            const data = await r.arrayBuffer();
+            dataUrl = `data:${mime};base64,${arrayBufferToBase64(data)}`;
           }
-          shot.imageUrl = dataUrl;
-          if ((shot as any).imageUrls) {
-            (shot as any).imageUrls = [dataUrl];
-          }
-        } catch (e) {
-          console.warn('[JianyingExport] 图片转 base64 失败，将使用原 URL:', e);
         }
+        shot.imageUrl = dataUrl;
+        if ((shot as any).imageUrls) {
+          (shot as any).imageUrls = [dataUrl];
+        }
+      } catch (e) {
+        console.warn('[JianyingExport] 图片处理失败，将使用原 URL:', e);
       }
     }
 
-    // 处理音频
+    // 处理音频：blob URL 必须转 data:URL（Python 无法访问 blob:）。
+    // HTTP URL 保持不变让 Python 直接下载，避免 JSON 过大导致传输失败。
     const raw = (shot.audioUrl || shot.voiceoverAudioUrl)?.trim();
     if (!raw) { out.push(shot); continue; }
     if (raw.startsWith('data:')) { out.push(shot); continue; }
-    if (!/^https?:\/\//i.test(raw)) {
+    if (raw.startsWith('blob:')) {
+      // 本地模式 blob URL → base64
       try {
         const r = await fetch(raw);
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -276,33 +277,8 @@ export async function embedAudioDataUrlsForJianyingExport(
     }
     // Railway 环境直接传 URL
     if (returnZip) { out.push(shot); continue; }
-    // 本地环境转 base64
-    try {
-      let data: ArrayBuffer;
-      let mime = '';
-      try {
-        const r = await fetch(raw);
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        mime = r.headers.get('content-type')?.split(';')[0]?.trim() || '';
-        data = await r.arrayBuffer();
-      } catch {
-        if (typeof window === 'undefined') throw new Error('fetch failed');
-        const proxy = `/__image_proxy?url=${encodeURIComponent(raw)}`;
-        const r2 = await fetch(proxy);
-        if (!r2.ok) throw new Error(`proxy ${r2.status}`);
-        mime = r2.headers.get('content-type')?.split(';')[0]?.trim() || '';
-        data = await r2.arrayBuffer();
-      }
-      const ct = mime && mime !== 'application/octet-stream'
-        ? mime : inferAudioMimeFromUrl(raw) || 'audio/mpeg';
-      const dataUrl = `data:${ct};base64,${arrayBufferToBase64(data)}`;
-      shot.audioUrl = dataUrl;
-      shot.voiceoverAudioUrl = dataUrl;
-      out.push(shot);
-    } catch (e) {
-      console.warn('[JianyingExport] 浏览器拉取配音失败，仍尝试���务端下载:', e);
-      out.push(shot);
-    }
+    // 本地模式：HTTP URL 保持原样，让 Python 直接下载
+    out.push(shot);
   }
   return out;
 }
