@@ -193,17 +193,31 @@ def _safe_filename(url: str) -> str:
 
 
 def _download_file(url: str, dest_path: str, timeout: int = 120, max_retries: int = 3) -> bool:
-    """下载文件到本地，支持 http/https/data:/tmp/文件路径，默认 120s 超时+3次重试"""
+    """下载文件到本地，支持 http/https/data:/tmp/本地文件路径，默认 120s 超时+3次重试"""
     import time as _time
 
     for attempt in range(max_retries):
         try:
             # Node.js 层已把 data:URL 提取为临时文件（/tmp/jianying_data_xxx/...）
+            # 或本地图片缓存（~/Library/Application Support/contentmaster-ai/image-cache/...）
             # 直接复制到目标路径，避免重复解码
-            if url.startswith('/tmp/jianying_data_'):
+            _is_local_path = (
+                url.startswith('/tmp/jianying_data_') or
+                '/contentmaster-ai/image-cache/' in url or
+                '/.contentmaster-ai/image-cache/' in url or
+                (os.path.isfile(url) and not url.startswith('http'))
+            )
+            if _is_local_path:
                 import shutil as _shutil
-                shutil.copy2(url, dest_path)
-                return True
+                if os.path.isfile(url):
+                    _shutil.copy2(url, dest_path)
+                    return True
+                # 重试一次（文件可能被移动）
+                _time.sleep(0.5)
+                if os.path.isfile(url):
+                    _shutil.copy2(url, dest_path)
+                    return True
+                return False
 
             if url.startswith('data:'):
                 # data:image/png;base64,iVBORw0KG...

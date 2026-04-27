@@ -69,6 +69,7 @@ import {
   MEDIA_HISTORY_MAX_DATA_URL_CHARS,
   type MediaProjectRecord,
 } from '../services/mediaProjectHistoryService';
+import { resolveLocalCacheOrFetch, getLocalCachePaths } from '../services/localMediaCacheService';
 
 interface MediaGeneratorProps {
   apiKey: string;
@@ -859,51 +860,136 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       };
     });
 
-  // 导出前预处理：将 blob: URL 转为 data:URL（Python 无法访问 blob:）。
-  // HTTP URL 保持不变，让 Python 直接下载，避免 JSON 因 base64 过大而传输失败。
+  // 导出前预处理：
+  // 1. blob: URL → data:URL（Python 无法访问 blob:）
+  // 2. HTTP URL → 检查本地缓存，已缓存则用本地文件路径，未缓存则下载保存后下次直接用
+  // 3. 最终传给 Python 的是 data:URL 或本地文件路径（不再传 HTTP URL，避免链接过期问题）
   const prepareShotsForExport = async (sList: Shot[]): Promise<JianyingShot[]> => {
     const prepared = shotsToJianying(sList);
-    // 只收集需要转换的 blob: URL（保留 HTTP URL 让 Python 下载）
-    const blobUrlsToConvert = new Set<string>();
+
+    // 收集所有需要处理的媒体 URL（图片、音频、视频）
+    const httpImageUrls = new Set<string>();
+    const blobImageUrls = new Set<string>();
+    const httpAudioUrls = new Set<string>();
+    const blobAudioUrls = new Set<string>();
+    const httpVideoUrls = new Set<string>();
+    const blobVideoUrls = new Set<string>();
+
     for (const shot of prepared) {
-      if (shot.imageUrl?.startsWith('blob:')) {
-        blobUrlsToConvert.add(shot.imageUrl);
+      // 图片
+      if (shot.imageUrl) {
+        if (shot.imageUrl.startsWith('blob:')) blobImageUrls.add(shot.imageUrl);
+        else if (shot.imageUrl.startsWith('http')) httpImageUrls.add(shot.imageUrl);
       }
       for (const url of shot.imageUrls || []) {
-        if (url?.startsWith('blob:')) {
-          blobUrlsToConvert.add(url);
+        if (!url) continue;
+        if (url.startsWith('blob:')) blobImageUrls.add(url);
+        else if (url.startsWith('http')) httpImageUrls.add(url);
+      }
+      // 音频
+      const audioUrl = (shot.audioUrl || shot.voiceoverAudioUrl || '').trim();
+      if (audioUrl) {
+        if (audioUrl.startsWith('blob:')) blobAudioUrls.add(audioUrl);
+        else if (audioUrl.startsWith('http')) httpAudioUrls.add(audioUrl);
+      }
+      // 视频
+      if (shot.videoUrl) {
+        if (shot.videoUrl.startsWith('blob:')) blobVideoUrls.add(shot.videoUrl);
+        else if (shot.videoUrl.startsWith('http')) httpVideoUrls.add(shot.videoUrl);
+      }
+    }
+
+    const allHttpUrls = [
+      ...[...httpImageUrls].map(u => ({ url: u, type: 'image' })),
+      ...[...httpAudioUrls].map(u => ({ url: u, type: 'audio' })),
+      ...[...httpVideoUrls].map(u => ({ url: u, type: 'video' })),
+    ];
+
+    // 优先检查本地缓存
+    const localHttpPaths = new Map<string, string>();
+    if (allHttpUrls.length > 0) {
+      setJianyingExportMessage(`检查本地媒体缓存 (${allHttpUrls.length} 个)...`);
+      try {
+        const cached = await getLocalCachePaths(allHttpUrls.map(i => i.url));
+        cached.forEach((path, url) => localHttpPaths.set(url, path));
+      } catch (e) {
+        console.warn('[Export] 本地缓存检查失败:', e);
+      }
+    }
+
+    // 转换 blob: 图片 → data:URL
+    setJianyingExportMessage(`正在处理 ${blobImageUrls.size} 张 blob 图片...`);
+    const blobImageDataUrls = new Map<string, string>();
+    await Promise.all([...blobImageUrls].map(async (url) => {
+      try { blobImageDataUrls.set(url, await urlToDataUrlFallback(url)); }
+      catch { blobImageDataUrls.set(url, url); }
+    }));
+
+    // 转换 blob: 音频 → data:URL
+    setJianyingExportMessage(`正在处理 ${blobAudioUrls.size} 个 blob 音频...`);
+    const blobAudioDataUrls = new Map<string, string>();
+    await Promise.all([...blobAudioUrls].map(async (url) => {
+      try { blobAudioDataUrls.set(url, await urlToDataUrlFallback(url)); }
+      catch { blobAudioDataUrls.set(url, url); }
+    }));
+
+    // 处理 HTTP URL：已缓存用本地路径，未缓存则下载保存到本地
+    const httpResult = new Map<string, string>(); // url → dataURL 或本地路径
+    const pendingSaves: Array<{ url: string; dataUrl: string }> = [];
+
+    for (const { url } of allHttpUrls) {
+      if (localHttpPaths.has(url)) {
+        httpResult.set(url, localHttpPaths.get(url)!);
+      } else {
+        try {
+          const dataUrl = await urlToDataUrlFallback(url);
+          pendingSaves.push({ url, dataUrl });
+          httpResult.set(url, dataUrl);
+        } catch {
+          httpResult.set(url, url);
         }
       }
     }
 
-    if (blobUrlsToConvert.size === 0) {
-      return prepared; // 全部是 HTTP URL 或 data:URL，无需转换
+    // 同步保存到本地缓存
+    if (pendingSaves.length > 0) {
+      setJianyingExportMessage(`正在缓存 ${pendingSaves.length} 个媒体文件到本地...`);
+      for (const { url, dataUrl } of pendingSaves) {
+        const { saveMediaToLocalCache } = await import('../services/localMediaCacheService');
+        const localPath = await saveMediaToLocalCache(url, dataUrl);
+        if (localPath) {
+          console.log(`[Export] 媒体已本地缓存: ${url.slice(0, 50)} → ${localPath}`);
+          httpResult.set(url, localPath);
+        }
+      }
     }
 
-    // 批量转换 blob: URL → data:URL
-    setJianyingExportMessage(`正在缓存 ${blobUrlsToConvert.size} 张 blob 图片...`);
-    const urlToDataUrl = new Map<string, string>();
-    const convertPromises = Array.from(blobUrlsToConvert).map(async (url) => {
-      try {
-        const dataUrl = await urlToDataUrlFallback(url);
-        urlToDataUrl.set(url, dataUrl);
-      } catch {
-        urlToDataUrl.set(url, url);
-      }
-    });
-    await Promise.all(convertPromises);
-
-    // 替换 prepared 中的 blob: URL
+    // 替换 prepared 中的 URL
     for (const shot of prepared) {
-      if (shot.imageUrl?.startsWith('blob:')) {
-        shot.imageUrl = urlToDataUrl.get(shot.imageUrl) || shot.imageUrl;
+      // 图片
+      if (shot.imageUrl) {
+        if (shot.imageUrl.startsWith('blob:')) shot.imageUrl = blobImageDataUrls.get(shot.imageUrl) || shot.imageUrl;
+        else if (shot.imageUrl.startsWith('http')) shot.imageUrl = httpResult.get(shot.imageUrl) || shot.imageUrl;
       }
       if (shot.imageUrls) {
         shot.imageUrls = shot.imageUrls.map((url) => {
-          if (!url?.startsWith('blob:')) return url;
-          return urlToDataUrl.get(url) || url;
+          if (!url) return url;
+          if (url.startsWith('blob:')) return blobImageDataUrls.get(url) || url;
+          if (url.startsWith('http')) return httpResult.get(url) || url;
+          return url;
         });
       }
+      // 音频
+      const rawAudio = (shot.audioUrl || shot.voiceoverAudioUrl || '').trim();
+      if (rawAudio) {
+        let finalAudio = rawAudio;
+        if (rawAudio.startsWith('blob:')) finalAudio = blobAudioDataUrls.get(rawAudio) || rawAudio;
+        else if (rawAudio.startsWith('http')) finalAudio = httpResult.get(rawAudio) || rawAudio;
+        shot.audioUrl = finalAudio;
+        shot.voiceoverAudioUrl = finalAudio;
+      }
+      // 视频（保留原样，让 Python 下载）
+      // 视频文件通常较大，不在导出时处理，Python 会直接下载
     }
     return prepared;
   };
@@ -979,6 +1065,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           setJianyingExportMessage(message || '处理中...');
         }
       );
+      console.log('[JianyingExport] 导出完成，result:', JSON.stringify(result).slice(0, 200));
       setJianyingExportProgress(100);
       setJianyingExportMessage('导出完成');
 
