@@ -839,6 +839,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const [allBatchDownloadUrls, setAllBatchDownloadUrls] = useState<Array<{ filename: string; url: string; partLabel: string }>>([]);
   /** 批量打包 ZIP（图片 / 音频 / 视频）进行中，避免重复点击 */
   const [batchZipBusy, setBatchZipBusy] = useState(false);
+  /** 导出取消标志 */
+  const jianyingExportCancelledRef = useRef(false);
 
   // shots 转 JianyingShot[]，导出前将图片URL转为 data:URL 避免临时链接过期
   const shotsToJianying = (sList: Shot[]): JianyingShot[] =>
@@ -1043,21 +1045,23 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   };
 
   const performExportToJianying = async (exportShots: Shot[], exportDraftName: string, settings?: { randomEffectBundle?: boolean; randomTransitions?: boolean; randomFilters?: boolean }): Promise<boolean> => {
+    // 重置取消标志
+    jianyingExportCancelledRef.current = false;
     setIsExportingToJianying(true);
     setLastJianyingDownloadUrl('');
     setJianyingExportProgress(0);
     setJianyingExportMessage('准备导出...');
     try {
-      // 修复：如果用户填写了 jianyingOutputDir，将其作为 outputPath 和 pathMapRoot
-      // outputPath 用于 Railway ZIP 打包时的目标目录
-      // pathMapRoot 用于解压后路径映射
-      const exportOutputPath = jianyingOutputDir || undefined;
-      const exportPathMapRoot = jianyingOutputDir || undefined;
-
       // 导出前预处理：将图片 URL 转为 data:URL，避免即梦临时链接过期导致图片丢失
       setJianyingExportMessage('预处理媒体文件...');
       const preparedShots = await prepareShotsForExport(exportShots);
-
+      
+      // 检查是否已取消
+      if (jianyingExportCancelledRef.current) {
+        appendTerminalLog('Jianying', '导出已取消');
+        return false;
+      }
+      
       const result = await exportJianyingDraft(
         {
           draftName: exportDraftName,
@@ -1070,10 +1074,22 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             (settings?.randomFilters ?? jyRandomFilters),
         },
         (progress, message) => {
+          // 检查是否已取消
+          if (jianyingExportCancelledRef.current) {
+            appendTerminalLog('Jianying', '导出已取消');
+            return;
+          }
           setJianyingExportProgress(progress);
           setJianyingExportMessage(message || '处理中...');
         }
       );
+      
+      // 检查是否已取消
+      if (jianyingExportCancelledRef.current) {
+        appendTerminalLog('Jianying', '导出已取消');
+        return false;
+      }
+      
       console.log('[JianyingExport] 导出完成，result:', JSON.stringify(result).slice(0, 200));
       setJianyingExportProgress(100);
       setJianyingExportMessage('导出完成');
@@ -4718,14 +4734,29 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             </div>
             {/* 导出进度条 */}
             {isExportingToJianying && (
-              <div className="flex flex-col gap-0.5 min-w-[120px]">
-                <div className="h-1.5 bg-slate-700 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-purple-500 transition-all duration-300"
-                    style={{ width: `${Math.min(100, Math.max(0, jianyingExportProgress))}%` }}
-                  />
+              <div className="flex items-center gap-2">
+                <div className="flex flex-col gap-0.5 min-w-[120px]">
+                  <div className="h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-purple-500 transition-all duration-300"
+                      style={{ width: `${Math.min(100, Math.max(0, jianyingExportProgress))}%` }}
+                    />
+                  </div>
+                  <span className="text-[9px] text-slate-400 truncate">{jianyingExportMessage || '处理中...'}</span>
                 </div>
-                <span className="text-[9px] text-slate-400 truncate">{jianyingExportMessage || '处理中...'}</span>
+                <button
+                  onClick={() => {
+                    jianyingExportCancelledRef.current = true;
+                    setIsExportingToJianying(false);
+                    setJianyingExportProgress(0);
+                    setJianyingExportMessage('已取消');
+                    toast.info('已取消导出');
+                  }}
+                  className="px-2 py-1 bg-red-600 hover:bg-red-500 text-white text-[10px] font-medium rounded transition-all"
+                  title="取消导出"
+                >
+                  取消
+                </button>
               </div>
             )}
             {/* 单次导出下载按钮 */}
