@@ -2255,7 +2255,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     // 仅在以下情况写入：主工作区，或一键成片/队列执行中（activeQueueTaskIdRef 非 null）
     const isOnMain = activeWorkspaceTabIdRef.current === 'main';
     const isPipelineActive = activeQueueTaskIdRef.current != null;
-    if (isOnMain === false && isPipelineActive === false) return;
+    console.log('[updateShot] shotId:', shotId, 'isOnMain:', isOnMain, 'isPipelineActive:', isPipelineActive, 'updates:', updates);
+    if (isOnMain === false && isPipelineActive === false) {
+      console.log('[updateShot] 阻止更新，因为既不在主工作区也不在 pipeline 执行中');
+      return;
+    }
     // 必须先同步更新 shotsRef：每轮 render 会把 shotsRef.current = shots，若 setState 尚未提交，中间若发生重绘会回滚 ref（导出读到无配音）。
     const next = shotsRef.current.map((shot) => (shot.id === shotId ? { ...shot, ...updates } : shot));
     shotsRef.current = next;
@@ -2584,6 +2588,10 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
   // 生成单个图片（支持生成多张）；返回是否成功（避免依赖 React setState 延迟闭包误判）
   const handleGenerateImage = async (shot: Shot, regenerate: boolean = false): Promise<boolean> => {
+    // 立即设置按钮禁用状态，避免等待 setState
+    const btn = document.querySelector(`[data-shot-id="${shot.id}"] .regenerate-btn`) as HTMLButtonElement | null;
+    if (btn) btn.disabled = true;
+    
     if (imageGenPromisesRef.current.has(shot.id)) return false;
     const promise = (async () => {
       const selectedModel = IMAGE_MODELS.find(m => m.id === selectedImageModel);
@@ -2593,33 +2601,43 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       if (!jimengSessionId || jimengSessionId.trim() === '') {
         appendTerminalLog('ImageGen', `镜头${shot.number}: 已中止 — 未配置即梦 SESSION_ID`);
         alert('请先配置即梦 SESSION_ID');
-        return;
+        btn && (btn.disabled = false);
+        btn && (btn.textContent = '重新繪圖');
+        return false;
       }
     } else if (selectedModel?.isRunningHub) {
       if (provider !== 'runninghub' || !apiKey || apiKey.trim() === '') {
         appendTerminalLog('ImageGen', `镜头${shot.number}: 已中止 — 未配置 RunningHub（顶部需选 RunningHub 并填 Key）`);
         alert('请先在顶部配置 RunningHub API Key（选择 RunningHub 服务）');
-        return;
+        btn && (btn.disabled = false);
+        btn && (btn.textContent = '重新繪圖');
+        return false;
       }
     } else {
       if (!apiKey) {
         appendTerminalLog('ImageGen', `镜头${shot.number}: 已中止 — 未配置 API Key`);
         alert('请先配置 API Key');
-        return;
+        btn && (btn.disabled = false);
+        btn && (btn.textContent = '重新繪圖');
+        return false;
       }
     }
     
     if (!shot.imagePrompt) {
       appendTerminalLog('ImageGen', `镜头${shot.number}: 已跳过 — 无图片提示词`);
       toast.warning('该镜头没有图片提示词');
-      return;
+      btn && (btn.disabled = false);
+      btn && (btn.textContent = '重新繪圖');
+      return false;
     }
     
     appendTerminalLog(
       'ImageGen',
       `镜头${shot.number}: ${regenerate ? '重新绘图' : '生成图片'} · 模型=${selectedImageModel} · 张数=${generateImageCount}`
     );
+    console.log('[ImageGen] 开始生成，设置 imageGenerating=true, shotId:', shot.id, 'activeWorkspaceTabIdRef:', activeWorkspaceTabIdRef.current);
     updateShot(shot.id, { imageGenerating: true });
+    console.log('[ImageGen] updateShot 已调用');
     
     const selectedRatio = IMAGE_RATIOS.find(r => r.id === selectedImageRatio);
     const selectedStyleObj = STYLE_LIBRARY.find(s => s.id === selectedStyle);
@@ -2941,6 +2959,12 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       return false;
     } finally {
       imageGenPromisesRef.current.delete(shot.id);
+      // 重新启用按钮
+      const btn = document.querySelector(`[data-shot-id="${shot.id}"] .regenerate-btn`) as HTMLButtonElement | null;
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = '重新繪圖';
+      }
     }
     })();
     imageGenPromisesRef.current.set(shot.id, promise);
@@ -5120,7 +5144,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                                 }}
                               />
                               {shot.imageGenerating && (
-                                <div className="absolute inset-0 flex items-center justify-center bg-black/50 rounded">
+                                <div className="absolute inset-0 flex items-center justify-center bg-black/50 rounded pointer-events-none">
                                   <Loader2 size={16} className="animate-spin text-emerald-400" />
                                 </div>
                               )}
@@ -5172,7 +5196,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                               })}
                             </div>
                             {shot.imageGenerating && (
-                              <div className="absolute inset-0 flex items-center justify-center bg-black/50 rounded">
+                              <div className="absolute inset-0 flex items-center justify-center bg-black/50 rounded pointer-events-none">
                                 <Loader2 size={16} className="animate-spin text-emerald-400" />
                               </div>
                             )}
@@ -5289,6 +5313,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                   {/* 操作列 */}
                   <div className="flex flex-col gap-1 items-end pr-2">
                     <button
+                      data-shot-id={shot.id}
                       onClick={async () => {
                         try {
                           await handleGenerateImage(shot, true);
@@ -5296,10 +5321,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                           toast.error(`图片生成失败: ${error.message || '未知错误'}`, 6000);
                         }
                       }}
-                      className="text-[10px] px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded whitespace-nowrap"
+                      disabled={shot.imageGenerating}
+                      className="regenerate-btn text-[10px] px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded whitespace-nowrap disabled:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-100"
                       title="重新绘图"
                     >
-                      重新繪圖
+                      {shot.imageGenerating ? '生成中…' : '重新繪圖'}
                     </button>
                     {/* 音频：左侧试听/暂停 + 右侧重新配音 */}
                     <div className="flex gap-1">
