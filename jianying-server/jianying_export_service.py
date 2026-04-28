@@ -37,22 +37,6 @@ def report_progress(progress: int, stage: str):
     # 输出到 stdout，用特殊标记让 Node 解析
     print(f"[PROGRESS] {progress}|{stage}", flush=True)
 
-
-def _is_local_path(url: str) -> bool:
-    """判断 URL 是否为本地文件路径（而非远程 URL）"""
-    if url.startswith('/tmp/jianying_data_'):
-        return True
-    if '/contentmaster-ai/image-cache/' in url or '/.contentmaster-ai/image-cache/' in url:
-        return True
-    if '/contentmaster-ai/audio-cache/' in url or '/.contentmaster-ai/audio-cache/' in url:
-        return True
-    if '/jianying-server/image_cache/' in url:
-        return True
-    if not url.startswith('http') and not url.startswith('data:') and not url.startswith('blob:'):
-        if os.path.isfile(url):
-            return True
-    return False
-
 # ---- 跨平台工具函数 ----
 # Railway 环境磁盘空间阈值（MB）
 RAILWAY_MIN_DISK_SPACE_MB = 100
@@ -170,70 +154,81 @@ def _get_writable_output_dir() -> str:
     return output_dir
 
 
-def _safe_filename(url: str) -> str:
-    """从 URL 生成安全的本地文件名（支持 data: URL）"""
-    if url.startswith("blob:"):
-        return f"media_{uuid.uuid4().hex[:10]}.mp4"
-    if url.startswith('data:'):
-        # data:image/png;base64,... → 从 mime type 推断扩展名
+def _safe_filename(url_or_path: str) -> str:
+    """从 URL / data:URL / 本地路径生成安全的本地文件名"""
+    # 本地文件路径：直接取 basename
+    if not url_or_path.startswith(('http://', 'https://', 'data:', 'blob:')):
+        name = os.path.basename(url_or_path)
+        if not name or len(name) > 80:
+            name = f"media_{uuid.uuid4().hex[:8]}"
+        name = re.sub(r'[\\/:*?"<>|]', '_', name)
+        return name
+
+    # data:URL → 从 MIME 推断扩展名
+    if url_or_path.startswith('data:'):
         import re as _re
-        mime_match = _re.search(r'data:([^;]+)', url)
-        ext_map = {
+        mime_match = _re.search(r'data:([^;]+)', url_or_path)
+        mime_map = {
             'image/png': '.png',
             'image/jpeg': '.jpg',
             'image/jpg': '.jpg',
             'image/gif': '.gif',
             'image/webp': '.webp',
             'audio/wav': '.wav',
+            'audio/wave': '.wav',
+            'audio/x-wav': '.wav',
             'audio/mpeg': '.mp3',
             'audio/mp3': '.mp3',
             'audio/mp4': '.m4a',
             'audio/x-m4a': '.m4a',
+            'audio/aac': '.aac',
             'audio/flac': '.flac',
             'audio/ogg': '.ogg',
+            'audio/webm': '.webm',
             'video/mp4': '.mp4',
             'video/quicktime': '.mov',
             'video/webm': '.webm',
+            'video/x-msvideo': '.avi',
         }
         mime = mime_match.group(1) if mime_match else 'application/octet-stream'
-        ext = ext_map.get(mime, '.bin')
+        ext = mime_map.get(mime, '.bin')
         return f"media_{uuid.uuid4().hex[:8]}{ext}"
 
-    parsed = urlparse(url)
+    # HTTP/HTTPS URL
+    parsed = urlparse(url_or_path)
     name = os.path.basename(parsed.path)
     if not name or len(name) > 80:
         name = f"media_{uuid.uuid4().hex[:8]}"
-    # 去掉危险字符
     name = re.sub(r'[\\/:*?"<>|]', '_', name)
     return name
 
 
 def _download_file(url: str, dest_path: str, timeout: int = 120, max_retries: int = 3) -> bool:
-    """下载文件到本地，支持 http/https/data:/tmp/本地文件路径，默认 120s 超时+3次重试"""
+    """下载文件到本地，支持 http/https/data:/本地路径，Railway 环境默认 120s 超时+3次重试"""
     import time as _time
 
     for attempt in range(max_retries):
         try:
-            # Node.js 层已把 data:URL 提取为临时文件（/tmp/jianying_data_xxx/...）
-            # 或本地图片缓存（~/Library/Application Support/contentmaster-ai/image-cache/...）
-            # 直接复制到目标路径，避免重复解码
-            _is_local_path = (
-                url.startswith('/tmp/jianying_data_') or
-                '/contentmaster-ai/image-cache/' in url or
-                '/.contentmaster-ai/image-cache/' in url or
-                (os.path.isfile(url) and not url.startswith('http'))
-            )
-            if _is_local_path:
-                import shutil as _shutil
-                if os.path.isfile(url):
-                    _shutil.copy2(url, dest_path)
-                    return True
-                # 重试一次（文件可能被移动）
-                _time.sleep(0.5)
-                if os.path.isfile(url):
-                    _shutil.copy2(url, dest_path)
-                    return True
-                return False
+            # ── 本地文件路径：直接复制，避免误走 urllib ──────────────────────
+            if not url.startswith(('http://', 'https://', 'data:')):
+                src = url.strip()
+                if os.path.isfile(src):
+                    try:
+                        os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
+                        shutil.copy2(src, dest_path)
+                        print(f"[jianying_export] [COPY] {os.path.basename(src)} → {dest_path}", file=sys.stderr, flush=True)
+                        return True
+                    except Exception as copy_err:
+                        print(f"[jianying_export] [COPY] 失败 {copy_err}: {src} → {dest_path}", file=sys.stderr, flush=True)
+                        if attempt < max_retries - 1:
+                            _time.sleep((attempt + 1) * 2)
+                            continue
+                        return False
+                else:
+                    if attempt < max_retries - 1:
+                        _time.sleep((attempt + 1) * 2)
+                        continue
+                    return False
 
             if url.startswith('data:'):
                 # data:image/png;base64,iVBORw0KG...
@@ -257,135 +252,7 @@ def _download_file(url: str, dest_path: str, timeout: int = 120, max_retries: in
                         'audio/x-m4a': '.m4a',
                         'audio/flac': '.flac',
                         'audio/ogg': '.ogg',
-                        'video/mp4': '.mp4',
-                        'video/quicktime': '.mov',
-                        'video/webm': '.webm',
-                    }
-                    ext = ext_map.get(mime, ext)
-                # 如果文件没有扩展名，加上推断的扩展名
-                if '.' not in os.path.basename(dest_path):
-                    dest_path += ext
-                binary_data = base64.b64decode(data)
-                with open(dest_path, 'wb') as f:
-                    f.write(binary_data)
-                return True
-
-            # HTTP/HTTPS 下载
-            import urllib.request
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            }
-            # 常见站点的特殊 headers
-            if 'runninghub.cn' in url.lower():
-                headers['Referer'] = 'https://www.runninghub.cn/'
-                timeout = max(timeout, 180)
-            elif 'yunwu.ai' in url.lower():
-                headers['Referer'] = 'https://yunwu.ai/'
-            elif 'jianying' in url.lower():
-                headers['Referer'] = 'https://lv.ulikecom.com/'
-
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                content_type = response.headers.get('Content-Type', '')
-                # 根据 Content-Type 自动推断扩展名
-                if '.' not in os.path.basename(dest_path):
-                    ct_map = {
-                        'image/png': '.png',
-                        'image/jpeg': '.jpg',
-                        'image/jpg': '.jpg',
-                        'image/gif': '.gif',
-                        'image/webp': '.webp',
-                        'video/mp4': '.mp4',
-                        'video/quicktime': '.mov',
-                        'audio/wav': '.wav',
-                        'audio/wave': '.wav',
-                        'audio/x-wav': '.wav',
-                        'audio/mpeg': '.mp3',
-                        'audio/mp3': '.mp3',
-                        'audio/mp4': '.m4a',
-                        'audio/x-m4a': '.m4a',
-                        'audio/flac': '.flac',
-                        'audio/ogg': '.ogg',
-                    }
-                    ext = ct_map.get(content_type.split(';')[0].strip(), '')
-                    if ext:
-                        dest_path += ext
-                with open(dest_path, 'wb') as f:
-                    shutil.copyfileobj(response, f)
-            return True
-        except Exception as e:
-            last_err = e
-            if attempt < max_retries - 1:
-                wait = (attempt + 1) * 2  # 2s, 4s, 6s
-                print(f"[WARN] 下载失败 {url} (尝试 {attempt+1}/{max_retries}): {e}，{wait}s 后重试...", file=sys.stderr)
-                _time.sleep(wait)
-    print(f"[WARN] 下载最终失败 {url}: {last_err}", file=sys.stderr)
-    return False
-
-
-def _download_batch_parallel(
-    url_list: list[tuple[str, str]],
-    max_workers: int = 8,
-    timeout: int = 120,
-    max_retries: int = 2,
-) -> dict[str, tuple[bool, str]]:
-    """
-    并行下载多个文件。
-    url_list: [(url, dest_path), ...]
-    max_workers: 并发下载线程数
-    返回: {url: (success, local_path_or_error)}
-    """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    results: dict[str, tuple[bool, str]] = {}
-    total = len(url_list)
-    completed = 0
-
-    def _download_one(url: str, dest: str) -> tuple[str, bool, str]:
-        success = _download_file(url, dest, timeout=timeout, max_retries=max_retries)
-        return url, success, dest if success else ""
-
-    with ThreadPoolExecutor(max_workers=min(max_workers, total)) as executor:
-        futures = {executor.submit(_download_one, url, dest): url for url, dest in url_list}
-        for future in as_completed(futures):
-            try:
-                url, success, dest = future.result()
-                results[url] = (success, dest if success else "下载失败")
-            except Exception as e:
-                url = futures[future]
-                results[url] = (False, str(e))
-            completed += 1
-            if completed % 10 == 0 or completed == total:
-                print(f"[jianying_export] 并行下载进度: {completed}/{total}", file=sys.stderr, flush=True)
-
-    return results
-    """下载文件到本地，支持 http/https/data:，Railway 环境默认 120s 超时+3次重试"""
-    import time as _time
-
-    for attempt in range(max_retries):
-        try:
-            if url.startswith('data:'):
-                # data:image/png;base64,iVBORw0KG...
-                header, data = url.split(',', 1)
-                import base64
-                # 提取 mime type
-                mime_match = re.search(r'data:([^;]+)', header)
-                ext = '.png'
-                if mime_match:
-                    mime = mime_match.group(1)
-                    ext_map = {
-                        'image/png': '.png',
-                        'image/jpeg': '.jpg',
-                        'image/jpg': '.jpg',
-                        'image/gif': '.gif',
-                        'image/webp': '.webp',
-                        'audio/wav': '.wav',
-                        'audio/mpeg': '.mp3',
-                        'audio/mp3': '.mp3',
-                        'audio/mp4': '.m4a',
-                        'audio/x-m4a': '.m4a',
-                        'audio/flac': '.flac',
-                        'audio/ogg': '.ogg',
+                        'audio/webm': '.webm',
                         'video/mp4': '.mp4',
                         'video/quicktime': '.mov',
                         'video/webm': '.webm',
@@ -703,11 +570,14 @@ _LV59_INTRO_ANIMATION_PRESETS = [
     {"name": "轻微放大", "effect_id": "6800268825611735559", "resource_id": "629085", "duration_us": 500_000},
 ]
 
-# 视频画面特效（video_effect，对应 pyJianYingDraft VideoEffect；免费项）
+# 视频画面特效（video_effect，对应 pyJianYingDraft VideoSceneEffectType；免费项）
 _LV59_VIDEO_EFFECT_PRESETS = [
-    # ("名称", effect_id, resource_id, 参数列表)
-    # 参数为空列表时 adjust_params 为 []
-    ("kirakira", "6706773500142555656", "693883", []),
+    # 轻量特效（来自 pyJianYingDraft VideoSceneEffectType，免费项）
+    # 结构：(名称, effect_id, resource_id, adjust_params)
+    ("kirakira", "6706773500142555656", "693883", [
+        {"param_key": "effects_adjust_size", "param_value": 0.5},
+        {"param_key": "effects_adjust_number", "param_value": 0.33},
+    ]),
     ("CCD闪光", "7130585796020539941", "4007303", [
         {"param_key": "effects_adjust_speed", "param_value": 0.5},
         {"param_key": "effects_adjust_luminance", "param_value": 0.65},
@@ -743,35 +613,94 @@ _LV59_VIDEO_EFFECT_PRESETS = [
         {"param_key": "effects_adjust_horizontal_chromatic", "param_value": 0.6},
         {"param_key": "effects_adjust_vertical_chromatic", "param_value": 0.5},
     ]),
+    ("光晕", "6714239617916211716", "634095", [
+        {"param_key": "effects_adjust_speed", "param_value": 0.33},
+    ]),
+    ("镜头校正", "6763763712284936583", "630310", []),
+    ("锐化", "6706773500792796426", "693877", []),
+    ("暗角", "6723086142658318860", "634057", [
+        {"param_key": "effects_adjust_texture", "param_value": 1.0},
+    ]),
 ]
 
-# 转场（来自 pyJianYingDraft TransitionMeta，默认免费项；与剪映内置转场一致）
+# 转场（来自 pyJianYingDraft TransitionMeta，免费项）
 # 结构：(名称, effect_id, resource_id, duration_us, is_overlap)
 _LV59_TRANSITION_PRESETS = [
-    ("叠化", "6724845717472416269", "322577", 800_000, True),
-    ("分割", "6968372308419285540", "4211683", 600_000, True),
-    ("向上擦除", "6724849456891564557", "2917281", 800_000, True),
-    ("向右擦除", "6724849898857959950", "2917284", 800_000, True),
-    ("向左擦除", "6724849898857959951", "2917285", 800_000, True),
-    ("向下擦除", "6724849276100284943", "2917286", 800_000, True),
-    ("开幕", "6750893890712113677", "391781", 800_000, True),
-    ("闪回", "7250427149318885945", "16638473", 300_000, True),
-    ("3D空间", "7049979667406656014", "1506926", 1_500_000, True),
-    ("上移", "6724846395116753416", "2917279", 600_000, True),
-    ("下移", "6724849276100284942", "2917280", 600_000, True),
-    ("左移", "6724846395116753417", "2917287", 600_000, True),
-    ("右移", "6724846395116753418", "2917288", 600_000, True),
-    ("中心旋转", "6858191434294497805", "878914", 600_000, False),
-    ("动漫云朵", "6777178865119793678", "2911876", 800_000, False),
-    ("动漫漩涡", "6858191448827761160", "878913", 800_000, False),
+    # 经典常用转场（0.5s）
+    ("叠化", "6724845717472416269", "322577", 500_000, True),
+    ("分割", "6968372308419285540", "4211683", 500_000, True),
+    ("分割 II", "6969782622868214302", "4211740", 500_000, True),
+    ("分割 III", "6969793843403166215", "4211739", 500_000, True),
+    ("模糊", "6911569618171597320", "4212596", 500_000, True),
+    ("百叶窗", "6789847331060584974", "521326", 500_000, True),
+    ("圆形遮罩", "6725767129519362573", "2916676", 500_000, True),
+    ("斜向分割", "7085250093527339557", "4211687", 500_000, True),
+    ("横向分割", "7083771238564237861", "4211685", 500_000, True),
+    ("向上擦除", "6724849456891564557", "2917281", 500_000, True),
+    ("向右擦除", "6724849898857959950", "2917284", 500_000, True),
+    ("向左擦除", "6724849999336706573", "2917283", 500_000, True),
+    ("向下擦除", "6724849752921346573", "2917282", 500_000, True),
+    ("开幕", "6750893890712113677", "391781", 500_000, True),
+    ("弹跳", "6747865141120864779", "368205", 500_000, True),
+    # 移动转场
+    ("上移", "6724846395116753416", "2917279", 500_000, True),
+    ("下移", "6724849276100284942", "2917280", 500_000, True),
+    ("左移", "6726711499676455435", "2917286", 500_000, True),
+    ("右移", "6726711296063967748", "2917287", 1_000_000, True),
+    ("向上", "6724227090872275463", "359459", 1_000_000, False),
+    ("向下", "6724227330190873100", "359449", 1_000_000, False),
+    ("向左", "6724227717195108867", "359529", 500_000, False),
+    ("向右", "6724227599616184836", "359527", 1_000_000, False),
+    ("向左上", "6724230442679013902", "359533", 500_000, True),
+    ("向右上", "6724227870559834635", "359567", 500_000, True),
+    ("向左下", "6724230577211314695", "359535", 500_000, True),
+    ("向右下", "6724228621742903815", "359537", 500_000, True),
+    # 特色转场
+    ("中心旋转", "6858191434294497805", "878914", 500_000, False),
+    ("动漫云朵", "6777178865119793678", "2911876", 500_000, False),
+    ("动漫漩涡", "6858191448827761160", "878913", 500_000, False),
     ("动漫闪电", "6777178696609436174", "2911874", 500_000, False),
-    ("倒影", "6748313807031898627", "369691", 800_000, True),
-    ("冰雪结晶", "6919369228701143559", "1017910", 600_000, False),
-    ("冲鸭", "7030714241359286821", "1441672", 600_000, False),
-    ("云朵", "6955722927161479694", "2912469", 800_000, True),
-    ("光晕", "7049979667406656020", "1506927", 800_000, True),
-    ("推入", "6724849898857959960", "2917290", 600_000, True),
-    ("拉出", "6724849898857959961", "2917291", 600_000, True),
+    ("动漫火焰", "6777178765643485709", "2911875", 500_000, False),
+    ("倒影", "6748313807031898627", "369691", 500_000, True),
+    ("冰雪结晶", "6919369228701143559", "1017910", 500_000, False),
+    ("冲鸭", "7030714241359286821", "1441672", 500_000, False),
+    ("云朵", "6955722927161479694", "2912469", 500_000, True),
+    ("水墨", "6789847231873683976", "521328", 500_000, True),
+    ("星星", "6751564373317128708", "2916678", 500_000, True),
+    ("爱心", "6748289440130535947", "2916677", 500_000, True),
+    ("圆形遮罩_II", "6724850215364334083", "2916675", 1_000_000, True),
+    # 动感转场
+    ("抖动", "7252544245444121148", "17223925", 800_000, True),
+    ("故障", "6725771847444468236", "2918080", 1_000_000, False),
+    ("故障拼贴", "7397337004507140618", "77055395", 1_000_000, True),
+    ("复古放映", "7237068402945167909", "14192091", 600_000, True),
+    ("吸入", "7246288124110705209", "15653345", 1_000_000, True),
+    ("回忆下滑", "7309840407406318117", "33106283", 1_000_000, True),
+    ("拉伸", "7231391397717217851", "13402655", 1_200_000, True),
+    ("拉伸_II", "7259735372039459389", "19137130", 600_000, True),
+    ("压缩", "6751618376780485133", "4212466", 500_000, True),
+    ("推近", "6724226861666144779", "359359", 1_000_000, False),
+    ("拉远", "6724226338418332167", "359365", 1_000_000, False),
+    ("放射", "6724239584663704071", "4212630", 1_000_000, True),
+    ("泛光", "6914112263645303303", "4202527", 1_000_000, True),
+    ("泛白", "6949828109663212045", "4202528", 1_000_000, False),
+    # 分割系列
+    ("分割_IV", "6969793934356648455", "4211738", 500_000, True),
+    ("圆形分割_II", "7317206886053319194", "37127313", 800_000, True),
+    ("圆形扫描", "6851775006418932238", "813992", 1_000_000, True),
+    ("前后对比_II", "7299290706277831218", "28895844", 800_000, True),
+    ("横向拉幕", "6724492948144132621", "2917278", 1_000_000, True),
+    ("横向模糊", "7450031573958660645", "97482744", 500_000, True),
+    ("竖向分割", "7083771107706147364", "4211686", 500_000, True),
+    ("竖向拉幕", "6726711903684399619", "2917285", 1_000_000, True),
+    # 波纹/水波系列
+    ("水波卷动", "6858191497280360973", "878910", 500_000, False),
+    ("水波向右", "6858191510865711629", "878909", 500_000, False),
+    ("水波向左", "6858191524312650248", "878908", 500_000, False),
+    ("波点向右", "6858191541706428941", "878907", 500_000, False),
+    ("烟雾转场", "7450031574923350555", "97482746", 1_500_000, True),
+    ("白光电", "7343136487182963211", "49272367", 400_000, True),
+    ("岁月痕迹", "6982750240663147044", "1185194", 1_000_000, True),
 ]
 
 # 滤镜素材（filter，对应 pyJianYingDraft Filter；免费项）
@@ -875,6 +804,111 @@ def _build_video_intro_animation_json(spec: dict, clip_duration_us: int) -> dict
     }
 
 
+# ── 关键帧系统（参考 pyJianYingDraft keyframe.py）────────────────────────────────
+def _make_keyframe(time_offset: int, value: float) -> dict:
+    """生成单个关键帧 JSON（线性插值）。"""
+    return {
+        "curveType": "Line",
+        "graphID": "",
+        "left_control": {"x": 0.0, "y": 0.0},
+        "right_control": {"x": 0.0, "y": 0.0},
+        "id": _make_id(),
+        "time_offset": time_offset,
+        "values": [value],
+    }
+
+
+def _build_keyframe_list(property_type: str, keyframes: list) -> dict:
+    """
+    构建关键帧列表 JSON（对应 pyJianYingDraft keyframe.KeyframeList.export_json）。
+    property_type: "UNIFORM_SCALE" | "KFTypeVolume" | "KFTypeAlpha" | ...
+    keyframes: [(time_offset_us, value), ...] 有序列表
+    """
+    return {
+        "id": _make_id(),
+        "keyframe_list": [_make_keyframe(t, v) for t, v in keyframes],
+        "material_id": "",
+        "property_type": property_type,
+    }
+
+
+def _build_ken_burns_zoom(dur_us: int, direction: str = None) -> list[dict]:
+    """
+    Ken Burns 缓慢放大效果（图片关键帧动画）。
+    基于 pyJianYingDraft KeyframeProperty.uniform_scale。
+    direction: "in" | "out" | None（随机）
+    返回 common_keyframes 列表（可直接赋值给 segment["common_keyframes"]）。
+
+    缩放原理：uniform_scale 值为 1.0 时为原始大小。
+    - "in":  从 0.85x 缓慢放大到 1.05x（轻微放大效果）
+    - "out": 从 1.05x 缩小回 0.90x（轻微缩小后退效果）
+    - 过程略有偏移模拟真实相机运动
+    """
+    if direction is None:
+        direction = random.choice(["in", "out"])
+    # 留出前后各 10% 时间作为缓入缓出区间
+    hold_start = int(dur_us * 0.05)
+    hold_end = int(dur_us * 0.90)
+    mid = hold_start + (hold_end - hold_start) // 2
+
+    if direction == "in":
+        # 缓慢放大：起点小 → 中间稍大 → 终点更大
+        return [
+            _build_keyframe_list("UNIFORM_SCALE", [
+                (hold_start, 0.88),
+                (mid, 1.00),
+                (hold_end, 1.10),
+            ])
+        ]
+    else:
+        # 缓慢缩小后退：起点大 → 中间稍小 → 终点更小
+        return [
+            _build_keyframe_list("UNIFORM_SCALE", [
+                (hold_start, 1.08),
+                (mid, 0.98),
+                (hold_end, 0.88),
+            ])
+        ]
+
+
+def _build_audio_crossfade(prev_end_us: int, dur_us: int, fade_dur_us: int = 500_000) -> list[dict]:
+    """
+    音频交叉淡入淡出。
+    - 前一个音频：从 fade_dur_us 开始到 prev_end_us，音量从 1.0 渐变到 0.0
+    - 后一个音频：从 0 开始到 fade_dur_us，音量从 0.0 渐变到 1.0
+    返回当前音频 segment 的 common_keyframes（淡入效果）。
+
+    注意：前一个音频的淡出关键帧需要挂在前一个 segment 上。
+    这里只返回当前 segment 的淡入关键帧。
+    """
+    fade_in_dur = min(fade_dur_us, int(dur_us * 0.3))
+    fade_in_dur = max(fade_in_dur, 100_000)
+    return [
+        _build_keyframe_list("KFTypeVolume", [
+            (0, 0.0),              # 片段开始，音量为 0（淡入起点）
+            (int(fade_in_dur * 0.6), 0.7),  # 淡入中间过渡
+            (fade_in_dur, 1.0),     # 淡入结束，音量恢复正常
+        ])
+    ]
+
+
+def _build_audio_fade_out(seg_end_us: int, fade_dur_us: int = 500_000) -> list[dict]:
+    """
+    当前音频片段末尾的淡出关键帧。
+    seg_end_us: 当前片段的结束时间点（绝对时间，不是相对片段）
+    fade_dur_us: 淡出持续时间（微秒）
+    返回淡出 segment 的 common_keyframes。
+    """
+    fade_out_start = max(0, seg_end_us - fade_dur_us)
+    return [
+        _build_keyframe_list("KFTypeVolume", [
+            (fade_out_start, 1.0),    # 淡出开始，音量正常
+            (int(fade_out_start + fade_dur_us * 0.4), 0.5),  # 淡出中间
+            (seg_end_us, 0.0),       # 淡出结束，音量为 0
+        ])
+    ]
+
+
 def _load_lv59_template() -> dict:
     tpl_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jianying_draft_content_template.json")
     with open(tpl_path, "r", encoding="utf-8") as f:
@@ -892,6 +926,7 @@ def _build_lv59_main_script(
     draft_display_name: str = "",
     random_transitions: bool = False,
     random_filters: bool = False,
+    total_shots: int = 0,
 ) -> dict:
     """
     剪映专业版 5.9 macOS 主时间线格式：根目录 draft_info.json / draft_content.json
@@ -915,7 +950,7 @@ def _build_lv59_main_script(
     # 每个镜头最后一个 segment 的视频时长（秒），用于转场时长上限
     shot_last_seg_dur: list[int] = []
 
-    for row in prepared_shots:
+    for i, row in enumerate(prepared_shots):
         start_us = row["start_us"]
         dur_us = row["duration_us"]
         media_kind = row.get("media_kind") or "photo"
@@ -1021,7 +1056,7 @@ def _build_lv59_main_script(
             tgt_dur: int,
             vol: float,
             intro_clip_us=None,
-            ken_burns_zoom: float = 0.0,
+            common_keyframes: list = None,
         ) -> None:
             sp_id = _make_id()
             cv_id = _make_id()
@@ -1056,30 +1091,6 @@ def _build_lv59_main_script(
             mats["vocal_separations"].append(
                 {"choice": 0, "id": vs_id, "production_path": "", "time_range": None, "type": "vocal_separation"}
             )
-
-            # Ken Burns 缩放关键帧：图片慢慢放大，增加动感
-            # common_keyframes 格式：property=属性名, time=相对片段开始的时间(微秒), value=数值
-            common_keyframes: list[dict] = []
-            if ken_burns_zoom > 0.01 and tgt_dur > 0:
-                # 从 1.0 慢慢放大到 ken_burns_zoom（如 1.15 表示放大 15%）
-                # 在片段 10% 处设起始值，90% 处设最终值，中间平滑过渡
-                # 均匀分布 3-5 个关键帧
-                steps = min(5, max(3, tgt_dur // 2_000_000))
-                for step_i in range(steps + 1):
-                    t = int((step_i / steps) * tgt_dur)  # 0 ~ tgt_dur (微秒)
-                    progress = step_i / steps
-                    # 缓入缓出曲线（ease-in-out）
-                    eased = progress * progress * (3 - 2 * progress) if progress <= 1 else 1
-                    scale_x = 1.0 + (ken_burns_zoom - 1.0) * eased
-                    common_keyframes.append({"property": "KFTypeScaleX", "time": t, "value": scale_x})
-                    common_keyframes.append({"property": "KFTypeScaleY", "time": t, "value": scale_x})
-                    # 平移关键帧：从中心往右下微微移动（增加自然感）
-                    # 单位是半个画布宽/高，0.01 = 画面宽的 1%
-                    tx = 0.01 * eased
-                    ty = 0.008 * eased
-                    common_keyframes.append({"property": "KFTypePositionX", "time": t, "value": tx})
-                    common_keyframes.append({"property": "KFTypePositionY", "time": t, "value": ty})
-
             vseg_id = _make_id()
             video_segments.append(
                 {
@@ -1092,7 +1103,7 @@ def _build_lv59_main_script(
                         "scale": {"x": 1.0, "y": 1.0},
                         "transform": {"x": 0.0, "y": 0.0},
                     },
-                    "common_keyframes": common_keyframes,
+                    "common_keyframes": common_keyframes or [],
                     "enable_adjust": True,
                     "enable_color_correct_adjust": False,
                     "enable_color_curves": True,
@@ -1126,32 +1137,24 @@ def _build_lv59_main_script(
                     "template_scene": "default",
                     "track_attribute": 0,
                     "track_render_index": 0,
-                    "uniform_scale": {"on": True, "value": 1.0},
+                    "uniform_scale": {"on": not common_keyframes, "value": 1.0},
                     "visible": True,
                     "volume": vol,
                 }
             )
 
         if not is_video:
-            # Ken Burns 动态效果：随机选择 zoom 方向（放大/缩小/仅平移），每张图片都有动感
-            if random_transitions:
-                kb_roll = random.random()
-                if kb_roll < 0.5:
-                    ken_burns = random.uniform(1.10, 1.25)  # 50%: 放大
-                elif kb_roll < 0.75:
-                    ken_burns = random.uniform(0.85, 0.95)  # 25%: 缩小
-                else:
-                    ken_burns = 1.0  # 25%: 仅平移无缩放
-            else:
-                ken_burns = 0.0
             src_dur = max(33_333, int(dur_us))
+            # Ken Burns 缓慢放大效果（仅图片）：随机方向，随机时长缩放
+            kb_dur = int(dur_us)
+            kb_keyframes = _build_ken_burns_zoom(kb_dur)
             _append_one_video_segment(
                 t_start=int(start_us),
                 src_dur=src_dur,
                 tgt_dur=src_dur,
                 vol=1.0,
                 intro_clip_us=int(dur_us),
-                ken_burns_zoom=ken_burns,
+                common_keyframes=kb_keyframes,
             )
             shot_last_seg_idx.append(len(video_segments) - 1)
             shot_last_seg_dur.append(int(dur_us))
@@ -1166,12 +1169,15 @@ def _build_lv59_main_script(
             while remain > 33_333:
                 chunk = min(remain, mat_d)
                 intro_us = chunk if chunk_i == 0 else None
+                # Ken Burns 效果：仅在第一段（镜头开始）且启用了特效时添加
+                kb_kfs = _build_ken_burns_zoom(chunk) if chunk_i == 0 and (random_transitions or random_filters) else None
                 _append_one_video_segment(
                     t_start=pos,
                     src_dur=chunk,
                     tgt_dur=chunk,
                     vol=vol,
                     intro_clip_us=intro_us,
+                    common_keyframes=kb_kfs,
                 )
                 pos += chunk
                 remain -= chunk
@@ -1270,12 +1276,53 @@ def _build_lv59_main_script(
             use_src = max(33_333, int(adur))
             # 轨道长度以音频真实时长为准（有配音时），由视频轨决定总时间线
             audio_target_dur = use_src
+
+            # ── 音频淡入淡出（交叉淡入淡出）────────────────────────────────────
+            # crossfade_dur: 淡入淡出持续时间（约 0.5s），最多占总时长的 25%
+            xfade_dur = min(500_000, max(100_000, int(audio_target_dur * 0.25)))
+            seg_end_us = start_us + audio_target_dur  # 片段在时间线上的绝对结束时间
+
+            # 当前片段淡入关键帧（如果有前一个音频，添加淡入；第一个音频不加淡入）
+            has_prev_audio = len(audio_segments) > 0
+            audio_common_kfs: list = []
+            if has_prev_audio:
+                # 淡入：音量从 0 渐变到 1
+                audio_common_kfs = [
+                    _build_keyframe_list("KFTypeVolume", [
+                        (0, 0.0),
+                        (int(xfade_dur * 0.5), 0.6),
+                        (xfade_dur, 1.0),
+                    ])
+                ]
+                # 为前一个音频片段添加淡出（在片段末尾渐变到 0）
+                prev_seg = audio_segments[-1]
+                prev_end_us = prev_seg["target_timerange"]["start"] + prev_seg["target_timerange"]["duration"]
+                prev_xfade_start = max(prev_end_us - xfade_dur, prev_end_us - int(prev_seg["target_timerange"]["duration"] * 0.25))
+                # 追加淡出关键帧
+                fade_out_kl = _build_keyframe_list("KFTypeVolume", [
+                    (prev_xfade_start, 1.0),
+                    (prev_end_us - int(xfade_dur * 0.3), 0.6),
+                    (prev_end_us, 0.0),
+                ])
+                prev_seg["common_keyframes"] = prev_seg.get("common_keyframes", []) + [fade_out_kl]
+
+            # 最后一个音频片段添加淡出
+            is_last_shot = (i == total_shots - 1)
+            if is_last_shot:
+                last_xfade_start = max(0, seg_end_us - xfade_dur)
+                fade_out_last = _build_keyframe_list("KFTypeVolume", [
+                    (last_xfade_start, 1.0),
+                    (seg_end_us - int(xfade_dur * 0.3), 0.6),
+                    (seg_end_us, 0.0),
+                ])
+                audio_common_kfs = audio_common_kfs + [fade_out_last]
+
             audio_segments.append(
                 {
                     "caption_info": None,
                     "cartoon": False,
                     "clip": None,
-                    "common_keyframes": [],
+                    "common_keyframes": audio_common_kfs,
                     "enable_adjust": False,
                     "enable_color_correct_adjust": False,
                     "enable_color_curves": True,
@@ -1748,177 +1795,46 @@ def create_draft_on_mac(
         except Exception:
             return _safe_abs_for_jianying(local_abs_path)
 
-    # ---- 第一阶段：收集所有媒体 URL（支持 data:URL 和远程 URL）----
-    # data:URL 在前端已转为 base64，可直接写入本地文件，无需网络下载
+    # ---- 下载资源，组装剪映 5.9 主脚本所需镜头行（绝对路径）----
+    prepared_shots: list[dict] = []
+    timeline_cursor = 0
     total_shots = len(shots)
     report_progress(5, f"开始处理 {total_shots} 个镜头...")
     print(f"[jianying_export] 开始处理 {total_shots} 个镜头...", file=sys.stderr, flush=True)
-    media_urls: list[dict] = []
+
     for i, shot in enumerate(shots):
+        # 报告每个镜头的进度（5% - 70%）
+        shot_progress = 5 + int((i / max(total_shots, 1)) * 65)
+        report_progress(shot_progress, f"处理镜头 {i+1}/{total_shots}...")
+
         base_dur = int(float(shot.get("duration", 5)) * 1_000_000)
+        start_us = timeline_cursor
+
         vu = shot.get("videoUrls")
         video_url = shot.get("videoUrl") or shot.get("video_url")
         if vu and isinstance(vu, list) and len(vu) > 0:
             video_url = vu[-1]
-        image_url = shot.get("imageUrl") or (shot.get("imageUrls", [None])[0] if shot.get("imageUrls") else None)
-        audio_url = shot.get("audioUrl") or shot.get("voiceoverAudioUrl")
 
-        entry = {
-            "index": i,
-            "base_dur": base_dur,
-            "caption": (shot.get("caption") or "").strip(),
-            "video_url": video_url if (video_url and str(video_url).strip()) else None,
-            "image_url": image_url if (image_url and str(image_url).strip()) else None,
-            "audio_url": audio_url if (audio_url and str(audio_url).strip()) else None,
-            "client_audio_us": None,
-        }
-        # audioDurationExact 优先（TTS 原始精度，保留小数秒）
-        # audioDurationSec 次之（已 round 的整数秒）
-        for _k in ("audioDurationExact", "audio_duration_exact"):
-            v = shot.get(_k)
-            if v is not None:
-                try:
-                    sec = float(v)
-                    if sec > 0:
-                        entry["client_audio_us"] = max(1, int(sec * 1_000_000))
-                except (TypeError, ValueError):
-                    pass
-                break
-        if entry["client_audio_us"] is None:
-            for _k in ("audioDurationSec", "audio_duration_sec"):
-                v = shot.get(_k)
-                if v is not None:
-                    try:
-                        sec = float(v)
-                        if sec > 0:
-                            entry["client_audio_us"] = max(1, int(sec * 1_000_000))
-                    except (TypeError, ValueError):
-                        pass
-                    break
-        media_urls.append(entry)
-
-    # ---- 第二阶段：分离 data:URL 和远程 URL，并行下载远程文件 ----
-    remote_downloads: list[tuple[str, str]] = []  # [(url, dest_path), ...]
-    data_url_map: dict[int, dict[str, str]] = {}  # {shot_index: {"image": dest, "audio": dest}}
-
-    report_progress(5, f"收集媒体文件 URL...")
-    print(f"[jianying_export] 第一阶段：收集 {total_shots} 个镜头的媒体 URL...", file=sys.stderr, flush=True)
-
-    for entry in media_urls:
-        i = entry["index"]
-
-        # 图片
-        img_url = entry["image_url"]
-        if img_url:
-            if img_url.startswith("data:"):
-                # data:URL 直接写入本地文件
-                img_filename = _safe_filename(img_url)
-                img_dest = os.path.join(draft_folder, "Resources", "image", img_filename)
-                _download_file(img_url, img_dest)  # 内部已处理 data:URL
-                data_url_map.setdefault(i, {})["image"] = img_dest
-                print(f"[jianying_export] 镜头{i} 图片: data:URL → {img_filename}", file=sys.stderr, flush=True)
-            elif _is_local_path(img_url):
-                # 本地文件路径（来自 image cache）：直接复制到草稿目录，无需下载
-                img_filename = _safe_filename(img_url)
-                img_dest = os.path.join(draft_folder, "Resources", "image", img_filename)
-                _shutil.copy2(img_url, img_dest)
-                data_url_map.setdefault(i, {})["image"] = img_dest
-                print(f"[jianying_export] 镜头{i} 图片: 本地缓存 → {img_filename}", file=sys.stderr, flush=True)
-            else:
-                img_filename = _safe_filename(img_url)
-                img_dest = os.path.join(draft_folder, "Resources", "image", img_filename)
-                remote_downloads.append((str(img_url), img_dest))
-
-        # 音频
-        aud_url = entry["audio_url"]
-        if aud_url:
-            if aud_url.startswith("data:"):
-                aud_filename = _safe_filename(aud_url)
-                aud_dest = os.path.join(draft_folder, "Resources", "audio", aud_filename)
-                _download_file(aud_url, aud_dest)
-                data_url_map.setdefault(i, {})["audio"] = aud_dest
-                print(f"[jianying_export] 镜头{i} 音频: data:URL → {aud_filename}", file=sys.stderr, flush=True)
-            elif _is_local_path(aud_url):
-                # 本地文件路径（来自 audio cache）：直接复制到草稿目录
-                aud_filename = _safe_filename(aud_url)
-                aud_dest = os.path.join(draft_folder, "Resources", "audio", aud_filename)
-                _shutil.copy2(aud_url, aud_dest)
-                data_url_map.setdefault(i, {})["audio"] = aud_dest
-                print(f"[jianying_export] 镜头{i} 音频: 本地缓存 → {aud_filename}", file=sys.stderr, flush=True)
-            else:
-                aud_filename = _safe_filename(aud_url)
-                aud_dest = os.path.join(draft_folder, "Resources", "audio", aud_filename)
-                remote_downloads.append((str(aud_url), aud_dest))
-
-        # 视频
-        vid_url = entry["video_url"]
-        if vid_url:
-            vname = _safe_filename(str(vid_url))
+        use_video = False
+        local_video_path = None
+        if video_url and str(video_url).strip():
+            vname = _safe_filename(str(video_url))
             if not re.search(r"\.(mp4|mov|webm|m4v)$", vname, re.I):
                 vname = f"{vname}.mp4" if "." not in vname else re.sub(r"[^.]+$", "mp4", vname)
-            vid_dest = os.path.join(draft_folder, "Resources", "video", vname)
-            remote_downloads.append((str(vid_url), vid_dest))
+            local_video_path = os.path.join(draft_folder, "Resources", "video", vname)
+            if _download_file(str(video_url), local_video_path):
+                use_video = True
+            else:
+                local_video_path = None
 
-    # ---- 并行下载所有远程文件 ----
-    report_progress(10, f"开始并行下载 {len(remote_downloads)} 个媒体文件...")
-    print(f"[jianying_export] 待下载远程文件: {len(remote_downloads)} 个（并行）", file=sys.stderr, flush=True)
-
-    if remote_downloads:
-        # 进度回调包装器
-        total_remote = len(remote_downloads)
-        done_count = [0]  # 用列表包装以便在闭包中修改
-
-        def _progress_wrapper(progress: int, stage: str):
-            # 只在关键节点报告进度，避免日志刷屏
-            done_count[0] += 1
-            if done_count[0] % 10 == 0 or done_count[0] == total_remote:
-                pct = 10 + int((done_count[0] / total_remote) * 50)
-                report_progress(pct, f"下载媒体 {done_count[0]}/{total_remote}...")
-
-        # 分批下载，每批 8 个并发
-        batch_size = 8
-        download_results: dict[str, tuple[bool, str]] = {}
-        for batch_start in range(0, len(remote_downloads), batch_size):
-            batch = remote_downloads[batch_start:batch_start + batch_size]
-            print(f"[jianying_export] 下载批次 {batch_start // batch_size + 1}/{(len(remote_downloads) + batch_size - 1) // batch_size}: {len(batch)} 个文件", file=sys.stderr, flush=True)
-            batch_results = _download_batch_parallel(batch, max_workers=8, timeout=120, max_retries=2)
-            download_results.update(batch_results)
-            done = min(batch_start + batch_size, len(remote_downloads))
-            pct = 10 + int((done / len(remote_downloads)) * 50)
-            report_progress(pct, f"下载媒体 {done}/{len(remote_downloads)}...")
-    else:
-        download_results = {}
-
-    # ---- 第三阶段：组装 prepared_shots ----
-    report_progress(62, "组装镜头数据...")
-    prepared_shots: list[dict] = []
-    timeline_cursor = 0
-
-    for entry in media_urls:
-        i = entry["index"]
-        start_us = timeline_cursor
-        duration_us = entry["base_dur"]
+        duration_us = base_dur
         row: dict = {
             "start_us": start_us,
             "duration_us": duration_us,
-            "caption": entry["caption"],
+            "caption": (shot.get("caption") or "").strip(),
             "audio_abs": None,
             "audio_duration_us": None,
         }
-
-        # 视频处理
-        vid_url = entry["video_url"]
-        use_video = False
-        local_video_path = None
-        if vid_url and not vid_url.startswith("data:"):
-            vname = _safe_filename(str(vid_url))
-            if not re.search(r"\.(mp4|mov|webm|m4v)$", vname, re.I):
-                vname = f"{vname}.mp4" if "." not in vname else re.sub(r"[^.]+$", "mp4", vname)
-            vid_dest = os.path.join(draft_folder, "Resources", "video", vname)
-            success, _ = download_results.get(str(vid_url), (False, ""))
-            if success and os.path.exists(vid_dest):
-                local_video_path = vid_dest
-                use_video = True
 
         if use_video and local_video_path:
             vabs = _safe_abs_for_jianying(local_video_path)
@@ -1933,25 +1849,15 @@ def create_draft_on_mac(
             row["video_material_duration_us"] = vd or duration_us
             row["duration_us"] = duration_us
         else:
-            # 图片处理（data:URL 或已下载的远程文件）
-            img_url = entry["image_url"]
+            image_url = shot.get("imageUrl") or (shot.get("imageUrls", [None])[0] if shot.get("imageUrls") else None)
             local_image_path = None
-            if img_url:
-                if img_url.startswith("data:"):
-                    # data:URL 已在第二阶段写入
-                    saved = data_url_map.get(i, {}).get("image")
-                    if saved and os.path.exists(saved):
-                        local_image_path = saved
-                else:
-                    img_filename = _safe_filename(str(img_url))
-                    img_dest = os.path.join(draft_folder, "Resources", "image", img_filename)
-                    success, _ = download_results.get(str(img_url), (False, ""))
-                    if success and os.path.exists(img_dest):
-                        local_image_path = img_dest
-                        print(f"[jianying_export] 镜头{i} 图片: 下载成功 → {img_filename}", file=sys.stderr, flush=True)
-                    else:
-                        print(f"[jianying_export] 镜头{i} 图片: 下载失败（URL 已过期或网络错误）", file=sys.stderr, flush=True)
-
+            if image_url and str(image_url).strip():
+                img_filename = _safe_filename(str(image_url))
+                local_image_path = os.path.join(draft_folder, "Resources", "image", img_filename)
+                img_ok = _download_file(str(image_url), local_image_path)
+                print(f"[jianying_export] 镜头{i} 图片: url={'有' if image_url else '无'} → 文件={img_filename} → 下载={'成功' if img_ok else '失败'} {'(' + str(image_url)[:80] + ')' if image_url else ''}", file=sys.stderr, flush=True)
+                if not img_ok:
+                    local_image_path = None
             if not local_image_path:
                 local_image_path = _placeholder_shot_image_path(draft_folder, i, width, height)
             img_abs = _safe_abs_for_jianying(local_image_path)
@@ -1962,57 +1868,66 @@ def create_draft_on_mac(
             row["image_w"] = iw
             row["image_h"] = ih
 
-        # 音频处理（data:URL 或已下载的远程文件）
-        aud_url = entry["audio_url"]
-        if aud_url:
-            audio_filename = _safe_filename(str(aud_url))
-            lap = os.path.join(draft_folder, "Resources", "audio", audio_filename)
-            ok = False
-            if aud_url.startswith("data:"):
-                saved = data_url_map.get(i, {}).get("audio")
-                ok = bool(saved and os.path.exists(saved))
-                if ok:
-                    lap = saved
-            else:
-                success, _ = download_results.get(str(aud_url), (False, ""))
-                ok = success and os.path.exists(lap)
-                if ok:
-                    print(f"[jianying_export] 镜头{i} 音频: 下载成功 → {audio_filename}", file=sys.stderr, flush=True)
-                else:
-                    print(f"[jianying_export] 镜头{i} 音频: 下载失败", file=sys.stderr, flush=True)
+        audio_url = shot.get("audioUrl") or shot.get("voiceoverAudioUrl")
+        client_audio_us = None
+        for _k in ("audioDurationSec", "audio_duration_sec"):
+            v = shot.get(_k)
+            if v is not None:
+                try:
+                    sec = float(v)
+                    if sec > 0:
+                        client_audio_us = max(1, int(sec * 1_000_000))
+                except (TypeError, ValueError):
+                    pass
+                break
 
-            TTS_SILENCE_BUFFER = 300_000  # 300ms = 剪映最常见的开头静音补偿
+        if audio_url and str(audio_url).strip():
+            audio_filename = _safe_filename(str(audio_url))
+            lap = os.path.join(draft_folder, "Resources", "audio", audio_filename)
+            ok = _download_file(str(audio_url), lap)
+            # 报告音频下载进度（每个音频 5%）
+            audio_progress = 10 + int((i / max(total_shots, 1)) * 60)
+            report_progress(audio_progress, f"下载音频 {i+1}/{total_shots}...")
+            print(f"[jianying_export] 镜头{i} 音频: url={'有' if audio_url else '无'} → 文件={audio_filename} → 下载={'成功' if ok else '失败'} {'(' + str(audio_url)[:80] + ')' if audio_url else ''}", file=sys.stderr, flush=True)
             if ok:
                 row["audio_abs"] = _safe_abs_for_jianying(lap)
                 row["audio_client_path"] = _material_path_for_client(row["audio_abs"])
                 probe_us = _ffprobe_duration_us(row["audio_abs"])
-                client_us = entry["client_audio_us"]
-                # 优先使用 ffprobe 测量的实际时长，但 ffprobe 可能比实际时长略短
-                # （TTS 开头的静音/间隙 ffprobe 测不到），两者取最大值并加 300ms 缓冲
-                # 确保音频尾部不被截断，正常播放完毕才切换下一段
-                if probe_us and client_us:
-                    row["audio_duration_us"] = max(probe_us, client_us) + TTS_SILENCE_BUFFER
-                elif probe_us:
-                    row["audio_duration_us"] = probe_us + TTS_SILENCE_BUFFER
+                # 以文件实测为准；客户端 audioDurationSec 多为文案估算，取 max 会把时间线拉长得远超真实波形（见 pyJianYingDraft：片段时长应对齐素材）。
+                if probe_us:
+                    row["audio_duration_us"] = int(probe_us)
                 else:
-                    row["audio_duration_us"] = client_us + TTS_SILENCE_BUFFER
+                    row["audio_duration_us"] = client_audio_us
+                # 有配音时：时间线镜头时长以音频为准（静态图 / 视频片段不再固定 5s）
                 ad = row.get("audio_duration_us")
                 if ad and int(ad) > 0:
                     row["duration_us"] = int(ad)
             else:
-                if entry["client_audio_us"] and int(entry["client_audio_us"]) > 0:
-                    row["audio_duration_us"] = int(entry["client_audio_us"]) + TTS_SILENCE_BUFFER
-                    row["duration_us"] = int(entry["client_audio_us"]) + TTS_SILENCE_BUFFER
+                # 下载失败但客户端提供了时长估算（如前端 TTS），以此作时长兜底
+                if client_audio_us and int(client_audio_us) > 0:
+                    row["audio_duration_us"] = int(client_audio_us)
+                    row["duration_us"] = int(client_audio_us)
 
         prepared_shots.append(row)
         timeline_cursor += row["duration_us"]
+
+        # 及时清理 shot 对象中的大数据字段，释放内存
+        if image_url and str(image_url).startswith('data:'):
+            shot["imageUrl"] = ""  # 清理 base64 数据
+        if audio_url and str(audio_url).startswith('data:'):
+            shot["audioUrl"] = ""  # 清理 base64 数据
+            shot["voiceoverAudioUrl"] = ""
 
         # 每处理 10 个镜头强制垃圾回收
         if (i + 1) % 10 == 0:
             import gc
             gc.collect()
 
-    report_progress(70, "所有镜头处理完成，开始生成剪映 JSON...")
+    # 调试：汇总每个镜头的音频信息
+    for i, r in enumerate(prepared_shots):
+        print(f"[jianying_export] 镜头{i} 汇总: audio_abs={r.get('audio_abs','无')} audio_dur_us={r.get('audio_duration_us','无')} timeline_dur_us={r.get('duration_us','无')}", file=sys.stderr, flush=True)
+
+    report_progress(72, "所有镜头处理完成，开始生成剪映 JSON...")
     report_progress(78, "写入草稿 JSON 文件...")
     print(f"[jianying_export] 所有镜头处理完成，共 {len(prepared_shots)} 个镜头，开始生成剪映 JSON...", file=sys.stderr, flush=True)
 
@@ -2031,6 +1946,7 @@ def create_draft_on_mac(
         draft_display_name=draft_folder_name,
         random_transitions=random_transitions,
         random_filters=random_filters,
+        total_shots=total_shots,
     )
 
     # 剪映 5.9 mac：主时间线读根目录 draft_info.json（materials + tracks），与 draft_content.json 同构
@@ -2258,30 +2174,20 @@ def create_draft_on_mac(
 
         # 追加新的 tracks（假设都在主轨道）
         # 找到时间线末尾
-        def _segment_end_us(segment: dict) -> int:
-            """从片段中提取结束时间（微秒）"""
-            tr = segment.get("target_timerange")
-            if tr:
-                return int(tr.get("start", 0)) + int(tr.get("duration", 0))
-            return int(segment.get("start_time_us", 0)) + int(segment.get("duration_us", 0))
-
         timeline_end_us = 0
         for track in existing_tracks:
             for segment in track.get("segments", []):
-                timeline_end_us = max(timeline_end_us, _segment_end_us(segment))
+                end_us = segment.get("start_time_us", 0) + segment.get("duration_us", 0)
+                timeline_end_us = max(timeline_end_us, end_us)
 
-        # 更新新片段的 start_us（兼容 target_timerange 和 start_time_us 两种格式）
+        # 更新新片段的 start_us
         new_tracks = lv59_script.get("tracks", [])
         for track in new_tracks:
             for segment in track.get("segments", []):
-                tr = segment.get("target_timerange")
-                if tr:
-                    tr["start"] = int(tr.get("start", 0)) + timeline_end_us
+                if "start_time_us" in segment:
+                    segment["start_time_us"] += timeline_end_us
                 else:
-                    if "start_time_us" in segment:
-                        segment["start_time_us"] += timeline_end_us
-                    else:
-                        segment["start_time_us"] = timeline_end_us
+                    segment["start_time_us"] = timeline_end_us
 
         # 合并 tracks
         if new_tracks:
@@ -2291,7 +2197,8 @@ def create_draft_on_mac(
         new_end_us = 0
         for track in existing_tracks:
             for segment in track.get("segments", []):
-                new_end_us = max(new_end_us, _segment_end_us(segment))
+                end_us = segment.get("start_time_us", 0) + segment.get("duration_us", 0)
+                new_end_us = max(new_end_us, end_us)
         total_duration = new_end_us
 
         # 更新 draft_content.json
@@ -2574,7 +2481,6 @@ if __name__ == "__main__":
     parser.add_argument("--name", type=str, default="测试草稿", help="草稿名称")
     parser.add_argument("--shots", type=str, default="[]", help="镜头 JSON（命令行参数方式）")
     parser.add_argument("--shots-json-stdin", action="store_true", help="镜头 JSON 从 stdin 读取（避免 E2BIG）")
-    parser.add_argument("--shots-json-file", type=str, default=None, help="镜头 JSON 从文件读取（超大 payload 避免 V8 字符串限制）")
     parser.add_argument("--progress-callback", action="store_true", help="通过 stdout 报告进度")
     parser.add_argument("--resolution", type=str, default="1920x1080")
     parser.add_argument("--fps", type=int, default=30)
@@ -2586,16 +2492,10 @@ if __name__ == "__main__":
     elif args.list:
         print("list_drafts 需要完全磁盘访问权限")
     else:
-        # stdin 方式或文件方式读取 JSON payload
-        stdin_data = None
-        if args.shots_json_file:
-            with open(args.shots_json_file, "r", encoding="utf-8") as f:
-                stdin_data = json.load(f)
-        elif args.shots_json_stdin:
+        # stdin 方式优先（大数据时避免 E2BIG）
+        if args.shots_json_stdin:
             stdin_raw = _sys.stdin.read()
             stdin_data = json.loads(stdin_raw)
-        
-        if stdin_data is not None:
             shots = stdin_data.get("shots", [])
             output_path = stdin_data.get("outputPath") or args.output
             path_map_root = stdin_data.get("pathMapRoot")

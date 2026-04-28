@@ -9,5 +9,38 @@
   <body class="antialiased selection:bg-indigo-500/30">
     <div id="root"></div>
     <script type="module" src="/index.tsx"></script>
+    <script>
+      // 屏蔽第三方图片域名加载失败的污染日志（防止敏感 key 泄露）
+      (function() {
+        const BLOCKED_PATTERNS = [
+          /p\d+-dreamina-sign\.byteimg\.com/,
+          /p\d+-dreamina-sign\.temans\.com/,
+          /x-signature=/,
+          /lk3s=/
+        ];
+        const ORIGINAL_ERROR = console.error.bind(console);
+        console.error = function(...args) {
+          const msg = args.map(a => typeof a === 'string' ? a : String(a)).join(' ');
+          const shouldBlock = BLOCKED_PATTERNS.some(p => p.test(msg)) ||
+                             (msg.includes('Failed to load resource') && (
+                               msg.includes('byteimg.com') || msg.includes('403')
+                             ));
+          if (!shouldBlock) {
+            ORIGINAL_ERROR.apply(console, args);
+          }
+        };
+        // 屏蔽资源加载失败的全局事件
+        window.addEventListener('error', function(e) {
+          if (e.message && (
+            /p\d+-dreamina-sign\./.test(e.message) ||
+            /Failed to load resource/.test(e.message)
+          )) {
+            e.preventDefault();
+            e.stopPropagation();
+            return true;
+          }
+        }, true);
+      })();
+    </script>
   </body>
 </html>

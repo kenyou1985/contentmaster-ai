@@ -16,12 +16,14 @@ export function isJianyingLocalSiteOrigin(): boolean {
 }
 
 /**
- * 是否使用远程打包 ZIP 并展示下载链接（典型：Vercel ��署访问线上 API）。
+ * 是否使用远程打包 ZIP 并展示下载链接（典型：Vercel 部署访问线上 API）。
  * 本地站点为 false：直接导出到本机剪映草稿目录，不经 Railway 中转。
+ * VITE_JIANYING_FORCE_LOCAL=true 时也强制本地。
  */
 export function shouldUseJianyingZipDownload(): boolean {
   if (import.meta.env.VITE_JIANYING_FORCE_ZIP === 'true') return true;
   if (import.meta.env.VITE_JIANYING_FORCE_ZIP === 'false') return false;
+  if (import.meta.env.VITE_JIANYING_FORCE_LOCAL === 'true') return false;
   if (isJianyingLocalSiteOrigin()) return false;
   return true;
 }
@@ -29,8 +31,12 @@ export function shouldUseJianyingZipDownload(): boolean {
 /**
  * 剪映 HTTP API 根路径。
  * 本地开发强制同源 `/api/jianying`，避免 `.env` 里 `VITE_JIANYING_API_BASE` 指向 Railway 时仍请求远程。
+ * VITE_JIANYING_FORCE_LOCAL=true 时也强制走本地。
  */
 export function getJianyingApiBase(): string {
+  if (import.meta.env.VITE_JIANYING_FORCE_LOCAL === 'true') {
+    return '/api/jianying';
+  }
   if (typeof window !== 'undefined' && isJianyingLocalSiteOrigin()) {
     return '/api/jianying';
   }
@@ -325,28 +331,44 @@ export async function exportJianyingDraft(
   const hasRailwayConfig = railwayBase.includes('railway') && railwayBase.length > 0;
   const isLocal = isJianyingLocalSiteOrigin();
 
-  console.log('[JianyingExport] base:', base);
-  console.log('[JianyingExport] railwayBase:', railwayBase);
-  console.log('[JianyingExport] isLocal:', isLocal);
+  // 强制本地优先：本地环境（localhost/private IP）且本地服务可达时，忽略 VITE_JIANYING_API_BASE，始终走本地
+  const forceLocal = import.meta.env.VITE_JIANYING_FORCE_LOCAL === 'true';
 
-  // ── 优先：本地服务 ─────────────────────────────
-  if (isLocal) {
+  console.log('[JianyingExport] === 导出路由诊断 ===');
+  console.log('[JianyingExport] window.location.hostname:', typeof window !== 'undefined' ? window.location.hostname : 'N/A');
+  console.log('[JianyingExport] isLocal (本地站点):', isLocal);
+  console.log('[JianyingExport] hasRailwayConfig:', hasRailwayConfig);
+  console.log('[JianyingExport] forceLocal:', forceLocal);
+  console.log('[JianyingExport] VITE_JIANYING_API_BASE:', railwayBase || '(未设置)');
+  console.log('[JianyingExport] returnZip:', returnZip);
+
+  // ── 优先：本地服务（本地环境 + 本地服务可达时强制走本地，不走 Railway）─────────────
+  if (isLocal || forceLocal) {
     let localOk = false;
+    let localCheckError = '';
     try {
       const controller = new AbortController();
-      const tid = setTimeout(() => controller.abort(), 3000);
+      const tid = setTimeout(() => controller.abort(), 15000); // 15 秒，给 Python 模块加载留足时间
       const res = await fetch('/api/jianying/health', { signal: controller.signal });
       clearTimeout(tid);
       localOk = res.ok;
-    } catch { /* 不可用 */ }
+      if (!localOk) {
+        localCheckError = `HTTP ${res.status}`;
+      }
+    } catch (e: any) {
+      localCheckError = e.message || String(e);
+    }
 
     if (localOk) {
-      console.log('[JianyingExport] 本地服务可用，使用本地导出...');
+      console.log('[JianyingExport] ✅ 本地服务健康，使用本地导出');
       onProgress?.(15, '使用本地服务导出...');
       return await localExport(payload, base, options, onProgress);
     }
-    console.log('[JianyingExport] 本地服务不可用，切换到 Railway...');
-    onProgress?.(15, '本地服务不可用，切换到 Railway...');
+    console.warn(`[JianyingExport] ⚠️ 本地服务不可用 (${localCheckError || '超时'})，`);
+    console.warn('[JianyingExport]   → 本地端口 18091 的服务进程未启动或无响应');
+    console.warn('[JianyingExport]   → 请确保在 jianying-server/ 目录运行: node server.mjs');
+    console.warn('[JianyingExport]   → 降级到 Railway...');
+    onProgress?.(15, `本地服务不可用 (${localCheckError || '超时'})，切换到 Railway...`);
   }
 
   // ── Railway 异步模式 ──────────────��───────────

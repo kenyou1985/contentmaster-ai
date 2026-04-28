@@ -31,7 +31,7 @@ import {
 } from '../services/characterLibraryService';
 import { CharacterLibrary } from './CharacterLibrary';
 import { VoiceLibrary } from './VoiceLibrary';
-import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, FolderOpen, Rocket, Copy, Check, CheckSquare, Square, Users, HardDrive, ListOrdered, ArrowUp, Terminal, Gauge, AlertCircle } from 'lucide-react';
+import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, Settings2, FolderOpen, Rocket, Copy, Check, CheckSquare, Square, Users, HardDrive, ListOrdered, ArrowUp, Terminal, Gauge, AlertCircle, Sparkles, Wand2 } from 'lucide-react';
 import JSZip from 'jszip';
 import { HistorySelector } from './HistorySelector';
 import { getRunningHubMaxConcurrent, setRunningHubMaxConcurrent, initRunningHubConcurrency, MAX_CONCURRENT } from '../services/runningHubConcurrency';
@@ -567,6 +567,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const activeAudioRef = useRef<{ audio: HTMLAudioElement; shotId: string } | null>(null);
   /** 当前在播放的 shotId（用于按钮文字切换） */
   const [playingAudioShotId, setPlayingAudioShotId] = useState<string | null>(null);
+  /** 避免并行重新绘图因 React 闭包延迟导致同 shot 重复触发：shotId → in-flight Promise */
+  const imageGenPromisesRef = useRef<Map<string, Promise<boolean>>>(new Map());
   const [selectedImageModel, setSelectedImageModel] = useState('jimeng-5.0');
   const [selectedVideoModel, setSelectedVideoModel] = useState(VIDEO_MODELS[0].id);
   const [selectedImageRatio, setSelectedImageRatio] = useState('16:9'); // 默认横屏 16:9
@@ -828,6 +830,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const [jyRandomEffectBundle, setJyRandomEffectBundle] = useState(false);
   const [jyRandomTransitions, setJyRandomTransitions] = useState(false);
   const [jyRandomFilters, setJyRandomFilters] = useState(false);
+  const [jySettingsOpen, setJySettingsOpen] = useState(false);
   const [isExportingToJianying, setIsExportingToJianying] = useState(false);
   const [jianyingExportProgress, setJianyingExportProgress] = useState(0);
   const [jianyingExportMessage, setJianyingExportMessage] = useState('');
@@ -2581,8 +2584,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
   // 生成单个图片（支持生成多张）；返回是否成功（避免依赖 React setState 延迟闭包误判）
   const handleGenerateImage = async (shot: Shot, regenerate: boolean = false): Promise<boolean> => {
-    // 检查选中的模型
-    const selectedModel = IMAGE_MODELS.find(m => m.id === selectedImageModel);
+    if (imageGenPromisesRef.current.has(shot.id)) return false;
+    const promise = (async () => {
+      const selectedModel = IMAGE_MODELS.find(m => m.id === selectedImageModel);
     
     // 检查 API Key 配置
     if (selectedModel?.isJimeng) {
@@ -2932,14 +2936,18 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         return false;
       }
     } catch (error: any) {
-      // 确保 imageGenerating 状态被清除
       updateShot(shot.id, { imageGenerating: false });
       appendTerminalLog('ImageGen', `镜头${shot.number}: 异常 — ${error?.message || error}`);
       return false;
+    } finally {
+      imageGenPromisesRef.current.delete(shot.id);
     }
+    })();
+    imageGenPromisesRef.current.set(shot.id, promise);
+    return promise;
   };
 
-  // 辅助函数：追加视频URL到镜头（支持追加模式）
+  // 辅助函数：追加视频URL到镜头
   const appendVideoToShot = (shotId: string, videoUrl: string, cachedUrl?: string) => {
     const shot = shotsRef.current.find(s => s.id === shotId);
     if (!shot) return;
@@ -4606,6 +4614,86 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               {isExportingToJianying ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
               {isExportingToJianying ? '导出中...' : '导出剪映'}
             </button>
+            {/* 剪映导出设置面板 */}
+            <div className="relative">
+              <button
+                onClick={() => setJySettingsOpen(v => !v)}
+                className={`flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded-lg border transition-all ${jySettingsOpen || jyRandomTransitions || jyRandomEffectBundle || jyRandomFilters ? 'bg-purple-900/60 border-purple-500 text-purple-200' : 'bg-slate-800/60 border-slate-600 text-slate-400 hover:text-slate-200 hover:border-slate-500'}`}
+                title="剪映导出高级设置"
+              >
+                <Settings2 size={13} />
+                {jyRandomTransitions || jyRandomEffectBundle || jyRandomFilters ? '已设置' : '高级'}
+              </button>
+              {jySettingsOpen && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setJySettingsOpen(false)} />
+                  <div className="absolute right-0 top-full mt-1.5 z-20 w-52 bg-slate-800/95 backdrop-blur border border-slate-600 rounded-xl shadow-2xl p-3 flex flex-col gap-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-slate-200 flex items-center gap-1.5">
+                        <Wand2 size={12} className="text-purple-400" />
+                        剪映导出设置
+                      </span>
+                      <button onClick={() => setJySettingsOpen(false)} className="text-slate-400 hover:text-slate-200">
+                        <X size={12} />
+                      </button>
+                    </div>
+                    <div className="border-t border-slate-700" />
+                    {/* 随机转场 */}
+                    <label className="flex items-center gap-2.5 cursor-pointer group">
+                      <button
+                        onClick={() => setJyRandomTransitions(v => !v)}
+                        className={`w-9 h-5 rounded-full relative transition-all duration-200 ${jyRandomTransitions ? 'bg-purple-600' : 'bg-slate-600 group-hover:bg-slate-500'}`}
+                      >
+                        <span
+                          className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200 ${jyRandomTransitions ? 'left-[18px]' : 'left-0.5'}`}
+                        />
+                      </button>
+                      <div className="flex flex-col">
+                        <span className="text-[11px] font-medium text-slate-200">随机转场</span>
+                        <span className="text-[9px] text-slate-500">分镜间自动添加随机转场</span>
+                      </div>
+                    </label>
+                    {/* 随机特效 */}
+                    <label className="flex items-center gap-2.5 cursor-pointer group">
+                      <button
+                        onClick={() => setJyRandomEffectBundle(v => !v)}
+                        className={`w-9 h-5 rounded-full relative transition-all duration-200 ${jyRandomEffectBundle ? 'bg-purple-600' : 'bg-slate-600 group-hover:bg-slate-500'}`}
+                      >
+                        <span
+                          className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200 ${jyRandomEffectBundle ? 'left-[18px]' : 'left-0.5'}`}
+                        />
+                      </button>
+                      <div className="flex flex-col">
+                        <span className="text-[11px] font-medium text-slate-200">随机特效</span>
+                        <span className="text-[9px] text-slate-500">镜头添加随机视觉特效</span>
+                      </div>
+                    </label>
+                    {/* 随机滤镜 */}
+                    <label className="flex items-center gap-2.5 cursor-pointer group">
+                      <button
+                        onClick={() => setJyRandomFilters(v => !v)}
+                        className={`w-9 h-5 rounded-full relative transition-all duration-200 ${jyRandomFilters ? 'bg-purple-600' : 'bg-slate-600 group-hover:bg-slate-500'}`}
+                      >
+                        <span
+                          className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200 ${jyRandomFilters ? 'left-[18px]' : 'left-0.5'}`}
+                        />
+                      </button>
+                      <div className="flex flex-col">
+                        <span className="text-[11px] font-medium text-slate-200">随机滤镜</span>
+                        <span className="text-[9px] text-slate-500">镜头添加随机颜色滤镜</span>
+                      </div>
+                    </label>
+                    {/* 提示说明 */}
+                    <div className="bg-slate-700/50 rounded-lg p-2 flex items-start gap-1.5">
+                      <Sparkles size={10} className="text-amber-400 mt-0.5 flex-shrink-0" />
+                      <p className="text-[9px] text-slate-400 leading-relaxed">
+                        音频淡入淡出默认开启，图片会轻微放大（Ken Burns 效果）
+                      </p>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
             {/* 导出进度条 */}
             {isExportingToJianying && (
               <div className="flex flex-col gap-0.5 min-w-[120px]">
@@ -5202,7 +5290,6 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                   <div className="flex flex-col gap-1 items-end pr-2">
                     <button
                       onClick={async () => {
-                        if (shot.imageGenerating) return;
                         try {
                           await handleGenerateImage(shot, true);
                         } catch (error: any) {

@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "dev": "node --watch server.mjs"
+    "dev": "node --watch server.mjs",
+    "start:all": "bash start-servers.sh"
   },
   "engines": {
     "node": ">=20.0.0"
