@@ -3866,8 +3866,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         }
       );
       
-      // 并发执行，Yunwu API 支持高并发，最多 100 个并行任务
-      const concurrency = 100;
+      // 并发执行，使用用户设置的并发数
+      const concurrency = runningHubConcurrency;
       const results = await runConcurrentTasks(
         tasks,
         concurrency,
