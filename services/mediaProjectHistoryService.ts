@@ -38,6 +38,8 @@ export interface PersistedShot {
   voiceoverAudioUrl?: string;
   /** TTS 音频时长（秒），导出剪映时用于音频下载失败的兜底时长 */
   audioDurationSec?: number;
+  /** TTS 音频原始时长（秒，保留小数精度），优先用于剪映导出时长控制 */
+  audioDurationExact?: number;
   selected?: boolean;
   selectedImageIndex?: number;
   selectedVideoIndex?: number;
@@ -172,6 +174,7 @@ export function shotToPersisted(s: {
   videoUrls?: string[];
   voiceoverAudioUrl?: string;
   audioDurationSec?: number;
+  audioDurationExact?: number;
   selected?: boolean;
   selectedImageIndex?: number;
   selectedVideoIndex?: number;
@@ -193,6 +196,7 @@ export function shotToPersisted(s: {
     videoUrls: videoUrls?.length ? videoUrls : undefined,
     voiceoverAudioUrl: filterPersistableUrl(s.voiceoverAudioUrl),
     audioDurationSec: s.audioDurationSec,
+    audioDurationExact: s.audioDurationExact,
     selected: s.selected,
     selectedImageIndex: s.selectedImageIndex,
     selectedVideoIndex: s.selectedVideoIndex,

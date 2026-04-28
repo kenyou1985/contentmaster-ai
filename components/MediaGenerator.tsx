@@ -95,6 +95,8 @@ interface Shot {
   voiceSourceText?: string;
   /** TTS 音频时长（秒），导出剪映时用于音频下载失败的兜底时长 */
   audioDurationSec?: number;
+  /** TTS 音频原始时长（秒，保留小数精度），优先用于剪映导出 */
+  audioDurationExact?: number;
   voiceGenerating?: boolean;
   imageUrls?: string[]; // 支持多张图片
   videoUrl?: string; // 保留向后兼容（显示第一个视频）
@@ -259,6 +261,7 @@ function queueSnapshotRowsToShots(raw: unknown[] | undefined | null): Shot[] {
       soundEffect: String(p.soundEffect ?? ''),
       voiceAudioUrl: rawVoice,
       audioDurationSec: p.audioDurationSec,
+      audioDurationExact: p.audioDurationExact,
       voiceSourceText: (p as any).voiceSourceText,
       imageUrls: p.imageUrls,
       videoUrl: p.videoUrl,
@@ -291,6 +294,7 @@ function shotsToPersistPayloadFromShots(list: Shot[]) {
     videoUrls: s.videoUrls,
     voiceoverAudioUrl: s.voiceAudioUrl,
     audioDurationSec: s.audioDurationSec,
+    audioDurationExact: s.audioDurationExact,
     voiceSourceText: s.voiceSourceText,
     selected: s.selected,
     selectedImageIndex: s.selectedImageIndex,
@@ -400,6 +404,7 @@ function restoredShotsFromProject(shots: MediaProjectRecord['shots']): Shot[] {
       soundEffect: p.soundEffect,
       voiceAudioUrl: p.voiceoverAudioUrl,
       audioDurationSec: p.audioDurationSec,
+      audioDurationExact: p.audioDurationExact,
       voiceSourceText: (p as any).voiceSourceText,
       imageUrls: p.imageUrls,
       videoUrl: p.videoUrl,
@@ -857,6 +862,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         audioUrl,
         voiceoverAudioUrl: audioUrl,
         audioDurationSec: s.audioDurationSec,
+        audioDurationExact: s.audioDurationExact,
       };
     });
 
@@ -3384,12 +3390,15 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         3,
         Math.round(speakText.length / 5 + (speakText.split(/\s+/).length - 1) / 2.5)
       );
-      const audioDurationSec =
+      // audioDurationExact: 保留原始精度，用于剪映导出时精确控制时长
+      const audioDurationExact =
         probedSec != null && Number.isFinite(probedSec) && probedSec > 0
-          ? Math.max(1, Math.round(probedSec))
+          ? Math.max(0.1, probedSec)
           : estimatedSec;
+      const audioDurationSec = Math.max(1, Math.round(audioDurationExact));
       updateShot(shot.id, {
         voiceAudioUrl: playableUrl,
+        audioDurationExact,
         audioDurationSec,
         voiceSourceText: speakText,
         voiceGenerating: false,

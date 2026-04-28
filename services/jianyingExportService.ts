@@ -45,6 +45,8 @@ export interface JianyingShot {
   audioUrl?: string;
   voiceoverAudioUrl?: string;
   audioDurationSec?: number;
+  /** TTS 音频原始时长（秒，保留小数精度），优先用于剪映导出时长控制 */
+  audioDurationExact?: number;
 }
 
 export interface JianyingExportOptions {

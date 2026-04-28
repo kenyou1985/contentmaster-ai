@@ -37,6 +37,20 @@ def report_progress(progress: int, stage: str):
     # 输出到 stdout，用特殊标记让 Node 解析
     print(f"[PROGRESS] {progress}|{stage}", flush=True)
 
+
+def _is_local_path(url: str) -> bool:
+    """判断 URL 是否为本地文件路径（而非远程 URL）"""
+    if url.startswith('/tmp/jianying_data_'):
+        return True
+    if '/contentmaster-ai/image-cache/' in url or '/.contentmaster-ai/image-cache/' in url:
+        return True
+    if '/contentmaster-ai/audio-cache/' in url or '/.contentmaster-ai/audio-cache/' in url:
+        return True
+    if not url.startswith('http') and not url.startswith('data:') and not url.startswith('blob:'):
+        if os.path.isfile(url):
+            return True
+    return False
+
 # ---- 跨平台工具函数 ----
 # Railway 环境磁盘空间阈值（MB）
 RAILWAY_MIN_DISK_SPACE_MB = 100
@@ -1712,7 +1726,9 @@ def create_draft_on_mac(
             "audio_url": audio_url if (audio_url and str(audio_url).strip()) else None,
             "client_audio_us": None,
         }
-        for _k in ("audioDurationSec", "audio_duration_sec"):
+        # audioDurationExact 优先（TTS 原始精度，保留小数秒）
+        # audioDurationSec 次之（已 round 的整数秒）
+        for _k in ("audioDurationExact", "audio_duration_exact"):
             v = shot.get(_k)
             if v is not None:
                 try:
@@ -1722,6 +1738,17 @@ def create_draft_on_mac(
                 except (TypeError, ValueError):
                     pass
                 break
+        if entry["client_audio_us"] is None:
+            for _k in ("audioDurationSec", "audio_duration_sec"):
+                v = shot.get(_k)
+                if v is not None:
+                    try:
+                        sec = float(v)
+                        if sec > 0:
+                            entry["client_audio_us"] = max(1, int(sec * 1_000_000))
+                    except (TypeError, ValueError):
+                        pass
+                    break
         media_urls.append(entry)
 
     # ---- 第二阶段：分离 data:URL 和远程 URL，并行下载远程文件 ----
@@ -1744,6 +1771,13 @@ def create_draft_on_mac(
                 _download_file(img_url, img_dest)  # 内部已处理 data:URL
                 data_url_map.setdefault(i, {})["image"] = img_dest
                 print(f"[jianying_export] 镜头{i} 图片: data:URL → {img_filename}", file=sys.stderr, flush=True)
+            elif _is_local_path(img_url):
+                # 本地文件路径（来自 image cache）：直接复制到草稿目录，无需下载
+                img_filename = _safe_filename(img_url)
+                img_dest = os.path.join(draft_folder, "Resources", "image", img_filename)
+                _shutil.copy2(img_url, img_dest)
+                data_url_map.setdefault(i, {})["image"] = img_dest
+                print(f"[jianying_export] 镜头{i} 图片: 本地缓存 → {img_filename}", file=sys.stderr, flush=True)
             else:
                 img_filename = _safe_filename(img_url)
                 img_dest = os.path.join(draft_folder, "Resources", "image", img_filename)
@@ -1758,6 +1792,13 @@ def create_draft_on_mac(
                 _download_file(aud_url, aud_dest)
                 data_url_map.setdefault(i, {})["audio"] = aud_dest
                 print(f"[jianying_export] 镜头{i} 音频: data:URL → {aud_filename}", file=sys.stderr, flush=True)
+            elif _is_local_path(aud_url):
+                # 本地文件路径（来自 audio cache）：直接复制到草稿目录
+                aud_filename = _safe_filename(aud_url)
+                aud_dest = os.path.join(draft_folder, "Resources", "audio", aud_filename)
+                _shutil.copy2(aud_url, aud_dest)
+                data_url_map.setdefault(i, {})["audio"] = aud_dest
+                print(f"[jianying_export] 镜头{i} 音频: 本地缓存 → {aud_filename}", file=sys.stderr, flush=True)
             else:
                 aud_filename = _safe_filename(aud_url)
                 aud_dest = os.path.join(draft_folder, "Resources", "audio", aud_filename)
@@ -1898,10 +1939,16 @@ def create_draft_on_mac(
                 row["audio_abs"] = _safe_abs_for_jianying(lap)
                 row["audio_client_path"] = _material_path_for_client(row["audio_abs"])
                 probe_us = _ffprobe_duration_us(row["audio_abs"])
-                if probe_us:
-                    row["audio_duration_us"] = int(probe_us)
+                client_us = entry["client_audio_us"]
+                # 优先使用 ffprobe 测量的实际时长
+                # 但如果 ffprobe 结果明显短于前端传入的时长（可能是截断误差），
+                # 取两者最大值确保音频不被截断
+                if probe_us and client_us:
+                    row["audio_duration_us"] = max(probe_us, client_us)
+                elif probe_us:
+                    row["audio_duration_us"] = probe_us
                 else:
-                    row["audio_duration_us"] = entry["client_audio_us"]
+                    row["audio_duration_us"] = client_us
                 ad = row.get("audio_duration_us")
                 if ad and int(ad) > 0:
                     row["duration_us"] = int(ad)
