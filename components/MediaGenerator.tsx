@@ -3969,12 +3969,10 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         }
       );
       
-      // 并发执行：即梦视频并发更保守，降低被限流概率
-      const selectedVideoModelCfg = VIDEO_MODELS.find(m => m.id === selectedVideoModel);
-      const concurrency = selectedVideoModelCfg?.isJimengVideo ? 2 : runningHubConcurrency;
+      // 并发执行：使用用户设置的并发数
       const results = await runConcurrentTasks(
         tasks,
-        concurrency,
+        runningHubConcurrency,
         (completed, total) => {
           setBatchProgress(prev => prev ? { ...prev, current: completed } : null);
         }
