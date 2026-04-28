@@ -1196,6 +1196,11 @@ def _build_lv59_main_script(
             else:
                 adur = int(dur_us)
             adur = max(adur, int(dur_us))
+            # 音频末尾可能包含 TTS 模型生成的噪声/尾音，
+            # 缩短 50ms 以避免破音，同时让片段之间有自然的静音间隙
+            audio_end_trim = 50_000  # 50ms
+            adur_trimmed = max(1_000_000, adur - audio_end_trim)  # 至少保留 1s
+            adur = adur_trimmed
             aud_mat_id = _make_id()
             lm = uuid.uuid4().hex
             music_id = str(uuid.uuid4())
@@ -1278,41 +1283,45 @@ def _build_lv59_main_script(
             audio_target_dur = use_src
 
             # ── 音频淡入淡出（交叉淡入淡出）────────────────────────────────────
-            # crossfade_dur: 淡入淡出持续时间（约 0.5s），最多占总时长的 25%
-            xfade_dur = min(500_000, max(100_000, int(audio_target_dur * 0.25)))
+            # crossfade_dur: 交叉淡入淡出持续时间（固定 200ms，确保平滑过渡且不会太明显）
+            xfade_dur = 200_000  # 200ms 固定值
             seg_end_us = start_us + audio_target_dur  # 片段在时间线上的绝对结束时间
 
             # 当前片段淡入关键帧（如果有前一个音频，添加淡入；第一个音频不加淡入）
             has_prev_audio = len(audio_segments) > 0
             audio_common_kfs: list = []
             if has_prev_audio:
-                # 淡入：音量从 0 渐变到 1
+                # 淡入：音量从 0 渐变到 1，使用平滑曲线
                 audio_common_kfs = [
                     _build_keyframe_list("KFTypeVolume", [
                         (0, 0.0),
-                        (int(xfade_dur * 0.5), 0.6),
+                        (int(xfade_dur * 0.4), 0.3),
+                        (int(xfade_dur * 0.7), 0.8),
                         (xfade_dur, 1.0),
                     ])
                 ]
                 # 为前一个音频片段添加淡出（在片段末尾渐变到 0）
                 prev_seg = audio_segments[-1]
                 prev_end_us = prev_seg["target_timerange"]["start"] + prev_seg["target_timerange"]["duration"]
-                prev_xfade_start = max(prev_end_us - xfade_dur, prev_end_us - int(prev_seg["target_timerange"]["duration"] * 0.25))
-                # 追加淡出关键帧
+                # 淡出起点：片段结束前 xfade_dur 时间
+                prev_xfade_start = prev_end_us - xfade_dur
+                # 追加淡出关键帧（平滑曲线）
                 fade_out_kl = _build_keyframe_list("KFTypeVolume", [
                     (prev_xfade_start, 1.0),
-                    (prev_end_us - int(xfade_dur * 0.3), 0.6),
+                    (prev_end_us - int(xfade_dur * 0.6), 0.7),
+                    (prev_end_us - int(xfade_dur * 0.3), 0.2),
                     (prev_end_us, 0.0),
                 ])
                 prev_seg["common_keyframes"] = prev_seg.get("common_keyframes", []) + [fade_out_kl]
 
-            # 最后一个音频片段添加淡出
+            # 最后一个音频片段添加淡出（避免音频突然结束）
             is_last_shot = (i == total_shots - 1)
             if is_last_shot:
                 last_xfade_start = max(0, seg_end_us - xfade_dur)
                 fade_out_last = _build_keyframe_list("KFTypeVolume", [
                     (last_xfade_start, 1.0),
-                    (seg_end_us - int(xfade_dur * 0.3), 0.6),
+                    (seg_end_us - int(xfade_dur * 0.6), 0.7),
+                    (seg_end_us - int(xfade_dur * 0.3), 0.2),
                     (seg_end_us, 0.0),
                 ])
                 audio_common_kfs = audio_common_kfs + [fade_out_last]
