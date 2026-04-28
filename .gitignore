@@ -28,3 +28,4 @@ vendor/
 
 # Environment variables
 .env
+jianying-server/image_cache/

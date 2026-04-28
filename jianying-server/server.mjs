@@ -20,7 +20,9 @@ import { promises as fs } from 'fs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const PYTHON_SCRIPT = join(__dirname, 'jianying_export_service.py');
-const PORT = process.env.PORT || 10000; // Render.com 免费版分配随机端口
+// 本地开发用 18091，Railway 用环境变量分配端口
+const IS_RAILWAY = !!process.env.RAILWAY_ENVIRONMENT || !!process.env.RAILWAY_PROJECT_ID;
+const PORT = process.env.PORT || (IS_RAILWAY ? 10000 : 18091);
 
 const app = express();
 
@@ -87,6 +89,84 @@ function normalizeExportResult(result, returnZip) {
   return result;
 }
 
+// ── Data URL → Temp File 转换（避免超长 stdin JSON）──────────────────────
+function extractDataUrlsToTempFiles(shots) {
+  const tempDir = join('/tmp', `jianying_data_${Date.now()}`);
+  const { mkdirSync, writeFileSync } = require('fs');
+  mkdirSync(tempDir, { recursive: true });
+  const replacements = {};
+
+  const MIME_EXT = {
+    'image/png': '.png', 'image/jpeg': '.jpg', 'image/jpg': '.jpg',
+    'image/gif': '.gif', 'image/webp': '.webp',
+    'audio/mpeg': '.mp3', 'audio/mp3': '.mp3', 'audio/wav': '.wav',
+    'audio/ogg': '.ogg', 'audio/m4a': '.m4a', 'audio/aac': '.aac',
+    'video/mp4': '.mp4', 'video/quicktime': '.mov',
+    'video/webm': '.webm', 'video/x-m4v': '.m4v',
+  };
+
+  for (let i = 0; i < shots.length; i++) {
+    const shot = shots[i];
+    for (const key of ['imageUrl', 'audioUrl', 'voiceoverAudioUrl', 'videoUrl']) {
+      let val = shot[key];
+      if (!val || typeof val !== 'string' || !val.startsWith('data:')) continue;
+      if (replacements[val]) continue;
+      const headerMatch = val.match(/^data:([^;]+)/);
+      const mime = headerMatch ? headerMatch[1] : 'application/octet-stream';
+      const ext = MIME_EXT[mime] || '.bin';
+      const idx = Object.keys(replacements).length;
+      const filePath = join(tempDir, `media_${String(idx).padStart(4, '0')}${ext}`);
+      const commaIdx = val.indexOf(',');
+      const b64data = commaIdx >= 0 ? val.slice(commaIdx + 1) : val;
+      writeFileSync(filePath, Buffer.from(b64data, 'base64'));
+      replacements[val] = filePath;
+    }
+    if (Array.isArray(shot.imageUrls)) {
+      for (let j = 0; j < shot.imageUrls.length; j++) {
+        const url = shot.imageUrls[j];
+        if (url && typeof url === 'string' && url.startsWith('data:') && !replacements[url]) {
+          const headerMatch = url.match(/^data:([^;]+)/);
+          const mime = headerMatch ? headerMatch[1] : 'application/octet-stream';
+          const ext = MIME_EXT[mime] || '.bin';
+          const idx = Object.keys(replacements).length;
+          const filePath = join(tempDir, `media_${String(idx).padStart(4, '0')}${ext}`);
+          const commaIdx = url.indexOf(',');
+          const b64data = commaIdx >= 0 ? url.slice(commaIdx + 1) : url;
+          writeFileSync(filePath, Buffer.from(b64data, 'base64'));
+          replacements[url] = filePath;
+        }
+      }
+    }
+  }
+
+  // Deep clone shots and replace data URLs with file paths
+  const cleanedShots = JSON.parse(JSON.stringify(shots));
+  for (let i = 0; i < cleanedShots.length; i++) {
+    const shot = cleanedShots[i];
+    for (const key of ['imageUrl', 'audioUrl', 'voiceoverAudioUrl', 'videoUrl']) {
+      if (shot[key] && typeof shot[key] === 'string' && shot[key].startsWith('data:')) {
+        shot[key] = replacements[shot[key]] || shot[key];
+      }
+    }
+    if (Array.isArray(shot.imageUrls)) {
+      shot.imageUrls = shot.imageUrls.map(u =>
+        (u && typeof u === 'string' && u.startsWith('data:')) ? (replacements[u] || u) : u
+      );
+    }
+  }
+
+  return { cleanedShots, tempDir };
+}
+
+function cleanupTempDir(tempDir) {
+  try {
+    const { rmSync } = require('fs');
+    if (tempDir && tempDir.includes('/tmp/jianying_data_')) {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  } catch { /* ignore */ }
+}
+
 async function runExportJob(payload, taskId, onProgress, fromRailway = false) {
   const {
     draftName = 'ContentMaster_Export',
@@ -126,30 +206,53 @@ async function runExportJob(payload, taskId, onProgress, fromRailway = false) {
 
   notify(5, '开始处理...');
 
-  const { code, stdout, stderr } = await runPythonStdin(
-    [
-      '--name', draftName,
-      '--shots-json-stdin',
-      '--resolution', resolution,
-      '--fps', String(fps),
-      '--progress-callback',
-    ],
-    {
-      shots,
-      outputPath,
-      pathMapRoot,
-      forceDraftFolderName,
-      randomTransitions,
-      randomVideoEffects,
-    },
-    (progress, stage) => {
-      // Python 进度回调：0-95% 之间
-      const scaledProgress = Math.round(5 + progress * 0.9);
-      notify(scaledProgress, stage || '处理中...');
+  // ── Data URL → Temp File（本地/Railway 均需要，避免超长 stdin JSON）────────
+  let processedShots = shots;
+  let tempDir = null;
+  const hasDataUrls = shots.some(s => {
+    const vals = [s.imageUrl, s.audioUrl, s.voiceoverAudioUrl, s.videoUrl, ...(s.imageUrls || [])];
+    return vals.some(v => v && typeof v === 'string' && v.startsWith('data:'));
+  });
+  if (hasDataUrls) {
+    try {
+      const result = extractDataUrlsToTempFiles(shots);
+      processedShots = result.cleanedShots;
+      tempDir = result.tempDir;
+    } catch (e) {
+      console.warn('[jianying-server] data URL 提取失败，使用原始数据:', e.message);
     }
-  );
+  }
+
+  let pyResult;
+  try {
+    pyResult = await runPythonStdin(
+      [
+        '--name', draftName,
+        '--shots-json-stdin',
+        '--resolution', resolution,
+        '--fps', String(fps),
+        '--progress-callback',
+      ],
+      {
+        shots: processedShots,
+        outputPath,
+        pathMapRoot,
+        forceDraftFolderName,
+        randomTransitions,
+        randomVideoEffects,
+      },
+      (progress, stage) => {
+        const scaledProgress = Math.round(5 + progress * 0.9);
+        notify(scaledProgress, stage || '处理中...');
+      }
+    );
+  } finally {
+    if (tempDir) cleanupTempDir(tempDir);
+  }
 
   notify(95, '解析结果...');
+
+  const { code, stdout, stderr } = pyResult;
 
   // 调试日志过滤：记录到任务日志 + 控制台
   if (stderr.trim()) {

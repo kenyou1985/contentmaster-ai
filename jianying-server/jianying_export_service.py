@@ -193,6 +193,156 @@ def _safe_filename(url: str) -> str:
 
 
 def _download_file(url: str, dest_path: str, timeout: int = 120, max_retries: int = 3) -> bool:
+    """下载文件到本地，支持 http/https/data:/tmp/本地文件路径，默认 120s 超时+3次重试"""
+    import time as _time
+
+    for attempt in range(max_retries):
+        try:
+            # Node.js 层已把 data:URL 提取为临时文件（/tmp/jianying_data_xxx/...）
+            # 或本地图片缓存（~/Library/Application Support/contentmaster-ai/image-cache/...）
+            # 直接复制到目标路径，避免重复解码
+            _is_local_path = (
+                url.startswith('/tmp/jianying_data_') or
+                '/contentmaster-ai/image-cache/' in url or
+                '/.contentmaster-ai/image-cache/' in url or
+                (os.path.isfile(url) and not url.startswith('http'))
+            )
+            if _is_local_path:
+                import shutil as _shutil
+                if os.path.isfile(url):
+                    _shutil.copy2(url, dest_path)
+                    return True
+                # 重试一次（文件可能被移动）
+                _time.sleep(0.5)
+                if os.path.isfile(url):
+                    _shutil.copy2(url, dest_path)
+                    return True
+                return False
+
+            if url.startswith('data:'):
+                # data:image/png;base64,iVBORw0KG...
+                header, data = url.split(',', 1)
+                import base64
+                # 提取 mime type
+                mime_match = re.search(r'data:([^;]+)', header)
+                ext = '.png'
+                if mime_match:
+                    mime = mime_match.group(1)
+                    ext_map = {
+                        'image/png': '.png',
+                        'image/jpeg': '.jpg',
+                        'image/jpg': '.jpg',
+                        'image/gif': '.gif',
+                        'image/webp': '.webp',
+                        'audio/wav': '.wav',
+                        'audio/mpeg': '.mp3',
+                        'audio/mp3': '.mp3',
+                        'audio/mp4': '.m4a',
+                        'audio/x-m4a': '.m4a',
+                        'audio/flac': '.flac',
+                        'audio/ogg': '.ogg',
+                        'video/mp4': '.mp4',
+                        'video/quicktime': '.mov',
+                        'video/webm': '.webm',
+                    }
+                    ext = ext_map.get(mime, ext)
+                # 如果文件没有扩展名，加上推断的扩展名
+                if '.' not in os.path.basename(dest_path):
+                    dest_path += ext
+                binary_data = base64.b64decode(data)
+                with open(dest_path, 'wb') as f:
+                    f.write(binary_data)
+                return True
+
+            # HTTP/HTTPS 下载
+            import urllib.request
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            }
+            # 常见站点的特殊 headers
+            if 'runninghub.cn' in url.lower():
+                headers['Referer'] = 'https://www.runninghub.cn/'
+                timeout = max(timeout, 180)
+            elif 'yunwu.ai' in url.lower():
+                headers['Referer'] = 'https://yunwu.ai/'
+            elif 'jianying' in url.lower():
+                headers['Referer'] = 'https://lv.ulikecom.com/'
+
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                content_type = response.headers.get('Content-Type', '')
+                # 根据 Content-Type 自动推断扩展名
+                if '.' not in os.path.basename(dest_path):
+                    ct_map = {
+                        'image/png': '.png',
+                        'image/jpeg': '.jpg',
+                        'image/jpg': '.jpg',
+                        'image/gif': '.gif',
+                        'image/webp': '.webp',
+                        'video/mp4': '.mp4',
+                        'video/quicktime': '.mov',
+                        'audio/wav': '.wav',
+                        'audio/wave': '.wav',
+                        'audio/x-wav': '.wav',
+                        'audio/mpeg': '.mp3',
+                        'audio/mp3': '.mp3',
+                        'audio/mp4': '.m4a',
+                        'audio/x-m4a': '.m4a',
+                        'audio/flac': '.flac',
+                        'audio/ogg': '.ogg',
+                    }
+                    ext = ct_map.get(content_type.split(';')[0].strip(), '')
+                    if ext:
+                        dest_path += ext
+                with open(dest_path, 'wb') as f:
+                    shutil.copyfileobj(response, f)
+            return True
+        except Exception as e:
+            last_err = e
+            if attempt < max_retries - 1:
+                wait = (attempt + 1) * 2  # 2s, 4s, 6s
+                print(f"[WARN] 下载失败 {url} (尝试 {attempt+1}/{max_retries}): {e}，{wait}s 后重试...", file=sys.stderr)
+                _time.sleep(wait)
+    print(f"[WARN] 下载最终失败 {url}: {last_err}", file=sys.stderr)
+    return False
+
+
+def _download_batch_parallel(
+    url_list: list[tuple[str, str]],
+    max_workers: int = 8,
+    timeout: int = 120,
+    max_retries: int = 2,
+) -> dict[str, tuple[bool, str]]:
+    """
+    并行下载多个文件。
+    url_list: [(url, dest_path), ...]
+    max_workers: 并发下载线程数
+    返回: {url: (success, local_path_or_error)}
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    results: dict[str, tuple[bool, str]] = {}
+    total = len(url_list)
+    completed = 0
+
+    def _download_one(url: str, dest: str) -> tuple[str, bool, str]:
+        success = _download_file(url, dest, timeout=timeout, max_retries=max_retries)
+        return url, success, dest if success else ""
+
+    with ThreadPoolExecutor(max_workers=min(max_workers, total)) as executor:
+        futures = {executor.submit(_download_one, url, dest): url for url, dest in url_list}
+        for future in as_completed(futures):
+            try:
+                url, success, dest = future.result()
+                results[url] = (success, dest if success else "下载失败")
+            except Exception as e:
+                url = futures[future]
+                results[url] = (False, str(e))
+            completed += 1
+            if completed % 10 == 0 or completed == total:
+                print(f"[jianying_export] 并行下载进度: {completed}/{total}", file=sys.stderr, flush=True)
+
+    return results
     """下载文件到本地，支持 http/https/data:，Railway 环境默认 120s 超时+3次重试"""
     import time as _time
 
@@ -1538,46 +1688,150 @@ def create_draft_on_mac(
         except Exception:
             return _safe_abs_for_jianying(local_abs_path)
 
-    # ---- 下载资源，组装剪映 5.9 主脚本所需镜头行（绝对路径）----
-    prepared_shots: list[dict] = []
-    timeline_cursor = 0
+    # ---- 第一阶段：收集所有媒体 URL（支持 data:URL 和远程 URL）----
+    # data:URL 在前端已转为 base64，可直接写入本地文件，无需网络下载
     total_shots = len(shots)
     report_progress(5, f"开始处理 {total_shots} 个镜头...")
     print(f"[jianying_export] 开始处理 {total_shots} 个镜头...", file=sys.stderr, flush=True)
-
+    media_urls: list[dict] = []
     for i, shot in enumerate(shots):
-        # 报告每个镜头的进度（5% - 70%）
-        shot_progress = 5 + int((i / max(total_shots, 1)) * 65)
-        report_progress(shot_progress, f"处理镜头 {i+1}/{total_shots}...")
-
         base_dur = int(float(shot.get("duration", 5)) * 1_000_000)
-        start_us = timeline_cursor
-
         vu = shot.get("videoUrls")
         video_url = shot.get("videoUrl") or shot.get("video_url")
         if vu and isinstance(vu, list) and len(vu) > 0:
             video_url = vu[-1]
+        image_url = shot.get("imageUrl") or (shot.get("imageUrls", [None])[0] if shot.get("imageUrls") else None)
+        audio_url = shot.get("audioUrl") or shot.get("voiceoverAudioUrl")
 
-        use_video = False
-        local_video_path = None
-        if video_url and str(video_url).strip():
-            vname = _safe_filename(str(video_url))
+        entry = {
+            "index": i,
+            "base_dur": base_dur,
+            "caption": (shot.get("caption") or "").strip(),
+            "video_url": video_url if (video_url and str(video_url).strip()) else None,
+            "image_url": image_url if (image_url and str(image_url).strip()) else None,
+            "audio_url": audio_url if (audio_url and str(audio_url).strip()) else None,
+            "client_audio_us": None,
+        }
+        for _k in ("audioDurationSec", "audio_duration_sec"):
+            v = shot.get(_k)
+            if v is not None:
+                try:
+                    sec = float(v)
+                    if sec > 0:
+                        entry["client_audio_us"] = max(1, int(sec * 1_000_000))
+                except (TypeError, ValueError):
+                    pass
+                break
+        media_urls.append(entry)
+
+    # ---- 第二阶段：分离 data:URL 和远程 URL，并行下载远程文件 ----
+    remote_downloads: list[tuple[str, str]] = []  # [(url, dest_path), ...]
+    data_url_map: dict[int, dict[str, str]] = {}  # {shot_index: {"image": dest, "audio": dest}}
+
+    report_progress(5, f"收集媒体文件 URL...")
+    print(f"[jianying_export] 第一阶段：收集 {total_shots} 个镜头的媒体 URL...", file=sys.stderr, flush=True)
+
+    for entry in media_urls:
+        i = entry["index"]
+
+        # 图片
+        img_url = entry["image_url"]
+        if img_url:
+            if img_url.startswith("data:"):
+                # data:URL 直接写入本地文件
+                img_filename = _safe_filename(img_url)
+                img_dest = os.path.join(draft_folder, "Resources", "image", img_filename)
+                _download_file(img_url, img_dest)  # 内部已处理 data:URL
+                data_url_map.setdefault(i, {})["image"] = img_dest
+                print(f"[jianying_export] 镜头{i} 图片: data:URL → {img_filename}", file=sys.stderr, flush=True)
+            else:
+                img_filename = _safe_filename(img_url)
+                img_dest = os.path.join(draft_folder, "Resources", "image", img_filename)
+                remote_downloads.append((str(img_url), img_dest))
+
+        # 音频
+        aud_url = entry["audio_url"]
+        if aud_url:
+            if aud_url.startswith("data:"):
+                aud_filename = _safe_filename(aud_url)
+                aud_dest = os.path.join(draft_folder, "Resources", "audio", aud_filename)
+                _download_file(aud_url, aud_dest)
+                data_url_map.setdefault(i, {})["audio"] = aud_dest
+                print(f"[jianying_export] 镜头{i} 音频: data:URL → {aud_filename}", file=sys.stderr, flush=True)
+            else:
+                aud_filename = _safe_filename(aud_url)
+                aud_dest = os.path.join(draft_folder, "Resources", "audio", aud_filename)
+                remote_downloads.append((str(aud_url), aud_dest))
+
+        # 视频
+        vid_url = entry["video_url"]
+        if vid_url:
+            vname = _safe_filename(str(vid_url))
             if not re.search(r"\.(mp4|mov|webm|m4v)$", vname, re.I):
                 vname = f"{vname}.mp4" if "." not in vname else re.sub(r"[^.]+$", "mp4", vname)
-            local_video_path = os.path.join(draft_folder, "Resources", "video", vname)
-            if _download_file(str(video_url), local_video_path):
-                use_video = True
-            else:
-                local_video_path = None
+            vid_dest = os.path.join(draft_folder, "Resources", "video", vname)
+            remote_downloads.append((str(vid_url), vid_dest))
 
-        duration_us = base_dur
+    # ---- 并行下载所有远程文件 ----
+    report_progress(10, f"开始并行下载 {len(remote_downloads)} 个媒体文件...")
+    print(f"[jianying_export] 待下载远程文件: {len(remote_downloads)} 个（并行）", file=sys.stderr, flush=True)
+
+    if remote_downloads:
+        # 进度回调包装器
+        total_remote = len(remote_downloads)
+        done_count = [0]  # 用列表包装以便在闭包中修改
+
+        def _progress_wrapper(progress: int, stage: str):
+            # 只在关键节点报告进度，避免日志刷屏
+            done_count[0] += 1
+            if done_count[0] % 10 == 0 or done_count[0] == total_remote:
+                pct = 10 + int((done_count[0] / total_remote) * 50)
+                report_progress(pct, f"下载媒体 {done_count[0]}/{total_remote}...")
+
+        # 分批下载，每批 8 个并发
+        batch_size = 8
+        download_results: dict[str, tuple[bool, str]] = {}
+        for batch_start in range(0, len(remote_downloads), batch_size):
+            batch = remote_downloads[batch_start:batch_start + batch_size]
+            print(f"[jianying_export] 下载批次 {batch_start // batch_size + 1}/{(len(remote_downloads) + batch_size - 1) // batch_size}: {len(batch)} 个文件", file=sys.stderr, flush=True)
+            batch_results = _download_batch_parallel(batch, max_workers=8, timeout=120, max_retries=2)
+            download_results.update(batch_results)
+            done = min(batch_start + batch_size, len(remote_downloads))
+            pct = 10 + int((done / len(remote_downloads)) * 50)
+            report_progress(pct, f"下载媒体 {done}/{len(remote_downloads)}...")
+    else:
+        download_results = {}
+
+    # ---- 第三阶段：组装 prepared_shots ----
+    report_progress(62, "组装镜头数据...")
+    prepared_shots: list[dict] = []
+    timeline_cursor = 0
+
+    for entry in media_urls:
+        i = entry["index"]
+        start_us = timeline_cursor
+        duration_us = entry["base_dur"]
         row: dict = {
             "start_us": start_us,
             "duration_us": duration_us,
-            "caption": (shot.get("caption") or "").strip(),
+            "caption": entry["caption"],
             "audio_abs": None,
             "audio_duration_us": None,
         }
+
+        # 视频处理
+        vid_url = entry["video_url"]
+        use_video = False
+        local_video_path = None
+        if vid_url and not vid_url.startswith("data:"):
+            vname = _safe_filename(str(vid_url))
+            if not re.search(r"\.(mp4|mov|webm|m4v)$", vname, re.I):
+                vname = f"{vname}.mp4" if "." not in vname else re.sub(r"[^.]+$", "mp4", vname)
+            vid_dest = os.path.join(draft_folder, "Resources", "video", vname)
+            success, _ = download_results.get(str(vid_url), (False, ""))
+            if success and os.path.exists(vid_dest):
+                local_video_path = vid_dest
+                use_video = True
 
         if use_video and local_video_path:
             vabs = _safe_abs_for_jianying(local_video_path)
@@ -1592,15 +1846,25 @@ def create_draft_on_mac(
             row["video_material_duration_us"] = vd or duration_us
             row["duration_us"] = duration_us
         else:
-            image_url = shot.get("imageUrl") or (shot.get("imageUrls", [None])[0] if shot.get("imageUrls") else None)
+            # 图片处理（data:URL 或已下载的远程文件）
+            img_url = entry["image_url"]
             local_image_path = None
-            if image_url and str(image_url).strip():
-                img_filename = _safe_filename(str(image_url))
-                local_image_path = os.path.join(draft_folder, "Resources", "image", img_filename)
-                img_ok = _download_file(str(image_url), local_image_path)
-                print(f"[jianying_export] 镜头{i} 图片: url={'有' if image_url else '无'} → 文件={img_filename} → 下载={'成功' if img_ok else '失败'} {'(' + str(image_url)[:80] + ')' if image_url else ''}", file=sys.stderr, flush=True)
-                if not img_ok:
-                    local_image_path = None
+            if img_url:
+                if img_url.startswith("data:"):
+                    # data:URL 已在第二阶段写入
+                    saved = data_url_map.get(i, {}).get("image")
+                    if saved and os.path.exists(saved):
+                        local_image_path = saved
+                else:
+                    img_filename = _safe_filename(str(img_url))
+                    img_dest = os.path.join(draft_folder, "Resources", "image", img_filename)
+                    success, _ = download_results.get(str(img_url), (False, ""))
+                    if success and os.path.exists(img_dest):
+                        local_image_path = img_dest
+                        print(f"[jianying_export] 镜头{i} 图片: 下载成功 → {img_filename}", file=sys.stderr, flush=True)
+                    else:
+                        print(f"[jianying_export] 镜头{i} 图片: 下载失败（URL 已过期或网络错误）", file=sys.stderr, flush=True)
+
             if not local_image_path:
                 local_image_path = _placeholder_shot_image_path(draft_folder, i, width, height)
             img_abs = _safe_abs_for_jianying(local_image_path)
@@ -1611,66 +1875,50 @@ def create_draft_on_mac(
             row["image_w"] = iw
             row["image_h"] = ih
 
-        audio_url = shot.get("audioUrl") or shot.get("voiceoverAudioUrl")
-        client_audio_us = None
-        for _k in ("audioDurationSec", "audio_duration_sec"):
-            v = shot.get(_k)
-            if v is not None:
-                try:
-                    sec = float(v)
-                    if sec > 0:
-                        client_audio_us = max(1, int(sec * 1_000_000))
-                except (TypeError, ValueError):
-                    pass
-                break
-
-        if audio_url and str(audio_url).strip():
-            audio_filename = _safe_filename(str(audio_url))
+        # 音频处理（data:URL 或已下载的远程文件）
+        aud_url = entry["audio_url"]
+        if aud_url:
+            audio_filename = _safe_filename(str(aud_url))
             lap = os.path.join(draft_folder, "Resources", "audio", audio_filename)
-            ok = _download_file(str(audio_url), lap)
-            # 报告音频下载进度（每个音频 5%）
-            audio_progress = 10 + int((i / max(total_shots, 1)) * 60)
-            report_progress(audio_progress, f"下载音频 {i+1}/{total_shots}...")
-            print(f"[jianying_export] 镜头{i} 音频: url={'有' if audio_url else '无'} → 文件={audio_filename} → 下载={'成功' if ok else '失败'} {'(' + str(audio_url)[:80] + ')' if audio_url else ''}", file=sys.stderr, flush=True)
+            ok = False
+            if aud_url.startswith("data:"):
+                saved = data_url_map.get(i, {}).get("audio")
+                ok = bool(saved and os.path.exists(saved))
+                if ok:
+                    lap = saved
+            else:
+                success, _ = download_results.get(str(aud_url), (False, ""))
+                ok = success and os.path.exists(lap)
+                if ok:
+                    print(f"[jianying_export] 镜头{i} 音频: 下载成功 → {audio_filename}", file=sys.stderr, flush=True)
+                else:
+                    print(f"[jianying_export] 镜头{i} 音频: 下载失败", file=sys.stderr, flush=True)
+
             if ok:
                 row["audio_abs"] = _safe_abs_for_jianying(lap)
                 row["audio_client_path"] = _material_path_for_client(row["audio_abs"])
                 probe_us = _ffprobe_duration_us(row["audio_abs"])
-                # 以文件实测为准；客户端 audioDurationSec 多为文案估算，取 max 会把时间线拉长得远超真实波形（见 pyJianYingDraft：片段时长应对齐素材）。
                 if probe_us:
                     row["audio_duration_us"] = int(probe_us)
                 else:
-                    row["audio_duration_us"] = client_audio_us
-                # 有配音时：时间线镜头时长以音频为准（静态图 / 视频片段不再固定 5s）
+                    row["audio_duration_us"] = entry["client_audio_us"]
                 ad = row.get("audio_duration_us")
                 if ad and int(ad) > 0:
                     row["duration_us"] = int(ad)
             else:
-                # 下载失败但客户端提供了时长估算（如前端 TTS），以此作时长兜底
-                if client_audio_us and int(client_audio_us) > 0:
-                    row["audio_duration_us"] = int(client_audio_us)
-                    row["duration_us"] = int(client_audio_us)
+                if entry["client_audio_us"] and int(entry["client_audio_us"]) > 0:
+                    row["audio_duration_us"] = int(entry["client_audio_us"])
+                    row["duration_us"] = int(entry["client_audio_us"])
 
         prepared_shots.append(row)
         timeline_cursor += row["duration_us"]
-
-        # 及时清理 shot 对象中的大数据字段，释放内存
-        if image_url and str(image_url).startswith('data:'):
-            shot["imageUrl"] = ""  # 清理 base64 数据
-        if audio_url and str(audio_url).startswith('data:'):
-            shot["audioUrl"] = ""  # 清理 base64 数据
-            shot["voiceoverAudioUrl"] = ""
 
         # 每处理 10 个镜头强制垃圾回收
         if (i + 1) % 10 == 0:
             import gc
             gc.collect()
 
-    # 调试：汇总每个镜头的音频信息
-    for i, r in enumerate(prepared_shots):
-        print(f"[jianying_export] 镜头{i} 汇总: audio_abs={r.get('audio_abs','无')} audio_dur_us={r.get('audio_duration_us','无')} timeline_dur_us={r.get('duration_us','无')}", file=sys.stderr, flush=True)
-
-    report_progress(72, "所有镜头处理完成，开始生成剪映 JSON...")
+    report_progress(70, "所有镜头处理完成，开始生成剪映 JSON...")
     report_progress(78, "写入草稿 JSON 文件...")
     print(f"[jianying_export] 所有镜头处理完成，共 {len(prepared_shots)} 个镜头，开始生成剪映 JSON...", file=sys.stderr, flush=True)
 
@@ -2223,6 +2471,7 @@ if __name__ == "__main__":
     parser.add_argument("--name", type=str, default="测试草稿", help="草稿名称")
     parser.add_argument("--shots", type=str, default="[]", help="镜头 JSON（命令行参数方式）")
     parser.add_argument("--shots-json-stdin", action="store_true", help="镜头 JSON 从 stdin 读取（避免 E2BIG）")
+    parser.add_argument("--shots-json-file", type=str, default=None, help="镜头 JSON 从文件读取（超大 payload 避免 V8 字符串限制）")
     parser.add_argument("--progress-callback", action="store_true", help="通过 stdout 报告进度")
     parser.add_argument("--resolution", type=str, default="1920x1080")
     parser.add_argument("--fps", type=int, default=30)
@@ -2234,10 +2483,16 @@ if __name__ == "__main__":
     elif args.list:
         print("list_drafts 需要完全磁盘访问权限")
     else:
-        # stdin 方式优先（大数据时避免 E2BIG）
-        if args.shots_json_stdin:
+        # stdin 方式或文件方式读取 JSON payload
+        stdin_data = None
+        if args.shots_json_file:
+            with open(args.shots_json_file, "r", encoding="utf-8") as f:
+                stdin_data = json.load(f)
+        elif args.shots_json_stdin:
             stdin_raw = _sys.stdin.read()
             stdin_data = json.loads(stdin_raw)
+        
+        if stdin_data is not None:
             shots = stdin_data.get("shots", [])
             output_path = stdin_data.get("outputPath") or args.output
             path_map_root = stdin_data.get("pathMapRoot")
