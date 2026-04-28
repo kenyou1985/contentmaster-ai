@@ -1052,6 +1052,12 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     setJianyingExportProgress(0);
     setJianyingExportMessage('准备导出...');
     try {
+      // 修复：如果用户填写了 jianyingOutputDir，将其作为 outputPath 和 pathMapRoot
+      // outputPath 用于 Railway ZIP 打包时的目标目录
+      // pathMapRoot 用于解压后路径映射
+      const exportOutputPath = jianyingOutputDir || undefined;
+      const exportPathMapRoot = jianyingOutputDir || undefined;
+      
       // 导出前预处理：将图片 URL 转为 data:URL，避免即梦临时链接过期导致图片丢失
       setJianyingExportMessage('预处理媒体文件...');
       const preparedShots = await prepareShotsForExport(exportShots);
