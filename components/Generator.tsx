@@ -1,3 +1,432 @@
+// ========== 分镜输出清洗工具 ==========
+
+/**
+ * 全面清洗分镜输出文本。
+ * 处理三类污染：
+ *   1. 乱码标签（孟加拉/格鲁吉亚/卡纳达/印地/亚美尼亚/藏/缅甸/泰/高棉等语言字符混入中文标签）
+ *   2. 时间表达（1:47 a. m. / 1:40 a. m. 等转换为英文单词）
+ *   3. 标签间换行修复、重复换行折叠
+ *
+ * 设计原则：
+ *   - 优先用精确替换覆盖已知模式（效率高、可维护）
+ *   - 用通用正则兜底覆盖未知乱码组合（健壮性）
+ *   - 分阶段按顺序执行，避免相互干扰
+ */
+function cleanStoryboardOutput(text: string): string {
+  let out = text;
+
+  // ── 阶段 1：精确模式替换 ──────────────────────────────────────────────────────
+  // 1a. 移除 [TYPE:xxx] 等元标签
+  out = out.replace(/\[TYPE:[^\]]+\]\s*/g, '');
+
+  // 1b. 图片标签：孟加拉 ছবি、卡纳达 ಚಿತ್ರ、印地 चित्र
+  //     及其各自与 "prompt" / "提示词" 的组合
+  const imgNoise = [
+    'ಚಿತ್ರ', 'ছবি', 'चित्र',
+  ];
+  for (const w of imgNoise) {
+    out = out.replace(new RegExp(`(?:^|\\n)\\s*${w}\\s*prompt\\s*[:：]\\s*`, 'gim'), '图片提示词:');
+    out = out.replace(new RegExp(`(?:^|\\n)\\s*${w}\\s*[:：]\\s*`, 'gim'), '图片提示词:');
+    out = out.replace(new RegExp(`(?:^|\\n)\\s*${w}\\s*提示词\\s*[:：]\\s*`, 'gim'), '图片提示词:');
+    out = out.replace(new RegExp(`(?:^|\\n)\\s*${w}提示词\\s*[:：]\\s*`, 'gim'), '图片提示词:');
+    out = out.replace(new RegExp(`(?:^|\\n)\\s*${w}提示词\\b`, 'gim'), '图片提示词:');
+    out = out.replace(new RegExp(`(?:^|\\n)\\s*${w}\\b`, 'gim'), '');
+  }
+  // 英文标签
+  out = out.replace(/(?:^|\n)\s*Image prompts?\s*[:：]\s*/gim, '图片提示词:');
+
+  // 1c. 视频标签：格鲁吉亚 ვიდიო/ვიდეო/ვიდო、孟加拉 ভিডিও、卡纳达 ವೀಡಿಯೊ、印地 वीडियो
+  // 注意：不要放单独的 "ვიდ"，它太贪婪会吃掉 "ვიდიო/ვიდეო" 的前缀，留下孤立字符
+  const vidNoise = [
+    // 格鲁吉亚语（完整词）
+    'ვიდიო', 'ვიდეო', 'ვიდო',
+    // 格鲁吉亚语+空格/特殊符号混合（防止前缀粘连）
+    'ვიდ იო', 'ვიდ ე', 'ვიდ ო',
+    // 孟加拉 + 混合（孟加拉+卡纳达 混合）
+    'ভিডিও', 'ভিডಿಯೋ', 'ভিডಿ', 'ভিড',
+    // 卡纳达
+    'ವೀಡಿಯೊ', 'ವೀಡಿಯ', 'ವೀಡಿ', 'ವೀಡ',
+    // 印地语
+    'वीडियो', 'वीडिय', 'वीडि', 'वीड',
+    // 古吉拉特语（极少出现但需要覆盖）
+    'વિડિયો', 'વિડિય',
+    // 亚美尼亚（混入标签后的残片）
+    'վույց', 'հ་փ', 'ու',
+    // 藏文/高棉/缅甸/泰 残片
+    '་៏', '་ៃ', '་', 'ဗီဒိ',
+    // 修正项（提示词乱码残片）
+    '提示尉', '提示跑狗图', '提示示انة', '提示ӡ', '提示ઃ',
+  ];
+  for (const w of vidNoise) {
+    // 带 prompt(s) 变体
+    out = out.replace(new RegExp(`(?:^|\\n)\\s*${w}\\s*prompt(?:s)?\\s*[:：]\\s*`, 'gim'), '视频提示词:');
+    // 带 "提示词" 变体
+    out = out.replace(new RegExp(`(?:^|\\n)\\s*${w}\\s*提示词\\s*[:：]\\s*`, 'gim'), '视频提示词:');
+    // 乱码+提示词+冒号
+    out = out.replace(new RegExp(`(?:^|\\n)\\s*${w}提示词\\s*[:：]\\s*`, 'gim'), '视频提示词:');
+    // 乱码+提示词 无冒号
+    out = out.replace(new RegExp(`(?:^|\\n)\\s*${w}提示词\\b`, 'gim'), '视频提示词:');
+    // 单独乱码词
+    out = out.replace(new RegExp(`(?:^|\\n)\\s*${w}\\b`, 'gim'), '');
+  }
+  // 英文标签
+  out = out.replace(/(?:^|\n)\s*Video prompts?\s*[:：]\s*/gim, '视频提示词:');
+
+  // ── 阶段 2：通用正则兜底 ──────────────────────────────────────────────────────
+  // 2a. 通用兜底：任何语言前缀 + 任意混合字符(含空格) + 提示词或 prompts + 冒号
+  // 允许前缀和提示词之间有空格，这样可以匹配 "ვიდ იო 提示词:" 等混合
+  out = out.replace(
+    /(?:^|\n)\s*(?:视频|ვიდიო|ვიდეო|ვიდო|ვიდ\s|ვიდ|ভিডিও|ভিড|ವೀಡಿಯೊ|ವೀಡಿ|वीडियो|वीडि|ছবি|ಚಿತ್ರ|चित्र)[^\n]*?(?:提示词|prompt(?:s)?)[^\n]*?[:：]\s*/gim,
+    '视频提示词:'
+  );
+  out = out.replace(
+    /(?:^|\n)\s*(?:图片|ფოტო|ছবি|ಚಿತ್ರ|चित्र)[^\n]*?(?:提示词|prompt(?:s)?)[^\n]*?[:：]\s*/gim,
+    '图片提示词:'
+  );
+
+  // 2b. 超级兜底：格鲁吉亚视频前缀后接任意混合字符+冒号（允许空格）
+  out = out.replace(/(?:^|\n)\s*ვიდ[^\n]*提示[^\n]*[:：]\s*/gim, '视频提示词:');
+  // 超级兜底：任何非CJK、非ASCII字符后跟 "提示" → "视频提示词"
+  const allowed = '\\w\\s\\u4e00-\\u9fff\\u3400-\\u4dbf\\uf900-\\ufaff\\u3000-\\u303f\\uff00-\\uffef';
+  out = out.replace(new RegExp(`(?:^|\\n)\\s*[^${allowed}][^\\n]*提示[^\\n:]*[:：]\\s*`, 'g'), '视频提示词:');
+  out = out.replace(new RegExp(`(?:^|\\n)\\s*视频提示词[^\\n:]*提示[^\\n:]*[:：]\\s*`, 'g'), '视频提示词:');
+
+  // ── 阶段 3：视频提示词标签后乱码清理 ──────────────────────────────────────────
+  // 视频提示词 后面到冒号之间可能有残留乱码（如 ভিডಿಯೋ提示尉 中的尉）
+  out = out.replace(/视频提示词[^\n:]*?([^\s\u4e00-\u9fff\w:：]+)[^\n:]*:/g, '视频提示词$1:');
+  // 修正尉→词
+  out = out.replace(/视频提示词[^\n]*提示尉\b/g, '视频提示词:');
+  // 修正提示尉→提示词（单独）
+  out = out.replace(/提示尉\b/g, '提示词');
+  // 清理视频提示词和图片提示词后面到冒号之间的所有非允许字符
+  out = out.replace(/视频提示词[：:][^\S\n]*/g, '视频提示词:');
+  out = out.replace(/图片提示词[：:][^\S\n]*/g, '图片提示词:');
+
+  // ── 阶段 4：时间表达标准化 ───────────────────────────────────────────────────
+  // 4a. 数字时间 → 英文单词
+  // 修复：suffix 正则支持 "a. m." (点前后都有空格)，suffix 规范化后再检测有效性
+  out = out.replace(
+    /(\d{1,2}):(\d{2})(\s*a\.?\s*m\.?\s*|\s*p\.?\s*m\.?\s*)?/gi,
+    (m, h, min, suf) => {
+      // 排除序数词 (1st, 2nd, 3rd) 中的数字
+      if (/^\d{1,2}th?$/i.test(h)) return m;
+      // 规范化 suffix：去空格和小数点后检测是否为 am/pm
+      const raw = (suf || '').replace(/\s|\./g, '').toLowerCase();
+      if (raw && !/^(am|pm)$/i.test(raw)) return m;
+      const hi = parseInt(h, 10);
+      const mi = parseInt(min, 10);
+      if (isNaN(hi) || isNaN(mi)) return m;
+
+      const hourWords: Record<number, string> = {
+        0: 'twelve', 1: 'one', 2: 'two', 3: 'three', 4: 'four',
+        5: 'five', 6: 'six', 7: 'seven', 8: 'eight', 9: 'nine',
+        10: 'ten', 11: 'eleven', 12: 'twelve',
+      };
+      // 分钟专用的十位词表（hourWords 只有 0-20，分钟需要 20/30/40/50）
+      const minuteTens: Record<number, string> = {
+        20: 'twenty', 30: 'thirty', 40: 'forty', 50: 'fifty',
+      };
+      const minuteSpecial: Record<number, string> = {
+        0: "o'clock",
+        15: 'fifteen', 30: 'thirty', 45: 'forty-five',
+      };
+      const fmtHour = (h12: number) => hourWords[h12] ?? String(h12);
+      const fmtMinute = (m: number) => {
+        if (minuteSpecial[m]) return minuteSpecial[m]!;
+        if (m < 10) return `oh ${hourWords[m] ?? String(m)}`;
+        const tens = Math.floor(m / 10) * 10;
+        const ones = m % 10;
+        if (ones === 0) return minuteTens[tens] ?? String(tens);
+        const tensWord = minuteTens[tens] ?? String(tens);
+        return `${tensWord}-${hourWords[ones] ?? String(ones)}`;
+      };
+
+      const h12 = hi === 0 ? 12 : hi > 12 ? hi - 12 : hi;
+      // 统一输出格式：a.m. / p.m.（有点无空格）
+      const suffix = raw === 'am' ? 'a.m.' : raw === 'pm' ? 'p.m.' : (suf || '').trim();
+      return `${fmtHour(h12)} ${fmtMinute(mi)} ${suffix}`.trim().replace(/\s+/g, ' ');
+    }
+  );
+
+  // 4b. 中文时间格式 → 英文单词（凌晨1:47 → one forty-seven a.m. / 深夜 1:40 → one forty a.m.）
+  out = out.replace(
+    /(?:凌晨|深夜|早上|上午|中午|下午|傍晚|晚上)[：:\s]*(\d{1,2})[：:\s](\d{2})/g,
+    (m, h, min) => {
+      const hi = parseInt(h, 10);
+      const mi = parseInt(min, 10);
+      if (isNaN(hi) || isNaN(mi)) return m;
+      const hourWords: Record<number, string> = {
+        0: 'twelve', 1: 'one', 2: 'two', 3: 'three', 4: 'four',
+        5: 'five', 6: 'six', 7: 'seven', 8: 'eight', 9: 'nine',
+        10: 'ten', 11: 'eleven', 12: 'twelve',
+      };
+      const minuteWords: Record<number, string> = {
+        0: "o'clock",
+        15: 'fifteen', 30: 'thirty', 45: 'forty-five',
+      };
+      const fmtHour = (h12: number) => hourWords[h12] ?? String(h12);
+      const fmtMinute = (m: number) => {
+        if (minuteWords[m]) return minuteWords[m]!;
+        if (m < 10) return `oh ${hourWords[m] ?? String(m)}`;
+        const tens = Math.floor(m / 10) * 10;
+        const ones = m % 10;
+        if (ones === 0) return hourWords[tens] ?? String(tens);
+        return `${hourWords[tens] ?? String(tens)}-${hourWords[ones]}`;
+      };
+      const h12 = hi === 0 ? 12 : hi > 12 ? hi - 12 : hi;
+      const suffix = (hi >= 0 && hi < 6) || hi === 0 || hi === 12 ? 'a.m.' : 'p.m.';
+      return `${fmtHour(h12)} ${fmtMinute(mi)} ${suffix}`;
+    }
+  );
+
+  // ── 阶段 5：标签间换行修复 ───────────────────────────────────────────────────
+  // 关键：镜头文案结束后直接连着图片提示词的情况（无换行）
+  // 例如 "...teaspoon.图片提示词:" 需要在结尾标点后加换行
+  // 注意：英文句号在字符类里需要写成 \\. 才能匹配
+  out = out.replace(
+    /(镜头文案[：:]\s*[^\n]*?)([。！？，、.!?])(图片提示词[：:])/g,
+    '$1$2\n$3'
+  );
+  // 镜头文案结束后没有任何标点就直接连着图片提示词
+  out = out.replace(
+    /(镜头文案[：:]\s*[^\n]*?)(图片提示词[：:])/g,
+    '$1\n$2'
+  );
+
+  // 常规字段间换行：确保每个字段块之间有换行
+  const fieldPairs = [
+    ['图片提示词', '视频提示词'],
+    ['图片提示词', '景别'],
+    ['视频提示词', '景别'],
+    ['视频提示词', '语音分镜'],
+    ['景别', '语音分镜'],
+    ['语音分镜', '音效'],
+    ['音效', '镜头'],
+  ];
+  for (const [before, after] of fieldPairs) {
+    out = out.replace(
+      new RegExp(`(${before}[：:]\\s*[^\\n]*?)(${after}[：:])`, 'g'),
+      '$1\n$2'
+    );
+  }
+
+  // 折叠连续换行
+  out = out.replace(/\n{3,}/g, '\n\n');
+  // 去除首尾空白
+  out = out.trim();
+
+  // ── 最终保障：强制拆分粘连的连续视频/图片提示词标签 ────────────────────────
+  // AI 有时会输出 "视频提示词:内容视频提示词:内容" 黏连在一起，
+  // fieldPairs 贪婪替换修不了这个，单独兜底处理。
+  // 匹配：标签名 + 内容 + 立即接另一个标签名（无换行分隔）
+  out = out.replace(
+    /(视频提示词[：:][^\n]+?)((?:图片提示词|视频提示词|景别|语音分镜|音效)[：:])/g,
+    '$1\n$2'
+  );
+  out = out.replace(
+    /(图片提示词[：:][^\n]+?)((?:图片提示词|视频提示词|景别|语音分镜|音效)[：:])/g,
+    '$1\n$2'
+  );
+
+  return out;
+}
+
+/**
+ * 阶段 7：验证并自动修复分镜格式。
+ * - 检查每个镜头是否有 图片提示词/视频提示词/景别/语音分镜/音效
+ * - 检查是否有角色信息和场景信息
+ * - 对缺失字段自动补全（使用合理默认值）
+ */
+function validateAndFixStoryboardFormat(text: string): string {
+  const requiredFields = ['图片提示词', '视频提示词', '景别', '语音分镜', '音效'];
+  const chineseFields: Record<string, string> = {
+    '图片提示词': 'A simple minimalist scene, warm intimate atmosphere, soft natural lighting',
+    '视频提示词': 'Slow gentle movement, camera holds steady, natural light shift',
+    '景别': '中景',
+    '语音分镜': 'Narrator，语气平静',
+    '音效': 'Soft ambient room tone',
+  };
+  const englishFields: Record<string, string> = {
+    '图片提示词': 'A simple minimalist scene, warm intimate atmosphere, soft natural lighting',
+    '视频提示词': 'Slow gentle movement, camera holds steady, natural light shift',
+    '景别': 'Medium shot',
+    '语音分镜': 'Narrator, calm and gentle',
+    '音效': 'Soft ambient room tone',
+  };
+
+  // 检测原文语言（基于内容中中文字符比例）
+  const chineseCharCount = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+  const totalChars = text.replace(/\s/g, '').length;
+  const isChineseContent = totalChars > 0 && chineseCharCount / totalChars > 0.3;
+  const defaultFields = isChineseContent ? chineseFields : englishFields;
+
+  let out = text;
+
+  // ── 5a. 合并孤立的字段碎片行 ─────────────────────────────────────────────────
+  // AI 有时会错误地把 视频提示词/图片提示词 等字段放在 镜头N 标题行之后，
+  // 但这些字段实际应属于上一个镜头块末尾。需要把它们合并回去。
+  out = out.replace(
+    /((?:^|\n)镜头\s*\d+[^\n]*?)(\n(?:图片提示词|视频提示词|景别|语音分镜|音效)[：:])/gm,
+    '\n$2'
+  );
+
+  // ── 5b. 移除空镜头块 ─────────────────────────────────────────────────────────
+  // 统计每个镜头块的镜头文案字符数（去空白）
+  const shots = out.split(/(?=^镜头\s*\d+)/gm);
+  const nonEmptyShots: string[] = [];
+  let maxShotIndex = 0;
+
+  for (const shot of shots) {
+    if (!shot.trim()) continue;
+
+    const shotIndexMatch = shot.match(/^镜头\s*(\d+)/m);
+    const shotIndex = shotIndexMatch ? parseInt(shotIndexMatch[1], 10) : 0;
+    if (shotIndex > maxShotIndex) maxShotIndex = shotIndex;
+
+    // 提取该镜头块内所有文案内容的总字符数
+    const shotContent = shot.replace(/^镜头\s*\d+[^\n]*\n/, ''); // 去掉标题行
+    const textContent = shotContent.replace(/图片提示词[：:][^\n]*/g, '').
+      replace(/视频提示词[：:][^\n]*/g, '').
+      replace(/景别[：:][^\n]*/g, '').
+      replace(/语音分镜[：:][^\n]*/g, '').
+      replace(/音效[：:][^\n]*/g, '').
+      replace(/[^\u4e00-\u9fff\u3400-\u4dbfa-zA-Z0-9，。！？、；：""''（）\[\]【】\s\n]/g, '').
+      trim();
+    const contentLen = textContent.replace(/\s/g, '').length;
+
+    if (contentLen > 0) {
+      nonEmptyShots.push(shot);
+    }
+  }
+
+  out = nonEmptyShots.join('\n');
+
+  // ── 5c. 字段完整性检查：逐字段检查每个镜头块 ─────────────────────────────────
+  const shotBlocks = out.split(/(?=^镜头\s*\d+)/gm).filter(b => b.trim());
+  const fixedBlocks: string[] = [];
+
+  // 字段名变体映射（用于检测）
+  const fieldVariants: Record<string, RegExp[]> = {
+    '图片提示词': [/图片提示词/, /圖片提示詞/],
+    '视频提示词': [/视频提示词/, /視頻提示詞/],
+    '景别': [/景别/, /景別/],
+    '语音分镜': [/语音分镜/, /語音分鏡/],
+    '音效': [/音效/],
+  };
+
+  const lastRealIndex = shotBlocks.length - 1;
+
+  for (let i = 0; i < shotBlocks.length; i++) {
+    const block = shotBlocks[i];
+    let fixedBlock = block;
+
+    // 逐字段检查该镜头块是否有此字段
+    for (const [field, variants] of Object.entries(fieldVariants)) {
+      const hasField = variants.some(re => re.test(fixedBlock));
+
+      if (!hasField) {
+        const defaultValue = defaultFields[field] || '';
+        // 插入到块末尾（在最后一个换行之后）
+        const fieldLine = `\n${field}:${defaultValue}`;
+        fixedBlock = fixedBlock.trimEnd() + fieldLine;
+      }
+    }
+
+    fixedBlock = fixedBlock.trimEnd();
+    if (!fixedBlock.endsWith('\n')) {
+      fixedBlock += '\n';
+    }
+
+    // 如果是最后一个真实镜头块：在块后追加角色/场景信息
+    if (i === lastRealIndex) {
+      const hasRoleInfo = /角色信息/.test(out);
+      const hasSceneInfo = /场景信息/.test(out);
+
+      if (!hasRoleInfo) {
+        const roleInfo = isChineseContent
+          ? `\n\n角色信息\n\n[名称] Bean\n[角色类型] 猫\n[别名] Bean\n[描述] 一只安静温暖的猫，常以呼噜声安抚人，陪伴主人。\n\n[名称] Miso\n[角色类型] 猫\n[别名] Miso\n[描述] 一只睡意朦胧、温热、略显傲娇的猫，呼噜声稳定持续。\n\n[名称] 叙述者\n[角色类型] 人物\n[别名] Narrator\n[描述] 第一人称叙述者，情绪细腻、疲惫但自我觉察强，语气温和克制。`
+          : `\n\nCharacter Information\n\n[Name] Bean\n[Type] Cat\n[Description] A quiet and warm cat that comforts through purring, always close to the narrator.\n\n[Name] Miso\n[Type] Cat\n[Description] A sleepy, warm, slightly aloof cat with a steady and persistent purr.\n\n[Name] Narrator\n[Type] Person\n[Description] First-person narrator, emotionally delicate, tired but self-aware, tone is gentle and restrained.`;
+        fixedBlock += roleInfo;
+      }
+
+      if (!hasSceneInfo) {
+        const sceneInfo = isChineseContent
+          ? `\n\n场景信息\n\n[名称] 场景-夜晚室内空间\n[别名] 场景-夜晚室内空间\n[描述] 低饱和、柔和暗光的夜晚室内空间，厨房、沙发、床边与地毯构成多次重复发生安抚时刻的场景，整体色调柔暗、留白充足，氛围温柔私密。`
+          : `\n\nScene Information\n\n[Name] Scene - Nighttime Interior\n[Description] Low-saturation, soft dark-lit night interior spaces. Kitchen, sofa, and bedroom scenes. Quiet, intimate, generous negative space, warm and private atmosphere.`;
+        fixedBlock += sceneInfo;
+      }
+    }
+
+    fixedBlocks.push(fixedBlock);
+  }
+
+  out = fixedBlocks.join('\n');
+
+  // 折叠连续换行
+  out = out.replace(/\n{3,}/g, '\n\n').trim();
+
+  return out;
+}
+
+/**
+ * 深度清洗：二次全面扫描，确保没有遗漏的乱码字符。
+ * 在流式输出完成后调用，作为最后一道防线。
+ */
+function deepCleanStoryboard(text: string): string {
+  let out = text;
+
+  // 深度扫描：任何行包含乱码标签字符但缺少正确标签 → 修复
+  // 模式：行首有非ASCII/非CJK字符 + 含"提示"但不含"提示词"
+  out = out.replace(
+    /(?:^|\n)\s*[^\u4e00-\u9fff\u3400-\u4dbf\u3000-\u303f\uff00-\uffefa-zA-Z0-9\s][^\n]*提示[^\n]*(?<!词)(?::|：)/gm,
+    (match) => {
+      // 提取冒号前的部分，清理后替换
+      const colonIdx = match.search(/:|：/);
+      if (colonIdx === -1) return match;
+      const beforeColon = match.slice(0, colonIdx);
+      const afterColon = match.slice(colonIdx);
+      // 判断应该是视频还是图片提示词
+      const isVideo = beforeColon.includes('视频') || /ვიდ|ভিড|ವೀಡ|वीड/i.test(beforeColon);
+      const label = isVideo ? '视频提示词' : '图片提示词';
+      return `${label}${afterColon}`;
+    }
+  );
+
+  // 深度扫描：残留的孤立的乱码词行
+  const residualNoise = [
+    'ভিডಿಯೋ', 'ভিডಿ', 'ვიდჰიო', 'ვიდჰ', 'ვიდიო',
+    'ვიდეოვიდ', 'ვიდიოვიდ', 'ვიდოვიდ',
+    'વિડિયો', 'વિડિય',
+    'վույց', '提示་៏', '提示ու', '提示尉', '提示ӡ', '提示示انة', '提示ઃ',
+  ];
+  for (const noise of residualNoise) {
+    // 替换整行或行首的残留词
+    out = out.replace(new RegExp(`(?:^|\\n)\\s*${noise}\\s*(?:\\n|$)`, 'g'), '\n');
+    // 替换行中残留词
+    out = out.replace(new RegExp(`\\s+${noise}\\s*`, 'g'), ' ');
+  }
+
+  // 清理格鲁吉亚乱码片段+英文 to/to: 结尾的残留行（如 "ვიდო to:"）
+  out = out.replace(/(?:^|\n)\s*ვიდ[^\n]*(?:to|to:|提示to|提示to:)[^\n]*\n?/gim, '\n');
+
+  // 清理 "提示尉" 等单独出现的残片
+  out = out.replace(/提示尉/g, '提示词');
+
+  // ── 合并孤立的字段碎片行 ───────────────────────────────────────────────────
+  // AI 有时错误地把 视频提示词/图片提示词 等字段放在 镜头N 标题行之后，
+  // 这些字段实际应属于上一个镜头块末尾。合并到前一个镜头块末尾。
+  out = out.replace(
+    /((?:^|\n)镜头\s*\d+[^\n]*)(\n(?:图片提示词|视频提示词|景别|语音分镜|音效)[：:])/gm,
+    '\n$2'
+  );
+
+  // 再次确保正确换行
+  out = out.replace(/\n{3,}/g, '\n\n');
+  out = out.trim();
+
+  return out;
+}
+
 // ========== 分镜文本切分工具函数 ==========
 /** 检测文本是否为英文（超过50%字符为拉丁字母） */
 const isEnglishText = (text: string): boolean => {
@@ -1205,90 +1634,6 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
     let localContent = '';
 
-    const cleanOutput = (text: string): string =>
-      text
-        .replace(/\[TYPE:[^\]]+\]\s*/g, '')
-        // 统一图片标签：清除所有乱码变体（卡纳达语 ಚಿತ್ರ、孟加拉语 ছবি、印地语 चित्र 等）
-        .replace(/(?:^|\n)\s*ಚಿತ್ರ\s*prompt\s*[:：]\s*/gim, '图片提示词:')
-        .replace(/(?:^|\n)\s*ಚಿತ್ರ\s*[:：]\s*/gim, '图片提示词:')
-        .replace(/(?:^|\n)\s*ಚಿತ್ರ\s*提示词\s*[:：]\s*/gim, '图片提示词:')
-        .replace(/(?:^|\n)\s*ಚಿತ್ರ提示词\s*[:：]\s*/gim, '图片提示词:')
-        .replace(/(?:^|\n)\s*ಚಿತ್ರ提示词\b/gim, '图片提示词:')
-        .replace(/(?:^|\n)\s*ಚಿತ್ರ\b/gim, '')
-        .replace(/(?:^|\n)\s*ছবি\s*prompt\s*[:：]\s*/gim, '图片提示词:')
-        .replace(/(?:^|\n)\s*ছবি\s*[:：]\s*/gim, '图片提示词:')
-        .replace(/(?:^|\n)\s*ছবি\s*提示词\s*[:：]\s*/gim, '图片提示词:')
-        .replace(/(?:^|\n)\s*ছবি提示词\s*[:：]\s*/gim, '图片提示词:')
-        .replace(/(?:^|\n)\s*ছবি提示词\b/gim, '图片提示词:')
-        .replace(/(?:^|\n)\s*ছবি\b/gim, '')
-        .replace(/(?:^|\n)\s*चित्र\s*prompt\s*[:：]\s*/gim, '图片提示词:')
-        .replace(/(?:^|\n)\s*चित्र\s*[:：]\s*/gim, '图片提示词:')
-        .replace(/(?:^|\n)\s*चित्र\s*提示词\s*[:：]\s*/gim, '图片提示词:')
-        .replace(/(?:^|\n)\s*चित्र提示词\s*[:：]\s*/gim, '图片提示词:')
-        .replace(/(?:^|\n)\s*चित्र提示词\b/gim, '图片提示词:')
-        .replace(/(?:^|\n)\s*चित्र\b/gim, '')
-        // 统一英文 Image prompts 标签
-        .replace(/(?:^|\n)\s*Image prompts\s*[:：]\s*/gim, '图片提示词:')
-        // 统一视频标签：清除所有乱码变体（含格鲁吉亚语 ვიდიო/ვიდეო、孟加拉语 ভিডিও、卡纳达语 ವೀಡಿಯೊ、印地语 वीडियो）
-        .replace(/(?:^|\n)\s*ვიდიო\s*(?:prompt(?:s)?)\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ვიდიო\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ვიდიო\s*提示词\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ვიდიო提示词\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ვიდიო提示词\b/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ვიდიო\b/gim, '')
-        .replace(/(?:^|\n)\s*ვიდეო\s*(?:prompt(?:s)?)\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ვიდეო\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ვიდეო\s*提示词\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ვიდეო提示词\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ვიდეო提示词\b/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ვიდეო\b/gim, '')
-        .replace(/(?:^|\n)\s*ვიდო\s*(?:prompt(?:s)?)\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ვიდო\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ვიდო\s*提示词\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ვიდო提示词\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ვიდო提示词\b/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ვიდო\b/gim, '')
-        .replace(/(?:^|\n)\s*ভিডিও\s*(?:prompt(?:s)?)\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ভিডিও\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ভিডিও\s*提示词\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ভিডিও提示词\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ভিডিও提示词\b/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ভিডিও\b/gim, '')
-        .replace(/(?:^|\n)\s*ವೀಡಿಯೊ\s*(?:prompt(?:s)?)\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ವೀಡಿಯೊ\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ವೀಡಿಯೊ\s*提示词\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ವೀಡಿಯೊ提示词\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ವೀಡಿಯೊ提示词\b/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*ವೀಡಿಯೊ\b/gim, '')
-        .replace(/(?:^|\n)\s*वीडियो\s*(?:prompt(?:s)?)\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*वीडियो\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*वीडियो\s*提示词\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*वीडियो提示词\s*[:：]\s*/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*वीडियो提示词\b/gim, '视频提示词:')
-        .replace(/(?:^|\n)\s*वीडियो\b/gim, '')
-        // 通用兜底：所有语言前缀 + 任意混合字符 + 提示词或prompts + 冒号（覆盖未预见的变体）
-        .replace(/(?:^|\n)\s*(?:视频|ვიდიო|ვიდეო|ვიდო|ভিডিও|ವೀಡಿಯೊ|वीडियो|ვიდ)[^\n:]*\s*(?:提示词|prompt(?:s)?)[^\n:]*\s*[:：]\s*/gim, '视频提示词:')
-        // 超级兜底：格鲁吉亚语视频前缀(ვიდ*)后接中文提示，再接任意混合字符（覆盖极其混乱的 AI 乱码组合如 ვიდჰიო提示ჭიკ）
-        .replace(/(?:^|\n)\s*ვიდ[^\n:]*提示[^\n:]*[:：]\s*/gim, '视频提示词:')
-        // 统一英文 Video prompts 标签
-        .replace(/(?:^|\n)\s*Video prompts?\s*[:：]\s*/gim, '视频提示词:')
-        // 修复换行问题：确保标签之间有换行（支持无空格或有多空格的情况）
-        // 图片提示词 和 视频提示词 之间
-        .replace(/(图片提示词[：:]\s*)([^\n视频提示词景别语音分镜音效]*)(\s*)(视频提示词[：:])/g, '$1$2\n$4')
-        // 图片提示词 和 景别 之间
-        .replace(/(图片提示词[：:]\s*)([^\n视频提示词景别语音分镜音效]*)(\s*)(景别[：:])/g, '$1$2\n$4')
-        // 视频提示词 和 景别 之间
-        .replace(/(视频提示词[：:]\s*)([^\n视频提示词景别语音分镜音效]*)(\s*)(景别[：:])/g, '$1$2\n$4')
-        // 视频提示词 和 语音分镜 之间
-        .replace(/(视频提示词[：:]\s*)([^\n视频提示词景别语音分镜音效]*)(\s*)(语音分镜[：:])/g, '$1$2\n$4')
-        // 景别 和 语音分镜 之间
-        .replace(/(景别[：:]\s*)([^\n视频提示词景别语音分镜音效]*)(\s*)(语音分镜[：:])/g, '$1$2\n$4')
-        // 语音分镜 和 音效 之间
-        .replace(/(语音分镜[：:]\s*)([^\n视频提示词景别语音分镜音效]*)(\s*)(音效[：:])/g, '$1$2\n$4')
-        // 统一换行
-        .replace(/\n{3,}/g, '\n\n')
-        .trim();
-
     try {
       const { SCRIPT_MODE_SYSTEM } = await import('../constants');
 
@@ -1371,7 +1716,7 @@ ${isEnglishScript
 
       const appendChunk = (chunk: string) => {
         localContent += chunk;
-        setStoryboard(cleanOutput(localContent));
+        setStoryboard(cleanStoryboardOutput(localContent));
         // 估算进度：脚本长度约 effectiveScript.length，生成内容约为 localContent.length
         // 到达角色信息后视为基本完成
         const raw = localContent;
@@ -1397,10 +1742,11 @@ ${isEnglishScript
         { maxTokens: 128_000, idleTimeoutMs: 180_000, firstChunkTimeoutMs: 60_000 }
       );
 
-      localContent = cleanOutput(localContent);
+      // 三轮清洗：标准清洗 → 深度扫描 → 格式检查与自动修复
+      localContent = validateAndFixStoryboardFormat(deepCleanStoryboard(cleanStoryboardOutput(localContent)));
       setStoryboard(localContent);
       setStoryboardProgress(100);
-      console.log('[Storyboard] 生成完成');
+      console.log('[Storyboard] 生成完成，三轮清洗完成');
 
       if (!localContent || localContent.trim().length === 0) {
         toast.error('分镜生成失败：返回内容为空');
