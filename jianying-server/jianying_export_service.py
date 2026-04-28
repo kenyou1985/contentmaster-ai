@@ -46,6 +46,8 @@ def _is_local_path(url: str) -> bool:
         return True
     if '/contentmaster-ai/audio-cache/' in url or '/.contentmaster-ai/audio-cache/' in url:
         return True
+    if '/jianying-server/image_cache/' in url:
+        return True
     if not url.startswith('http') and not url.startswith('data:') and not url.startswith('blob:'):
         if os.path.isfile(url):
             return True
@@ -746,23 +748,30 @@ _LV59_VIDEO_EFFECT_PRESETS = [
 # 转场（来自 pyJianYingDraft TransitionMeta，默认免费项；与剪映内置转场一致）
 # 结构：(名称, effect_id, resource_id, duration_us, is_overlap)
 _LV59_TRANSITION_PRESETS = [
-    ("叠化", "6724845717472416269", "322577", 500_000, True),
-    ("分割", "6968372308419285540", "4211683", 500_000, True),
-    ("向上擦除", "6724849456891564557", "2917281", 500_000, True),
-    ("向右擦除", "6724849898857959950", "2917284", 500_000, True),
-    ("开幕", "6750893890712113677", "391781", 500_000, True),
-    ("闪回", "7250427149318885945", "16638473", 200_000, True),
+    ("叠化", "6724845717472416269", "322577", 800_000, True),
+    ("分割", "6968372308419285540", "4211683", 600_000, True),
+    ("向上擦除", "6724849456891564557", "2917281", 800_000, True),
+    ("向右擦除", "6724849898857959950", "2917284", 800_000, True),
+    ("向左擦除", "6724849898857959951", "2917285", 800_000, True),
+    ("向下擦除", "6724849276100284943", "2917286", 800_000, True),
+    ("开幕", "6750893890712113677", "391781", 800_000, True),
+    ("闪回", "7250427149318885945", "16638473", 300_000, True),
     ("3D空间", "7049979667406656014", "1506926", 1_500_000, True),
-    ("上移", "6724846395116753416", "2917279", 500_000, True),
-    ("下移", "6724849276100284942", "2917280", 500_000, True),
-    ("中心旋转", "6858191434294497805", "878914", 500_000, False),
-    ("动漫云朵", "6777178865119793678", "2911876", 500_000, False),
-    ("动漫漩涡", "6858191448827761160", "878913", 500_000, False),
+    ("上移", "6724846395116753416", "2917279", 600_000, True),
+    ("下移", "6724849276100284942", "2917280", 600_000, True),
+    ("左移", "6724846395116753417", "2917287", 600_000, True),
+    ("右移", "6724846395116753418", "2917288", 600_000, True),
+    ("中心旋转", "6858191434294497805", "878914", 600_000, False),
+    ("动漫云朵", "6777178865119793678", "2911876", 800_000, False),
+    ("动漫漩涡", "6858191448827761160", "878913", 800_000, False),
     ("动漫闪电", "6777178696609436174", "2911874", 500_000, False),
-    ("倒影", "6748313807031898627", "369691", 500_000, True),
-    ("冰雪结晶", "6919369228701143559", "1017910", 500_000, False),
-    ("冲鸭", "7030714241359286821", "1441672", 500_000, False),
-    ("云朵", "6955722927161479694", "2912469", 500_000, True),
+    ("倒影", "6748313807031898627", "369691", 800_000, True),
+    ("冰雪结晶", "6919369228701143559", "1017910", 600_000, False),
+    ("冲鸭", "7030714241359286821", "1441672", 600_000, False),
+    ("云朵", "6955722927161479694", "2912469", 800_000, True),
+    ("光晕", "7049979667406656020", "1506927", 800_000, True),
+    ("推入", "6724849898857959960", "2917290", 600_000, True),
+    ("拉出", "6724849898857959961", "2917291", 600_000, True),
 ]
 
 # 滤镜素材（filter，对应 pyJianYingDraft Filter；免费项）
@@ -1012,6 +1021,7 @@ def _build_lv59_main_script(
             tgt_dur: int,
             vol: float,
             intro_clip_us=None,
+            ken_burns_zoom: float = 0.0,
         ) -> None:
             sp_id = _make_id()
             cv_id = _make_id()
@@ -1046,6 +1056,30 @@ def _build_lv59_main_script(
             mats["vocal_separations"].append(
                 {"choice": 0, "id": vs_id, "production_path": "", "time_range": None, "type": "vocal_separation"}
             )
+
+            # Ken Burns 缩放关键帧：图片慢慢放大，增加动感
+            # common_keyframes 格式：property=属性名, time=相对片段开始的时间(微秒), value=数值
+            common_keyframes: list[dict] = []
+            if ken_burns_zoom > 0.01 and tgt_dur > 0:
+                # 从 1.0 慢慢放大到 ken_burns_zoom（如 1.15 表示放大 15%）
+                # 在片段 10% 处设起始值，90% 处设最终值，中间平滑过渡
+                # 均匀分布 3-5 个关键帧
+                steps = min(5, max(3, tgt_dur // 2_000_000))
+                for step_i in range(steps + 1):
+                    t = int((step_i / steps) * tgt_dur)  # 0 ~ tgt_dur (微秒)
+                    progress = step_i / steps
+                    # 缓入缓出曲线（ease-in-out）
+                    eased = progress * progress * (3 - 2 * progress) if progress <= 1 else 1
+                    scale_x = 1.0 + (ken_burns_zoom - 1.0) * eased
+                    common_keyframes.append({"property": "KFTypeScaleX", "time": t, "value": scale_x})
+                    common_keyframes.append({"property": "KFTypeScaleY", "time": t, "value": scale_x})
+                    # 平移关键帧：从中心往右下微微移动（增加自然感）
+                    # 单位是半个画布宽/高，0.01 = 画面宽的 1%
+                    tx = 0.01 * eased
+                    ty = 0.008 * eased
+                    common_keyframes.append({"property": "KFTypePositionX", "time": t, "value": tx})
+                    common_keyframes.append({"property": "KFTypePositionY", "time": t, "value": ty})
+
             vseg_id = _make_id()
             video_segments.append(
                 {
@@ -1058,7 +1092,7 @@ def _build_lv59_main_script(
                         "scale": {"x": 1.0, "y": 1.0},
                         "transform": {"x": 0.0, "y": 0.0},
                     },
-                    "common_keyframes": [],
+                    "common_keyframes": common_keyframes,
                     "enable_adjust": True,
                     "enable_color_correct_adjust": False,
                     "enable_color_curves": True,
@@ -1099,6 +1133,17 @@ def _build_lv59_main_script(
             )
 
         if not is_video:
+            # Ken Burns 动态效果：随机选择 zoom 方向（放大/缩小/仅平移），每张图片都有动感
+            if random_transitions:
+                kb_roll = random.random()
+                if kb_roll < 0.5:
+                    ken_burns = random.uniform(1.10, 1.25)  # 50%: 放大
+                elif kb_roll < 0.75:
+                    ken_burns = random.uniform(0.85, 0.95)  # 25%: 缩小
+                else:
+                    ken_burns = 1.0  # 25%: 仅平移无缩放
+            else:
+                ken_burns = 0.0
             src_dur = max(33_333, int(dur_us))
             _append_one_video_segment(
                 t_start=int(start_us),
@@ -1106,6 +1151,7 @@ def _build_lv59_main_script(
                 tgt_dur=src_dur,
                 vol=1.0,
                 intro_clip_us=int(dur_us),
+                ken_burns_zoom=ken_burns,
             )
             shot_last_seg_idx.append(len(video_segments) - 1)
             shot_last_seg_dur.append(int(dur_us))
@@ -1935,27 +1981,28 @@ def create_draft_on_mac(
                 else:
                     print(f"[jianying_export] 镜头{i} 音频: 下载失败", file=sys.stderr, flush=True)
 
+            TTS_SILENCE_BUFFER = 300_000  # 300ms = 剪映最常见的开头静音补偿
             if ok:
                 row["audio_abs"] = _safe_abs_for_jianying(lap)
                 row["audio_client_path"] = _material_path_for_client(row["audio_abs"])
                 probe_us = _ffprobe_duration_us(row["audio_abs"])
                 client_us = entry["client_audio_us"]
-                # 优先使用 ffprobe 测量的实际时长
-                # 但如果 ffprobe 结果明显短于前端传入的时长（可能是截断误差），
-                # 取两者最大值确保音频不被截断
+                # 优先使用 ffprobe 测量的实际时长，但 ffprobe 可能比实际时长略短
+                # （TTS 开头的静音/间隙 ffprobe 测不到），两者取最大值并加 300ms 缓冲
+                # 确保音频尾部不被截断，正常播放完毕才切换下一段
                 if probe_us and client_us:
-                    row["audio_duration_us"] = max(probe_us, client_us)
+                    row["audio_duration_us"] = max(probe_us, client_us) + TTS_SILENCE_BUFFER
                 elif probe_us:
-                    row["audio_duration_us"] = probe_us
+                    row["audio_duration_us"] = probe_us + TTS_SILENCE_BUFFER
                 else:
-                    row["audio_duration_us"] = client_us
+                    row["audio_duration_us"] = client_us + TTS_SILENCE_BUFFER
                 ad = row.get("audio_duration_us")
                 if ad and int(ad) > 0:
                     row["duration_us"] = int(ad)
             else:
                 if entry["client_audio_us"] and int(entry["client_audio_us"]) > 0:
-                    row["audio_duration_us"] = int(entry["client_audio_us"])
-                    row["duration_us"] = int(entry["client_audio_us"])
+                    row["audio_duration_us"] = int(entry["client_audio_us"]) + TTS_SILENCE_BUFFER
+                    row["duration_us"] = int(entry["client_audio_us"]) + TTS_SILENCE_BUFFER
 
         prepared_shots.append(row)
         timeline_cursor += row["duration_us"]
@@ -2211,20 +2258,30 @@ def create_draft_on_mac(
 
         # 追加新的 tracks（假设都在主轨道）
         # 找到时间线末尾
+        def _segment_end_us(segment: dict) -> int:
+            """从片段中提取结束时间（微秒）"""
+            tr = segment.get("target_timerange")
+            if tr:
+                return int(tr.get("start", 0)) + int(tr.get("duration", 0))
+            return int(segment.get("start_time_us", 0)) + int(segment.get("duration_us", 0))
+
         timeline_end_us = 0
         for track in existing_tracks:
             for segment in track.get("segments", []):
-                end_us = segment.get("start_time_us", 0) + segment.get("duration_us", 0)
-                timeline_end_us = max(timeline_end_us, end_us)
+                timeline_end_us = max(timeline_end_us, _segment_end_us(segment))
 
-        # 更新新片段的 start_us
+        # 更新新片段的 start_us（兼容 target_timerange 和 start_time_us 两种格式）
         new_tracks = lv59_script.get("tracks", [])
         for track in new_tracks:
             for segment in track.get("segments", []):
-                if "start_time_us" in segment:
-                    segment["start_time_us"] += timeline_end_us
+                tr = segment.get("target_timerange")
+                if tr:
+                    tr["start"] = int(tr.get("start", 0)) + timeline_end_us
                 else:
-                    segment["start_time_us"] = timeline_end_us
+                    if "start_time_us" in segment:
+                        segment["start_time_us"] += timeline_end_us
+                    else:
+                        segment["start_time_us"] = timeline_end_us
 
         # 合并 tracks
         if new_tracks:
@@ -2234,8 +2291,7 @@ def create_draft_on_mac(
         new_end_us = 0
         for track in existing_tracks:
             for segment in track.get("segments", []):
-                end_us = segment.get("start_time_us", 0) + segment.get("duration_us", 0)
-                new_end_us = max(new_end_us, end_us)
+                new_end_us = max(new_end_us, _segment_end_us(segment))
         total_duration = new_end_us
 
         # 更新 draft_content.json
