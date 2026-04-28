@@ -337,11 +337,6 @@ export default defineConfig(({ mode }) => {
             changeOrigin: true,
             rewrite: (path) => path,
           },
-          '/api/image-cache': {
-            target: 'http://127.0.0.1:18092',
-            changeOrigin: true,
-            rewrite: (path) => path,
-          },
         },
       },
       plugins: [
