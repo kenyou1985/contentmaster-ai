@@ -2481,6 +2481,7 @@ if __name__ == "__main__":
     parser.add_argument("--name", type=str, default="测试草稿", help="草稿名称")
     parser.add_argument("--shots", type=str, default="[]", help="镜头 JSON（命令行参数方式）")
     parser.add_argument("--shots-json-stdin", action="store_true", help="镜头 JSON 从 stdin 读取（避免 E2BIG）")
+    parser.add_argument("--shots-json-file", type=str, default=None, help="镜头 JSON 从文件读取（大 payload 时使用）")
     parser.add_argument("--progress-callback", action="store_true", help="通过 stdout 报告进度")
     parser.add_argument("--resolution", type=str, default="1920x1080")
     parser.add_argument("--fps", type=int, default=30)
@@ -2492,33 +2493,52 @@ if __name__ == "__main__":
     elif args.list:
         print("list_drafts 需要完全磁盘访问权限")
     else:
-        # stdin 方式优先（大数据时避免 E2BIG）
-        if args.shots_json_stdin:
+        # 优先从文件读取，其次从 stdin，最后从命令行参数
+        shots = []
+        output_path = args.output
+        path_map_root = None
+        force_draft_folder_name = None
+        zip_part_suffix = None
+        batch_id = None
+        is_final_batch = True
+        media_only = False
+        rnd_tr = rnd_fx = False
+        
+        if args.shots_json_file:
+            # 从文件读取 JSON
+            with open(args.shots_json_file, 'r', encoding='utf-8') as f:
+                stdin_data = json.load(f)
+            shots = stdin_data.get("shots", [])
+            output_path = stdin_data.get("outputPath") or args.output
+            path_map_root = stdin_data.get("pathMapRoot")
+            force_draft_folder_name = stdin_data.get("forceDraftFolderName")
+            zip_part_suffix = stdin_data.get("zipPartSuffix")
+            batch_id = stdin_data.get("batchId")
+            is_final_batch = bool(stdin_data.get("isFinalBatch", True))
+            media_only = bool(stdin_data.get("mediaOnly", False))
+            rnd_tr = bool(stdin_data.get("randomTransitions"))
+            rnd_fx = bool(stdin_data.get("randomVideoEffects"))
+            if args.progress_callback:
+                set_progress_callback(lambda p, s: report_progress(p, s))
+        elif args.shots_json_stdin:
+            # 从 stdin 读取 JSON
             stdin_raw = _sys.stdin.read()
             stdin_data = json.loads(stdin_raw)
             shots = stdin_data.get("shots", [])
             output_path = stdin_data.get("outputPath") or args.output
             path_map_root = stdin_data.get("pathMapRoot")
             force_draft_folder_name = stdin_data.get("forceDraftFolderName")
-            zip_part_suffix = stdin_data.get("zipPartSuffix")  # 分批导出时添加到 ZIP 文件名的后缀
-            batch_id = stdin_data.get("batchId")  # 批次 ID（用于持久化存储）
-            is_final_batch = bool(stdin_data.get("isFinalBatch", True))  # 是否为最后一组
-            media_only = bool(stdin_data.get("mediaOnly", False))  # 是否只保存媒体文件
+            zip_part_suffix = stdin_data.get("zipPartSuffix")
+            batch_id = stdin_data.get("batchId")
+            is_final_batch = bool(stdin_data.get("isFinalBatch", True))
+            media_only = bool(stdin_data.get("mediaOnly", False))
             rnd_tr = bool(stdin_data.get("randomTransitions"))
             rnd_fx = bool(stdin_data.get("randomVideoEffects"))
-            # 启用进度回调
             if args.progress_callback:
                 set_progress_callback(lambda p, s: report_progress(p, s))
         else:
             shots = json.loads(args.shots)
-            output_path = args.output
-            path_map_root = None
-            force_draft_folder_name = None
-            zip_part_suffix = None
-            batch_id = None
-            is_final_batch = True
-            media_only = False
-            rnd_tr = rnd_fx = False
+            
         result = batch_export(
             draft_name=args.name,
             shots=shots,
