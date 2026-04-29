@@ -3946,6 +3946,60 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
       const expandPctMax = Math.round(expandRange.max * 100);
       const isChineseSeg = /[\u4e00-\u9fff]/.test(segSource);
       const charUnit = isChineseSeg ? '字（去空白）' : '字符（去空白）';
+      
+      // 中医玄学赛道特殊约束：根据段索引生成不同内容
+      const tcmSegmentConstraint = niche === NicheType.TCM_METAPHYSICS ? (() => {
+        // 获取前段结尾用于衔接
+        const prevEnding = idx > 0 ? (segmentOutputs[idx - 1] || '').trim().slice(-200) : '';
+        
+        if (idx === 0) {
+          // 第1段：开场白 + 引子（聚焦当天风险与核心警告）
+          return `【中医玄学赛道·第1段特殊约束·必须严格遵守】
+【⚠️ 核心概念】这是长篇文章的第1章，不是完整文章！全文共5章，必须连贯！
+【第1段结构】
+1. 以"各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。"开场（只出现一次，在第1段开头）
+2. 紧接着输出引子段落（聚焦当天风险与核心警告）
+3. 引子结束后输出"好了，我们开始上课。"
+4. 然后输出第1章正文内容（围绕本段大纲展开）
+【强制禁止】
+- "各位老友们好..."只允许在第1段开头出现一次
+- "好了，我们开始上课。"只允许在第1段引子后出现一次
+- 禁止输出"第1课"、"第2课"等章节标记
+- 禁止输出任何其他开场白或过渡语
+- 第1章正文要有实质性内容，不能只是引子`;
+        } else if (idx === 4) {
+          // 第5段：正文承接 + 收尾升华
+          return `【中医玄学赛道·第5段特殊约束·必须严格遵守】
+【⚠️ 核心概念】这是长篇文章的第5章（最后一章），不是完整文章！
+【前段结尾衔接参考】${prevEnding || '无'}
+【第5段结构】
+1. 自然承接上文内容，不要重复前段已讲的内容
+2. 深入展开本段大纲主题
+3. 结尾要有倪海厦风格收尾（如"好了，我话讲完了，信不信随你。下课！"）
+【强制禁止】
+- 禁止输出任何开场白（"各位老友们好..."）
+- 禁止输出任何过渡语（"好了，我们开始上课。"）
+- 禁止输出"第5课"、"最后一课"等章节标记
+- 禁止输出任何引导语或解释性文字
+- 禁止生成"下期再见"、"今天就讲到这"等收尾语（用倪海厦霸气风格代替）`;
+        } else {
+          // 第2-4段：纯正文承接
+          return `【中医玄学赛道·第${idx + 1}段特殊约束·必须严格遵守】
+【⚠️ 核心概念】这是长篇文章的第${idx + 1}章，不是完整文章！
+【前段结尾衔接参考】${prevEnding || '无'}
+【第${idx + 1}段结构】
+1. 自然承接前段内容，使用过渡句衔接
+2. 围绕本段大纲展开论述，要有具体案例或细节
+3. 内容要有深度，不能泛泛而谈
+【强制禁止】
+- 禁止输出任何开场白（"各位老友们好..."）
+- 禁止输出任何过渡语（"好了，我们开始上课。"）
+- 禁止输出"第${idx + 1}课"、"第${idx + 2}课"等章节标记
+- 禁止输出任何引导语或解释性文字
+- 禁止重复前段已讲过的案例或观点`;
+        }
+      })() : '';
+      
       const prompt = `请执行【${modeText}】，基于以下规则重写第${idx + 1}段：
 
 【赛道】${nicheName}
@@ -3953,57 +4007,21 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
 【分段大纲】${segmentOutline}
 【评论区痛点/关键词】${painPointText || '无'}
 【本段序号】第${idx + 1}段（共5段）
-${idx > 0 ? `【前段结尾】（仅作衔接参考，不可照抄）\n${(segmentOutputs[idx - 1] || '').trim().slice(-100)}` : '【前段结尾】无'}
+${niche === NicheType.TCM_METAPHYSICS ? '' : idx > 0 ? `【前段结尾】（仅作衔接参考，不可照抄）\n${(segmentOutputs[idx - 1] || '').trim().slice(-100)}` : '【前段结尾】无'}
 
 【原文分段】
 ${segSource}
 
 【硬性约束】
-${niche === NicheType.TCM_METAPHYSICS ? (idx === 0
-? `【中医玄学赛道·第1课约束·必须严格遵守】
-【强制禁止输出以下内容】
-- 禁止输出"第一课"、"第二课"等课程序号
-- 禁止输出"各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。"
-- 禁止输出"好了，我们开始上课。"
-- 禁止输出任何固定开场白
-【只输出纯正文】开头第一句就是正文，不要任何引导语`
-: idx === 1
-? `【中医玄学赛道·第2课约束·必须严格遵守】
-【强制禁止】
-- 禁止输出任何开头语、过渡语、引导语
-- 禁止输出"第二课"、"第一课"、"第三课"等课程序号
-- 禁止输出"好了，我们开始上课"
-- 只输出纯正文内容，开头第一句就是正文`
-: idx === 2
-? `【中医玄学赛道·第3课约束·必须严格遵守】
-【强制禁止】
-- 禁止输出任何开头语、过渡语、引导语
-- 禁止输出任何课程序号
-- 禁止输出"好了，我们开始上课"
-- 只输出纯正文内容，开头第一句就是正文`
-: idx === 3
-? `【中医玄学赛道·第4课约束·必须严格遵守】
-【强制禁止】
-- 禁止输出任何开头语、过渡语、引导语
-- 禁止输出任何课程序号
-- 禁止输出"好了，我们开始上课"
-- 只输出纯正文内容，开头第一句就是正文`
-: `【中医玄学赛道·第5课约束·必须严格遵守】
-【强制禁止】
-- 禁止输出任何开头语、过渡语、引导语
-- 禁止输出任何课程序号
-- 禁止输出"好了，我们开始上课"
-- 只输出纯正文内容，开头第一句就是正文（引向全文收尾升华）`)
-: `- 不得照抄原句，不得只换同义词`}
-- 保留核心中心思想，但表达必须重构
-- ${
-        mode === ToolMode.EXPAND
-          ? `【深度扩写 · 扩写强度策略】全文与分段计字均采用「去空白后的字符数」。该段原文约 ${sourceCharCount} 字，输出必须控制在 ${rewriteTargetMin}~${rewriteTargetMax} 字，约为原文 ${expandPctMin}%~${expandPctMax}% 体量（约 ${expandRange.min}~${expandRange.max} 倍），且必须明显长于原文`
-          : `输出字数（去空白计字）控制在 ${rewriteTargetMin} ~ ${rewriteTargetMax} 字（${modeText}，按当前洗稿字数策略执行）`
-      }
-- 必须完整收尾，结尾句闭环
-- 输出字数（去空白计字）必须在 ${rewriteTargetMin} ~ ${rewriteTargetMax} ${charUnit} 之间，超出上限算失败！
-- 输出字数必须在 ${rewriteTargetMin} ~ ${rewriteTargetMax} ${charUnit}，上限绝对不能超出！超出则任务失败！
+${niche === NicheType.TCM_METAPHYSICS ? tcmSegmentConstraint : `【赛道】${nicheName}
+【字数要求（去空白计字）】${rewriteTargetMin} ~ ${rewriteTargetMax} ${charUnit}
+- 不得照抄原句，不得只换同义词
+- 保留核心中心思想，但表达必须重构`}
+- ${mode === ToolMode.EXPAND
+    ? `【深度扩写 · 扩写强度策略】该段原文约 ${sourceCharCount} 字，输出必须控制在 ${rewriteTargetMin}~${rewriteTargetMax} 字，约为原文 ${expandPctMin}%~${expandPctMax}% 体量（约 ${expandRange.min}~${expandRange.max} 倍），且必须明显长于原文`
+    : `输出字数（去空白计字）控制在 ${rewriteTargetMin} ~ ${rewriteTargetMax} 字（${modeText}，按当前洗稿字数策略执行）`}
+${niche !== NicheType.TCM_METAPHYSICS ? `- 必须完整收尾，结尾句闭环` : ''}
+- 输出字数必须在 ${rewriteTargetMin} ~ ${rewriteTargetMax} ${charUnit} 之间，超出上限算失败！
 - 只输出正文，不要解释，不要标题`;
       await streamContentGeneration(
         prompt,
