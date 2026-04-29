@@ -226,66 +226,84 @@ function inferAudioMimeFromUrl(url: string): string | undefined {
 }
 
 /**
- * 导出前处理媒体 URL：blob: URL 必须转 base64（服务端无法访问 blob:）。
- * HTTP URL 保持不变让服务端直接下载，避免 JSON 因 base64 过大而传输失败。
- * Railway 环境下如遇下载失败（如大陆图片服务被海外访问），该镜头的媒体会缺失。
+ * 导出前处理媒体 URL
+ * 
+ * 核心逻辑：
+ * - HTTP URL：保持不变，Python 脚本直接下载（支持大文件，不会撑爆 JSON）
+ * - blob: URL：前端无法访问，尝试转 base64；转换失败则保留原 URL
+ * - data: URL：已是 base64，直接使用
+ * 
+ * 重要：本地模式绝不转 base64！base64 会使 JSON 膨胀 33%+，
+ * 43 个镜头的媒体文件转 base64 后轻易超过 500MB，导致 Node.js 报错。
  */
 export async function embedAudioDataUrlsForJianyingExport(
   shots: JianyingShot[],
   returnZip: boolean = false
 ): Promise<JianyingShot[]> {
   const out: JianyingShot[] = [];
+
   for (const s of shots) {
     let shot = { ...s };
 
-    // 处理图片：blob URL 必须转 base64（Python/Railway 无法访问 blob:）。
-    // HTTP URL 保持不变让 Python/Railway 直接下载。
-    // Railway 环境下如遇下载失败（如大陆图片服务被海外访问），该镜头的图片会缺失。
+    // 处理图片 URL
     const rawImage = shot.imageUrl?.trim() || (shot as any).imageUrls?.[0]?.trim();
-    if (rawImage && !rawImage.startsWith('data:')) {
-      try {
-        let dataUrl = rawImage;
-        // 只转 blob: URL；HTTP URL 保持不变让服务端下载
-        if (rawImage.startsWith('blob:')) {
+    if (rawImage) {
+      if (rawImage.startsWith('data:')) {
+        // 已是 base64，直接使用
+      } else if (rawImage.startsWith('blob:')) {
+        // blob: URL → 尝试转 base64（可能失败，因为文件可能已释放）
+        try {
           const r = await fetch(rawImage);
           if (r.ok) {
             const mime = r.headers.get('content-type')?.split(';')[0]?.trim() || 'image/png';
             const data = await r.arrayBuffer();
-            dataUrl = `data:${mime};base64,${arrayBufferToBase64(data)}`;
+            const dataUrl = `data:${mime};base64,${arrayBufferToBase64(data)}`;
+            shot.imageUrl = dataUrl;
+            if ((shot as any).imageUrls) {
+              (shot as any).imageUrls = [dataUrl];
+            }
+          } else {
+            console.warn('[JianyingExport] 图片 blob 已失效:', rawImage.substring(0, 50));
           }
+        } catch (e) {
+          console.warn('[JianyingExport] 图片处理失败:', e);
         }
-        shot.imageUrl = dataUrl;
-        if ((shot as any).imageUrls) {
-          (shot as any).imageUrls = [dataUrl];
-        }
-      } catch (e) {
-        console.warn('[JianyingExport] 图片处理失败，将使用原 URL:', e);
       }
+      // HTTP URL：保持不变，Python 会直接下载
     }
 
-    // 处理音频：blob URL 必须转 data:URL（Python 无法访问 blob:）。
-    // HTTP URL 保持不变让 Python 直接下载，避免 JSON 过大导致传输失败。
-    const raw = (shot.audioUrl || shot.voiceoverAudioUrl)?.trim();
-    if (!raw) { out.push(shot); continue; }
-    if (raw.startsWith('data:')) { out.push(shot); continue; }
-    if (raw.startsWith('blob:')) {
-      // 本地模式 blob URL → base64
-      try {
-        const r = await fetch(raw);
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const mime = r.headers.get('content-type')?.split(';')[0]?.trim()
-          || inferAudioMimeFromUrl(raw) || 'audio/mpeg';
-        const data = await r.arrayBuffer();
-        const dataUrl = `data:${mime};base64,${arrayBufferToBase64(data)}`;
-        shot.audioUrl = dataUrl;
-        shot.voiceoverAudioUrl = dataUrl;
-        out.push(shot);
-      } catch { out.push(shot); }
-      continue;
+    // 处理音频 URL
+    const rawAudio = (shot.audioUrl || shot.voiceoverAudioUrl)?.trim();
+    if (rawAudio) {
+      if (rawAudio.startsWith('data:')) {
+        // 已是 base64
+      } else if (rawAudio.startsWith('blob:')) {
+        try {
+          const r = await fetch(rawAudio);
+          if (r.ok) {
+            const mime = r.headers.get('content-type')?.split(';')[0]?.trim()
+              || inferAudioMimeFromUrl(rawAudio) || 'audio/mpeg';
+            const data = await r.arrayBuffer();
+            const dataUrl = `data:${mime};base64,${arrayBufferToBase64(data)}`;
+            shot.audioUrl = dataUrl;
+            shot.voiceoverAudioUrl = dataUrl;
+          }
+        } catch (e) {
+          console.warn('[JianyingExport] 音频处理失败:', e);
+        }
+      }
+      // HTTP URL：保持不变
     }
-    // Railway 环境直接传 URL
-    if (returnZip) { out.push(shot); continue; }
-    // 本地模式：HTTP URL 保持原样，让 Python 直接下载
+
+    // 处理视频 URL（如果有）
+    if (shot.videoUrl?.trim()) {
+      if (shot.videoUrl.startsWith('blob:')) {
+        // 视频 blob 太大，保留原 URL 让 Python 重新下载
+        console.warn('[JianyingExport] 视频使用 blob: URL，将让 Python 重新下载');
+      }
+      // HTTP URL：保持不变
+    }
+
     out.push(shot);
   }
   return out;

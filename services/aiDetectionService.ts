@@ -19,6 +19,10 @@
  *   D9  故事结构多样性 权重7%    多种开场=100分，重复=0分（默认50）
  *   D10 角色名一致性   权重5%    一致=100分，不一致=20分（默认50）
  *
+ * 赛道权重调整：
+ *   新闻热点/小美赛道：D5权重降至5%，D6权重降至8%，D7权重降至5%，D2权重提至18%
+ *   治愈心理学赛道：D10权重提至10%（宠物名一致性更重要）
+ *
  * 公式：score = round(加权平均) / 10
  * 效果：
  *   质量好（加权平均 70-95） → 7.0-9.5 分 → 优秀
@@ -28,10 +32,26 @@
 
 export type AiStrengthLevel = 'strong' | 'medium' | 'weak';
 
+/** 赛道类型，用于评分权重调整（共10个赛道） */
+export type NicheTypeForScoring = 
+  | 'tcm_metaphysics'    // 中医玄学/倪海厦
+  | 'finance_crypto'     // 金融投资/芒格
+  | 'psychology'         // 心理学/Awake Mentor
+  | 'philosophy_wisdom'   // 哲学智慧/禅意
+  | 'emotion_taboo'      // 情感禁忌/Taboo Love
+  | 'story_revenge'      // 复仇故事/Storytelling
+  | 'news'               // 新闻热点/小美
+  | 'yi_jing'            // 易经命理/曾仕强
+  | 'rich_mindset'       // 富人思维/马云
+  | 'mindful_psychology'  // 治愈心理学/Mindful Paws
+  | 'general'            // 通用赛道（默认）
+
 export interface AiDetectionResult {
   level: AiStrengthLevel;
   /** 人类感得分 (0-10)，越高表示越像真人写的 */
   score: number;
+  /** 使用的赛道类型（用于权重调整） */
+  nicheType: NicheTypeForScoring;
   /** 10个检测维度详情（均表示人类感质量，越高越好） */
   dimensions: {
     /** D1 模板词清洁度 (0-100) */
@@ -286,10 +306,213 @@ function lerp(value: number, from: number, to: number, outFrom: number, outTo: n
 }
 
 // ============================================================
+// 赛道识别函数
+// ============================================================
+
+/**
+ * 根据文本内容自动识别赛道类型
+ * 用于调整评分权重
+ */
+export function detectNicheType(text: string): NicheTypeForScoring {
+  const lowerText = text.toLowerCase();
+  
+  // 中医玄学/倪海厦赛道特征
+  const tcmKeywords = [
+    '倪海厦', '倪师', '中医', '经方', '黄帝内经', '伤寒论', '金匮',
+    '风水', '易经', '八字', '算命', '命理', '阳宅', '阴宅',
+    '针灸', '药方', '经方', '虚汗', '寒症', '热症',
+    '好了我们开始上课', '下课', '各位老友',
+  ];
+  
+  // 金融投资/芒格赛道特征
+  const financeKeywords = [
+    '芒格', '巴菲特', '价值投资', '护城河', '复利', '华尔街',
+    '伯克希尔', '聪明钱', '逆向思维', '普世智慧',
+    '查理', '股票', '估值', '财报', '市盈率',
+    '投资组合', '风险管理', '人性', '贪婪', '恐惧',
+  ];
+  
+  // 心理学/Awake Mentor赛道特征
+  const awakePsychologyKeywords = [
+    'NPD', '自恋型', '人格障碍', '依恋类型', '讨好型', '边界感',
+    '人间清醒', '一针见血', '犀利', '原生家庭', '亲密关系',
+    '自我成长', '能量场', '吸能', '打压',
+  ];
+  
+  // 哲学智慧/禅意赛道特征
+  const philosophyKeywords = [
+    '禅', '道家', '佛学', '老子', '庄子', '金刚经', '心经',
+    '开悟', '觉醒', '放下', '执念', '无常', '空',
+    '因果', '缘分', '修行', '悟', '通透',
+  ];
+  
+  // 情感禁忌/Taboo Love赛道特征
+  const emotionKeywords = [
+    '禁忌', '越界', '出轨', '背叛', '婚外情', '姐弟恋',
+    '暧昧', '心动', '克制', '窒息', '拉扯',
+    '婚姻', '爱情', '欲望', '道德',
+  ];
+  
+  // 复仇故事/Storytelling赛道特征
+  const revengeKeywords = [
+    '复仇', 'revenge', 'reddit', '故事', '逆转', '翻盘',
+    '算计', '反杀', '以牙还牙', '以其人之道',
+    '结局反转', '真相大白', '洗白', '反转',
+  ];
+  
+  // 新闻热点/小美赛道特征
+  const newsKeywords = [
+    '乌克兰', '以色列', '特朗普', '俄罗斯', '美国', '欧盟', '制裁',
+    '欧洲', '中东', '北约', '台海', '地缘', '粮食', '能源',
+    '国际', '外交', '战场', '绞肉机', '遮羞布', '回旋镖',
+    '各位观众', '我跟你们说', '咱们下期', '小美',
+    '谁在得利', '谁在受害', '谁在演',
+  ];
+  
+  // 易经命理/曾仕强赛道特征
+  const yiJingKeywords = [
+    '曾仕强', '曾教授', '易经', '道德经', '论语',
+    '卦象', '爻辞', '乾卦', '坤卦', '五行',
+    '太极', '阴阳', '道', '德', '仁义',
+    '我跟你讲', '你自己去悟', '信不信由你',
+  ];
+  
+  // 富人思维/马云赛道特征
+  const richMindsetKeywords = [
+    '马云', '阿里巴巴', '创业', '商业', '财富', '成功',
+    '思维', '格局', '眼光', '执行力', '商战',
+    '普通人', '逆袭', '赚钱', '机遇', '风口',
+    '各位朋友', '深夜', '我告诉你',
+  ];
+  
+  // 治愈心理学/Mindful Paws赛道特征
+  const mindfulPsychologyKeywords = [
+    ' Bean', 'Mochi', 'Junie', ' Muffin', ' Charlie',
+    '治愈', '疗愈', '减压', '抗焦虑', '宠物', '猫', '狗',
+    '心理健康', '情绪', '陪伴', '温暖', '放松',
+  ];
+  
+  // 计算各赛道匹配度
+  const scores: Record<string, number> = {
+    tcm: 0, finance: 0, awake: 0, philosophy: 0, emotion: 0,
+    revenge: 0, news: 0, yiJing: 0, rich: 0, mindful: 0,
+  };
+  
+  const keywordSets = [
+    { keywords: tcmKeywords, key: 'tcm' },
+    { keywords: financeKeywords, key: 'finance' },
+    { keywords: awakePsychologyKeywords, key: 'awake' },
+    { keywords: philosophyKeywords, key: 'philosophy' },
+    { keywords: emotionKeywords, key: 'emotion' },
+    { keywords: revengeKeywords, key: 'revenge' },
+    { keywords: newsKeywords, key: 'news' },
+    { keywords: yiJingKeywords, key: 'yiJing' },
+    { keywords: richMindsetKeywords, key: 'rich' },
+    { keywords: mindfulPsychologyKeywords, key: 'mindful' },
+  ];
+  
+  for (const { keywords, key } of keywordSets) {
+    for (const kw of keywords) {
+      if (lowerText.includes(kw.toLowerCase())) scores[key]++;
+    }
+  }
+  
+  // 根据匹配度判断赛道（使用不同的阈值）
+  if (scores.tcm >= 3) return 'tcm_metaphysics';
+  if (scores.finance >= 4) return 'finance_crypto';
+  if (scores.awake >= 3) return 'psychology';
+  if (scores.philosophy >= 3) return 'philosophy_wisdom';
+  if (scores.emotion >= 3) return 'emotion_taboo';
+  if (scores.revenge >= 2) return 'story_revenge';
+  if (scores.news >= 4) return 'news';
+  if (scores.yiJing >= 3) return 'yi_jing';
+  if (scores.rich >= 3) return 'rich_mindset';
+  if (scores.mindful >= 3) return 'mindful_psychology';
+  
+  return 'general';
+}
+
+/**
+ * 获取赛道特定的评分权重
+ * 权重总和必须为 1.0
+ * 
+ * 维度说明：
+ * D1: 模板词清洁度 - 避免AI腔
+ * D2: 口语词密度 - 语言自然度
+ * D3: 句式多样性 - 句子结构变化
+ * D4: 段落不均匀度 - 长短段落交替
+ * D5: 第一人称主体 - 个人视角
+ * D6: 具体细节锚点 - 具体人名/地名/事件
+ * D7: 自嘲/口语打断 - 口语化表达
+ * D8: 结尾质量 - 自然收尾
+ * D9: 故事结构多样性 - 叙事多样性
+ * D10: 名字一致性 - 角色名一致
+ */
+function getNicheWeights(nicheType: NicheTypeForScoring): number[] {
+  // 默认权重：[D1, D2, D3, D4, D5, D6, D7, D8, D9, D10]
+  const defaultWeights = [0.10, 0.15, 0.10, 0.08, 0.12, 0.15, 0.10, 0.08, 0.07, 0.05];
+  
+  switch (nicheType) {
+    case 'tcm_metaphysics':
+      // 中医玄学/倪海厦：强调口语打断（D7）、第一人称（D5）、结尾霸气（D8）
+      // 倪师风格：直接、不客气、案例丰富、自嘲式打断
+      return [0.08, 0.12, 0.08, 0.10, 0.12, 0.10, 0.15, 0.12, 0.08, 0.05];
+    
+    case 'finance_crypto':
+      // 金融投资/芒格：强调口语词（D2）、句式多样性（D3）、自嘲（D7）
+      // 芒格风格：尖酸刻薄、反讽、普世智慧、案例丰富
+      return [0.10, 0.15, 0.12, 0.08, 0.08, 0.10, 0.12, 0.10, 0.10, 0.05];
+    
+    case 'psychology':
+      // 心理学/Awake Mentor：强调口语密度（D2）、自嘲（D7）、结尾犀利（D8）
+      // 心理学风格：犀利专业、一针见血、不熬鸡汤
+      return [0.10, 0.15, 0.10, 0.08, 0.10, 0.12, 0.12, 0.10, 0.08, 0.05];
+    
+    case 'philosophy_wisdom':
+      // 哲学智慧/禅意：强调句式多样性（D3）、段落变化（D4）、故事结构（D9）
+      // 哲学风格：通透、慢节奏、东方智慧、留白感
+      return [0.10, 0.10, 0.12, 0.12, 0.08, 0.08, 0.08, 0.10, 0.12, 0.10];
+    
+    case 'emotion_taboo':
+      // 情感禁忌：强调具体细节（D6）、句式变化（D3）、情感深度（D9）
+      // 情感风格：细腻克制、心理描写、微小瞬间、窒息感
+      return [0.08, 0.12, 0.12, 0.10, 0.10, 0.15, 0.08, 0.08, 0.12, 0.05];
+    
+    case 'story_revenge':
+      // 复仇故事：强调故事结构（D9）、细节锚点（D6）、具体情节（D6）
+      // 故事风格：叙事张力、情节反转、细节丰富
+      return [0.08, 0.10, 0.10, 0.08, 0.08, 0.15, 0.08, 0.10, 0.15, 0.08];
+    
+    case 'news':
+      // 新闻热点/小美：降低D5、D6、D7权重，提高D2、D9权重
+      // 新闻风格：口语流畅、叙事有力、观点鲜明
+      return [0.10, 0.18, 0.12, 0.09, 0.05, 0.08, 0.05, 0.10, 0.13, 0.10];
+    
+    case 'yi_jing':
+      // 易经命理/曾仕强：强调口语打断（D7）、结尾自然（D8）、第一人称（D5）
+      // 曾仕强风格：自然收束、不煽情、东方智慧
+      return [0.08, 0.12, 0.10, 0.10, 0.12, 0.10, 0.13, 0.12, 0.08, 0.05];
+    
+    case 'rich_mindset':
+      // 富人思维/马云：强调口语词（D2）、句式变化（D3）、第一人称（D5）
+      // 马云风格：直击痛点、商业智慧、深夜语录感
+      return [0.08, 0.15, 0.12, 0.08, 0.12, 0.10, 0.10, 0.10, 0.10, 0.05];
+    
+    case 'mindful_psychology':
+      // 治愈心理学：强调口语密度（D2）、结尾治愈（D8）、宠物名一致（D10）
+      // 治愈风格：温暖口语、自然疗愈、宠物共鸣
+      return [0.10, 0.15, 0.10, 0.08, 0.08, 0.10, 0.10, 0.10, 0.09, 0.10];
+    
+    default:
+      return defaultWeights;
+  }
+}
+
+// ============================================================
 // 核心检测函数
 // ============================================================
 
-export function detectAiFeatures(text: string, lang?: string): AiDetectionResult {
+export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheTypeForScoring): AiDetectionResult {
   const issues: string[] = [];
   const suggestions: string[] = [];
   const textLength = text.replace(/\s/g, '').length;
@@ -298,6 +521,7 @@ export function detectAiFeatures(text: string, lang?: string): AiDetectionResult
     return {
       level: 'strong',
       score: 0,
+      nicheType: nicheType || 'general',
       dimensions: {
         templateWords: 0, colloquialDensity: 0, sentenceVariation: 0,
         paragraphVariation: 0, firstPersonVoice: 0, concreteDetails: 0,
@@ -308,6 +532,9 @@ export function detectAiFeatures(text: string, lang?: string): AiDetectionResult
     };
   }
 
+  // 自动检测赛道类型（如果未指定）
+  const detectedNiche = nicheType || detectNicheType(text);
+  const weights = getNicheWeights(detectedNiche);
   const lang_ = lang || detectLanguage(text);
   const templateWords = getWords(lang_, AI_TEMPLATE_WORDS);
   const humanWords = getWords(lang_, HUMAN_COLLOQUIAL_WORDS);
@@ -683,13 +910,11 @@ export function detectAiFeatures(text: string, lang?: string): AiDetectionResult
     // D10 保持 50（默认值）：检测不到名字时不扣分（可能是纯人类主题）
   }
 
-  // ===== 综合得分：直接加权平均 / 10 = 0-10 分 =====
+  // ===== 综合得分：使用赛道特定权重计算加权平均 =====
   // 质量好的内容（优化到位）加权平均约 70-95 → 7.0-9.5 分（优秀）
   // 质量中的内容 → 5.0-7.0 分（一般）
   // 质量差的内容 → <5.0 分（较弱）
   const dims = [D1, D2, D3, D4, D5, D6, D7, D8, D9, D10];
-  const weights = [0.10, 0.15, 0.10, 0.08, 0.12, 0.15, 0.10, 0.08, 0.07, 0.05];
-
   const weightedSum = dims.reduce((sum, d, i) => sum + d * weights[i], 0);
   const score = Math.round(weightedSum) / 10;
 
@@ -705,6 +930,7 @@ export function detectAiFeatures(text: string, lang?: string): AiDetectionResult
   return {
     level,
     score,
+    nicheType: detectedNiche,
     dimensions: {
       templateWords: D1,
       colloquialDensity: D2,

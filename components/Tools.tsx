@@ -763,13 +763,12 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
 
     const isEnglish = isEnglishText(cleaned);
     
-    // 根据语言设置目标字数范围
-    // 中文：200-300字，英文：300-450字符
+    // 根据语言设置目标字数范围（每个镜头 100-200 字）
     const avgChars = isEnglish 
-      ? Math.max(350, Math.round(cleaned.length / targetShots))
-      : Math.max(200, Math.round(cleaned.length / targetShots));
-    const minLen = Math.round(avgChars * 0.8);
-    const maxLen = Math.round(avgChars * 1.2);
+      ? Math.max(200, Math.round(cleaned.length / targetShots))
+      : Math.max(120, Math.round(cleaned.length / targetShots));
+    const minLen = Math.round(avgChars * 0.7);  // 最低 70-140 字
+    const maxLen = Math.round(avgChars * 1.4);  // 最高 168-280 字
 
     // 按句子分割（保证完整性）
     const sentences = splitIntoSentences(cleaned);
@@ -1186,7 +1185,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     let skipInvalidBlock = false; // 标记是否在跳过无效格式块（如【脚本角色清单】）
     const targetShots = scriptShotMode === 'custom'
       ? Math.min(100, Math.max(10, scriptShotCount))
-      : Math.min(60, Math.ceil(inputText.length / 250));
+      : Math.min(60, Math.max(30, Math.ceil(inputText.length / 150)));
     
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
@@ -1839,7 +1838,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       const shotCount = getUniqueShotCount(text);
       const targetShots = scriptShotMode === 'custom'
         ? Math.min(100, Math.max(10, scriptShotCount))
-        : Math.min(60, Math.ceil(originalLength / 250));
+        : Math.min(60, Math.max(30, Math.ceil(originalLength / 150)));
       
       // 不能仅凭角色/场景信息提前判定完成，必须通过尾部对齐和字数搬运校验
       
@@ -2067,7 +2066,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     let sameShotReworkCount = 0;
     const dynamicTargetShots = scriptShotMode === 'custom'
       ? Math.min(100, Math.max(10, scriptShotCount))
-      : Math.min(60, Math.ceil(taskInputText.length / 250));
+      : Math.min(60, Math.max(30, Math.ceil(taskInputText.length / 150)));
     if (taskMode === ToolMode.SCRIPT && !isRevengeScriptTask) {
       // 二段式输出：无论自动/自定义镜头数，都先做均分切段，供第一段镜头文案使用
       shotSegmentsRef.current = segmentTextByShots(taskInputText, dynamicTargetShots);
@@ -2138,7 +2137,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
 
     const MAX_CONTINUATIONS = scriptShotMode === 'custom'
       ? Math.min(30, Math.max(10, dynamicTargetShots))
-      : 10; // 与金融等脚本赛道一致，并缩短无效循环时间
+      : 15; // 自动模式增加到15次（原文较长时需要更多续写）
     let continuationCount = 0;
     
     updateTask({ isGenerating: true, outputText: '' });
@@ -2636,16 +2635,29 @@ ${inputSection}
 ## Output Format
 请直接输出润色後的纯净最終版本（使用 ${inputLanguage} 输出），保持簡潔連貫流暢，無需標註修改痕跡或解釋。严禁使用「## 」「### 」「修改说明：」「（）」「**」等任何标记。`;
         case ToolMode.SCRIPT:
+                // 计算镜头数量和字数范围
+                const targetShots = scriptShotMode === 'custom'
+                  ? Math.min(100, Math.max(10, scriptShotCount))
+                  : Math.min(60, Math.max(30, Math.ceil(originalLength / 150)));
+                const avgChars = Math.max(120, Math.min(200, Math.round(originalLength / targetShots)));
+                const minChars = Math.max(100, Math.round(avgChars * 0.7));
+                const maxChars = Math.min(220, Math.round(avgChars * 1.4));
+                
                 const scriptPrompt = `### 任务指令：视频分镜生成
 
 ${inputSection}
 
-## 格式要求
+## 镜头数量要求（强制）
+- **目标镜头数**：${targetShots} 个
+- **每个镜头文案字数**：${minChars}-${maxChars} 字（约 ${avgChars} 字）
+- **【重要】必须将多个短句合并为一个镜头的文案**，不能每个短句单独成一个镜头！
+
+## 格式要求（严格按顺序输出所有镜头）
 
 按以下格式输出所有分镜，禁止输出任何分析过程：
 
 镜头N
-镜头文案:[必须包含该分镜对应的所有原文句子，严格按原文输出]
+镜头文案:[必须包含该分镜对应的多个原文句子（合并为一个镜头），100%原文还原]
 图片提示词:图片背景为[主要场景]，[时间段]，[环境简述]。[构图描述]
 视频提示词:[运镜或动态趋势的描述]
 景别:[特写/近景/中景/全景/微观/宏观]
@@ -2857,16 +2869,18 @@ ${needsMore ?
                 : '0';
             
             // 估算还需要多少镜头（基于原文长度和已完成内容）
+            // 自动模式：30-60个镜头，每个镜头100-200字文案
+            // 镜头数量 = 原文字数 / 150（目标每个镜头150字左右）
+            const baseShotCount = Math.ceil(originalLength / 150);
             const estimatedTotalShots = scriptShotMode === 'custom'
               ? Math.min(100, Math.max(10, scriptShotCount))
-              : Math.min(60, Math.ceil(originalLength / 250));
+              : Math.min(60, Math.max(30, baseShotCount));
             const expectedSegments = scriptShotMode === 'custom' ? shotSegmentsRef.current : null;
-            // 【修复】对于长原文，增加每个镜头的最小字符数限制，避免内容被过度压缩
-            // minChars: 中文至少300字，英文至少400字（确保原文内容完整保留）
-            // maxChars: 中文最多为avgChars的2倍，英文最多为avgChars的2.5倍
-            const avgChars = Math.max(150, Math.round(originalLength / estimatedTotalShots));
-            const minChars = isChinese ? Math.max(300, Math.round(avgChars * 0.8)) : Math.max(400, Math.round(avgChars * 0.8));
-            const maxChars = isChinese ? Math.max(minChars + 80, Math.round(avgChars * 2.0)) : Math.max(minChars + 120, Math.round(avgChars * 2.5));
+            // 【修复】自动模式：每个镜头100-200字，确保内容均衡分布
+            // 目标：每个镜头文案150字左右，既不太短也不太长
+            const avgChars = Math.max(120, Math.min(200, Math.round(originalLength / estimatedTotalShots)));
+            const minChars = Math.max(100, Math.round(avgChars * 0.7)); // 最低100字
+            const maxChars = Math.min(220, Math.round(avgChars * 1.4)); // 最高220字
             const remainingShots = Math.max(0, estimatedTotalShots - shotCount);
             const nextShotNumber = Math.min(estimatedTotalShots, shotCount + 1);
             
@@ -2995,7 +3009,8 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
 【续写要求（CRITICAL）】${!needsRework && !roleSceneInstruction ? `
 1. **继续输出镜头**：从「----」下一行开始，继续输出下一个镜头
 2. **镜头格式**：必须包含所有字段（镜头序号、镜头文案、图片提示词、视频提示词、景别、语音分镜、音效）
-3. **镜头文案（绝对铁律 - 100%原文还原，绝对禁止修改）**：
+3. **【强制合并短句】**：如果原文由多个短句组成，必须将多个短句合并为一个镜头的文案，确保每个镜头文案有 ${minChars}-${maxChars} 字（约 ${avgChars} 字）。**禁止把每个短句单独输出为一个镜头！**
+4. **镜头文案（绝对铁律 - 100%原文还原，绝对禁止修改）**：
    ⚠️ **这是最重要的规则，违反即失败**：
    - **必须从上面提供的【原文内容】中继续复制粘贴，不能有任何改动**
    - **根据【进度统计】，你已经搬运了${copiedTextLength}字（${copyProgress}%），还需要搬运约${remainingTextLength}字**
@@ -3379,7 +3394,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                     if (taskMode === ToolMode.SCRIPT) {
                         const expectedShots = scriptShotMode === 'custom'
                           ? Math.min(100, Math.max(10, scriptShotCount))
-                          : Math.min(60, Math.ceil(originalLength / 250));
+                          : Math.min(60, Math.max(30, Math.ceil(originalLength / 150)));
                         setShotPromptProgress(estimatePromptProgress(localOutput, expectedShots));
                     }
                 });
@@ -3391,7 +3406,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                     const currentShotCount = getUniqueShotCount(localOutput);
                     const targetShots = scriptShotMode === 'custom'
                       ? Math.min(100, Math.max(10, scriptShotCount))
-                      : Math.min(60, Math.ceil(originalLength / 250));
+                      : Math.min(60, Math.max(30, Math.ceil(originalLength / 150)));
                     const tailAligned = isLastShotTailAligned(localOutput, originalScriptInputRef.current || '');
                     if (hasSceneInfo || hasRoleInfo) {
                         if (currentShotCount < targetShots) {
@@ -3470,7 +3485,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
                   const currentShotCount = getUniqueShotCount(localOutput);
                   const targetShots = scriptShotMode === 'custom'
                     ? Math.min(100, Math.max(10, scriptShotCount))
-                    : Math.min(60, Math.ceil(originalLength / 250));
+                    : Math.min(60, Math.max(30, Math.ceil(originalLength / 150)));
                   const shouldStop = scriptShotMode === 'custom'
                     ? (hasSceneInfo && hasRoleInfo && currentShotCount >= targetShots)
                     : (hasSceneInfo && hasRoleInfo);

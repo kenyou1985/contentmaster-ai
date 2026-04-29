@@ -934,22 +934,19 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const [showHistorySelector, setShowHistorySelector] = useState(false);
   const [historyRecords, setHistoryRecords] = useState<HistoryRecord[]>([]);
   const [pendingSubModeChange, setPendingSubModeChange] = useState<{ niche: NicheType; submode: string } | null>(null);
-  /** 治愈心理学·一键动画分镜：独立历史弹窗（与脚本历史 key 分离为 mindful_mode2） */
+  // 全赛道·一键动画分镜相关状态
   const [showStoryboardHistorySelector, setShowStoryboardHistorySelector] = useState(false);
   const [storyboardHistoryRecords, setStoryboardHistoryRecords] = useState<HistoryRecord[]>([]);
-
-  // Mindful Psychology 频道相关状态
-  const [mindfulMode, setMindfulMode] = useState<'mode1' | 'mode2'>('mode1');
-  const [mindfulScript, setMindfulScript] = useState('');
   const [storyboard, setStoryboard] = useState('');
+  const [storyboardScript, setStoryboardScript] = useState('');
   const [isGeneratingStoryboard, setIsGeneratingStoryboard] = useState(false);
   /** 分镜生成进度百分比（0-100） */
   const [storyboardProgress, setStoryboardProgress] = useState(0);
-  /** 治愈心理学：一键动画分镜默认折叠，点击标题展开 */
-  const [mindfulStoryboardExpanded, setMindfulStoryboardExpanded] = useState(false);
-  const mindfulStoryboardAnchorRef = useRef<HTMLDivElement>(null);
+  /** 一键动画分镜默认折叠，点击标题展开 */
+  const [storyboardExpanded, setStoryboardExpanded] = useState(false);
+  const storyboardAnchorRef = useRef<HTMLDivElement>(null);
   /** 一键动画分镜画面风格：与媒体生成「风格设置」同一套选项与 localStorage */
-  const [mindfulStoryboardStyleId, setMindfulStoryboardStyleId] = useState(() => {
+  const [storyboardStyleId, setStoryboardStyleId] = useState(() => {
     try {
       const s = localStorage.getItem(MEDIA_IMAGE_STYLE_STORAGE_KEY);
       if (s && MEDIA_IMAGE_STYLE_SELECT_OPTIONS.some((o) => o.id === s)) return s;
@@ -960,11 +957,11 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   });
   useEffect(() => {
     try {
-      localStorage.setItem(MEDIA_IMAGE_STYLE_STORAGE_KEY, mindfulStoryboardStyleId);
+      localStorage.setItem(MEDIA_IMAGE_STYLE_STORAGE_KEY, storyboardStyleId);
     } catch {
       /* ignore */
     }
-  }, [mindfulStoryboardStyleId]);
+  }, [storyboardStyleId]);
 
   // 治愈心理学多语言输出选项
   const mindfulLanguages: { id: MindfulLanguage; name: string; native: string }[] = [
@@ -1171,8 +1168,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     }
     setStoryboard(text);
     const src = record.metadata?.input?.trim();
-    if (src) setMindfulScript(src);
-    setMindfulStoryboardExpanded(true);
+    if (src) setStoryboardScript(src);
+    setStoryboardExpanded(true);
     toast.success('已载入分镜历史');
     setShowStoryboardHistorySelector(false);
   };
@@ -1606,7 +1603,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     }
   };
 
-  // Mindful Psychology 频道：生成分镜（可选 scriptOverride 避免 setState 异步导致未取到最新文案）
+  // 全赛道·一键动画分镜：生成分镜（可选 scriptOverride 避免 setState 异步导致未取到最新文案）
   const handleGenerateStoryboard = async (scriptOverride?: string) => {
     if (!apiKey || !apiKey.trim()) {
       toast.error("请先在设置中输入您的 API Key。");
@@ -1618,14 +1615,16 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       return;
     }
 
-    const effectiveScript = (scriptOverride ?? mindfulScript).trim();
+    // 优先使用传入的脚本，其次使用全局 storyboardScript
+    const globalScript = (storyboardScript || '').trim();
+    const effectiveScript = (scriptOverride ?? globalScript).trim();
     if (!effectiveScript) {
       toast.warning("请先在左侧输入要生成分镜的脚本内容。");
       return;
     }
 
     if (scriptOverride !== undefined && scriptOverride.trim()) {
-      setMindfulScript(scriptOverride);
+      setStoryboardScript(scriptOverride);
     }
 
     initializeGemini(apiKey, { provider });
@@ -1658,9 +1657,9 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       const systemInstruction =
         '你是一个全领域万能短视频分镜生成器。接收故事文本，通过"语义合并"与"抽象概念具象化"生成动画/实拍视频提示词。**严格按照格式输出分镜内容，禁止输出任何前缀说明或分析过程。**';
 
-      const stylePromptEn = getMediaImageStylePromptEn(mindfulStoryboardStyleId);
-      const isMinimalistStyle = mindfulStoryboardStyleId === 'minimalist';
-      const isAnimeAestheticsStyle = mindfulStoryboardStyleId === 'anime_aesthetics';
+      const stylePromptEn = getMediaImageStylePromptEn(storyboardStyleId);
+      const isMinimalistStyle = storyboardStyleId === 'minimalist';
+      const isAnimeAestheticsStyle = storyboardStyleId === 'anime_aesthetics';
       
       // 【预切分原文】严格按照句子边界切分，保证完整性
       const scriptSegments = segmentTextByShots(effectiveScript, estimatedShots);
@@ -5563,19 +5562,19 @@ ${segmentSourceText}
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  /** 从即時編輯器跳转：展开上方分镜区、填入当前文稿并立即开始流式生成分镜 */
-  const openMindfulStoryboardFromEditor = () => {
+  /** 从即時編輯器跳转：展开上方分镜区、填入当前文稿并立即开始流式生成分镜（适用于所有赛道） */
+  const openStoryboardFromEditor = () => {
     const item = generatedContents[viewIndex];
     const text = item?.content?.trim() ?? '';
     if (!text) {
       toast.warning('当前暂无文案，无法生成分镜');
       return;
     }
-    setMindfulScript(text);
-    setMindfulStoryboardExpanded(true);
+    setStoryboardScript(text);
+    setStoryboardExpanded(true);
     void handleGenerateStoryboard(text);
     window.setTimeout(() => {
-      mindfulStoryboardAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      storyboardAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 120);
   };
 
@@ -6944,17 +6943,16 @@ ${segmentSourceText}
                 )}
             </div>
         )}
-        {/* 治愈心理学：动画分镜（选题与「分段并行工作台」见上方，与全赛道一致） */}
-        {niche === NicheType.MINDFUL_PSYCHOLOGY && (
+        {/* 全赛道·一键动画分镜区域 */}
           <div className="mt-8 p-4 bg-slate-800/50 border border-slate-700 rounded-xl">
             <div className="flex items-center gap-2 mb-4">
-              <span className="text-lg">🐾</span>
-              <span className="text-slate-200 font-medium">治愈心理学频道</span>
+              <span className="text-lg">{niche === NicheType.MINDFUL_PSYCHOLOGY ? '🐾' : niche === NicheType.PSYCHOLOGY ? '🧠' : niche === NicheType.PHILOSOPHY_WISDOM ? '🪷' : niche === NicheType.EMOTION_TABOO ? '🕯️' : niche === NicheType.STORY_REVENGE ? '⚔️' : niche === NicheType.GENERAL_VIRAL ? '🔥' : niche === NicheType.YI_JING_METAPHYSICS ? '📿' : niche === NicheType.RICH_MINDSET ? '💎' : niche === NicheType.TCM_METAPHYSICS ? '☯️' : niche === NicheType.FINANCE_CRYPTO ? '💰' : '🎬'}</span>
+              <span className="text-slate-200 font-medium">{niche === NicheType.MINDFUL_PSYCHOLOGY ? '治愈心理学频道' : niche === NicheType.PSYCHOLOGY ? '心理学' : niche === NicheType.PHILOSOPHY_WISDOM ? '哲学智慧' : niche === NicheType.EMOTION_TABOO ? '情感禁忌' : niche === NicheType.STORY_REVENGE ? '复仇故事' : niche === NicheType.GENERAL_VIRAL ? '新闻热点' : niche === NicheType.YI_JING_METAPHYSICS ? '易经命理' : niche === NicheType.RICH_MINDSET ? '富人思维' : niche === NicheType.TCM_METAPHYSICS ? '中医玄学' : niche === NicheType.FINANCE_CRYPTO ? '金融投资' : '一键动画分镜'}：动画分镜</span>
             </div>
-            <div ref={mindfulStoryboardAnchorRef}>
+            <div ref={storyboardAnchorRef}>
               <button
                 type="button"
-                onClick={() => setMindfulStoryboardExpanded((v) => !v)}
+                onClick={() => setStoryboardExpanded((v) => !v)}
                 className="w-full flex items-center justify-between gap-2 rounded-lg border border-slate-600 bg-slate-900/50 px-3 py-2.5 mb-2 text-left hover:bg-slate-800/70 transition-colors"
               >
                 <span className="flex items-center gap-2 text-sm text-slate-300 font-medium min-w-0">
@@ -6962,24 +6960,24 @@ ${segmentSourceText}
                   <span className="truncate">一键动画分镜</span>
                   <span className="text-xs font-normal text-slate-500 shrink-0">（点击展开）</span>
                 </span>
-                {mindfulStoryboardExpanded ? (
+                {storyboardExpanded ? (
                   <ChevronDown size={18} className="text-slate-400 shrink-0" />
                 ) : (
                   <ChevronRight size={18} className="text-slate-400 shrink-0" />
                 )}
               </button>
-              {mindfulStoryboardExpanded && (
+              {storyboardExpanded && (
                 <>
                   <div className="mb-3 flex flex-wrap items-end gap-3">
                     <div className="min-w-[200px] max-w-[320px] flex-1">
                       <label className="text-[10px] text-slate-500 mb-0.5 block">风格设置（与媒体生成一致）</label>
                       <select
                         value={
-                          MEDIA_IMAGE_STYLE_SELECT_OPTIONS.some((o) => o.id === mindfulStoryboardStyleId)
-                            ? mindfulStoryboardStyleId
+                          MEDIA_IMAGE_STYLE_SELECT_OPTIONS.some((o) => o.id === storyboardStyleId)
+                            ? storyboardStyleId
                             : 'none'
                         }
-                        onChange={(e) => setMindfulStoryboardStyleId(e.target.value)}
+                        onChange={(e) => setStoryboardStyleId(e.target.value)}
                         className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
                       >
                         {MEDIA_IMAGE_STYLE_SELECT_OPTIONS.map((o) => (
@@ -6993,8 +6991,8 @@ ${segmentSourceText}
                   <div className="flex gap-4">
                     <div className="flex-1">
                       <textarea
-                        value={mindfulScript}
-                        onChange={(e) => setMindfulScript(e.target.value)}
+                        value={storyboardScript}
+                        onChange={(e) => setStoryboardScript(e.target.value)}
                         placeholder="在此粘贴脚本内容，一键生成动画分镜..."
                         className="w-full h-[280px] bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-slate-200 focus:outline-none focus:border-emerald-500 resize-none custom-scrollbar text-sm"
                       />
@@ -7065,7 +7063,7 @@ ${segmentSourceText}
                     <button
                       type="button"
                       onClick={() => void handleGenerateStoryboard()}
-                      disabled={isGeneratingStoryboard || !mindfulScript.trim()}
+                      disabled={isGeneratingStoryboard || !storyboardScript.trim()}
                       className="px-8 py-2.5 bg-purple-600 hover:bg-purple-500 text-white font-medium rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                     >
                       {isGeneratingStoryboard ? (
@@ -7085,7 +7083,6 @@ ${segmentSourceText}
               )}
             </div>
           </div>
-        )}
       </section>
 
       {/* 3. Output Section */}
@@ -7181,9 +7178,21 @@ ${segmentSourceText}
                                     {niche === NicheType.MINDFUL_PSYCHOLOGY && (
                                         <button
                                             type="button"
-                                            onClick={openMindfulStoryboardFromEditor}
+                                            onClick={openStoryboardFromEditor}
                                             className="px-3 py-2 bg-purple-600/20 hover:bg-purple-600/35 text-purple-200 hover:text-purple-50 border border-purple-500/40 rounded-md transition-all flex items-center gap-1.5 text-xs"
                                             title="展开策划区「一键动画分镜」并填入当前文案"
+                                        >
+                                            <Film size={14} />
+                                            一键动画分镜
+                                        </button>
+                                    )}
+                                    {/* 所有赛道通用：一键动画分镜按钮（显示在右上角，治愈心理学赛道不重复显示） */}
+                                    {niche !== NicheType.MINDFUL_PSYCHOLOGY && (
+                                        <button
+                                            type="button"
+                                            onClick={openStoryboardFromEditor}
+                                            className="px-3 py-2 bg-purple-600/20 hover:bg-purple-600/35 text-purple-200 hover:text-purple-50 border border-purple-500/40 rounded-md transition-all flex items-center gap-1.5 text-xs"
+                                            title="展开上方「一键动画分镜」并填入当前文案"
                                         >
                                             <Film size={14} />
                                             一键动画分镜

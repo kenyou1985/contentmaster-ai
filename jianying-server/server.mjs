@@ -26,9 +26,9 @@ const PORT = process.env.PORT || (IS_RAILWAY ? 10000 : 18091);
 
 const app = express();
 
-// 增加请求体大小限制：从默认 100KB 增加到 200MB（支持 base64 图片数据）
-app.use(express.json({ limit: '200mb' }));
-app.use(express.urlencoded({ extended: true, limit: '200mb' }));
+// 增加请求体大小限制：从默认 100KB 增加到 1GB（支持 base64 图片/音频/视频数据）
+app.use(express.json({ limit: '1gb' }));
+app.use(express.urlencoded({ extended: true, limit: '1gb' }));
 
 const recentZipPathByName = new Map();
 
@@ -373,7 +373,7 @@ app.use(cors({
 }));
 
 app.use(express.json({
-  limit: '100mb',
+  limit: '1gb',  // 支持更大的请求体（base64 编码会比原文件大约 1.33 倍）
   inflate: true,
   // 自定义错误处理：区分请求中止（不打印为 ERROR）和格式错误
   verify: (req, _res, buf) => {
@@ -427,7 +427,7 @@ app.use((err, req, res, _next) => {
   if (errType === 'entity.too.large') {
     console.warn('[jianying-server] 请求体过大');
     if (!res.headersSent) {
-      res.status(413).json({ error: '请求体过大，最大支持 100MB' });
+      res.status(413).json({ error: '请求体过大，最大支持 1GB' });
     }
     return;
   }

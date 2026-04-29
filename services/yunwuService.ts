@@ -169,11 +169,7 @@ Optimize the user's lines for natural, fluent speech: improve punctuation and ph
 Rules:
 - Output ONLY the final text to be spoken. Same language as input (do not translate).
 - Do NOT add role names, shot labels, markdown, or quotes wrapping the entire output.
-- Do NOT add opening greetings like "各位老友们好" or "欢迎来到我的频道" or channel announcements.
-- Do NOT add transitional phrases like "好了，我们开始上课" or "各位乡亲".
-- Do NOT repeat the same paragraph or section. Keep each section unique.
 - Keep the content complete; do not summarize away substantive lines.
-- If the input contains multiple paragraphs/sections that are continuations, keep them as a single flowing narrative—do NOT restart each paragraph as if beginning a new article.
 - Input is expected to stay within about 5000 characters; keep the output in the same ballpark—no gratuitous lengthening or filler.`;
 
 async function runTtsPolishChat(
@@ -252,23 +248,13 @@ export async function polishTextForTtsSpeechWithStyle(
   }
 
   const styleBlock = persona
-    ? `\n\n【演绎风格 / 人设】
-${persona}
-
-重要约束：
-- 如果正文是多段连续的叙述内容（如同一人连续讲述的多个段落），必须保持为一个连贯的整体，不要在段落之间插入开场白、过渡语或重复性语句。
-- 不要在每个段落前都加上"各位老友们好""欢迎来到我的频道""好了，我们开始上课"等固定开场白。
-- 不要重复同一段内容多次。如果某个故事/案例已在前面讲过，后面不要再完整复述。
-- 保持原文的内容结构，只做语气、断句、节奏的优化。`
+    ? `\n\n【演绎风格 / 人设】\n${persona}\n请在此风格下做断句与语气调整，使口播更贴人设，但不歪曲事实、不删减关键信息。`
     : '';
   const system = TTS_POLISH_BASE_SYSTEM + styleBlock;
 
-  let user = `以下是一段需要配音朗读的口播正文，请只做「导演级切行与朗读友好化」优化后输出。只输出优化后的正文，不要任何额外说明或开场白：
-
-${text}`;
+  let user = `以下是一段需要配音朗读的口播正文，请只做「导演级切行与朗读友好化」优化后输出：\n\n${text}`;
   if (hint) {
-    user += `\n\n【用户额外说明】
-${hint}`;
+    user += `\n\n【用户额外说明】\n${hint}`;
   }
   return runTtsPolishChat(apiKey, system, user, text);
 }

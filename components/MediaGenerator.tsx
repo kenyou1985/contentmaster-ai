@@ -872,63 +872,87 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     });
 
   // 导出前预处理：
-  // 1. blob: URL → data:URL（Python 无法访问 blob:）
-  // 2. HTTP URL → 检查本地缓存，已缓存则用本地文件路径，未缓存则下载保存后下次直接用
-  // 3. 最终传给 Python 的是 data:URL 或本地文件路径（不再传 HTTP URL，避免链接过期问题）
+  // 导出前预处理：检查本地缓存，将 HTTP URL 替换为本地文件路径
+  // 逻辑：优先使用本地已缓存的文件路径，避免传 HTTP URL 或 base64 导致 JSON 过大
+  // - 已缓存：使用本地文件路径（Python 直接复制）
+  // - 未缓存：下载并保存到本地，返回本地路径
+  // - blob: URL：尝试转 data:URL，失败则保留原 URL
   const prepareShotsForExport = async (sList: Shot[]): Promise<JianyingShot[]> => {
     const prepared = shotsToJianying(sList);
 
-    // 收集所有需要处理的媒体 URL（图片、音频、视频）
-    const httpImageUrls = new Set<string>();
+    // 收集所有 HTTP URL（图片、音频、视频）
+    const httpImageUrls: Array<{ url: string; type: string }> = [];
+    const httpAudioUrls: Array<{ url: string; type: string }> = [];
+    const httpVideoUrls: Array<{ url: string; type: string }> = [];
     const blobImageUrls = new Set<string>();
-    const httpAudioUrls = new Set<string>();
     const blobAudioUrls = new Set<string>();
-    const httpVideoUrls = new Set<string>();
-    const blobVideoUrls = new Set<string>();
 
     for (const shot of prepared) {
       // 图片
-      if (shot.imageUrl) {
-        if (shot.imageUrl.startsWith('blob:')) blobImageUrls.add(shot.imageUrl);
-        else if (shot.imageUrl.startsWith('http')) httpImageUrls.add(shot.imageUrl);
-      }
+      if (shot.imageUrl?.startsWith('blob:')) blobImageUrls.add(shot.imageUrl);
+      else if (shot.imageUrl?.startsWith('http')) httpImageUrls.push({ url: shot.imageUrl, type: 'image' });
       for (const url of shot.imageUrls || []) {
         if (!url) continue;
         if (url.startsWith('blob:')) blobImageUrls.add(url);
-        else if (url.startsWith('http')) httpImageUrls.add(url);
+        else if (url.startsWith('http')) httpImageUrls.push({ url, type: 'image' });
       }
       // 音频
       const audioUrl = (shot.audioUrl || shot.voiceoverAudioUrl || '').trim();
-      if (audioUrl) {
-        if (audioUrl.startsWith('blob:')) blobAudioUrls.add(audioUrl);
-        else if (audioUrl.startsWith('http')) httpAudioUrls.add(audioUrl);
-      }
+      if (audioUrl.startsWith('blob:')) blobAudioUrls.add(audioUrl);
+      else if (audioUrl.startsWith('http')) httpAudioUrls.push({ url: audioUrl, type: 'audio' });
       // 视频
-      if (shot.videoUrl) {
-        if (shot.videoUrl.startsWith('blob:')) blobVideoUrls.add(shot.videoUrl);
-        else if (shot.videoUrl.startsWith('http')) httpVideoUrls.add(shot.videoUrl);
-      }
+      if (shot.videoUrl?.startsWith('http')) httpVideoUrls.push({ url: shot.videoUrl, type: 'video' });
     }
 
     const allHttpUrls = [
-      ...[...httpImageUrls].map(u => ({ url: u, type: 'image' })),
-      ...[...httpAudioUrls].map(u => ({ url: u, type: 'audio' })),
-      ...[...httpVideoUrls].map(u => ({ url: u, type: 'video' })),
+      ...httpImageUrls,
+      ...httpAudioUrls,
+      ...httpVideoUrls,
     ];
 
-    // 优先检查本地缓存
-    const localHttpPaths = new Map<string, string>();
-    if (allHttpUrls.length > 0) {
-      setJianyingExportMessage(`检查本地媒体缓存 (${allHttpUrls.length} 个)...`);
-      try {
-        const cached = await getLocalCachePaths(allHttpUrls.map(i => i.url));
-        cached.forEach((path, url) => localHttpPaths.set(url, path));
-      } catch (e) {
-        console.warn('[Export] 本地缓存检查失败:', e);
+    // Step 1: 检查本地缓存
+    setJianyingExportMessage(`检查本地媒体缓存 (${allHttpUrls.length} 个)...`);
+    const cachedPaths = await getLocalCachePaths(allHttpUrls.map(u => u.url));
+
+    // Step 2: 找出未缓存的 URL，下载并保存
+    const pendingUrls = allHttpUrls.filter(u => !cachedPaths.has(u.url));
+    const newCachedPaths = new Map<string, string>();
+
+    if (pendingUrls.length > 0) {
+      setJianyingExportMessage(`正在缓存 ${pendingUrls.length} 个媒体文件到本地...`);
+      for (const { url, type } of pendingUrls) {
+        try {
+          // 下载文件
+          const resp = await fetch(url);
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const blob = await resp.blob();
+
+          // 转为 dataUrl 保存到本地缓存
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+
+          const { saveMediaToLocalCache } = await import('../services/localMediaCacheService');
+          const localPath = await saveMediaToLocalCache(url, dataUrl);
+          if (localPath) {
+            newCachedPaths.set(url, localPath);
+            console.log(`[Export] 媒体已本地缓存: ${url.slice(0, 50)} → ${localPath}`);
+          }
+        } catch (e) {
+          console.warn(`[Export] 缓存失败 ${url.slice(0, 50)}:`, e);
+        }
       }
     }
 
-    // 转换 blob: 图片 → data:URL
+    // 合并所有本地路径（已缓存 + 新缓存）
+    const allLocalPaths = new Map<string, string>();
+    cachedPaths.forEach((path, url) => allLocalPaths.set(url, path));
+    newCachedPaths.forEach((path, url) => allLocalPaths.set(url, path));
+
+    // Step 3: 转换 blob: 图片 → data:URL
     setJianyingExportMessage(`正在处理 ${blobImageUrls.size} 张 blob 图片...`);
     const blobImageDataUrls = new Map<string, string>();
     await Promise.all([...blobImageUrls].map(async (url) => {
@@ -936,7 +960,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       catch { blobImageDataUrls.set(url, url); }
     }));
 
-    // 转换 blob: 音频 → data:URL
+    // Step 4: 转换 blob: 音频 → data:URL
     setJianyingExportMessage(`正在处理 ${blobAudioUrls.size} 个 blob 音频...`);
     const blobAudioDataUrls = new Map<string, string>();
     await Promise.all([...blobAudioUrls].map(async (url) => {
@@ -944,63 +968,41 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       catch { blobAudioDataUrls.set(url, url); }
     }));
 
-    // 处理 HTTP URL：已缓存用本地路径，未缓存则下载保存到本地
-    const httpResult = new Map<string, string>(); // url → dataURL 或本地路径
-    const pendingSaves: Array<{ url: string; dataUrl: string }> = [];
-
-    for (const { url } of allHttpUrls) {
-      if (localHttpPaths.has(url)) {
-        httpResult.set(url, localHttpPaths.get(url)!);
-      } else {
-        try {
-          const dataUrl = await urlToDataUrlFallback(url);
-          pendingSaves.push({ url, dataUrl });
-          httpResult.set(url, dataUrl);
-        } catch {
-          httpResult.set(url, url);
-        }
-      }
-    }
-
-    // 同步保存到本地缓存
-    if (pendingSaves.length > 0) {
-      setJianyingExportMessage(`正在缓存 ${pendingSaves.length} 个媒体文件到本地...`);
-      for (const { url, dataUrl } of pendingSaves) {
-        const { saveMediaToLocalCache } = await import('../services/localMediaCacheService');
-        const localPath = await saveMediaToLocalCache(url, dataUrl);
-        if (localPath) {
-          console.log(`[Export] 媒体已本地缓存: ${url.slice(0, 50)} → ${localPath}`);
-          httpResult.set(url, localPath);
-        }
-      }
-    }
-
-    // 替换 prepared 中的 URL
+    // Step 5: 替换 URL 为本地路径
     for (const shot of prepared) {
-      // 图片
+      // 图片：优先用本地路径，其次用 data:URL
       if (shot.imageUrl) {
-        if (shot.imageUrl.startsWith('blob:')) shot.imageUrl = blobImageDataUrls.get(shot.imageUrl) || shot.imageUrl;
-        else if (shot.imageUrl.startsWith('http')) shot.imageUrl = httpResult.get(shot.imageUrl) || shot.imageUrl;
+        if (allLocalPaths.has(shot.imageUrl)) {
+          shot.imageUrl = allLocalPaths.get(shot.imageUrl)!;
+        } else if (shot.imageUrl.startsWith('blob:')) {
+          shot.imageUrl = blobImageDataUrls.get(shot.imageUrl) || shot.imageUrl;
+        }
       }
       if (shot.imageUrls) {
         shot.imageUrls = shot.imageUrls.map((url) => {
           if (!url) return url;
+          if (allLocalPaths.has(url)) return allLocalPaths.get(url)!;
           if (url.startsWith('blob:')) return blobImageDataUrls.get(url) || url;
-          if (url.startsWith('http')) return httpResult.get(url) || url;
           return url;
         });
       }
-      // 音频
+      // 音频：优先用本地路径，其次用 data:URL
       const rawAudio = (shot.audioUrl || shot.voiceoverAudioUrl || '').trim();
       if (rawAudio) {
-        let finalAudio = rawAudio;
-        if (rawAudio.startsWith('blob:')) finalAudio = blobAudioDataUrls.get(rawAudio) || rawAudio;
-        else if (rawAudio.startsWith('http')) finalAudio = httpResult.get(rawAudio) || rawAudio;
-        shot.audioUrl = finalAudio;
-        shot.voiceoverAudioUrl = finalAudio;
+        if (allLocalPaths.has(rawAudio)) {
+          const localPath = allLocalPaths.get(rawAudio)!;
+          shot.audioUrl = localPath;
+          shot.voiceoverAudioUrl = localPath;
+        } else if (rawAudio.startsWith('blob:')) {
+          const dataUrl = blobAudioDataUrls.get(rawAudio) || rawAudio;
+          shot.audioUrl = dataUrl;
+          shot.voiceoverAudioUrl = dataUrl;
+        }
       }
-      // 视频（保留原样，让 Python 下载）
-      // 视频文件通常较大，不在导出时处理，Python 会直接下载
+      // 视频：优先用本地路径
+      if (shot.videoUrl && allLocalPaths.has(shot.videoUrl)) {
+        shot.videoUrl = allLocalPaths.get(shot.videoUrl)!;
+      }
     }
     return prepared;
   };
