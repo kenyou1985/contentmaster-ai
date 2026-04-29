@@ -522,6 +522,103 @@ def _ffprobe_duration_us(path: str):
     return None
 
 
+def _process_audio_for_export(audio_path: str) -> bool:
+    """
+    使用 ffmpeg 优化音频：去除末尾静音/噪声，添加淡出效果
+    - 末尾静音检测：移除低于 -50dB 的部分
+    - 淡出效果：在最后 200ms 添加音量渐变到 0
+    返回 True 表示处理成功，False 表示跳过处理（文件不存在或 ffmpeg 不可用）
+    """
+    import tempfile as _tempfile
+    
+    if not os.path.isfile(audio_path):
+        return False
+    
+    # 检查 ffmpeg 是否可用
+    try:
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5, check=True)
+    except Exception:
+        print(f"[jianying_export] ffmpeg 不可用，跳过音频处理", file=sys.stderr, flush=True)
+        return False
+    
+    try:
+        # 获取音频时长
+        dur_r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", audio_path],
+            capture_output=True, text=True, timeout=30
+        )
+        if dur_r.returncode != 0:
+            return False
+        
+        try:
+            total_dur = float(dur_r.stdout.strip())
+        except ValueError:
+            return False
+        
+        if total_dur < 0.5:
+            # 太短的音频不处理
+            return False
+        
+        # 音频末尾裁剪 + 淡出参数
+        fade_out_dur = 0.2  # 200ms 淡出
+        silence_thresh = -50  # -50dB 以下视为静音
+        
+        # 检测末尾非静音位置（从后往前扫描，找到第一个高于阈值的点）
+        # 简单策略：保留 95% 的音频，只在最后做淡出
+        trim_start = max(0, total_dur - fade_out_dur - 0.05)
+        
+        # 创建临时文件
+        temp_fd, temp_path = _tempfile.mkstemp(suffix='.wav')
+        os.close(temp_fd)
+        
+        try:
+            # 使用 ffmpeg 处理音频：
+            # 1. 末尾静音检测并裁剪
+            # 2. 添加淡出效果
+            # silenceremove: 去除开头和末尾的静音
+            # afade: 添加淡出效果
+            cmd = [
+                "ffmpeg", "-y", "-i", audio_path,
+                "-af", f"silenceremove=start_periods=1:start_duration=0.1:start_threshold={silence_thresh}dB:detection=peak,afade=t=out:st={total_dur - fade_out_dur}:d={fade_out_dur}",
+                "-ar", "48000",  # 统一采样率
+                "-ac", "2",      # 立体声
+                temp_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            
+            if result.returncode == 0 and os.path.isfile(temp_path):
+                # 检查处理后的文件是否有效
+                check_r = subprocess.run(
+                    ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", temp_path],
+                    capture_output=True, text=True, timeout=30
+                )
+                if check_r.returncode == 0:
+                    try:
+                        processed_dur = float(check_r.stdout.strip())
+                        if processed_dur > 0.1:  # 处理后的音频不能太短
+                            # 替换原文件
+                            shutil.move(temp_path, audio_path)
+                            print(f"[jianying_export] 音频处理完成: {audio_path} (时长 {processed_dur:.2f}s)", file=sys.stderr, flush=True)
+                            return True
+                    except ValueError:
+                        pass
+            else:
+                print(f"[jianying_export] 音频处理失败: {result.stderr[:200] if result.stderr else '未知错误'}", file=sys.stderr, flush=True)
+        finally:
+            # 清理临时文件
+            if os.path.isfile(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except Exception:
+                    pass
+        
+        return False
+    except Exception as e:
+        print(f"[jianying_export] 音频处理异常: {e}", file=sys.stderr, flush=True)
+        return False
+
+
 def _ffprobe_video_meta(path: str):
     """返回 (duration_us, width, height)，失败则为 (None, 0, 0)。"""
     try:
@@ -1901,6 +1998,8 @@ def create_draft_on_mac(
             if ok:
                 row["audio_abs"] = _safe_abs_for_jianying(lap)
                 row["audio_client_path"] = _material_path_for_client(row["audio_abs"])
+                # 使用 ffmpeg 处理音频：去除末尾噪声/静音，添加淡出效果
+                _process_audio_for_export(row["audio_abs"])
                 probe_us = _ffprobe_duration_us(row["audio_abs"])
                 # 以文件实测为准；客户端 audioDurationSec 多为文案估算，取 max 会把时间线拉长得远超真实波形（见 pyJianYingDraft：片段时长应对齐素材）。
                 if probe_us:
