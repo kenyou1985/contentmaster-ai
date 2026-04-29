@@ -268,8 +268,8 @@ export function buildParallelSegmentUserPrompt(
 
   const lastChapterInstruction = isLast
     ? (isEnglishOutput
-        ? `\n\n【结语收尾方式（英文内容）】\n- 英文内容**禁止**使用「please like and subscribe」等营销腔结尾，也**禁止**使用「Good night, my friends」「Take care, everyone」「Rest well, my friends」等偏公开化的收尾——全文是私密独白，"my friends"会让读者从「我」的故事里跳出来。\n- 推荐收尾方式（融入结语段落末尾，娓娓道来、自然收束）：\n  - "Anyway, my cat is snoring now. Good night."\n  - "My dog just flopped over. Time to sleep, I guess."\n  - "Bean is asleep now, tucked into the crook of the sofa like he pays rent here. I think that's enough for tonight."\n- 禁止加粗、禁止 Markdown。`
-        : `\n\n【结语收尾方式（中文内容）】\n- 中文内容**禁止**使用旁观式互动话术结尾：禁止「好了，我今天就讲到这里」「好了，今天就到这里。」「各位朋友」「各位家人」「保重」「晚安各位」「我们下次再聊」等——这些词一出口，读者会立刻从「我」的深夜独白里被拽出来。\n- 推荐收尾方式（用宠物行为+自嘲收束）：\n  - 「小满在打呼噜。我也睡了。」\n  - 「它又睡着了。我也该把灯关小一点。」\n  - 「算了，我也差不多该去洗杯子了。」\n- 禁止加粗、禁止 Markdown。`
+        ? `\\n\\n【结语收尾方式（英文内容）】\\n- 英文内容**禁止**使用「please like and subscribe」等营销腔结尾，也**禁止**使用「Good night, my friends」「Take care, everyone」「Rest well, my friends」等偏公开化的收尾——全文是曾仕强口吻，"my friends"会让读者从「我」的讲学里被拽出来。\\n- 推荐收尾方式（用曾仕强风格自然收束）：\\n  - "Okay, that's all for today. You figure it out yourself."\\n  - "I have said what I needed to say. Believe it or not, it's up to you."\\n  - "Remember what the ancients taught. Figure it out yourself."\\n- 禁止加粗、禁止 Markdown。`
+        : `\\n\\n【结语收尾方式（中文内容）】\\n- 中文内容**禁止**使用旁观式互动话术结尾：禁止「好了，我今天就讲到这里」「好了，今天就到这里。」「各位朋友」「各位家人」「保重」「晚安各位」「我们下次再聊」「感谢观看」等——这些词一出口，读者会立刻从「我」的讲学里被拽出来。\\n- 推荐收尾方式（用曾仕强风格自然收束）：\\n  - 「好了，讲了这么多，你自己去悟。」\\n  - 「我今天就讲到这里，信不信由你。」\\n  - 「记住老祖宗的话，自己去体会。」\\n- 禁止加粗、禁止 Markdown。`
     )
     : '';
 
