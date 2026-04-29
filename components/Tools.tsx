@@ -606,43 +606,82 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   };
 
   const mergeFiveSegments = (segs: string[]): string => {
-    // 合并前清洗：去除每段开头重复的固定开头语（中医玄学赛道特有）
-    const FIXED_PATTERNS = [
-      /^各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。\s*/,
-      /^各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦!\s*/,
-      /^各位老友们好，欢迎来到我的频道，我是倪海厦。\s*/,
-      /^各位老友们好，欢迎来到我的频道，我是倪海厦!\s*/,
-      /^好了，我们开始上课。\s*/,
-      /^好了，我們開始上課。\s*/,
-      /^第一节课[:：]?\s*/,
-      /^第二节课[:：]?\s*/,
-      /^第三节课[:：]?\s*/,
-      /^第四节课[:：]?\s*/,
-      /^第五节课[:：]?\s*/,
-      /^第六节课[:：]?\s*/,
-      /^第七节课[:：]?\s*/,
-      /^第八节课[:：]?\s*/,
-      /^第九节课[:：]?\s*/,
-      /^第[一二三四五六七八九十]节课[:：]?\s*/,
-      /^第[一二三四五六七八九十]節課[:：]?\s*/,
-    ];
+    // 中医玄学赛道合并核心逻辑：
+    // 1. 第一段保留开场白和"好了，我们开始上课"
+    // 2. 第二至五段去除所有开场白和过渡语
+    // 3. 合并后全局去重，确保每个模板句只出现一次
 
-    const cleaned = segs.map(seg => {
+    const cleaned = segs.map((seg, segIdx) => {
       let result = seg.trim();
-      FIXED_PATTERNS.forEach(pattern => {
-        result = result.replace(pattern, '');
-      });
+      
+      if (segIdx > 0) {
+        // 第二至五段：去除开场白和过渡语
+        result = result.replace(/^各位老友们好[，,\s][^\n。！？]+[。！？]\s*/gm, '');
+        result = result.replace(/^各位老友们好[^\n]*\n*/gm, '');
+        result = result.replace(/^好了，我们开始上课。[。]*\s*/gm, '');
+        result = result.replace(/^好了我們開始上課。[。]*\s*/gm, '');
+        result = result.replace(/^第[一二三四五六七八九十\d]+节课[:：]?\s*/gm, '');
+        result = result.replace(/^第一课\s*/gm, '');
+        result = result.replace(/^第二课\s*/gm, '');
+        result = result.replace(/^第三课\s*/gm, '');
+        result = result.replace(/^第四课\s*/gm, '');
+        result = result.replace(/^第五课\s*/gm, '');
+        // 段中去除
+        result = result.replace(/\n各位老友们好[^\n]*倪海厦[^\n]*\n*/g, '\n');
+        result = result.replace(/\n各位老友们好[^\n]*\n*/g, '\n');
+        result = result.replace(/\n好了，我们开始上课。[。]*\n*/g, '\n');
+        result = result.replace(/\n好了我們開始上課。[。]*\n*/g, '\n');
+      }
+      
       return result;
     });
-    // 使用更宽松的过滤：只过滤完全为空的字符串，保留所有有内容的段
-    const filtered = cleaned.filter(seg => seg.length > 0);
+    
+    // 过滤空段
+    const filtered = cleaned.filter(seg => seg.trim().length > 0);
     if (filtered.length === 0) {
-      // 兜底：至少返回第一个非空原始段
       const fallback = segs.find(s => (s || '').trim().length > 0);
       return fallback ? fallback.trim() : '';
     }
-    return filtered.join('\n\n');
+    
+    // 合并
+    let merged = filtered.join('\n\n');
+    
+    // 全局强制去重：只保留第一个开场白
+    const firstOpeningIdx = merged.indexOf('各位老友们好');
+    if (firstOpeningIdx !== -1) {
+      const secondOpeningIdx = merged.indexOf('各位老友们好', firstOpeningIdx + 1);
+      if (secondOpeningIdx !== -1) {
+        // 找到"好了，我们开始上课"的位置
+        const startClassIdx = merged.indexOf('好了，我们开始上课');
+        if (startClassIdx !== -1 && secondOpeningIdx > startClassIdx) {
+          // 第二个开场白在"好了"之后，说明是新文章的开始，直接截断
+          merged = merged.substring(0, secondOpeningIdx).trim();
+        }
+      }
+    }
+    
+    // 全局强制去重：只保留第一个"好了，我们开始上课"
+    const startClassPattern = '好了，我们开始上课。';
+    const regex = new RegExp(startClassPattern, 'g');
+    const matches = merged.match(regex);
+    if (matches && matches.length > 1) {
+      let first = true;
+      merged = merged.replace(regex, () => {
+        if (first) {
+          first = false;
+          return startClassPattern;
+        }
+        return '';
+      });
+    }
+    
+    // 清理多余的空行
+    merged = merged.replace(/\n{3,}/g, '\n\n');
+    merged = merged.trim();
+    
+    return merged;
   };
+
 
   const calcSimilarityRough = (a: string, b: string): number => {
     const sa = (a || '').replace(/\s+/g, '').trim();
