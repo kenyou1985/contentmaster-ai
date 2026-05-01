@@ -1,4 +1,5 @@
 // ========== 分镜输出清洗工具 ==========
+import { getNicheCharacterInfo, getNicheSceneDescription } from '../services/nicheCharacterProfiles';
 
 /**
  * 全面清洗分镜输出文本。
@@ -236,8 +237,9 @@ function cleanStoryboardOutput(text: string): string {
  * - 检查每个镜头是否有 图片提示词/视频提示词/景别/语音分镜/音效
  * - 检查是否有角色信息和场景信息
  * - 对缺失字段自动补全（使用合理默认值）
+ * - niche 参数用于生成赛道专属的角色/场景默认信息
  */
-function validateAndFixStoryboardFormat(text: string): string {
+function validateAndFixStoryboardFormat(text: string, niche: NicheType = NicheType.MINDFUL_PSYCHOLOGY): string {
   const requiredFields = ['图片提示词', '视频提示词', '景别', '语音分镜', '音效'];
   const chineseFields: Record<string, string> = {
     '图片提示词': 'A simple minimalist scene, warm intimate atmosphere, soft natural lighting',
@@ -342,18 +344,23 @@ function validateAndFixStoryboardFormat(text: string): string {
       const hasRoleInfo = /角色信息/.test(out);
       const hasSceneInfo = /场景信息/.test(out);
 
-      if (!hasRoleInfo) {
-        const roleInfo = isChineseContent
-          ? `\n\n角色信息\n\n[名称] Bean\n[角色类型] 猫\n[别名] Bean\n[描述] 一只安静温暖的猫，常以呼噜声安抚人，陪伴主人。\n\n[名称] Miso\n[角色类型] 猫\n[别名] Miso\n[描述] 一只睡意朦胧、温热、略显傲娇的猫，呼噜声稳定持续。\n\n[名称] 叙述者\n[角色类型] 人物\n[别名] Narrator\n[描述] 第一人称叙述者，情绪细腻、疲惫但自我觉察强，语气温和克制。`
-          : `\n\nCharacter Information\n\n[Name] Bean\n[Type] Cat\n[Description] A quiet and warm cat that comforts through purring, always close to the narrator.\n\n[Name] Miso\n[Type] Cat\n[Description] A sleepy, warm, slightly aloof cat with a steady and persistent purr.\n\n[Name] Narrator\n[Type] Person\n[Description] First-person narrator, emotionally delicate, tired but self-aware, tone is gentle and restrained.`;
-        fixedBlock += roleInfo;
-      }
+      if (!hasRoleInfo || !hasSceneInfo) {
+        const charInfo = getNicheCharacterInfo(niche);
+        const sceneDesc = getNicheSceneDescription(niche);
 
-      if (!hasSceneInfo) {
-        const sceneInfo = isChineseContent
-          ? `\n\n场景信息\n\n[名称] 场景-夜晚室内空间\n[别名] 场景-夜晚室内空间\n[描述] 低饱和、柔和暗光的夜晚室内空间，厨房、沙发、床边与地毯构成多次重复发生安抚时刻的场景，整体色调柔暗、留白充足，氛围温柔私密。`
-          : `\n\nScene Information\n\n[Name] Scene - Nighttime Interior\n[Description] Low-saturation, soft dark-lit night interior spaces. Kitchen, sofa, and bedroom scenes. Quiet, intimate, generous negative space, warm and private atmosphere.`;
-        fixedBlock += sceneInfo;
+        if (!hasRoleInfo) {
+          const roleInfo = isChineseContent
+            ? `\n\n角色信息\n\n[名称] ${charInfo.name}\n[别名] ${charInfo.alias}\n[描述] ${charInfo.description}\n\n[名称] 讲述者\n[角色类型] 人物\n[别名] Narrator\n[描述] 第一人称叙述者，情绪细腻、疲惫但自我觉察强，语气温和克制。`
+            : `\n\nCharacter Information\n\n[Name] ${charInfo.name}\n[Alias] ${charInfo.alias}\n[Description] ${charInfo.description}\n\n[Name] Narrator\n[Type] Person\n[Description] First-person narrator, emotionally delicate, tired but self-aware, tone is gentle and restrained.`;
+          fixedBlock += roleInfo;
+        }
+
+        if (!hasSceneInfo) {
+          const sceneBlock = isChineseContent
+            ? `\n\n场景信息\n\n[名称] 场景-${charInfo.name}讲学空间\n[别名] Scene - ${charInfo.name} Teaching Space\n[描述] ${sceneDesc}`
+            : `\n\nScene Information\n\n[Name] Scene - ${charInfo.name} Teaching Space\n[Description] ${sceneDesc}`;
+          fixedBlock += sceneBlock;
+        }
       }
     }
 
@@ -637,6 +644,10 @@ import {
   type YiJingOutlinePayload,
   type YiJingChapterPlan,
 } from '../services/yiJingParallelLongForm';
+import {
+  PARALLEL_LOGIC_TCM,
+  TCM_MERGE_SYSTEM,
+} from '../services/tcmParallelLongForm';
 import JSZip from 'jszip';
 import {
   saveHistory,
@@ -750,6 +761,11 @@ function getParallelPipelineBundle(
       ? 'You are a senior editor merging long-form scripts for audio/video.'
       : `你是资深长文编辑，熟悉「${baseName}」的叙事与语气。`;
 
+  let mergeTone =
+    outputLanguage === 'en'
+      ? 'Unify narrative voice, tense, and pacing; keep the same language as the segment drafts.'
+      : `全文语气、视角与「${baseName}」人设保持一致，衔接自然。`;
+
   if (niche === NicheType.YI_JING_METAPHYSICS) {
     logicBlueprint = PARALLEL_LOGIC_YI_JING;
     channelLabel = '曾仕强风格长视频口播';
@@ -759,14 +775,14 @@ function getParallelPipelineBundle(
     mergeEditorLine = '你是资深口播编辑，熟悉曾仕强讲学风格。';
   }
 
-
   if (niche === NicheType.TCM_METAPHYSICS) {
-    logicBlueprint = PARALLEL_LOGIC_GENERIC;
+    logicBlueprint = PARALLEL_LOGIC_TCM;
     channelLabel = '倪海厦中医玄学风格长视频口播';
     contentKindOutline = '口播大纲';
     contentKindMerge = '口播';
     directorLine = '你是倪海厦教授风格的中医玄学长视频总编导。';
-    mergeEditorLine = '你是资深口播编辑，熟悉倪海厦讲学风格。';
+    mergeEditorLine = '你是资深口播编辑，熟悉倪海厦讲学风格，必须删除各段重复的开场白、套话和案例。';
+    mergeTone = '全文语气统一为倪海厦式骂醒风格：犀利、直接、口语化，但禁止机械重复任何套话。金句只出现一次，全文只保留一个"下课！"。各段衔接自然，禁止出现两段内容高度相似的重复段落。';
   }
 
   if (niche === NicheType.STORY_REVENGE) {
@@ -809,11 +825,6 @@ function getParallelPipelineBundle(
   }
 
   const voiceRules = `1. 严格遵循下列「频道创作铁律摘要」与人设。\n2. 禁止【】、[] 舞台提示、禁止「模块一/第一节」等露骨章节标、禁止 Markdown 标题层级、避免纯列表骨架。\n【频道创作铁律摘要】\n${clampSystemSummary(nicheConfig.systemInstruction)}`;
-
-  const mergeTone =
-    outputLanguage === 'en'
-      ? 'Unify narrative voice, tense, and pacing; keep the same language as the segment drafts.'
-      : `全文语气、视角与「${baseName}」人设保持一致，衔接自然。`;
 
   return {
     outline: {
@@ -1742,7 +1753,7 @@ ${isEnglishScript
       );
 
       // 三轮清洗：标准清洗 → 深度扫描 → 格式检查与自动修复
-      localContent = validateAndFixStoryboardFormat(deepCleanStoryboard(cleanStoryboardOutput(localContent)));
+      localContent = validateAndFixStoryboardFormat(deepCleanStoryboard(cleanStoryboardOutput(localContent)), niche);
       setStoryboard(localContent);
       setStoryboardProgress(100);
       console.log('[Storyboard] 生成完成，三轮清洗完成');
@@ -3514,7 +3525,7 @@ ${segmentSourceText}
           pushYiJingLog(`【${topicTitle.slice(0, 18)}】分段完成，开始合并`);
           bumpProgress(`「${topicTitle.slice(0, 16)}${topicTitle.length > 16 ? '…' : ''}」分段完成`);
 
-          // 3) 合并
+          // 3) 合并（倪海厦赛道使用专用merge系统）
           const combined = segResults.join('\n\n');
           const mindfulLong =
             niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
@@ -3526,7 +3537,7 @@ ${segmentSourceText}
                 : undefined,
               mindfulLanguage,
             }),
-            bundle.mergeSystem,
+            niche === NicheType.TCM_METAPHYSICS ? TCM_MERGE_SYSTEM : bundle.mergeSystem,
             32768
           );
           let finalText = normalizeYiJingBody(merged);
@@ -3539,6 +3550,187 @@ ${segmentSourceText}
             if (batchLang === 'zh') {
               finalText = normalizePetNames(finalText);
             }
+          }
+
+          // 中医玄学倪海厦赛道：去除重复开场白和套话
+          if (niche === NicheType.TCM_METAPHYSICS) {
+            // 1. 只保留第一次出现的开场白
+            const openingPattern = /各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。?/;
+            const hasOpening = openingPattern.test(finalText);
+            if (hasOpening) {
+              // 删除后续出现的重复开场白变体
+              finalText = finalText.replace(/各位老友们好[^。！？]*倪海厦[。！？]?/g, '');
+              // 重新插入正确的开场白（在开头）
+              finalText = finalText.replace(/^[\s\n]*/, '各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。\n\n');
+            }
+            // 2. 删除重复的"好了，我们开始上课"
+            const classStartCount = (finalText.match(/好了，我们开始上课。?/g) || []).length;
+            if (classStartCount > 1) {
+              // 只保留第一个
+              let foundFirst = false;
+              finalText = finalText.replace(/好了，我们开始上课。?/g, () => {
+                if (!foundFirst) {
+                  foundFirst = true;
+                  return '好了，我们开始上课。';
+                }
+                return '';
+              });
+            }
+            // 3. 高频套话去重：全文只保留第一次出现（安全版，用索引扫描）
+            const phraseKeepFirst: Array<{ patt: RegExp }> = [
+              { patt: /我在临床上看太多了[。．，,\s]/ },
+              { patt: /从那以后我才知道，有些事不是迷信，是经验[。！？]?/ },
+              { patt: /我年轻时候[也很]?铁齿[，,]?[有一]?[年个]?交运[日天]?[偏]?要去爬山，结果摔了一跤，膝盖肿了半个月[。！？]?/ },
+              // 完整版（含"真的，说不下去了"）
+              { patt: /你们不要笑[，,]?这种事情我见太多了[，,]?(?:有时候我自己回想起来也觉得[…⋯.儿]*[，,]?)?真的[，,]?说不下去了[。！？]?/ },
+              // 诊所版
+              { patt: /我[跟跟]?你[说说讲]?[，,]?(?:有时候我自己在诊所里也[…⋯.儿]*)?[唉算]?[了得]?(?:算了|不说这个了)[。！？]?/ },
+              // 你说你不信版
+              { patt: /你说你不信[？?]?[，,]?行[，,]?你继续不信[，,]?我讲完你自己掂量[。！？]?/ },
+              // 自我纠正："不对，等等，我说的是"
+              { patt: /不对[，,]?[等等甚]?我[说讲]?的是[，,]?/ },
+              // 诸位乡亲（全文只第一次）
+              { patt: /诸位乡亲[，,]?/ },
+              // 骂醒
+              { patt: /我今天必须骂醒你们[。！？]?/ },
+              // 真有这么明显吗
+              { patt: /真有这么明显吗[？?]?/ },
+              // 气一乱
+              { patt: /气一乱[，,]?(?:脸和身体|脸先变?|身体先喊话)[。！？]?/ },
+              // 你说这是不是自找麻烦
+              { patt: /你说这是不是自找麻烦[？?]?/ },
+              // 你这是在作死（任意上下文，句中/句尾均可）
+              { patt: /你这是在作死[，。！？…⋯]/ },
+              // 人一乱，家就乱
+              { patt: /人一[乱散][，,]?(?:家就[乱吵]|气就散|神就乱)[。！？]?/ },
+            ];
+
+            for (const { patt } of phraseKeepFirst) {
+              const matches: number[] = [];
+              let m: RegExpExecArray | null;
+              const re = new RegExp(patt.source, 'g');
+              while ((m = re.exec(finalText)) !== null) {
+                matches.push(m.index);
+              }
+              if (matches.length > 1) {
+                let removed = 0;
+                for (let i = 1; i < matches.length; i++) {
+                  const idx = matches[i] - removed;
+                  const matchResult = finalText.slice(idx).match(patt);
+                  const len = matchResult?.[0].length ?? 0;
+                  finalText = finalText.slice(0, idx) + finalText.slice(idx + len);
+                  removed += len;
+                }
+              }
+            }
+
+            // 4. 整段重复检测：相似度阈值降至 0.75，补充 n-gram 重叠辅助检测
+            const dedupeDuplicateParagraphs = (text: string): string => {
+              const paragraphs = text.split(/\n\n+/).filter(p => p.trim().length > 30);
+              if (paragraphs.length < 4) return text;
+
+              const norm = (s: string) =>
+                s.replace(/\s+/g, '').replace(/[，。！？、；：""''（）「」『』…⋯]/g, '').toLowerCase();
+
+              const levenshteinNorm = (s1: string, s2: string): number => {
+                const a = norm(s1);
+                const b = norm(s2);
+                if (a === b) return 1.0;
+                const maxLen = Math.max(a.length, b.length);
+                if (maxLen === 0) return 1.0;
+                return 1 - levenshteinDistance(a, b) / maxLen;
+              };
+
+              // N-gram 重叠：若两段有超过 40% 的 6-gram 相同，视为重复
+              const ngramOverlap = (s1: string, s2: string): number => {
+                const a = norm(s1);
+                const b = norm(s2);
+                if (a.length < 12 || b.length < 12) return 0;
+                const getNgrams = (s: string, n: number): Set<string> => {
+                  const set = new Set<string>();
+                  for (let i = 0; i <= s.length - n; i++) set.add(s.slice(i, i + n));
+                  return set;
+                };
+                const ng1 = getNgrams(a, 6);
+                const ng2 = getNgrams(b, 6);
+                let intersect = 0;
+                for (const g of ng1) { if (ng2.has(g)) intersect++; }
+                const union = ng1.size + ng2.size - intersect;
+                return union > 0 ? intersect / union : 0;
+              };
+
+              const toRemove = new Set<number>();
+              for (let i = 0; i < paragraphs.length; i++) {
+                if (toRemove.has(i)) continue;
+                const s1 = paragraphs[i];
+                for (let j = i + 1; j < paragraphs.length; j++) {
+                  if (toRemove.has(j)) continue;
+                  const s2 = paragraphs[j];
+                  if (s1.length < 50 || s2.length < 50) continue;
+                  // 两种检测任一超过阈值即删除
+                  const simLev = levenshteinNorm(s1, s2);
+                  const simNgram = ngramOverlap(s1, s2);
+                  if (simLev > 0.75 || simNgram > 0.40) {
+                    toRemove.add(j);
+                  }
+                }
+              }
+
+              if (toRemove.size > 0) {
+                const cleaned = paragraphs.filter((_, i) => !toRemove.has(i));
+                return cleaned.join('\n\n');
+              }
+              return text;
+            };
+            finalText = dedupeDuplicateParagraphs(finalText);
+
+            // 5. "下课"只能在末尾出现一次
+            const 下课Parts = finalText.split('下课！');
+            if (下课Parts.length > 2) {
+              finalText = 下课Parts.slice(0, -1).join('').replace(/[\s\n]*下课！[\s\n]*/g, '\n\n') + '\n\n下课！';
+            }
+
+            // 6. 结尾套话：只保留最后一次出现
+            const endPhrases = [
+              '好了，讲了这么多，你自己去悟。',
+              '好了，我话讲完了，信不信由你。',
+              '好了，今天就讲到这儿。'
+            ];
+            for (const phrase of endPhrases) {
+              const re = new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+              const all: string[] = [];
+              let m: RegExpExecArray | null;
+              while ((m = re.exec(finalText)) !== null) all.push(m[0]);
+              if (all.length > 1) {
+                finalText = finalText.replace(re, '');
+                const paras = finalText.split(/\n\n+/);
+                paras[paras.length - 1] = paras[paras.length - 1].replace(/[。！？\s]+$/, '').trimEnd();
+                if (!/下课！$/.test(paras[paras.length - 1])) {
+                  paras[paras.length - 1] += '。';
+                }
+                paras.push(phrase);
+                finalText = paras.join('\n\n');
+              }
+            }
+
+            // 7. 时间真实性检查：2012年之后年份替换
+            const years = finalText.match(/\d{4}年/g) || [];
+            let hasInvalidYear = false;
+            for (const ym of years) {
+              if (parseInt(ym) > 2012) { hasInvalidYear = true; break; }
+            }
+            if (hasInvalidYear) {
+              finalText = finalText.replace(/大概是\d{4}年[，,]?\s*还是\d{4}年[？?]?/g, '那时候');
+              finalText = finalText.replace(/大概是\d{4}年[？]/g, '那时候');
+              finalText = finalText.replace(/\d{4}年/g, (m) =>
+                parseInt(m) > 2012 ? '那时候' : m
+              );
+              pushYiJingLog('[TCM时间] 已修正2012年之后年份为"那时候"');
+            }
+
+            // 8. 清理多余空行
+            finalText = finalText.replace(/\n{3,}/g, '\n\n');
+            pushYiJingLog('[TCM去重] 开场白、套话、重复段落、结尾、结尾套话清理完成');
           }
 
           // 检测文章主题：猫还是狗，用于生成匹配的结尾正则
@@ -3713,7 +3905,7 @@ ${segmentSourceText}
           pushYiJingLog('[人类感检测] 开始检测内容人类感...');
           setYiJingIsRunningAiDetection(true);
           try {
-            const detection = detectAiFeatures(finalText);
+            const detection = detectAiFeatures(finalText, undefined, 'tcm_metaphysics');
             setYiJingAiDetection(detection);
             pushYiJingLog(`[人类感检测] 完成 - 人类感 ${detection.score}/10分 (${detection.level === 'weak' ? '优秀' : detection.level === 'medium' ? '一般' : '较弱'})`);
             if (detection.issues.length > 0) {
@@ -4410,7 +4602,17 @@ ${segmentSourceText}
 1. 以正文有效字数计：全文未满约 ${TCM_MIN_CHARS_BEFORE_FINAL_LESSON} 字前，禁止出现「第${lastCn}节课」或「第${lastCn}堂课」及其后的收束、总结、互动收尾段。
 2. 未满 ${TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES} 字前，禁止使用任何节目收尾语（如下期再见、下期节目再见、下课、散会、今天就讲到这、节目再见、各位/诸位乡亲道别等）。
 3. 仅当字数≥${TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES}、且已按顺序完成全部 ${tcmRequiredLessons} 节课、并在最后一节课内自然收束时，才输出收尾语；收尾语输出后即视为终稿，不要重复前文。
-4. 目标总字数约 ${MIN_TCM_SCRIPT_CHARS}–${MAX_TCM_SCRIPT_CHARS} 字，优先充实第1–${Math.max(1, tcmRequiredLessons - 1)}节后再进入最后一节。`;
+4. 目标总字数约 ${MIN_TCM_SCRIPT_CHARS}–${MAX_TCM_SCRIPT_CHARS} 字，优先充实第1–${Math.max(1, tcmRequiredLessons - 1)}节后再进入最后一节。
+5. 【防重复铁律·最高优先级】本章内容禁止与前序章节重复。以下套话在本章只出现一次，后续章节禁止再用：
+   - "我在临床上看太多了" → 全文只出现1次
+   - "从那以后我才知道，有些事不是迷信，是经验" → 全文只出现1次
+   - "你这是在作死" → 全文只出现1次
+   - "诸位乡亲" → 全文只出现1次
+   - "我今天必须骂醒你们" → 全文只出现1次
+   - "我年轻时候也铁齿" → 全文只出现1次
+   - "真有这么明显吗" → 全文只出现1次
+   - "下课！" → 只在全文末尾出现1次
+   - 任何连续3句以上相同的句子 → 全文只出现1次`;
         }
 
         // 短视频脚本模式：覆盖为短视频文案指令（仅中医玄学/金融投资）

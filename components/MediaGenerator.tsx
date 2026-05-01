@@ -880,6 +880,13 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const prepareShotsForExport = async (sList: Shot[]): Promise<JianyingShot[]> => {
     const prepared = shotsToJianying(sList);
 
+    // 调试日志：打印初始 URL 状态
+    console.log(`[Export DEBUG] prepareShotsForExport: ${sList.length} 镜头`);
+    for (let i = 0; i < Math.min(3, prepared.length); i++) {
+      const s = prepared[i];
+      console.log(`[Export DEBUG] 镜头${i}: imageUrl=${String(s.imageUrl || '').slice(0, 60)}, audioUrl=${String(s.audioUrl || '').slice(0, 60)}, videoUrl=${String(s.videoUrl || '').slice(0, 60)}`);
+    }
+
     // 收集所有 HTTP URL（图片、音频、视频）
     const httpImageUrls: Array<{ url: string; type: string }> = [];
     const httpAudioUrls: Array<{ url: string; type: string }> = [];
@@ -910,9 +917,13 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       ...httpVideoUrls,
     ];
 
+    console.log(`[Export DEBUG] HTTP URLs: 图片=${httpImageUrls.length}, 音频=${httpAudioUrls.length}, 视频=${httpVideoUrls.length}`);
+    console.log(`[Export DEBUG] blob URLs: 图片=${blobImageUrls.size}, 音频=${blobAudioUrls.size}`);
+
     // Step 1: 检查本地缓存
     setJianyingExportMessage(`检查本地媒体缓存 (${allHttpUrls.length} 个)...`);
     const cachedPaths = await getLocalCachePaths(allHttpUrls.map(u => u.url));
+    console.log(`[Export DEBUG] 缓存命中: ${cachedPaths.size}/${allHttpUrls.length}`);
 
     // Step 2: 找出未缓存的 URL，下载并保存
     const pendingUrls = allHttpUrls.filter(u => !cachedPaths.has(u.url));
@@ -940,9 +951,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           if (localPath) {
             newCachedPaths.set(url, localPath);
             console.log(`[Export] 媒体已本地缓存: ${url.slice(0, 50)} → ${localPath}`);
+          } else {
+            console.warn(`[Export] 媒体缓存保存失败（留原 URL）: ${url.slice(0, 50)}`);
           }
         } catch (e) {
-          console.warn(`[Export] 缓存失败 ${url.slice(0, 50)}:`, e);
+          console.warn(`[Export] 缓存失败（留原 URL） ${url.slice(0, 50)}:`, e);
         }
       }
     }
@@ -1004,6 +1017,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         shot.videoUrl = allLocalPaths.get(shot.videoUrl)!;
       }
     }
+
+    // 调试日志：打印最终 URL 状态
+    console.log(`[Export DEBUG] === 最终替换后 ===`);
+    for (let i = 0; i < Math.min(3, prepared.length); i++) {
+      const s = prepared[i];
+      console.log(`[Export DEBUG] 镜头${i}: imageUrl=${String(s.imageUrl || '').slice(0, 80)}, audioUrl=${String(s.audioUrl || '').slice(0, 80)}, videoUrl=${String(s.videoUrl || '').slice(0, 80)}`);
+    }
+
     return prepared;
   };
 
@@ -1063,6 +1084,13 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       // 导出前预处理：将图片 URL 转为 data:URL，避免即梦临时链接过期导致图片丢失
       setJianyingExportMessage('预处理媒体文件...');
       const preparedShots = await prepareShotsForExport(exportShots);
+
+      // 调试：打印最终发送给 Python 的数据
+      console.log(`[Export DEBUG] === 发送给 Python ===`);
+      for (let i = 0; i < Math.min(3, preparedShots.length); i++) {
+        const s = preparedShots[i];
+        console.log(`[Export DEBUG] 镜头${i}: imageUrl=${String(s.imageUrl || '').slice(0, 80)}, audioUrl=${String(s.audioUrl || '').slice(0, 80)}, videoUrl=${String(s.videoUrl || '').slice(0, 80)}`);
+      }
       
       // 检查是否已取消
       if (jianyingExportCancelledRef.current) {
@@ -1070,6 +1098,18 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         return false;
       }
       
+      // 从预处理后的镜头中提取本地媒体缓存路径，传递给导出服务
+      const localMediaPaths: Array<{ url: string; localPath: string }> = [];
+      for (const shot of preparedShots) {
+        if (shot.localMediaPaths) {
+          for (const mp of shot.localMediaPaths) {
+            if (!localMediaPaths.some(m => m.url === mp.url)) {
+              localMediaPaths.push(mp);
+            }
+          }
+        }
+      }
+
       const result = await exportJianyingDraft(
         {
           draftName: exportDraftName,
@@ -1080,6 +1120,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           randomVideoEffects:
             (settings?.randomEffectBundle ?? jyRandomEffectBundle) ||
             (settings?.randomFilters ?? jyRandomFilters),
+          localMediaPaths,
         },
         (progress, message) => {
           // 检查是否已取消

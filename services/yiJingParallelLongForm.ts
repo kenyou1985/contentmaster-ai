@@ -305,7 +305,7 @@ export function buildSegmentUserPrompt(params: {
 }): string {
   return buildParallelSegmentUserPrompt(params, {
     outputLanguage: 'zh',
-    voiceRules: `1. 曾仕强口吻：各位朋友、我常常讲、易经告诉我们、老祖宗说、你仔细去看、不要瞎折腾、这就是智慧、大错特错 等自然穿插。
+    voiceRules: `1. 曾仕强口吻：自然穿插，**有节制**——"各位朋友"≤2次、"我常常讲/我告诉你"≤2次、"你仔细去看"≤1次；多用"你看""你说""你不要小看""这就是智慧""大错特错"等变化句式替代重复。
 2. 纯净口播：禁止【】、[] 舞台提示、禁止「模块一/第一节」等章节标、禁止 Markdown、禁止列表骨架腔。`,
   });
 }

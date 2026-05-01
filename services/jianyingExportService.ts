@@ -53,6 +53,8 @@ export interface JianyingShot {
   audioDurationSec?: number;
   /** TTS 音频原始时长（秒，保留小数精度），优先用于剪映导出时长控制 */
   audioDurationExact?: number;
+  /** 本地媒体缓存路径（优先使用，跳过下载）。格式: { url: string; localPath: string }[] */
+  localMediaPaths?: Array<{ url: string; localPath: string }>;
 }
 
 export interface JianyingExportOptions {
@@ -74,6 +76,8 @@ export interface JianyingExportOptions {
   isFinalBatch?: boolean;
   /** 是否只保存媒体文件（用于分批中间组） */
   mediaOnly?: boolean;
+  /** 本地媒体缓存路径（优先使用，跳过下载）。格式: { url: string; localPath: string }[] */
+  localMediaPaths?: Array<{ url: string; localPath: string }>;
 }
 
 export interface JianyingDraftInfo {
@@ -342,6 +346,8 @@ export async function exportJianyingDraft(
     randomTransitions: !!options.randomTransitions,
     randomVideoEffects: !!options.randomVideoEffects,
     returnZip,
+    // 本地媒体缓存路径：Python 优先从本地文件复制，而非重新下载
+    localMediaPaths: options.localMediaPaths || null,
   };
 
   const base = getJianyingApiBase();
@@ -801,6 +807,8 @@ async function submitAndWait(
       isFinalBatch,
       mediaOnly: !isFinalBatch,
       returnZip: true,
+      // 本地媒体缓存路径：优先从本地文件复制，而非重新下载
+      localMediaPaths: options.localMediaPaths || null,
     };
 
     onProgress?.(Math.round(progressStart), `提交第 ${partIndex || 1} 批任务到 Railway...`);

@@ -73,7 +73,15 @@ async function retryOperation<T>(operation: () => Promise<T>, retries = 5, delay
       msg.includes('配額') ||
       msg.includes('配额') ||
       msg.includes('overloaded') ||
+      msg.includes('无可用渠道') ||
+      msg.includes('no distributor') ||
       (error.status === 429);
+
+    // 503 无可用渠道：快速失败，不做长时间等待
+    const isChannelUnavailable =
+      msg.includes('无可用渠道') ||
+      msg.includes('no distributor') ||
+      msg.includes('no available channel');
 
     const isRetryable =
       msg.includes('500') ||
@@ -823,6 +831,16 @@ export const streamContentGeneration = async (
         );
       };
 
+      const isChannelUnavailable = (err: any): boolean => {
+        const msg = (err?.message || String(err)).toLowerCase();
+        return (
+          msg.includes('无可用渠道') ||
+          msg.includes('no distributor') ||
+          msg.includes('no available distributor') ||
+          msg.includes('no channel')
+        );
+      };
+
       const isRetryableForFallback = (err: any): boolean => {
         const msg = (err?.message || String(err)).toLowerCase();
         return (
@@ -888,7 +906,24 @@ export const streamContentGeneration = async (
         // 主模型：一次尝试，失败立即切备用（不再重试同一模型浪费时间）
         await streamWithRetry(primaryModel, firstChunkMs);
       } catch (err: any) {
-        if (
+        // "无可用渠道"错误立即切备用模型，不重试
+        if (isChannelUnavailable(err)) {
+          console.warn(
+            `[Gemini Service] Yunwu 主模型无可用渠道 (${primaryModel})，立即切换备用模型: ${fallbackOpenAI}`
+          );
+          await wait(2000);
+          try {
+            await streamWithRetry(
+              fallbackOpenAI,
+              firstChunkMs,
+              `${systemInstruction}${FALLBACK_STREAM_FORMAT_HINT}`
+            );
+          } catch (err2: any) {
+            throw new Error(
+              `主模型无可用渠道，备用模型也失败。\n主模型错误: ${err?.message || err}\n备用模型错误: ${err2?.message || err2}`
+            );
+          }
+        } else if (
           isRetryableForFallback(err) &&
           fallbackOpenAI &&
           primaryModel !== fallbackOpenAI
@@ -896,10 +931,8 @@ export const streamContentGeneration = async (
           console.warn(
             `[Gemini Service] Yunwu 主模型失败 (${primaryModel})，错误: ${err?.message || err}，切换备用模型: ${fallbackOpenAI}`
           );
-          // 切备用模型前短暂等待（3秒），避免刚触发限流立刻又请求
           await wait(3000);
           try {
-            // 备用模型：一次尝试，失败立即报错
             await streamWithRetry(
               fallbackOpenAI,
               firstChunkMs,

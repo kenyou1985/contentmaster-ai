@@ -108,7 +108,7 @@ export async function getLocalCachePaths(
           setMeta(meta.filter((m) => m.url !== url));
         }
       } catch {
-        // 网络错误时保守地信任元数据
+        // 网络错误时保守地信任元数据（本地文件大概率仍存在）
         result.set(url, entry.localPath);
       }
     }

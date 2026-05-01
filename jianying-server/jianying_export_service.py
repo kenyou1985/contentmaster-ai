@@ -203,9 +203,29 @@ def _safe_filename(url_or_path: str) -> str:
     return name
 
 
-def _download_file(url: str, dest_path: str, timeout: int = 120, max_retries: int = 3) -> bool:
-    """下载文件到本地，支持 http/https/data:/本地路径，Railway 环境默认 120s 超时+3次重试"""
+def _download_file(url: str, dest_path: str, timeout: int = 120, max_retries: int = 3,
+                   local_source_path: str = None) -> bool:
+    """下载文件到本地，支持 http/https/data:/本地路径，Railway 环境默认 120s 超时+3次重试
+
+    Args:
+        local_source_path: 若提供且文件存在，优先从该本地路径复制（跳过下载），
+                           用于利用前端已缓存的媒体文件。
+    """
     import time as _time
+
+    # ── 本地缓存优先：local_source_path 存在则直接复制 ──────────────────────────
+    if local_source_path and os.path.isfile(local_source_path):
+        if os.path.exists(dest_path):
+            print(f"[jianying_export] [CACHE] {os.path.basename(dest_path)} → 已缓存，跳过复制", file=sys.stderr, flush=True)
+            return True
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
+            shutil.copy2(local_source_path, dest_path)
+            print(f"[jianying_export] [LOCAL_COPY] {os.path.basename(local_source_path)} → {dest_path}", file=sys.stderr, flush=True)
+            return True
+        except Exception as copy_err:
+            print(f"[jianying_export] [LOCAL_COPY] 失败 {copy_err}: {local_source_path} → {dest_path}", file=sys.stderr, flush=True)
+            # 回退到 URL 下载
 
     for attempt in range(max_retries):
         try:
@@ -213,6 +233,10 @@ def _download_file(url: str, dest_path: str, timeout: int = 120, max_retries: in
             if not url.startswith(('http://', 'https://', 'data:')):
                 src = url.strip()
                 if os.path.isfile(src):
+                    # 本地文件也检查缓存：目标已存在则跳过
+                    if os.path.exists(dest_path):
+                        print(f"[jianying_export] [CACHE] {os.path.basename(dest_path)} → 已缓存，跳过复制", file=sys.stderr, flush=True)
+                        return True
                     try:
                         os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
                         shutil.copy2(src, dest_path)
@@ -524,71 +548,76 @@ def _ffprobe_duration_us(path: str):
 
 def _process_audio_for_export(audio_path: str) -> bool:
     """
-    使用 ffmpeg 优化音频：去除末尾静音/噪声，添加淡出效果
-    - 末尾静音检测：移除低于 -50dB 的部分
-    - 淡出效果：在最后 200ms 添加音量渐变到 0
+    使用 ffmpeg 标准化音频 + 追加尾部静音垫（而非裁剪/淡出）：
+    - 统一采样率 48000Hz + 立体声
+    - 追加 300ms 静音垫：防止剪映解码时误判音频结束而截断尾音
+    - 不做 silenceremove（避免误删正常音频内容）
+    - 不做 afade 淡出（淡出会导致尾音被切除，听起来像截断）
     返回 True 表示处理成功，False 表示跳过处理（文件不存在或 ffmpeg 不可用）
     """
     import tempfile as _tempfile
-    
+
     if not os.path.isfile(audio_path):
         return False
-    
-    # 检查 ffmpeg 是否可用
+
     try:
         subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5, check=True)
     except Exception:
         print(f"[jianying_export] ffmpeg 不可用，跳过音频处理", file=sys.stderr, flush=True)
         return False
-    
+
     try:
-        # 获取音频时长
         dur_r = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", audio_path],
             capture_output=True, text=True, timeout=30
         )
         if dur_r.returncode != 0:
             return False
-        
+
         try:
             total_dur = float(dur_r.stdout.strip())
         except ValueError:
             return False
-        
+
         if total_dur < 0.5:
-            # 太短的音频不处理
             return False
-        
-        # 音频末尾裁剪 + 淡出参数
-        fade_out_dur = 0.2  # 200ms 淡出
-        silence_thresh = -50  # -50dB 以下视为静音
-        
-        # 检测末尾非静音位置（从后往前扫描，找到第一个高于阈值的点）
-        # 简单策略：保留 95% 的音频，只在最后做淡出
-        trim_start = max(0, total_dur - fade_out_dur - 0.05)
-        
-        # 创建临时文件
+
+        silence_pad = 0.3  # 300ms 静音垫
+
         temp_fd, temp_path = _tempfile.mkstemp(suffix='.wav')
         os.close(temp_fd)
-        
+
         try:
-            # 使用 ffmpeg 处理音频：
-            # 1. 末尾静音检测并裁剪
-            # 2. 添加淡出效果
-            # silenceremove: 去除开头和末尾的静音
-            # afade: 添加淡出效果
+            # 方案A：concat 两个流（原始音频 + 静音）再重采样
             cmd = [
-                "ffmpeg", "-y", "-i", audio_path,
-                "-af", f"silenceremove=start_periods=1:start_duration=0.1:start_threshold={silence_thresh}dB:detection=peak,afade=t=out:st={total_dur - fade_out_dur}:d={fade_out_dur}",
-                "-ar", "48000",  # 统一采样率
-                "-ac", "2",      # 立体声
+                "ffmpeg", "-y",
+                "-i", audio_path,
+                "-f", "lavfi",
+                "-t", str(silence_pad),
+                "-i", "anullsrc=r=48000:cl=stereo",
+                "-filter_complex",
+                f"[0:a]aresample=48000,apad=whole_dur={total_dur + silence_pad}[a0];[a0][1:a]concat=n=2:v=0:a=1",
+                "-ar", "48000",
+                "-ac", "2",
                 temp_path
             ]
-            
+
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-            
+
+            if result.returncode != 0 or not os.path.isfile(temp_path):
+                # 方案B（备选）：apad 追加静音
+                print(f"[jianying_export] 方案A失败，尝试方案B: {result.stderr[:100] if result.stderr else ''}", file=sys.stderr, flush=True)
+                cmd_b = [
+                    "ffmpeg", "-y",
+                    "-i", audio_path,
+                    "-af", f"aresample=48000,apad=whole_dur={total_dur + silence_pad}",
+                    "-ar", "48000",
+                    "-ac", "2",
+                    temp_path
+                ]
+                result = subprocess.run(cmd_b, capture_output=True, text=True, timeout=60)
+
             if result.returncode == 0 and os.path.isfile(temp_path):
-                # 检查处理后的文件是否有效
                 check_r = subprocess.run(
                     ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", temp_path],
                     capture_output=True, text=True, timeout=30
@@ -596,23 +625,22 @@ def _process_audio_for_export(audio_path: str) -> bool:
                 if check_r.returncode == 0:
                     try:
                         processed_dur = float(check_r.stdout.strip())
-                        if processed_dur > 0.1:  # 处理后的音频不能太短
-                            # 替换原文件
+                        if processed_dur >= total_dur - 0.05:
                             shutil.move(temp_path, audio_path)
-                            print(f"[jianying_export] 音频处理完成: {audio_path} (时长 {processed_dur:.2f}s)", file=sys.stderr, flush=True)
+                            print(f"[jianying_export] 音频处理完成: {audio_path} (原 {total_dur:.2f}s → {processed_dur:.2f}s，含 {silence_pad*1000:.0f}ms 静音垫)",
+                                  file=sys.stderr, flush=True)
                             return True
                     except ValueError:
                         pass
             else:
                 print(f"[jianying_export] 音频处理失败: {result.stderr[:200] if result.stderr else '未知错误'}", file=sys.stderr, flush=True)
         finally:
-            # 清理临时文件
             if os.path.isfile(temp_path):
                 try:
                     os.unlink(temp_path)
                 except Exception:
                     pass
-        
+
         return False
     except Exception as e:
         print(f"[jianying_export] 音频处理异常: {e}", file=sys.stderr, flush=True)
@@ -1293,11 +1321,8 @@ def _build_lv59_main_script(
             else:
                 adur = int(dur_us)
             adur = max(adur, int(dur_us))
-            # 音频末尾可能包含 TTS 模型生成的噪声/尾音，
-            # 缩短 50ms 以避免破音，同时让片段之间有自然的静音间隙
-            audio_end_trim = 50_000  # 50ms
-            adur_trimmed = max(1_000_000, adur - audio_end_trim)  # 至少保留 1s
-            adur = adur_trimmed
+            # 音频时长直接使用 probe 到的值，不再做尾部裁剪
+            # （_process_audio_for_export 已追加了 300ms 静音垫，无需再裁剪）
             aud_mat_id = _make_id()
             lm = uuid.uuid4().hex
             music_id = str(uuid.uuid4())
@@ -1378,50 +1403,17 @@ def _build_lv59_main_script(
             use_src = max(33_333, int(adur))
             # 轨道长度以音频真实时长为准（有配音时），由视频轨决定总时间线
             audio_target_dur = use_src
-
-            # ── 音频淡入淡出（交叉淡入淡出）────────────────────────────────────
-            # crossfade_dur: 交叉淡入淡出持续时间（固定 200ms，确保平滑过渡且不会太明显）
-            xfade_dur = 200_000  # 200ms 固定值
             seg_end_us = start_us + audio_target_dur  # 片段在时间线上的绝对结束时间
 
-            # 当前片段淡入关键帧（如果有前一个音频，添加淡入；第一个音频不加淡入）
-            has_prev_audio = len(audio_segments) > 0
-            audio_common_kfs: list = []
-            if has_prev_audio:
-                # 淡入：音量从 0 渐变到 1，使用平滑曲线
-                audio_common_kfs = [
-                    _build_keyframe_list("KFTypeVolume", [
-                        (0, 0.0),
-                        (int(xfade_dur * 0.4), 0.3),
-                        (int(xfade_dur * 0.7), 0.8),
-                        (xfade_dur, 1.0),
-                    ])
-                ]
-                # 为前一个音频片段添加淡出（在片段末尾渐变到 0）
-                prev_seg = audio_segments[-1]
-                prev_end_us = prev_seg["target_timerange"]["start"] + prev_seg["target_timerange"]["duration"]
-                # 淡出起点：片段结束前 xfade_dur 时间
-                prev_xfade_start = prev_end_us - xfade_dur
-                # 追加淡出关键帧（平滑曲线）
-                fade_out_kl = _build_keyframe_list("KFTypeVolume", [
-                    (prev_xfade_start, 1.0),
-                    (prev_end_us - int(xfade_dur * 0.6), 0.7),
-                    (prev_end_us - int(xfade_dur * 0.3), 0.2),
-                    (prev_end_us, 0.0),
-                ])
-                prev_seg["common_keyframes"] = prev_seg.get("common_keyframes", []) + [fade_out_kl]
-
-            # 最后一个音频片段添加淡出（避免音频突然结束）
-            is_last_shot = (i == total_shots - 1)
-            if is_last_shot:
-                last_xfade_start = max(0, seg_end_us - xfade_dur)
-                fade_out_last = _build_keyframe_list("KFTypeVolume", [
-                    (last_xfade_start, 1.0),
-                    (seg_end_us - int(xfade_dur * 0.6), 0.7),
-                    (seg_end_us - int(xfade_dur * 0.3), 0.2),
-                    (seg_end_us, 0.0),
-                ])
-                audio_common_kfs = audio_common_kfs + [fade_out_last]
+            # ── 不做交叉淡入淡出（防止尾音被截断感）───────────────────────
+            # 旧逻辑：200ms 交叉淡出 keyframe 将音量渐变为 0，听感上像音频被切断。
+            # 根本原因：fade-out 只是衰减音量，但 source_timerange.duration 仍指向完整音频，
+            #           剪映渲染时 keyframe volume=0 + source_timerange 没读完 = 尾音被截断。
+            # 正确做法：
+            #   1. 每段音频保持全音量（1.0），不做任何音量 keyframe
+            #   2. 音频文件末尾已在 _process_audio_for_export 中追加了 300ms 静音垫
+            #   3. 片段时间轴紧密衔接，自然形成段间过渡，无需 keyframe 控制
+            audio_common_kfs: list = []  # 空列表 = 无音量 keyframe = 全程音量 1.0
 
             audio_segments.append(
                 {
@@ -1784,17 +1776,27 @@ def create_draft_on_mac(
     append_timeline_offset: int = 0,
     # 媒体只模式：只下载媒体文件，不生成完整草稿 JSON
     media_only: bool = False,
+    # 本地媒体缓存路径映射：{ url: local_absolute_path }，优先从本地文件复制而非重新下载
+    local_media_paths: list = None,
 ) -> dict:
     """
     创建剪映草稿：
       1. 建立目录结构
-      2. 下载每个镜头的图片/音频到本地
+      2. 下载每个镜头的图片/音频到本地（优先使用 local_media_paths 中的本地缓存）
       3. 写入根目录 draft_info.json 与 draft_content.json（剪映 5.9 主时间线格式）
 
     force_draft_folder_name: 强制使用该名称作为草稿目录名（分批导出时用于统一目录结构）
     append_to_draft: 追加模式，传入已有草稿目录路径，新镜头将从 append_timeline_offset 开始
     append_timeline_offset: 追加模式下，新镜头开始的时间线偏移（微秒）
+    local_media_paths: 格式 [{url: str, localPath: str}]，优先从本地路径复制文件
     """
+    # 构建 URL → 本地路径查找表
+    local_path_map: dict = {}
+    if local_media_paths and isinstance(local_media_paths, list):
+        for entry in local_media_paths:
+            if isinstance(entry, dict) and entry.get("url") and entry.get("localPath"):
+                local_path_map[str(entry["url"])] = str(entry["localPath"])
+        print(f"[jianying_export] 本地媒体缓存映射: {len(local_path_map)} 个 URL", file=sys.stderr, flush=True)
     # 调试信息必须写 stderr，stdout 仅用于 JSON（否则 Node 会把整段 stdout 当响应体）
     for i, shot in enumerate(shots):
         audio_url = shot.get("audioUrl") or shot.get("voiceoverAudioUrl")
@@ -1928,7 +1930,8 @@ def create_draft_on_mac(
             if not re.search(r"\.(mp4|mov|webm|m4v)$", vname, re.I):
                 vname = f"{vname}.mp4" if "." not in vname else re.sub(r"[^.]+$", "mp4", vname)
             local_video_path = os.path.join(draft_folder, "Resources", "video", vname)
-            if _download_file(str(video_url), local_video_path):
+            local_src = local_path_map.get(str(video_url))
+            if _download_file(str(video_url), local_video_path, local_source_path=local_src):
                 use_video = True
             else:
                 local_video_path = None
@@ -1960,7 +1963,7 @@ def create_draft_on_mac(
             if image_url and str(image_url).strip():
                 img_filename = _safe_filename(str(image_url))
                 local_image_path = os.path.join(draft_folder, "Resources", "image", img_filename)
-                img_ok = _download_file(str(image_url), local_image_path)
+                img_ok = _download_file(str(image_url), local_image_path, local_source_path=local_path_map.get(str(image_url)))
                 print(f"[jianying_export] 镜头{i} 图片: url={'有' if image_url else '无'} → 文件={img_filename} → 下载={'成功' if img_ok else '失败'} {'(' + str(image_url)[:80] + ')' if image_url else ''}", file=sys.stderr, flush=True)
                 if not img_ok:
                     local_image_path = None
@@ -1990,7 +1993,8 @@ def create_draft_on_mac(
         if audio_url and str(audio_url).strip():
             audio_filename = _safe_filename(str(audio_url))
             lap = os.path.join(draft_folder, "Resources", "audio", audio_filename)
-            ok = _download_file(str(audio_url), lap)
+            local_src = local_path_map.get(str(audio_url))
+            ok = _download_file(str(audio_url), lap, local_source_path=local_src)
             # 报告音频下载进度（每个音频 5%）
             audio_progress = 10 + int((i / max(total_shots, 1)) * 60)
             report_progress(audio_progress, f"下载音频 {i+1}/{total_shots}...")
@@ -2396,6 +2400,8 @@ def batch_export(
     batch_id: str = None,
     is_final_batch: bool = True,
     media_only: bool = False,
+    # 本地媒体缓存路径映射，优先从本地文件复制而非重新下载
+    local_media_paths: list = None,
 ) -> dict:
     """
     跨平台批量导出。
@@ -2407,6 +2413,7 @@ def batch_export(
     batch_id: 批次 ID（用于持久化存储目录）
     is_final_batch: 是否为最后一组（最后一组才生成完整草稿和打包）
     media_only: 是否只保存媒体文件（用于分批中间组）
+    local_media_paths: 格式 [{url: str, localPath: str}]，优先从本地路径复制文件
     """
     system = get_platform()
 
@@ -2454,6 +2461,7 @@ def batch_export(
                 path_map_root=path_map_root,
                 force_draft_folder_name=force_draft_folder_name,
                 media_only=media_only,
+                local_media_paths=local_media_paths,
             )
             result.update(draft_result)
 
@@ -2640,12 +2648,14 @@ if __name__ == "__main__":
             batch_id = stdin_data.get("batchId")
             is_final_batch = bool(stdin_data.get("isFinalBatch", True))
             media_only = bool(stdin_data.get("mediaOnly", False))
+            local_media_paths = stdin_data.get("localMediaPaths") or stdin_data.get("local_media_paths")
             rnd_tr = bool(stdin_data.get("randomTransitions"))
             rnd_fx = bool(stdin_data.get("randomVideoEffects"))
             if args.progress_callback:
                 set_progress_callback(lambda p, s: report_progress(p, s))
         else:
             shots = json.loads(args.shots)
+            local_media_paths = None
             
         result = batch_export(
             draft_name=args.name,
@@ -2661,5 +2671,6 @@ if __name__ == "__main__":
             batch_id=batch_id,
             is_final_batch=is_final_batch,
             media_only=media_only,
+            local_media_paths=local_media_paths,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
