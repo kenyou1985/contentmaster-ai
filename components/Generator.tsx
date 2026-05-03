@@ -3409,6 +3409,15 @@ ${segmentSourceText}
           norm = normalizePetNames(norm);
         }
 
+        // 大国博弈/Bo Yi：检查并确保收尾语存在
+        if (niche === NicheType.GREAT_POWER_GAME) {
+          const hasClosing = /The game (?:never stops|continues)\.?\s*$/i.test(norm.trim());
+          if (!hasClosing) {
+            console.log('[GP Cleanup] No closing phrase found, appending...');
+            norm = norm.trimEnd() + '\n\nThe game continues.';
+          }
+        }
+
         patchRun(topic.id, { status: 'done', stage: 'done', progress: 100 });
         appendRunLog(topic.id, `完成：终稿约 ${norm.length} 字`);
         bumpGlobalProgress(`已完成：${topicTitle}`);

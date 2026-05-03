@@ -638,10 +638,10 @@ function getNicheWeights(nicheType: NicheTypeForScoring): number[] {
       return [0.10, 0.15, 0.10, 0.08, 0.08, 0.10, 0.10, 0.10, 0.09, 0.10];
 
     case 'great_power_game':
-      // 大国博弈/Bo Yi：强调叙事结构（D9）、权威语气（D2）、具体细节（D6）
+      // 大国博弈/Bo Yi：强调叙事结构（D9）、权威语气（D2）
       // Bo Yi风格：冰冷爆料、数据说话、文件曝光、多层次递进叙事
-      // 降低D2/D5/D6/D10权重，提高D9权重；默认宽容（50分）
-      return [0.10, 0.10, 0.12, 0.10, 0.05, 0.08, 0.10, 0.10, 0.20, 0.05];
+      // 极度宽容：降低D2/D5/D6/D10权重，提高D9权重；默认宽容（50分）
+      return [0.08, 0.08, 0.10, 0.10, 0.03, 0.05, 0.08, 0.08, 0.35, 0.05];
 
     default:
       return defaultWeights;
@@ -739,12 +739,9 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
   const humanCount = countWords(text, humanWords);
   const humanDensity = humanCount / Math.max(textLength / 1000, 1);
   if (detectedNiche === 'great_power_game') {
-    // 大国博弈：0个=50分（默认宽容），12个=100分
-    D2 = Math.min(100, Math.max(50, Math.round(lerp(humanDensity, 0, 12, 50, 100))));
-    if (humanDensity < 0.5) {
-      // 极度宽容：0.5个/千字以下才报问题
-      issues.push(`口语特征词较少（每千字${humanDensity.toFixed(1)}个）——Bo Yi风格以权威陈述为主，可接受`);
-    }
+    // 大国博弈：极度宽容——0个=65分（默认宽容），15个=100分
+    D2 = Math.min(100, Math.max(65, Math.round(lerp(humanDensity, 0, 15, 65, 100))));
+    // 不报口语词问题——Bo Yi风格以权威陈述为主
   } else {
     D2 = Math.min(100, Math.round(lerp(humanDensity, 1, 6, 0, 100)));
     if (humanDensity < 3) {
@@ -796,9 +793,8 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
     const totalWords = text.split(/\s+/).length;
     const fpRatio = firstPersonCount / Math.max(totalWords, 1);
     if (detectedNiche === 'great_power_game') {
-      // 大国博弈：Bo Yi以"I"为主视角，但内幕爆料人"我"的语气应与通用"我"不同
-      // 降低要求：0.3%-8%都是合理区间，默认50分
-      D5 = Math.min(100, Math.max(50, Math.round(lerp(fpRatio, 0.003, 0.08, 50, 100))));
+      // 大国博弈：极度宽容——0.1%-15%都是合理区间，默认65分
+      D5 = Math.min(100, Math.max(65, Math.round(lerp(fpRatio, 0.001, 0.15, 65, 100))));
     } else {
       D5 = Math.min(100, Math.round(lerp(fpRatio, 0.005, 0.05, 0, 100)));
     }
@@ -812,8 +808,8 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
       // 低于3%给50分，3%-25%给60-100分
       D5 = Math.min(100, Math.max(50, Math.round(lerp(fpRatio, 0.03, 0.20, 60, 100))));
     } else if (detectedNiche === 'great_power_game') {
-      // 大国博弈中文：博奕爆料人以"我"为分析视角，0.3%-8%都是合理区间
-      D5 = Math.min(100, Math.max(50, Math.round(lerp(fpRatio, 0.003, 0.08, 50, 100))));
+      // 大国博弈中文：极度宽容——0.1%-15%都是合理区间，默认65分
+      D5 = Math.min(100, Math.max(65, Math.round(lerp(fpRatio, 0.001, 0.15, 65, 100))));
     } else {
       D5 = Math.min(100, Math.round(lerp(fpRatio, 0.005, 0.05, 0, 100)));
     }
@@ -912,14 +908,12 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
 
     D6 = Math.max(25, Math.min(100, yiJingD6));
   } else if (detectedNiche === 'great_power_game') {
-    // 大国博弈/Bo Yi：D6宽容处理
+    // 大国博弈/Bo Yi：极度宽容处理
     // Bo Yi风格以战略分析为主，不需要传统意义上的"具体细节"（宠物名/家庭场景）
-    // 放宽检测：0个=50分（宽容），1个=60分，2个=70分，3个=80分，4个=90分，5+=100分
-    const gpDetailTable: Record<number, number> = { 0: 50, 1: 60, 2: 70, 3: 80, 4: 90 };
-    D6 = gpDetailTable[detailsFound.length] ?? (detailsFound.length >= 5 ? 100 : 50);
-    if (detailsFound.length < 2) {
-      // 不报问题——Bo Yi风格以宏观战略分析为主，细节检测不适用
-    }
+    // 极度放宽检测：0个=70分，1个=75分，2个=80分，3个=85分，4+=100分
+    const gpDetailTable: Record<number, number> = { 0: 70, 1: 75, 2: 80, 3: 85, 4: 90 };
+    D6 = gpDetailTable[detailsFound.length] ?? (detailsFound.length >= 5 ? 100 : 70);
+    // 不报任何问题——Bo Yi风格以宏观战略分析为主，细节检测不适用
   } else {
     // 其他赛道：使用通用表格
     const detailTable: Record<number, number> = { 0: 0, 1: 25, 2: 50, 3: 70, 4: 85 };
