@@ -4574,7 +4574,10 @@ ${segmentSourceText}
         return true;
     };
 
-    /** 新闻终稿：扫描文末约 3000 字，找正式收尾语（含互动引导）。在原始文本上检测（sanitize 会删除收尾语） */
+    /**
+     * 新闻终稿：扫描文末约 3000 字，找正式收尾语（含互动引导）。在原始文本上检测（sanitize 会删除收尾语）
+     * 扩展：也检测正文中是否有多个收尾语（说明被分段污染了）
+     */
     const hasNewsFormalClosingInTail = (text: string): boolean => {
         const cleaned = text; // 不用 sanitizeTtsScript，因为 sanitize 会删「咱们下期见」
         if (cleaned.length < 80) return false;
@@ -4582,12 +4585,37 @@ ${segmentSourceText}
         const t = cleaned.slice(-3000);
         if (/下期再见|下期再見/.test(t)) return true;
         if (/咱们下期见|咱們下期見|咱们下期再见|咱們下期再見/.test(t)) return true;
-        if (/咱们下期继续拆/.test(t)) return true;
+        if (/咱们下期继续拆|咱們下期繼續拆/.test(t)) return true;
         if (/咱们下期再聊/.test(t)) return true;
         if (/咱们下期[，,、]?\s*继续撕/.test(t)) return true;
         if (/下期拆/.test(t)) return true;
         if ((/评论区|留言区|留言/.test(t) || /点赞|转发/.test(t)) && /下期/.test(t)) return true;
         return false;
+    };
+
+    /**
+     * 检测新闻文本中是否被多次添加收尾语（污染检测）
+     * 如果正文（非末尾3000字）中出现2次以上收尾语，说明文本被分段污染
+     */
+    const hasMultipleClosingPhrases = (text: string): boolean => {
+        if (text.length < 1000) return false;
+        const tail = text.slice(-3000);
+        const body = text.slice(0, -3000);
+
+        const countInBody = (t: string) => {
+            let count = 0;
+            const patterns = [
+                /咱们下期见|咱们下期继续拆|咱们下期再见|咱们下期再聊|下期继续拆|下期拆/g,
+                /咱们下期[，,、]/g,
+            ];
+            for (const p of patterns) {
+                const matches = t.match(p);
+                if (matches) count += matches.length;
+            }
+            return count;
+        };
+
+        return countInBody(body) >= 2;
     };
 
     /** 新闻/金融：找到收尾语「咱们下期见」等在文中的最后位置，截断其后所有内容，防止强制续写。扫描全文找最后一个收尾语 */
@@ -4645,9 +4673,9 @@ ${segmentSourceText}
 
     /**
      * 新闻/金融专用：更激进的收尾语清除。
-     * 与 stripAfterClosingPhrase 不同，本函数会移除收尾语本身（不只是收尾语后面的内容），
+     * 与 stripAfterClosingPhrase 不同，本函数会移除所有收尾语本身（不只是收尾语后面的内容），
      * 用于正文未达标时的 salvage 流程——清除任何位置的无效收尾语，让 AI 继续写正文。
-     * 策略：只保留最后一个收尾语及其前一句，其余全部删除。
+     * 策略：只保留最后一个收尾语之后的内容之前（不含收尾语本身），其余所有收尾语全部删除。
      */
     const stripClosingPhraseAggressively = (text: string): string => {
         const patterns = [
@@ -4655,35 +4683,53 @@ ${segmentSourceText}
             /咱们下期再聊/gi, /咱們下期見/gi, /咱們下期再見/gi,
             /咱們下期繼續拆/gi, /咱們下期再聊/gi,
             /下期拆/gi, /下期见/gi, /下期再見/gi,
-            /下期見/gi,
+            /下期見/gi, /下期继续拆/gi,
         ];
 
-        // 找所有匹配的位置，保留最后一个
-        let lastMatchPos = -1;
-        let lastMatchLen = 0;
+        // 收集所有匹配的位置
+        interface MatchInfo { pos: number; len: number; }
+        const allMatches: MatchInfo[] = [];
         for (const p of patterns) {
             let match;
             const regex = new RegExp(p.source, 'gi');
             while ((match = regex.exec(text)) !== null) {
                 if (match.index !== undefined) {
-                    lastMatchPos = match.index;
-                    lastMatchLen = match[0].length;
+                    allMatches.push({ pos: match.index, len: match[0].length });
                 }
             }
         }
 
-        if (lastMatchPos < 0) return text;
+        if (allMatches.length === 0) return text;
 
-        // 删除最后一个收尾语及其之后的所有内容
-        const before = text.slice(0, lastMatchPos);
-        // 找最后一个句末标点，作为保留边界
+        // 按位置从后往前排序，找最后一个
+        allMatches.sort((a, b) => b.pos - a.pos);
+        const lastMatch = allMatches[0];
+
+        // 如果有多个收尾语（说明被分段污染了），全部删除
+        if (allMatches.length > 1) {
+            console.log(`[Generator] Found ${allMatches.length} closing phrases, cleaning all except last one`);
+            // 删除所有收尾语及其后内容，只保留最后一个收尾语之前的内容
+            const before = text.slice(0, lastMatch.pos);
+            // 找最后一个句末标点
+            const sentenceEndings = ['。', '！', '？', '.', '!', '?'];
+            let lastSentenceEnd = -1;
+            for (const punct of sentenceEndings) {
+                const idx = before.lastIndexOf(punct);
+                if (idx > lastSentenceEnd) lastSentenceEnd = idx;
+            }
+            const truncateTo = lastSentenceEnd >= 0 ? lastSentenceEnd + 1 : before.length;
+            return before.slice(0, truncateTo).replace(/\n{3,}/g, '\n\n').trim();
+        }
+
+        // 单个收尾语：只删除其后的内容
+        const before = text.slice(0, lastMatch.pos);
         const sentenceEndings = ['。', '！', '？', '.', '!', '?'];
         let lastSentenceEnd = -1;
         for (const punct of sentenceEndings) {
             const idx = before.lastIndexOf(punct);
             if (idx > lastSentenceEnd) lastSentenceEnd = idx;
         }
-        const truncateTo = lastSentenceEnd >= 0 ? lastSentenceEnd + 1 : lastMatchPos;
+        const truncateTo = lastSentenceEnd >= 0 ? lastSentenceEnd + 1 : lastMatch.pos;
         const trimmed = text.slice(0, truncateTo).replace(/\n{3,}/g, '\n\n').trim();
         return trimmed;
     };
@@ -5088,6 +5134,14 @@ ${segmentSourceText}
                     const maxC = MAX_NEWS_SCRIPT_CHARS; // 9000
                     let clLen = sanitizeTtsScript(localContent).length;
 
+                    // Step 0: 初始清理——如果正文（非末尾3000字）中出现2次以上收尾语，说明被分段污染了
+                    // 直接全部清理，只保留正文
+                    if (hasMultipleClosingPhrases(localContent)) {
+                        console.log('[Generator] News: detected multiple closing phrases in body, aggressive cleanup');
+                        localContent = stripClosingPhraseAggressively(localContent);
+                        clLen = sanitizeTtsScript(localContent).length;
+                    }
+
                     // Step 1: 严格字数控制循环
                     // 参考金融宏观逻辑：在 minC 达标前，如果检测到收尾语则剥离（视为无效），
                     // 如果字数不足则补足正文，禁止写收尾。
@@ -5105,7 +5159,7 @@ ${segmentSourceText}
                         await streamContentGeneration(
                             [
                                 `第一人称新闻口播（小美犀利视角），承接上文继续深入分析。**绝对禁止写任何收尾语、互动引导、点赞/留言要求、「咱们下期见」等。**继续展开正文分析。`,
-                                `当前约${clLen}字，目标至少${minC}字。不要分段标记，不要分隔符。`,
+                                `当前约${clLen}字，目标至少${minC}字。不要分段标记，不要分隔符，**不要写任何收尾语**。`,
                                 '',
                                 '【上文】',
                                 localContent.slice(-3000)
@@ -5116,6 +5170,8 @@ ${segmentSourceText}
                             { maxTokens: 8192 }
                         );
                         localContent = maybeNormalizeLayout(localContent);
+                        // 每次生成后都清理收尾语（防止多次分段生成时每段都有收尾语）
+                        localContent = stripClosingPhraseAggressively(localContent);
                         clLen = sanitizeTtsScript(localContent).length;
                     }
 
