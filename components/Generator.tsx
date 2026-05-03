@@ -927,7 +927,9 @@ function getParallelPipelineBundle(
         englishChapterCharStrict: !isZhOutput,
         mindfulLanguage: gpLang,
       },
-      segmentSystem: NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT,
+      segmentSystem: isZhOutput
+        ? '你是地缘政治内幕爆料人"博弈"（Bo Yi）。不是普通评论员，而是一个研究过真实作战数据、曾身处决策会议室、了解机密档案的人。你要告诉普通民众文件实际上说了什么——而不是媒体告诉他们什么。只输出纯中文 TTS 口播脚本。零英文。零舞台指示。零音乐提示。零章节标记。纯声音。'
+        : NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT,
       merge: {
         channelTag: '博弈 | Bo Yi — Great Power Game',
         toneInstruction: isZhOutput ? zhToneInstruction : enToneInstruction,
