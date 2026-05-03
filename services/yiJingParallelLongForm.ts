@@ -328,20 +328,20 @@ export function buildBoYiParallelSegmentUserPrompt(
   // 英文输出
   const enCharRule = `Target: approximately ${chapter.min_chars}–${chapter.max_chars} English characters (including spaces and punctuation). Content completeness takes priority over strict word count.`;
   const enOpening = isFirst
-    ? `Opening: Begin directly with the most counterintuitive, most devastating point. No preamble. No "In this video..." or "Today I want to talk about..."`
+    ? `Opening: Begin directly with the most counterintuitive point. No preamble. No "In this video..." or "Today I want to talk about..."`
     : `Opening: Begin with 1-3 sentences that naturally承接 the previous chapter ("${chapter.opening_echo}"). Then immediately dive into the core argument.`;
   const enClosing = isLast
-    ? `CLOSING: Summarize the core revelation. Then close with one of: "The game continues." or "The game never stops." — then stop immediately. No text after.`
+    ? `Closing (Wisdom Final): Summarize the core insight. End with a powerful, theme-relevant zeng-style closing statement (e.g., "Remember the wisdom of our ancestors — fate is not about surrender, it's about walking the right path."). Write the closing ONCE, then stop. No text after.`
     : `Closing: Provide a natural closing thought and a 1-2 sentence bridge to the next chapter ("${chapter.bridge_to_next}").`;
 
   // 中文输出
   const zhCharRule = `正文目标：约 ${chapter.min_chars}–${chapter.max_chars} 个中文字符（含标点空格）。内容完整性优先。`;
   const zhOpening = isFirst
-    ? `开篇：直接切入最反直觉、最震撼的内幕爆料点。不要任何开场白。不要"在本视频中"或"今天我想讲讲"。`
+    ? `开篇：直击痛点，反常识破局——抛出现实焦虑，打破世俗常规认知。不要任何开场白（如"各位朋友好"）。`
     : `开篇：用 1–3 句话自然承接上一章（「${chapter.opening_echo}」），然后立即深入核心论点。`;
   const zhClosing = isLast
-    ? `结语：总结核心内幕爆料，然后以"这场博弈还在继续。"或"博弈从未停止。"结尾——立即停止，不要任何后续文字。`
-    : `结语：提供自然的收束语句，以及 1–2 句衔接下一章的过渡（「${chapter.bridge_to_next}」）。`;
+    ? `收束（金句结语）：总结核心曾氏智慧，以一句紧扣选题主题的金句收尾（如"记住老祖宗的话，命不是认输，是把路走正""福气不是等来的，是自己养出来的"），**结语只写一次**，写完即终稿。禁止任何后续文字。`
+    : `收束：提供自然的曾氏式收束语句，以及 1–2 句衔接下一章的过渡（「${chapter.bridge_to_next}」）。`;
 
   const charRule = isZhOutput ? zhCharRule : enCharRule;
   const sectionHeader = isZhOutput ? '【本章核心】' : 'Chapter core focus:';
