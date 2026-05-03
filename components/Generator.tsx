@@ -3328,27 +3328,43 @@ ${segmentSourceText}
         appendRunLog(topic.id, `大纲完成：${n} 章`);
         bumpGlobalProgress(`已完成大纲：${topicTitle}`);
 
+        // 根据赛道选择正确的分段 prompt 函数
+        const isYiJing = niche === NicheType.YI_JING_METAPHYSICS;
+        const isGreatPower = niche === NicheType.GREAT_POWER_GAME;
         // 大国博弈走独立分支 bundle.segmentSystem；其他赛道用 NICHES.systemInstruction
         const sys =
-          niche === NicheType.GREAT_POWER_GAME && (bundle as any).segmentSystem
+          isGreatPower && (bundle as any).segmentSystem
             ? (bundle as any).segmentSystem
             : NICHES[niche].systemInstruction;
         const segDone = new Set<number>();
         const results = await Promise.all(
           parsed.chapters.map(async (ch, idx) => {
             let local = '';
-            // 统一走 buildBoYiParallelSegmentUserPrompt（内部已根据 outputLanguage 输出中/英文）
-            const user = buildBoYiParallelSegmentUserPrompt(
-              {
-                topic: topicTitle,
-                coreTheme: parsed.core_theme,
-                logicLine: parsed.logic_line,
-                chapter: ch,
-                chapterIndex: idx,
-                totalChapters: n,
-              },
-              bundle.segment
-            );
+            // 易经命理用 buildParallelSegmentUserPrompt（曾仕强风格）
+            // 大国博弈用 buildBoYiParallelSegmentUserPrompt（Bo Yi风格）
+            const user = isYiJing
+              ? buildParallelSegmentUserPrompt(
+                  {
+                    topic: topicTitle,
+                    coreTheme: parsed.core_theme,
+                    logicLine: parsed.logic_line,
+                    chapter: ch,
+                    chapterIndex: idx,
+                    totalChapters: n,
+                  },
+                  bundle.segment
+                )
+              : buildBoYiParallelSegmentUserPrompt(
+                  {
+                    topic: topicTitle,
+                    coreTheme: parsed.core_theme,
+                    logicLine: parsed.logic_line,
+                    chapter: ch,
+                    chapterIndex: idx,
+                    totalChapters: n,
+                  },
+                  bundle.segment
+                );
             try {
               await streamContentGeneration(user, sys, (c) => {
                 local += c;
@@ -3875,6 +3891,47 @@ ${segmentSourceText}
             // 8. 清理多余空行
             finalText = finalText.replace(/\n{3,}/g, '\n\n');
             pushYiJingLog('[TCM去重] 开场白、套话、重复段落、结尾、结尾套话清理完成');
+          }
+
+          // 新闻热点/小美赛道：清理重复的收尾语
+          if (niche === NicheType.GENERAL_VIRAL) {
+            // 统计"咱们下期继续拆"出现次数
+            const closingPatterns = [
+              /咱们下期继续拆/g,
+              /咱们下期见/g,
+              /咱们下期再见/g,
+              /咱们下期再聊/g,
+            ];
+            for (const p of closingPatterns) {
+              const matches = finalText.match(p) || [];
+              if (matches.length > 1) {
+                console.log(`[News Cleanup] Found ${matches.length} instances of "${p.source.replace(/[\\\/g]/g, '')}", cleaning to 1`);
+                // 只保留最后一个
+                const parts = finalText.split(p);
+                // 最后一节保留完整，其他节的收尾语删除（保留正文）
+                if (parts.length > 2) {
+                  // 保留第一部分和最后一部分，中间部分不要收尾语
+                  const first = parts.slice(0, -1).join('').replace(/咱们下期[^。！？\n]*[。！？]?\s*$/, '');
+                  const last = parts[parts.length - 1];
+                  finalText = first + '咱们下期见' + last;
+                }
+              }
+            }
+            // 更激进的清理：全文只保留一个收尾语
+            const allClosingMatches = [...finalText.matchAll(/咱们下期[^。！？\n]*[。！？]?/g)];
+            if (allClosingMatches.length > 1) {
+              console.log(`[News Cleanup] Found ${allClosingMatches.length} closing phrases, keeping only last one`);
+              // 找到最后一个收尾语的位置
+              const lastMatch = allClosingMatches[allClosingMatches.length - 1];
+              const lastPos = lastMatch.index!;
+              // 截断到最后一个收尾语
+              const before = finalText.slice(0, lastPos);
+              const after = finalText.slice(lastPos);
+              // 清理正文中的其他收尾语（只保留句号前的部分）
+              const cleanedBefore = before.replace(/咱们下期[^。！？\n]*[。！？]?\s*/g, '');
+              finalText = cleanedBefore + after;
+            }
+            pushYiJingLog('[News去重] 收尾语清理完成');
           }
 
           // 检测文章主题：猫还是狗，用于生成匹配的结尾正则
