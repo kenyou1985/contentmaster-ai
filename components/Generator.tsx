@@ -3497,6 +3497,7 @@ ${segmentSourceText}
     getParallelHistorySubModeId,
     generatedContents,
     mindfulLanguage,
+    greatPowerLanguage,
   ]);
 
   const handleBatchGenerate = async () => {
