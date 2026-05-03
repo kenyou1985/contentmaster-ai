@@ -25,11 +25,11 @@ export interface NicheCharacterProfile {
 export const NICHE_CHARACTER_PROFILES: Record<NicheType, NicheCharacterProfile> = {
   [NicheType.TCM_METAPHYSICS]: {
     nicheName: '中医玄学',
-    characterName: '倪海厦',
-    characterDescription: '身着素雅中式长衫的中医老者，手执毛笔或翻阅古籍，神情深邃睿智，常立于古朴书房或讲堂之中',
-    roleDescription: '以倪海厦医师形象出现，作为讲述者的引路人与良师，在关键转折点或引用古籍理论时适当现身，约30%镜头融入',
-    visualStyle: '水墨古风、宣纸肌理、朱砂点缀、古籍书卷、墨色晕染，庄重沉稳如讲座海报',
-    frequencySuggestion: '每3-5个分镜出现1次，约30%镜头融入，在关键转折点或引用古籍理论时出现'
+    characterName: '大师',
+    characterDescription: '中年男士，精瘦体型，台湾口音，面容清癯，目光锐利有神，常戴细框眼镜，身着深色中山装或素色长衫，手执毛笔或翻阅古籍，神态严厉而睿智，立于古朴诊室或书房之中',
+    roleDescription: '以大师形象出现，作为讲述者的引路人与良师，须在至少3个分镜中出现（开场引入、中间关键转折、结尾总结），以正侧脸、局部特写、诊室侧影等形式融入；其余分镜以场景、氛围、情绪意境为主',
+    visualStyle: '水墨古风、宣纸肌理、墨色晕染、朱砂点缀、古籍书卷、诊室药柜、老式台灯；整体色调沉稳克制，以深墨、中灰、赭石为主；画面以环境氛围为主，人物占比约30%',
+    frequencySuggestion: '至少3个分镜必须出现（开场、中段关键转折、结尾），其余分镜以场景环境和情绪意境为主；人物可采用正侧脸、局部特写、诊室侧影等抽象形式出现'
   },
 
   [NicheType.FINANCE_CRYPTO]: {
@@ -88,20 +88,20 @@ export const NICHE_CHARACTER_PROFILES: Record<NicheType, NicheCharacterProfile> 
 
   [NicheType.YI_JING_METAPHYSICS]: {
     nicheName: '易经命理',
-    characterName: '命理大师',
+    characterName: '大师',
     characterDescription: '中式长衫老者或中年人，手持折扇或罗盘，面相堂堂，气质沉稳，通晓易经八卦',
-    roleDescription: '以曾仕强等大师为形象，代表传统命理智慧',
-    visualStyle: '棕金底、祥云、八卦线稿、书卷，亲民讲座感',
-    frequencySuggestion: '每5-7个分镜出现1次，在引用易经理论或命理分析时出现'
+    roleDescription: '以曾仕强等大师为形象，代表传统命理智慧，须在至少3个分镜中出现（开场引入、中段转折、结尾总结），其余分镜以场景氛围和情绪意境为主',
+    visualStyle: '棕金底、祥云、八卦线稿、书卷、水墨古风、宣纸肌理；整体沉稳克制，以深墨、赭石、棕金为主；人物占比≤30%',
+    frequencySuggestion: '至少3个分镜必须出现（开场、中段转折、结尾），其余分镜以场景环境和情绪意境为主；人物可采用正侧脸、局部特写、书房侧影等抽象形式出现'
   },
 
-  [NicheType.RICH_MINDSET]: {
-    nicheName: '富人思维',
-    characterName: '马云',
-    characterDescription: '成功企业家形象，穿着简约商务装，面带自信微笑，站姿挺拔，气场强大且亲和',
-    roleDescription: '以马云为原型，代表中国创业者和富人思维',
-    visualStyle: '黑金配色、城市天际线虚化、聚光灯，成功学但不油腻',
-    frequencySuggestion: '每4-6个分镜出现1次，在分享创业经验或商业智慧时出现'
+  [NicheType.GREAT_POWER_GAME]: {
+    nicheName: '大国博弈',
+    characterName: '博弈 Bo Yi',
+    characterDescription: '前军方/情报高官形象，深色西装，表情冷峻，目光如炬，站姿沉稳，自带不怒自威的威慑气场',
+    roleDescription: '以博弈为原型，代表大国博弈内幕分析者，前国家安全系统官员',
+    visualStyle: '深色冷峻配色、战略地图背景、棋盘暗纹，地图与数据可视化元素穿插',
+    frequencySuggestion: '每3-5个分镜出现1次，在揭露内幕、分析博弈逻辑、揭示被掩盖真相时出现'
   },
 
   [NicheType.MINDFUL_PSYCHOLOGY]: {

@@ -10,7 +10,7 @@ export const COVER_NICHE_ORDER: NicheType[] = [
   NicheType.STORY_REVENGE,
   NicheType.GENERAL_VIRAL,
   NicheType.YI_JING_METAPHYSICS,
-  NicheType.RICH_MINDSET,
+  NicheType.GREAT_POWER_GAME,
   NicheType.MINDFUL_PSYCHOLOGY,
 ];
 
@@ -103,13 +103,13 @@ const PROFILES: Record<NicheType, CoverNicheProfile> = {
     schemeCHint: '太极阴阳高对比分割 + 手掐指一算剪影。',
     refUploadHint: '可上传中式纹样参考；提示词强调传统文化讲座封面。',
   },
-  [NicheType.RICH_MINDSET]: {
+  [NicheType.GREAT_POWER_GAME]: {
     styleDna:
-      '富人思维 / **马云**向：黑金、城市天际线虚化、聚光灯；**融入成功企业家的自信身影**，成功学但不油腻，留白大气。',
-    schemeAHint: '演讲台聚光 + 马云式企业家侧影 + 城市夜景虚化 + 金句标题。',
-    schemeBHint: '黑底金边大字 + 极简钻石或阶梯符号 + 企业家剪影。',
-    schemeCHint: '侧脸剪影 + 金色轮廓光 + 反问句Hook。',
-    refUploadHint: '可上传黑金配色参考；提示词强调商业演讲缩略图。',
+      '大国博弈 / 博弈 Bo Yi 向：深色冷峻配色、战略地图/棋盘/博弈论图形元素；融入前军方情报高官的冷峻身影，目光如炬，地图与数据可视化穿插，极简大气。',
+    schemeAHint: '深色会议室 + 博弈 Bo Yi 冷峻侧影 + 巨型世界地图 + 战略符号叠加。',
+    schemeBHint: '深黑底 + 红色与冷白字高对比 + 霍尔木兹/台湾海峡等战略要地微缩图。',
+    schemeCHint: '博弈半脸剪影 + 冷蓝/红光勾勒 + 地缘博弈棋盘背景。',
+    refUploadHint: '可上传深色冷峻配色参考；提示词强调地缘政治内幕分析封面。',
   },
 };
 

@@ -213,6 +213,11 @@ export function buildParallelOutlineSystem(directorLine: string): string {
   return `${directorLine}只输出合法 JSON，禁止其它文字。`;
 }
 
+/** 大纲 JSON 系统指令：Bo Yi / 大国博弈赛道专用 — 强制英文输出 */
+export function buildBoYiParallelOutlineSystem(directorLine: string): string {
+  return `${directorLine}Output valid JSON only. No other text. Every field in the JSON must be in English — the chapter titles, core_brief, logic hints, bridge lines, all text values. Zero Chinese characters in the JSON output.`;
+}
+
 /** @deprecated 请用 buildParallelOutlineUserPrompt + 赛道 opts */
 export function buildOutlineUserPrompt(
   topic: string,
@@ -292,6 +297,179 @@ ${langLine}
 ${opts.voiceRules}
 3. 本段是全文的一段中间稿，**不要写「谢谢大家」「感谢收看」等全场收场语**，除非当前为最后一章且字数已接近本章上限。
 4. 只输出正文，不要标题行。`;
+}
+
+/**
+ * Bo Yi / GREAT_POWER_GAME 赛道专用英文分段落 prompt 构造器。
+ * 完全绕过 buildParallelSegmentUserPrompt，避免中文结构标签（【写作铁律】等）
+ * 干扰英文输出。
+ */
+export function buildBoYiParallelSegmentUserPrompt(
+  params: {
+    topic: string;
+    coreTheme: string;
+    logicLine: string;
+    chapter: YiJingChapterPlan;
+    chapterIndex: number;
+    totalChapters: number;
+  },
+  opts: {
+    voiceRules: string;
+    outputLanguage?: string;
+    englishChapterCharStrict?: boolean;
+    mindfulLanguage?: string;
+  }
+): string {
+  const { topic, coreTheme, logicLine, chapter, chapterIndex, totalChapters } = params;
+  const isFirst = chapterIndex === 0;
+  const isLast = chapterIndex === totalChapters - 1;
+  const isZhOutput = opts.outputLanguage === 'zh';
+
+  // 英文输出
+  const enCharRule = `Target: approximately ${chapter.min_chars}–${chapter.max_chars} English characters (including spaces and punctuation). Content completeness takes priority over strict word count.`;
+  const enOpening = isFirst
+    ? `Opening: Begin directly with the most counterintuitive, most devastating point. No preamble. No "In this video..." or "Today I want to talk about..."`
+    : `Opening: Begin with 1-3 sentences that naturally承接 the previous chapter ("${chapter.opening_echo}"). Then immediately dive into the core argument.`;
+  const enClosing = isLast
+    ? `CLOSING: Summarize the core revelation. Then close with one of: "The game continues." or "The game never stops." — then stop immediately. No text after.`
+    : `Closing: Provide a natural closing thought and a 1-2 sentence bridge to the next chapter ("${chapter.bridge_to_next}").`;
+
+  // 中文输出
+  const zhCharRule = `正文目标：约 ${chapter.min_chars}–${chapter.max_chars} 个中文字符（含标点空格）。内容完整性优先。`;
+  const zhOpening = isFirst
+    ? `开篇：直接切入最反直觉、最震撼的内幕爆料点。不要任何开场白。不要"在本视频中"或"今天我想讲讲"。`
+    : `开篇：用 1–3 句话自然承接上一章（「${chapter.opening_echo}」），然后立即深入核心论点。`;
+  const zhClosing = isLast
+    ? `结语：总结核心内幕爆料，然后以"这场博弈还在继续。"或"博弈从未停止。"结尾——立即停止，不要任何后续文字。`
+    : `结语：提供自然的收束语句，以及 1–2 句衔接下一章的过渡（「${chapter.bridge_to_next}」）。`;
+
+  const charRule = isZhOutput ? zhCharRule : enCharRule;
+  const sectionHeader = isZhOutput ? '【本章核心】' : 'Chapter core focus:';
+  const logicHeader = isZhOutput ? '【逻辑主线】' : 'Logic:';
+  const outputNote = isZhOutput
+    ? '只输出正文。不要标题行。不要章节标记。纯自然段落。'
+    : 'Output only the chapter body text. No titles. No headings. No stage directions. Pure prose.';
+
+  const bridgeInstruction = isZhOutput
+    ? isFirst
+      ? zhOpening
+      : `开篇：${zhOpening}\n结语：${zhClosing}`
+    : enOpening;
+  const closingInstruction = isZhOutput ? zhClosing : enClosing;
+
+  return `${bridgeInstruction}
+${charRule}
+
+${sectionHeader} ${chapter.core_brief}
+
+${logicHeader} ${logicLine}
+
+${closingInstruction}
+
+${opts.voiceRules}
+
+${outputNote}`;
+}
+
+/**
+ * Bo Yi / GREAT_POWER_GAME 赛道专用英文合并 prompt 构造器。
+ * 完全绕过 buildParallelMergeUserPrompt，避免中文结构标签（【任务】等）
+ * 干扰英文输出。
+ */
+export function buildBoYiParallelMergeUserPrompt(
+  topic: string,
+  combinedDraft: string,
+  totalTargetChars: number | undefined,
+  opts: {
+    toneInstruction: string;
+    outputLanguage?: string;
+    mindfulLanguage?: string;
+    englishMergedCharClamp?: { min: number; max: number };
+  }
+): string {
+  const T = totalTargetChars
+    ? Math.min(PARALLEL_TOTAL_MAX, Math.max(PARALLEL_TOTAL_MIN, Math.round(totalTargetChars)))
+    : 10000;
+  const low = Math.round(T * 0.92);
+  const high = Math.round(T * 1.08);
+  const isZhOutput = opts.outputLanguage === 'zh';
+
+  const clamp = opts.englishMergedCharClamp;
+  const enLengthRule = clamp
+    ? `Word count target: approximately ${clamp.min}–${clamp.max} characters (English, including spaces and punctuation). Content completeness takes priority over strict word count. Do NOT truncate any paragraph to meet word count.`
+    : `Target total: approximately ${low}–${high} characters. Content completeness takes priority. Do NOT truncate any paragraph.`;
+  const zhLengthRule = `全文字数目标：约 ${low}–${high} 个中文字符（含标点）。内容完整性优先。不要为了字数限制而截断任何段落。`;
+
+  if (isZhOutput) {
+    // 中文合并 prompt
+    return `任务：你是"博弈"（Bo Yi）地缘政治内幕爆料频道的资深编辑，正在合并多个分段的草稿。
+
+## 核心原则——内容完整性优先
+- 你必须保留每个草稿分段的所有内容。不要删除、不要截断、不要裁剪任何段落。
+- 不要重写或润色正文主体文字。
+- 只调整每个分段开头的 1–2 句话以创建流畅过渡。
+- 最后一章（含结语）必须原封不动保留——包括其准确的结尾语句。
+
+## 允许的操作
+- 平滑过渡（仅限开头 1–2 句）。
+- 删除连续重复的完全相同句子。
+- 全文保持统一的博奕爆料人叙事语气。
+
+## 禁止的操作
+- 删除任何内容
+- 截断任何段落
+- 合并或拆分句子
+- 替换词汇或改写正文
+- 修改最后一段的自然结尾
+
+## 语言强制（最高优先级）
+全文必须使用**简体中文**输出，包括所有正文、金句、衔接句。禁止出现任何英文字符。如草稿包含英文——翻译为语义对等的简体中文。不要在正文中保留任何英文，禁止中英混合。
+
+## 语气与风格
+${opts.toneInstruction}
+
+## 字数目标
+${zhLengthRule}
+
+## 草稿分段（必须全部包含）
+${combinedDraft}
+
+直接输出完整合并后的文案。不要加任何前言。不要写"以下是合并后的文案："或类似内容。直接输出文案。`;
+  }
+
+  return `TASK: You are merging draft segments for the topic: "${topic}". This is a Bo Yi geopolitical insider analysis voice-over script.
+
+## Core Principles — Content Integrity First
+- You MUST retain ALL content from every draft segment. Do NOT delete, truncate, or cut any paragraph.
+- Do NOT rewrite, rephrase, or polish the main body text.
+- Only make minor adjustments to the opening 1-2 sentences of each segment to create smooth transitions.
+- The FINAL segment (closing) must be kept 100% intact — including its exact closing line.
+
+## What You May Do
+- Smooth transitions between segments (opening 1-2 sentences only).
+- Remove duplicate identical sentences if they appear back-to-back.
+- Apply the unified voice tone consistently across the full piece.
+
+## What You Must NOT Do
+- Delete any content
+- Truncate any paragraph
+- Merge or split sentences
+- Replace words or rephrase the core text
+- Modify the natural ending of the final segment
+
+## Language Rule (CRITICAL — Zero Tolerance)
+The ENTIRE merged script must be in **pure English**. If the draft contains ANY Chinese characters, Chinese phrases, or mixed language — translate everything to English. Do NOT preserve Chinese in any form: not in the main text, not in parentheses, not in brackets. Pure English only.
+
+## Voice & Tone
+${opts.toneInstruction}
+
+## Length Target
+${enLengthRule}
+
+## Draft Segments (MUST ALL BE INCLUDED)
+${combinedDraft}
+
+Output the complete merged script. Do not add any preamble. Do not write "Here is the merged script:" or similar. Just output the script directly.`;
 }
 
 /** @deprecated 请用 buildParallelSegmentUserPrompt */

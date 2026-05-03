@@ -2296,7 +2296,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       NicheType.PSYCHOLOGY,
       NicheType.PHILOSOPHY_WISDOM,
       NicheType.EMOTION_TABOO,
-      NicheType.RICH_MINDSET,
+      NicheType.GREAT_POWER_GAME,
       NicheType.MINDFUL_PSYCHOLOGY,
     ];
     niches.forEach((niche) => historyKeys.add(`${ToolMode.SCRIPT}_${niche}`));

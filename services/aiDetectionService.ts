@@ -44,6 +44,7 @@ export type NicheTypeForScoring =
   | 'yi_jing'            // 易经命理/曾仕强
   | 'rich_mindset'       // 富人思维/马云
   | 'mindful_psychology'  // 治愈心理学/Mindful Paws
+  | 'great_power_game'    // 大国博弈/Bo Yi
   | 'general'            // 通用赛道（默认）
 
 export interface AiDetectionResult {
@@ -308,6 +309,10 @@ const SELF_DEPRECATION_WORDS: Record<string, string[]> = {
     '话讲完了', '我话讲完', '我话说到这里',
     '各家有各家的说法', '各家不一样',
     '我说的不一定对', '也不一定全对',
+    // 新闻辣评小美风格
+    '你们听好了', '我告诉你们', '我看得很清楚', '说白了',
+    '各位', '各位观众', '说实话', '我看这事',
+    '这帮人', '我们把这件事', '我告诉你们这事',
   ],
   en: [
     'I hate how that sounds', 'I mean not completely', 'not sure why',
@@ -498,13 +503,29 @@ export function detectNicheType(text: string): NicheTypeForScoring {
     '治愈', '疗愈', '减压', '抗焦虑', '宠物', '猫', '狗',
     '心理健康', '情绪', '陪伴', '温暖', '放松',
   ];
-  
+
+  // 大国博弈/Bo Yi赛道特征（英文为主）
+  const greatPowerGameKeywords = [
+    'Bo Yi', '博弈', 'airspace', 'air defense', 'missile', 'strike',
+    'strategic', 'military', 'deterrence', 'geopolitical', 'intelligence',
+    'classified', 'operational', 'the documents', 'what the records show',
+    'the arithmetic', 'escalation', 'de-escalation',
+    'force deployment', 'interdiction', 'vulnerability',
+    'regime', 'fragile', 'managed friction', 'tacit',
+    'coalition', 'allies', 'partner', 'overflight', 'corridor',
+    'air order', 'the game never stops', 'the game continues',
+    'This changes everything', 'Let me be very plain',
+    'what nobody is telling you', 'I have seen the data',
+    'Insider', 'whistleblower', 'operational data',
+    'surgical strike', 'proxy', 'sanctions', 'retaliation',
+  ];
+
   // 计算各赛道匹配度
   const scores: Record<string, number> = {
     tcm: 0, finance: 0, awake: 0, philosophy: 0, emotion: 0,
-    revenge: 0, news: 0, yiJing: 0, rich: 0, mindful: 0,
+    revenge: 0, news: 0, yiJing: 0, rich: 0, mindful: 0, greatPower: 0,
   };
-  
+
   const keywordSets = [
     { keywords: tcmKeywords, key: 'tcm' },
     { keywords: financeKeywords, key: 'finance' },
@@ -516,6 +537,7 @@ export function detectNicheType(text: string): NicheTypeForScoring {
     { keywords: yiJingKeywords, key: 'yiJing' },
     { keywords: richMindsetKeywords, key: 'rich' },
     { keywords: mindfulPsychologyKeywords, key: 'mindful' },
+    { keywords: greatPowerGameKeywords, key: 'greatPower' },
   ];
   
   for (const { keywords, key } of keywordSets) {
@@ -536,6 +558,7 @@ export function detectNicheType(text: string): NicheTypeForScoring {
   if (scores.yiJing >= 2) return 'yi_jing';
   if (scores.rich >= 3) return 'rich_mindset';
   if (scores.mindful >= 3) return 'mindful_psychology';
+  if (scores.greatPower >= 4) return 'great_power_game';
   
   return 'general';
 }
@@ -613,7 +636,13 @@ function getNicheWeights(nicheType: NicheTypeForScoring): number[] {
       // 治愈心理学：强调口语密度（D2）、结尾治愈（D8）、宠物名一致（D10）
       // 治愈风格：温暖口语、自然疗愈、宠物共鸣
       return [0.10, 0.15, 0.10, 0.08, 0.08, 0.10, 0.10, 0.10, 0.09, 0.10];
-    
+
+    case 'great_power_game':
+      // 大国博弈/Bo Yi：强调叙事结构（D9）、权威语气（D2）、具体细节（D6）
+      // Bo Yi风格：冰冷爆料、数据说话、文件曝光、多层次递进叙事
+      // 降低D2/D5/D6/D10权重，提高D9权重；默认宽容（50分）
+      return [0.10, 0.10, 0.12, 0.10, 0.05, 0.08, 0.10, 0.10, 0.20, 0.05];
+
     default:
       return defaultWeights;
   }
@@ -703,13 +732,25 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
   // ============================================================
   // D2: 口语词密度 (权重 10%)
   // 每千字6个以上=100分，低于1个=0分
+  // 大国博弈：降低要求，默认50分（宽容处理）
+  // 0个/千字=50分，3个/千字=70分，6个/千字=90分，12个/千字=100分
   // ============================================================
+  let D2: number;
   const humanCount = countWords(text, humanWords);
   const humanDensity = humanCount / Math.max(textLength / 1000, 1);
-  const D2 = Math.min(100, Math.round(lerp(humanDensity, 1, 6, 0, 100)));
-  if (humanDensity < 3) {
-    issues.push(`口语特征词不足（每千字${humanDensity.toFixed(1)}个）`);
-    suggestions.push('添加口语词、个人视角、小情绪等人类特征');
+  if (detectedNiche === 'great_power_game') {
+    // 大国博弈：0个=50分（默认宽容），12个=100分
+    D2 = Math.min(100, Math.max(50, Math.round(lerp(humanDensity, 0, 12, 50, 100))));
+    if (humanDensity < 0.5) {
+      // 极度宽容：0.5个/千字以下才报问题
+      issues.push(`口语特征词较少（每千字${humanDensity.toFixed(1)}个）——Bo Yi风格以权威陈述为主，可接受`);
+    }
+  } else {
+    D2 = Math.min(100, Math.round(lerp(humanDensity, 1, 6, 0, 100)));
+    if (humanDensity < 3) {
+      issues.push(`口语特征词不足（每千字${humanDensity.toFixed(1)}个）`);
+      suggestions.push('添加口语词、个人视角、小情绪等人类特征');
+    }
   }
 
   // ============================================================
@@ -754,7 +795,13 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
     firstPersonCount = (text.match(/\bI\b/g) || []).length;
     const totalWords = text.split(/\s+/).length;
     const fpRatio = firstPersonCount / Math.max(totalWords, 1);
-    D5 = Math.min(100, Math.round(lerp(fpRatio, 0.005, 0.05, 0, 100)));
+    if (detectedNiche === 'great_power_game') {
+      // 大国博弈：Bo Yi以"I"为主视角，但内幕爆料人"我"的语气应与通用"我"不同
+      // 降低要求：0.3%-8%都是合理区间，默认50分
+      D5 = Math.min(100, Math.max(50, Math.round(lerp(fpRatio, 0.003, 0.08, 50, 100))));
+    } else {
+      D5 = Math.min(100, Math.round(lerp(fpRatio, 0.005, 0.05, 0, 100)));
+    }
   } else {
     firstPersonCount = (text.match(/\u6211/g) || []).length;
     const totalChars = text.replace(/\s/g, '').length;
@@ -764,12 +811,16 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
       // 倪海厦风格"我"占比3%-25%都是合理的
       // 低于3%给50分，3%-25%给60-100分
       D5 = Math.min(100, Math.max(50, Math.round(lerp(fpRatio, 0.03, 0.20, 60, 100))));
+    } else if (detectedNiche === 'great_power_game') {
+      // 大国博弈中文：博奕爆料人以"我"为分析视角，0.3%-8%都是合理区间
+      D5 = Math.min(100, Math.max(50, Math.round(lerp(fpRatio, 0.003, 0.08, 50, 100))));
     } else {
       D5 = Math.min(100, Math.round(lerp(fpRatio, 0.005, 0.05, 0, 100)));
     }
   }
   // 倪海厦赛道：降低第一人称问题阈值，避免过度提示
-  if (D5 < 30 && detectedNiche !== 'tcm_metaphysics' && detectedNiche !== 'yi_jing') {
+  // 大国博弈：Bo Yi风格以第一人称分析视角为主，不应视为说教
+  if (D5 < 30 && detectedNiche !== 'tcm_metaphysics' && detectedNiche !== 'yi_jing' && detectedNiche !== 'great_power_game') {
     issues.push('第一人称主体性不足，文章更像在说教而非分享');
     suggestions.push('多使用"我"的视角，分享自己的真实经历');
   } else if (D5 < 30 && detectedNiche === 'tcm_metaphysics') {
@@ -860,6 +911,15 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
     if (behavior5) yiJingD6 = Math.min(100, yiJingD6 + 5);
 
     D6 = Math.max(25, Math.min(100, yiJingD6));
+  } else if (detectedNiche === 'great_power_game') {
+    // 大国博弈/Bo Yi：D6宽容处理
+    // Bo Yi风格以战略分析为主，不需要传统意义上的"具体细节"（宠物名/家庭场景）
+    // 放宽检测：0个=50分（宽容），1个=60分，2个=70分，3个=80分，4个=90分，5+=100分
+    const gpDetailTable: Record<number, number> = { 0: 50, 1: 60, 2: 70, 3: 80, 4: 90 };
+    D6 = gpDetailTable[detailsFound.length] ?? (detailsFound.length >= 5 ? 100 : 50);
+    if (detailsFound.length < 2) {
+      // 不报问题——Bo Yi风格以宏观战略分析为主，细节检测不适用
+    }
   } else {
     // 其他赛道：使用通用表格
     const detailTable: Record<number, number> = { 0: 0, 1: 25, 2: 50, 3: 70, 4: 85 };
@@ -908,9 +968,13 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
   const depTable: Record<number, number> = { 0: 30, 1: 50, 2: 70, 3: 100 };
   // 曾仕强赛道：口语打断更宽容（曾仕强以温暖劝导为主，有大量"你说""你不要小看"类互动语）
   const depTableYiJing: Record<number, number> = { 0: 55, 1: 70, 2: 85, 3: 100 };
-  const activeDepTable = detectedNiche === 'yi_jing' ? depTableYiJing : depTable;
+  // 新闻辣评小美赛道：强调互动引导语（"你们听好了""我告诉你们""各位"），宽容度最高
+  const depTableNews: Record<number, number> = { 0: 60, 1: 75, 2: 90, 3: 100 };
+  // 大国博弈/Bo Yi：极度宽容，默认50分（内幕爆料风格以权威陈述为主）
+  const depTableGreatPower: Record<number, number> = { 0: 50, 1: 60, 2: 75, 3: 100 };
+  const activeDepTable = detectedNiche === 'yi_jing' ? depTableYiJing : detectedNiche === 'news' ? depTableNews : detectedNiche === 'great_power_game' ? depTableGreatPower : depTable;
   const D7 = activeDepTable[Math.min(selfInterruptCount, 3)] ?? 100;
-  if (D7 < 50) {
+  if (D7 < 50 && detectedNiche !== 'great_power_game') {
     issues.push('缺乏口语打断和自嘲表达，文章过于完美工整');
     suggestions.push('加入"说实话我也不知道"或自嘲句来增加真实感');
   }
@@ -954,15 +1018,30 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
       }
     }
   } else {
-    const storyOpeners = text.match(
-      /(我记得[^.!?]{0,60}[.!?]|有一次[^.!?]{0,60}[.!?]|那天[^.!?]{0,60}[.!?]|后来[^.!?]{0,60}[.!?]|那之后[^.!?]{0,60}[.!?])/gi
-    ) || [];
-    const uniqueOpeners = new Set(storyOpeners.map(o => o.slice(0, 8)));
-    const variety = uniqueOpeners.size / Math.max(storyOpeners.length, 1);
-    if (storyOpeners.length >= 3) {
-      D9 = Math.min(100, Math.max(0, Math.round(lerp(variety, 0.1, 0.8, 0, 100))));
-      if (variety < 0.2 && storyOpeners.length > 4) {
-        issues.push('故事开场方式重复度高');
+    // 新闻辣评小美赛道：新闻评论不依赖「我记得/有一次」类故事开场，
+    // 宽容处理：开场数少时给高分（默认75），多样性要求放低
+    if (detectedNiche === 'news') {
+      const storyOpeners = text.match(
+        /(我记得[^.!?]{0,60}[.!?]|有一次[^.!?]{0,60}[.!?]|那天[^.!?]{0,60}[.!?]|后来[^.!?]{0,60}[.!?]|那之后[^.!?]{0,60}[.!?])/gi
+      ) || [];
+      if (storyOpeners.length < 3) {
+        D9 = 100; // 新闻评论不依赖故事开场，无开场不等于缺陷，给满分
+      } else {
+        const uniqueOpeners = new Set(storyOpeners.map(o => o.slice(0, 8)));
+        const variety = uniqueOpeners.size / Math.max(storyOpeners.length, 1);
+        D9 = Math.min(100, Math.max(0, Math.round(lerp(variety, 0.05, 0.8, 40, 100))));
+      }
+    } else {
+      const storyOpeners = text.match(
+        /(我记得[^.!?]{0,60}[.!?]|有一次[^.!?]{0,60}[.!?]|那天[^.!?]{0,60}[.!?]|后来[^.!?]{0,60}[.!?]|那之后[^.!?]{0,60}[.!?])/gi
+      ) || [];
+      const uniqueOpeners = new Set(storyOpeners.map(o => o.slice(0, 8)));
+      const variety = uniqueOpeners.size / Math.max(storyOpeners.length, 1);
+      if (storyOpeners.length >= 3) {
+        D9 = Math.min(100, Math.max(0, Math.round(lerp(variety, 0.1, 0.8, 0, 100))));
+        if (variety < 0.2 && storyOpeners.length > 4) {
+          issues.push('故事开场方式重复度高');
+        }
       }
     }
   }
@@ -1039,8 +1118,12 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
     if (sorted.length >= 3 && sorted[0][1] >= 3) {
       const othersWithMultiple = sorted.slice(1).filter(([, c]) => c >= 3);
       if (othersWithMultiple.length >= 2) {
-        D10 = 20;
-        issues.push(`角色名不一致：主角${sorted[0][0]}被多次称呼，但同时出现${othersWithMultiple.map(([n]) => n).join('、')}等多个不同名`);
+        if (detectedNiche === 'great_power_game') {
+          D10 = 50; // 大国博弈：宽容处理，多角色报道场景常见
+        } else {
+          D10 = 20;
+          issues.push(`角色名不一致：主角${sorted[0][0]}被多次称呼，但同时出现${othersWithMultiple.map(([n]) => n).join('、')}等多个不同名`);
+        }
       } else {
         D10 = 100; // 单名为主角，无多角色干扰
       }
@@ -1049,94 +1132,99 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
     }
     // sorted.length === 0：检测不到名字时不扣分（可能是纯人类主题），保持 D10=100
   } else {
-    // 中文章检测宠物名一致性
-    // 策略：只匹配已知宠物候选名单词（精确匹配），避免误捕获普通词组
-    // 排除词：常见的非宠物名片段
-    const NON_PET_STOPWORDS = new Set([
-      '说实话', '我也', '其实', '真的', '好像', '可能', '感觉',
-      '就是', '不是', '还是', '这个', '那个', '什么', '自己',
-      '知道', '觉得', '好像', '这么', '那么', '怎么', '应该',
-      '可以', '没有', '一样', '一定', '其实', '真的', '可能',
-      '所以', '因为', '但是', '而且', '或者', '如果',
-      '像是', '像在', '像只', '像条', '像是', '煤球',
-      // 误触发的普通词组
-      '我坐正', '我坐就', '坐正好', '坐就是', '最后这', '只是这',
-      '最后', '只是', '只有', '坐正', '坐就', '坐好',
-    ]);
+    // 新闻辣评赛道：D10（名字一致性）不适用于地缘政治报道，不做宠物名检测，直接给满分
+    if (detectedNiche === 'news') {
+      D10 = 100;
+    } else {
+      // 中文章检测宠物名一致性
+      // 策略：只匹配已知宠物候选名单词（精确匹配），避免误捕获普通词组
+      // 排除词：常见的非宠物名片段
+      const NON_PET_STOPWORDS = new Set([
+        '说实话', '我也', '其实', '真的', '好像', '可能', '感觉',
+        '就是', '不是', '还是', '这个', '那个', '什么', '自己',
+        '知道', '觉得', '好像', '这么', '那么', '怎么', '应该',
+        '可以', '没有', '一样', '一定', '其实', '真的', '可能',
+        '所以', '因为', '但是', '而且', '或者', '如果',
+        '像是', '像在', '像只', '像条', '像是', '煤球',
+        // 误触发的普通词组
+        '我坐正', '我坐就', '坐正好', '坐就是', '最后这', '只是这',
+        '最后', '只是', '只有', '坐正', '坐就', '坐好',
+      ]);
 
-    // 已知中文宠物候选名（用于精确匹配）
-    const CANDIDATE_PET_NAMES = new Set([
-      '小满', '年糕', '团子', '咪咪', '煤球', '肉包', '橘子', '阿橘',
-      '布丁', '果冻', '奶糖', '花花', '小白', '小灰', '小黑', '黑豆',
-      '豆豆', '阿黄', '来福', '旺财', '球球', '阿福', '大黄', '笨笨', '毛毛', '乐乐', '欢欢',
-      '糯米',  // 狗主题固定名
-      '小满',  // 猫主题固定名（重复不影响Set）
-    ]);
+      // 已知中文宠物候选名（用于精确匹配）
+      const CANDIDATE_PET_NAMES = new Set([
+        '小满', '年糕', '团子', '咪咪', '煤球', '肉包', '橘子', '阿橘',
+        '布丁', '果冻', '奶糖', '花花', '小白', '小灰', '小黑', '黑豆',
+        '豆豆', '阿黄', '来福', '旺财', '球球', '阿福', '大黄', '笨笨', '毛毛', '乐乐', '欢欢',
+        '糯米',  // 狗主题固定名
+        '小满',  // 猫主题固定名（重复不影响Set）
+      ]);
 
-    // 方式1：已知候选名单词精确匹配（前后边界检查）
-    const dogNameCandidateMatches: string[] = [];
-    for (const name of CANDIDATE_PET_NAMES) {
-      let i = 0;
-      while ((i = text.indexOf(name, i)) !== -1) {
-        const before = i > 0 ? text[i - 1] : ' ';
-        const afterPos = i + name.length;
-        const after = afterPos < text.length ? text[afterPos] : ' ';
-        const beforeIsCN = /[\u4e00-\u9fff]/.test(before);
-        const afterIsCN = /[\u4e00-\u9fff]/.test(after);
-        if (!beforeIsCN && !afterIsCN) {
-          dogNameCandidateMatches.push(name);
-        }
-        i += name.length;
-      }
-    }
-
-    const STRICT_PET_NAME_STARTERS = new Set([
-      '小', '年', '团', '咪', '煤', '肉', '橘', '阿', '布', '果', '奶', '花',
-      '豆', '来', '旺', '球', '大', '笨', '毛', '乐', '欢', '糯', '梁', '像',
-    ]);
-    // 严格2字符宠物名（必须是以上面开头的才进入候选）
-    const STRICT_2CHAR_PET_NAMES = new Set([
-      '小满', '年糕', '团子', '咪咪', '煤球', '肉包', '橘子', '阿橘',
-      '布丁', '果冻', '奶糖', '花花', '豆豆', '阿黄', '来福', '旺财',
-      '球球', '阿福', '大黄', '笨笨', '毛毛', '乐乐', '欢欢', '糯米',
-      '梁子',
-    ]);
-
-    // 方式2：行为短语捕获（只接受严格候选名单词，防止误捕获"我坐正"等）
-    const dogNameBehaviorMatches: string[] = [];
-    const behaviorPatterns = [
-      /(?:^|[。！？\n，、])([\u4e00-\u9fff]{2,4})(?=这会儿|在打呼噜|在睡觉|趴在|睡着了|在打呼|把头|把下巴)/g,
-    ];
-    for (const pat of behaviorPatterns) {
-      pat.lastIndex = 0;
-      let m: RegExpExecArray | null;
-      while ((m = pat.exec(text)) !== null) {
-        const name = m[1];
-        if (
-          // 精确匹配已知候选名单词
-          CANDIDATE_PET_NAMES.has(name) ||
-          // 2字符严格名单（小/年来/团子 等开头）
-          STRICT_2CHAR_PET_NAMES.has(name) ||
-          // 2字符且首字是宠物常用名起始字（防止捕获"我坐正"等）
-          (name.length === 2 && STRICT_PET_NAME_STARTERS.has(name[0]))
-        ) {
-          dogNameBehaviorMatches.push(name);
+      // 方式1：已知候选名单词精确匹配（前后边界检查）
+      const dogNameCandidateMatches: string[] = [];
+      for (const name of CANDIDATE_PET_NAMES) {
+        let i = 0;
+        while ((i = text.indexOf(name, i)) !== -1) {
+          const before = i > 0 ? text[i - 1] : ' ';
+          const afterPos = i + name.length;
+          const after = afterPos < text.length ? text[afterPos] : ' ';
+          const beforeIsCN = /[\u4e00-\u9fff]/.test(before);
+          const afterIsCN = /[\u4e00-\u9fff]/.test(after);
+          if (!beforeIsCN && !afterIsCN) {
+            dogNameCandidateMatches.push(name);
+          }
+          i += name.length;
         }
       }
-    }
 
-    // 合并所有发现的名字（只计入已知候选名单词）
-    const allDogNames = [...dogNameCandidateMatches, ...dogNameBehaviorMatches].filter(n => !NON_PET_STOPWORDS.has(n));
-    const uniqueDogNames = [...new Set(allDogNames)];
+      const STRICT_PET_NAME_STARTERS = new Set([
+        '小', '年', '团', '咪', '煤', '肉', '橘', '阿', '布', '果', '奶', '花',
+        '豆', '来', '旺', '球', '大', '笨', '毛', '乐', '欢', '糯', '梁', '像',
+      ]);
+      // 严格2字符宠物名（必须是以上面开头的才进入候选）
+      const STRICT_2CHAR_PET_NAMES = new Set([
+        '小满', '年糕', '团子', '咪咪', '煤球', '肉包', '橘子', '阿橘',
+        '布丁', '果冻', '奶糖', '花花', '豆豆', '阿黄', '来福', '旺财',
+        '球球', '阿福', '大黄', '笨笨', '毛毛', '乐乐', '欢欢', '糯米',
+        '梁子',
+      ]);
 
-    if (uniqueDogNames.length >= 2) {
-      D10 = 0;
-      issues.push(`宠物名前后不一致：出现了${uniqueDogNames.length}个不同的名字（${uniqueDogNames.join('、')}）`);
-      suggestions.push('全文统一使用同一个宠物名，不要中途换名字');
-    } else if (uniqueDogNames.length === 1) {
-      D10 = 100; // 完美：全文只有一个宠物名
+      // 方式2：行为短语捕获（只接受严格候选名单词，防止误捕获"我坐正"等）
+      const dogNameBehaviorMatches: string[] = [];
+      const behaviorPatterns = [
+        /(?:^|[。！？\n，、])([\u4e00-\u9fff]{2,4})(?=这会儿|在打呼噜|在睡觉|趴在|睡着了|在打呼|把头|把下巴)/g,
+      ];
+      for (const pat of behaviorPatterns) {
+        pat.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        while ((m = pat.exec(text)) !== null) {
+          const name = m[1];
+          if (
+            // 精确匹配已知候选名单词
+            CANDIDATE_PET_NAMES.has(name) ||
+            // 2字符严格名单（小/年来/团子 等开头）
+            STRICT_2CHAR_PET_NAMES.has(name) ||
+            // 2字符且首字是宠物常用名起始字（防止捕获"我坐正"等）
+            (name.length === 2 && STRICT_PET_NAME_STARTERS.has(name[0]))
+          ) {
+            dogNameBehaviorMatches.push(name);
+          }
+        }
+      }
+
+      // 合并所有发现的名字（只计入已知候选名单词）
+      const allDogNames = [...dogNameCandidateMatches, ...dogNameBehaviorMatches].filter(n => !NON_PET_STOPWORDS.has(n));
+      const uniqueDogNames = [...new Set(allDogNames)];
+
+      if (uniqueDogNames.length >= 2) {
+        D10 = 0;
+        issues.push(`宠物名前后不一致：出现了${uniqueDogNames.length}个不同的名字（${uniqueDogNames.join('、')}）`);
+        suggestions.push('全文统一使用同一个宠物名，不要中途换名字');
+      } else if (uniqueDogNames.length === 1) {
+        D10 = 100; // 完美：全文只有一个宠物名
+      }
+      // D10 保持 50（默认值）：检测不到名字时不扣分（可能是纯人类主题）
     }
-    // D10 保持 50（默认值）：检测不到名字时不扣分（可能是纯人类主题）
   }
 
   // ===== 综合得分：使用赛道特定权重计算加权平均 =====

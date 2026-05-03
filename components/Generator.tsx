@@ -614,7 +614,7 @@ import {
   StoryLanguage,
   StoryDuration,
 } from '../types';
-import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT, YI_JING_SHORT_SCRIPT_PROMPT, MINDFUL_PSYCHOLOGY_SCRIPT_PROMPT, applyTopicCountToPrompt } from '../constants';
+import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT, YI_JING_SHORT_SCRIPT_PROMPT, MINDFUL_PSYCHOLOGY_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT, applyTopicCountToPrompt } from '../constants';
 import { NicheSelector } from './NicheSelector';
 import { generateTopics, streamContentGeneration, initializeGemini } from '../services/geminiService';
 import { fetchMacroNewsDigestForPrompt } from '../services/macroNewsFeedService';
@@ -629,8 +629,11 @@ import { Sparkles, Calendar, Loader2, Download, Eye, Zap, AlertTriangle, Copy, C
 import {
   buildParallelOutlineUserPrompt,
   buildParallelOutlineSystem,
+  buildBoYiParallelOutlineSystem,
   buildParallelSegmentUserPrompt,
+  buildBoYiParallelSegmentUserPrompt,
   buildParallelMergeUserPrompt,
+  buildBoYiParallelMergeUserPrompt,
   buildParallelMergeSystem,
   parseYiJingOutline,
   rescaleChapterWordCounts,
@@ -734,6 +737,9 @@ function sanitizeMindfulPsychologyTopicLine(raw: string): string {
 // 治愈心理学语言类型定义（需要在使用前定义）
 type MindfulLanguage = 'en' | 'zh' | 'ko' | 'ja' | 'es' | 'de' | 'hi' | 'ru' | 'pt' | 'fr' | 'id' | 'th';
 
+// 大国博弈语言类型定义
+type GreatPowerLanguage = 'en' | 'zh';
+
 /** 各赛道分段并行：大纲 / 分段 / 合并 的提示与人设 */
 function getParallelPipelineBundle(
   niche: NicheType,
@@ -741,7 +747,8 @@ function getParallelPipelineBundle(
   storyLanguage: StoryLanguage,
   storyDuration: StoryDuration,
   nicheConfig: NicheConfig,
-  mindfulLang?: MindfulLanguage
+  mindfulLang?: MindfulLanguage,
+  greatPowerLang?: GreatPowerLanguage
 ) {
   const baseName = nicheConfig.name;
   const isEnRevenge =
@@ -852,6 +859,85 @@ function getParallelPipelineBundle(
     },
     mergeSystem: buildParallelMergeSystem(mergeEditorLine),
   };
+
+  // ── GREAT_POWER_GAME（大国博弈主赛道）：独立赛道，不走新闻热点框架 ──
+  if (niche === NicheType.GREAT_POWER_GAME) {
+    const gpLang = greatPowerLang || 'en';
+    const isZhOutput = gpLang === 'zh';
+
+    // 英文输出的 prompt（已有）
+    const enOutlineSystem = buildBoYiParallelOutlineSystem(
+      'You are the lead producer for the "博弈" (Bo Yi) geopolitical analysis channel. ' +
+      'Output a pure English voice-over outline only. No Chinese characters. ' +
+      'No chapter numbers, no stage markers. Natural paragraphs only. ' +
+      'Pure English throughout — this is the Bo Yi insider analysis brand.'
+    );
+    const enVoiceRules = '【Language】The ENTIRE segment must be written in pure English. Every sentence, every transition, every closing line — English only. Do NOT write any Chinese characters whatsoever. Do NOT insert Chinese phrases, Chinese punctuation, or Chinese-style punctuation marks (，。：；？！). Use English punctuation only.';
+    const enToneInstruction =
+      'CRITICAL LANGUAGE RULE: The merged script must be **100% pure English**. ' +
+      'Every single Chinese character found in the combined draft MUST be translated into semantically equivalent English. ' +
+      'Do NOT preserve any Chinese. Do NOT mix languages. ' +
+      'Maintain Bo Yi\'s ice-cold insider whistleblower narrative voice throughout. ' +
+      'End with "The game continues." or "The game never stops."';
+    const enMergeSystem =
+      'You are a senior editor merging English voice-over scripts for the "博弈" (Bo Yi) geopolitical analysis channel. ' +
+      'Output pure English only. No Chinese. No stage directions. ' +
+      'Every Chinese character found in the draft must be translated into English — do not preserve any Chinese text. ' +
+      'Unify Bo Yi\'s ice-cold insider whistleblower voice throughout the merged script. ' +
+      'The merged script must feel like one continuous, cohesive monologue — not five separate drafts stitched together. ' +
+      'Remove any repetitive openings from individual segments. ' +
+      'Do NOT add "according to reports" or any hedging language. ' +
+      'End with exactly one of: "The game continues." / "The game never stops." — then stop immediately.';
+
+    // 中文输出的 prompt（新增）
+    const zhOutlineSystem = buildBoYiParallelOutlineSystem(
+      '你是"博弈"（Bo Yi）地缘政治分析频道的总制作人。' +
+      '输出纯中文的大纲。禁止出现任何英文字符。' +
+      '禁止章节编号，禁止舞台标记，只用自然段落。' +
+      '全程中文——这是博奕内部爆料风格。'
+    );
+    const zhVoiceRules = '【语言强制】全文必须使用**简体中文**输出，包括所有正文、金句、衔接句。禁止出现任何英文字符。中文标点符号（，。：；？！）只用于中文内容。';
+    const zhToneInstruction =
+      '【语言强制】合并后的文案必须 **100% 纯简体中文**。' +
+      '英文片段必须翻译为语义对等的简体中文。' +
+      '禁止保留任何英文。禁止中英混合。' +
+      '全文保持博奕冷静内幕爆料人叙事风格。' +
+      '以"这场博弈还在继续。"或"博弈从未停止。"结尾。';
+    const zhMergeSystem =
+      '你是"博弈"（Bo Yi）地缘政治分析频道的资深编辑。' +
+      '只输出简体中文。禁止英文。禁止舞台指示。' +
+      '将英文片段翻译为语义对等的简体中文。' +
+      '保持博奕冷静内幕爆料人叙事风格贯穿全文。' +
+      '全文应像一段连贯的内幕独白，而非五段草稿的拼接。' +
+      '删除各段重复的开场白。' +
+      '不以"据报道"等含糊语言。' +
+      '以"这场博弈还在继续。"或"博弈从未停止。"结尾，然后立即停止。';
+
+    return {
+      outline: {
+        channelLabel: isZhOutput ? '博弈 | Bo Yi — 大国博弈内幕分析' : '博弈 | Bo Yi — Great Power Game Insider Analysis',
+        contentKind: isZhOutput ? '口播大纲（中文）' : 'voice-over outline (English)',
+        logicBlueprint: '',
+        englishCharOutline: !isZhOutput,
+      },
+      outlineSystem: isZhOutput ? zhOutlineSystem : enOutlineSystem,
+      segment: {
+        outputLanguage: (isZhOutput ? 'zh' : 'en') as 'zh' | 'en',
+        voiceRules: isZhOutput ? zhVoiceRules : enVoiceRules,
+        englishChapterCharStrict: !isZhOutput,
+        mindfulLanguage: gpLang,
+      },
+      segmentSystem: NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT,
+      merge: {
+        channelTag: '博弈 | Bo Yi — Great Power Game',
+        toneInstruction: isZhOutput ? zhToneInstruction : enToneInstruction,
+        outputLanguage: (isZhOutput ? 'zh' : 'en') as 'zh' | 'en',
+        contentKind: isZhOutput ? '口播脚本（中文）' : 'voice-over script (English)',
+        mindfulLanguage: gpLang,
+      },
+      mergeSystem: isZhOutput ? zhMergeSystem : enMergeSystem,
+    };
+  }
 }
 
 interface GeneratorProps {
@@ -1007,6 +1093,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   };
 
   const [mindfulLanguage, setMindfulLanguage] = useState<MindfulLanguage>('en');
+  const [greatPowerLanguage, setGreatPowerLanguage] = useState<GreatPowerLanguage>('en');
 
   /** 易经命理·长视频：大纲 + 分段并行 + 合并润色 */
   /** 全文目标字数（分段并行的总目标，默认 3500，与各章 min/max 联动） */
@@ -1187,7 +1274,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
   /**
    * 无「子选题」网格的赛道：用固定虚拟 subModeId 读写历史，须与 saveHistory 使用同一 id。
-   * （易经 / 心理学 / 哲学 / 情感禁忌 / 富人思维 / 治愈心理学）
+   * （易经 / 心理学 / 哲学 / 情感禁忌 / 大国博弈 / 治愈心理学）
    */
   const getStaticGeneratorSubModeId = (nicheType: NicheType): string | null => {
     switch (nicheType) {
@@ -1199,8 +1286,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
         return 'philosophy';
       case NicheType.EMOTION_TABOO:
         return 'emotion_taboo';
-      case NicheType.RICH_MINDSET:
-        return 'rich_mindset';
+      case NicheType.GREAT_POWER_GAME:
+        return 'great_power_game';
       case NicheType.MINDFUL_PSYCHOLOGY:
         return 'mindful_mode1';
       default:
@@ -1331,7 +1418,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (niche === NicheType.PSYCHOLOGY) return null;
     if (niche === NicheType.PHILOSOPHY_WISDOM) return null;
     if (niche === NicheType.EMOTION_TABOO) return null;
-    if (niche === NicheType.RICH_MINDSET) return null;
+    if (niche === NicheType.GREAT_POWER_GAME) return null;
     if (niche === NicheType.MINDFUL_PSYCHOLOGY) return null;
     return null;
   };
@@ -1345,7 +1432,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
      if (niche === NicheType.PSYCHOLOGY) return null;
      if (niche === NicheType.PHILOSOPHY_WISDOM) return null;
      if (niche === NicheType.EMOTION_TABOO) return null;
-     if (niche === NicheType.RICH_MINDSET) return null;
+     if (niche === NicheType.GREAT_POWER_GAME) return null;
      if (niche === NicheType.MINDFUL_PSYCHOLOGY) return null;
      return null;
   };
@@ -1357,7 +1444,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (niche === NicheType.PSYCHOLOGY) return false;
     if (niche === NicheType.PHILOSOPHY_WISDOM) return false;
     if (niche === NicheType.EMOTION_TABOO) return false;
-    if (niche === NicheType.RICH_MINDSET) return false;
+    if (niche === NicheType.GREAT_POWER_GAME) return false;
     if (niche === NicheType.MINDFUL_PSYCHOLOGY) return false;
     return true; // Default input required for other niches
   };
@@ -1369,7 +1456,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (niche === NicheType.PSYCHOLOGY) return false;
     if (niche === NicheType.PHILOSOPHY_WISDOM) return false;
     if (niche === NicheType.EMOTION_TABOO) return false;
-    if (niche === NicheType.RICH_MINDSET) return true;
+    if (niche === NicheType.GREAT_POWER_GAME) return true;
     if (niche === NicheType.MINDFUL_PSYCHOLOGY) return true;
     return true;
   };
@@ -1380,8 +1467,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       if (niche === NicheType.YI_JING_METAPHYSICS) {
         return '（可选）侧重方向、关键词或素材提示，留空则按易经命理爆款逻辑生成';
       }
-      if (niche === NicheType.RICH_MINDSET) {
-        return '（可选）输入选题方向关键词，如：子女啃老、亲戚算计、养老困境';
+      if (niche === NicheType.GREAT_POWER_GAME) {
+        return '（可选）输入选题方向关键词，如：中东局势、伊朗战争、空域控制权';
       }
       if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
         return '（可选）输入选题方向关键词，如：性格心理学、情绪疗愈、潜意识';
@@ -1559,34 +1646,80 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       prompt += `\n\n【综合要求】其余选题可围绕人宠关系、宠物对人类心理的治愈作用等交叉主题。总计 ${n} 条选题须确保：猫主题≥${catMin}条、人类主题≥${humanMin}条。若任一类别不满足要求，整组结果作废重写。`;
     }
 
-    if (
+    // 大国博弈选题：根据语言模式构建专属 prompt
+    if (niche === NicheType.GREAT_POWER_GAME) {
+      if (greatPowerLanguage === 'zh') {
+        // 中文模式：完整中文选题 prompt（RSS digest 在下面追加）
+        prompt = `【角色】你是地缘政治内幕爆料人"博弈"（Bo Yi）。不是普通评论员，而是一个研究过真实作战数据、曾身处决策会议室、了解机密档案的人。
+
+【用户输入】${inputVal.trim() || '（用户未指定方向，由你从当前国际局势中自行选取最震撼的内幕爆料角度）'}
+
+【选题方向引导（博奕风格·中文·内幕爆料）】
+- 军事行动内幕：导弹防御漏洞、兵力部署数字、实际交火结果——官方叙事背后的真相
+- 战略体制失灵：情报评估如何被政治意志系统性压过，专业判断被否决的过程
+- 大国博弈格局：俄乌/中东/台海等热点中各方真实立场与算计，不是表面外交辞令
+- 经济与军力关联：穷兵黩武的债务代价、民生压力、战略储备消耗——数字揭示一切
+- 军事能力对比：防空系统漏洞、海上封锁可行性、地面部队真实战力——数据不会说谎
+- 内部文件曝光：情报圈/军方/外交系统内部的真实评估，与公开表态之间的鸿沟
+- 历史规律重现：这一次与历史上哪个时刻如出一辙？规律揭示了怎样的走向？
+
+【选题风格铁律】
+- 每条标题须体现博奕爆料人视角：数据说话、文件曝光、冷峻揭露
+- 禁止写成通讯社导语或新闻综述——这不是新闻，这是内幕
+- 禁止"据报道""有分析认为""专家表示"——你是爆料人，不是传声筒
+- 标题要有让人"不看浑身难受"的冲动：悬念、反直觉、震撼数字至少有其一
+- 可用冒号/破折号/问号制造节奏，总长建议 20–45 汉字`;
+      } else {
+        // 英文模式：用 constants 标准模板
+        prompt = config.topicPromptTemplate.replace('{input}', inputVal || '（No specific direction given — draw from the most explosive geopolitical insider angles from current international situation）');
+      }
+    }
+
+    // RSS 要闻抓取（金融宏观预警 + 新闻热点 + 大国博弈赛道）
+    const isRssNiche =
       (niche === NicheType.FINANCE_CRYPTO && financeSubMode === FinanceSubModeId.MACRO_WARNING) ||
-      niche === NicheType.GENERAL_VIRAL
-    ) {
+      niche === NicheType.GENERAL_VIRAL ||
+      niche === NicheType.GREAT_POWER_GAME;
+
+    if (isRssNiche) {
       toast.info('正在抓取国际 RSS 要闻（BBC / DW / Al Jazeera 等）…');
       try {
         const digest = await fetchMacroNewsDigestForPrompt();
+        // 存入 ref 供 UI 显示
         if (niche === NicheType.GENERAL_VIRAL) {
           newsMacroNewsDigestRef.current = digest;
+        } else if (niche === NicheType.GREAT_POWER_GAME) {
+          // 大国博弈赛道：RSS 对齐规则根据语言模式动态构建
+          if (greatPowerLanguage === 'zh') {
+            // prompt 已经是完整中文 prompt，追加 RSS digest + 对齐规则
+            const extraRules =
+              '\n\n【选题对齐铁律·最高优先级】每条标题须与上方「国际要闻投喂」中至少一条新闻在主题上可对应；禁止10条标题只围绕同一条新闻换皮，须尽量覆盖至少5条不同新闻线索。' +
+              '\n【博奕爆料风格·中文铁律】每条须含博奕内幕爆料人视角：数据说话、文件曝光、冷峻揭露。禁止写成通讯社导语。禁止"据报道""有分析认为""专家表示"。' +
+              '\n【标题党铁律】每条须含强钩子：悬念/反直觉/震撼数字/第二人称刺痛至少其一；总长建议 20–45 汉字，可用冒号/破折号制造节奏。' +
+              '\n【输出格式】只输出标题，每行一个，不要任何分析/前言/结语/列表标记/引号/Markdown。';
+            prompt = `${digest}\n\n---\n\n` + prompt + extraRules;
+          } else {
+            // 英文模式
+            const extraRules =
+              '\n\n【Topic Alignment Rule — Highest Priority】Each topic title MUST be anchored to at least one item in the "International Intelligence Feed" above. Do NOT generate generic geopolitical topics disconnected from the live RSS intelligence. Cover at least 5 different news lines from the feed. Do NOT output 10 titles all restating the same news item.' +
+              '\n【Bo Yi Hook Rule】Every title must carry the Bo Yi insider-reveal voice: this is what the data actually shows, this is what they buried, this is what the arithmetic proves. Do NOT write news-wire summaries. Do NOT write official narrative restatements. Pure English titles only.';
+            prompt = `${digest}\n\n---\n\n` + prompt + extraRules;
+          }
         } else {
           financeMacroNewsDigestRef.current = digest;
         }
-        const isNews = niche === NicheType.GENERAL_VIRAL;
-        const extraRules = isNews
-          ? `\n\n【选题对齐铁律】每条标题须与上方「国际要闻投喂」中至少一条新闻在主题上可对应（小美辣评风格改写）；禁止 10 条标题只围绕同一条新闻换皮，须尽量覆盖不同地缘/市场线索。\n【标题党铁律】每条须含强钩子：悬念/反问/震撼词/第二人称刺痛至少其二；禁止写成通讯社导语或「……说明……」式说明体；单条建议 22–48 字，可用冒号或破折号断句，追求「一眼想点进去」。`
-          : `\n\n【选题对齐铁律】每条标题须与上方「国际要闻投喂」中至少一条新闻在主题上可对应（可芒格式改写）；禁止 10 条标题只围绕同一条新闻换皮，须尽量覆盖不同地缘/市场线索。\n【标题党铁律】每条须含强钩子：悬念/反问/震撼词/读者切身利益至少其二；禁止写成通讯社导语或「……说明……」式说明体；单条建议 22–48 字，可用冒号或破折号断句，追求「一眼想点进去」。`;
-        prompt =
-          `${digest}\n\n---\n\n` +
-          prompt +
-          extraRules;
+        // 注入 digest 和额外规则（GENERAL_VIRAL 和 金融宏观预警）
+        if (niche === NicheType.GENERAL_VIRAL) {
+          const extraRules = '\n\n【选题对齐铁律】每条标题须与上方「国际要闻投喂」中至少一条新闻在主题上可对应（小美辣评风格改写）；禁止10条标题只围绕同一条新闻换皮，须尽量覆盖不同地缘/市场线索。\n【标题党铁律】每条须含强钩子：悬念/反问/震撼词/第二人称刺痛至少其二；禁止写成通讯社导语或「……说明……」式说明体；单条建议22–48字，可用冒号或破折号断句，追求「一眼想点进去」。';
+          prompt = `${digest}\n\n---\n\n` + prompt + extraRules;
+        } else if (niche === NicheType.FINANCE_CRYPTO && financeSubMode === FinanceSubModeId.MACRO_WARNING) {
+          const extraRules = '\n\n【选题对齐铁律】每条标题须与上方「国际要闻投喂」中至少一条新闻在主题上可对应（可芒格式改写）；禁止10条标题只围绕同一条新闻换皮，须尽量覆盖不同地缘/市场线索。\n【标题党铁律】每条须含强钩子：悬念/反问/震撼词/读者切身利益至少其二；禁止写成通讯社导语或「……说明……」式说明体；单条建议22–48字，可用冒号或破折号断句，追求「一眼想点进去」。';
+          prompt = `${digest}\n\n---\n\n` + prompt + extraRules;
+        }
       } catch (e) {
         console.error('[Generator] 宏观要闻 RSS 抓取失败', e);
         financeMacroNewsDigestRef.current = '';
-        if (niche === NicheType.GENERAL_VIRAL) {
-          newsMacroNewsDigestRef.current = '';
-        } else {
-          financeMacroNewsDigestRef.current = '';
-        }
+        newsMacroNewsDigestRef.current = '';
         toast.warning('国际要闻抓取失败，已退回纯模型生成选题。');
       }
     }
@@ -2258,7 +2391,8 @@ ${segmentSourceText}
       storyLanguage,
       storyDuration,
       NICHES[niche],
-      mindfulLanguage
+      mindfulLanguage,
+      greatPowerLanguage
     );
     const lead = getParallelOutlineLeadContext();
     setBatchProgress({
@@ -2358,7 +2492,8 @@ ${segmentSourceText}
       storyLanguage,
       storyDuration,
       config,
-      mindfulLanguage
+      mindfulLanguage,
+      greatPowerLanguage
     );
     const topicTitle = sel[0].title;
     const n = parsed.chapters.length;
@@ -2484,7 +2619,8 @@ ${segmentSourceText}
         storyLanguage,
         storyDuration,
         NICHES[niche],
-        mindfulLanguage
+        mindfulLanguage,
+        greatPowerLanguage
       );
       const combined = parts.join('\n\n');
       const mindfulLong =
@@ -2911,7 +3047,8 @@ ${segmentSourceText}
       storyLanguage,
       storyDuration,
       config,
-      mindfulLanguage
+      mindfulLanguage,
+      greatPowerLanguage
     );
     const topicTitle = sel[0].title;
     // 倪海厦风格5大模块
@@ -2959,7 +3096,7 @@ ${segmentSourceText}
                 arr[idx] = local;
                 return arr;
               });
-            }, undefined, { maxTokens: 8192, fallbackModelOnStall: 'deepseek-v4-flash' });
+            }, undefined, { maxTokens: 8192, fallbackModelOnStall: 'gemini-3-flash-preview' });
             setTcmSegStatus((prev) => {
               const next = [...prev];
               next[idx] = 'done';
@@ -3030,7 +3167,8 @@ ${segmentSourceText}
         storyLanguage,
         storyDuration,
         NICHES[niche],
-        mindfulLanguage
+        mindfulLanguage,
+        greatPowerLanguage
       );
       const combined = parts.join('\n\n');
       const merged = await collectStreamText(
@@ -3120,7 +3258,8 @@ ${segmentSourceText}
       storyLanguage,
       storyDuration,
       NICHES[niche],
-      mindfulLanguage
+      mindfulLanguage,
+      greatPowerLanguage
     );
     const outlineLead = getParallelOutlineLeadContext();
 
@@ -3189,13 +3328,17 @@ ${segmentSourceText}
         appendRunLog(topic.id, `大纲完成：${n} 章`);
         bumpGlobalProgress(`已完成大纲：${topicTitle}`);
 
-        const config = NICHES[niche];
-        const sys = config.systemInstruction;
+        // 大国博弈走独立分支 bundle.segmentSystem；其他赛道用 NICHES.systemInstruction
+        const sys =
+          niche === NicheType.GREAT_POWER_GAME && (bundle as any).segmentSystem
+            ? (bundle as any).segmentSystem
+            : NICHES[niche].systemInstruction;
         const segDone = new Set<number>();
         const results = await Promise.all(
           parsed.chapters.map(async (ch, idx) => {
             let local = '';
-            const user = buildParallelSegmentUserPrompt(
+            // 统一走 buildBoYiParallelSegmentUserPrompt（内部已根据 outputLanguage 输出中/英文）
+            const user = buildBoYiParallelSegmentUserPrompt(
               {
                 topic: topicTitle,
                 coreTheme: parsed.core_theme,
@@ -3230,17 +3373,14 @@ ${segmentSourceText}
         const combined = results.join('\n\n');
         const mindfulLongAp =
           niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
-        const merged = await collectStreamText(
-          buildParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
-            ...bundle.merge,
-            englishMergedCharClamp: mindfulLongAp
-              ? mindfulMergeCharClamp(parallelTotalTargetChars)
-              : undefined,
-            mindfulLanguage,
-          }),
-          bundle.mergeSystem,
-          32768
-        );
+        // 统一走 buildBoYiParallelMergeUserPrompt（内部已根据 outputLanguage 输出中/英文）
+        const mergeUser = buildBoYiParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
+          ...bundle.merge,
+          englishMergedCharClamp: mindfulLongAp
+            ? mindfulMergeCharClamp(parallelTotalTargetChars)
+            : undefined,
+        });
+        const merged = await collectStreamText(mergeUser, bundle.mergeSystem, 32768);
         let norm = normalizeYiJingBody(merged);
         if (mindfulLongAp) {
           norm = truncateMindfulScript(norm, MINDFUL_EN_SCRIPT_CHARS_MAX);
@@ -3435,7 +3575,8 @@ ${segmentSourceText}
             storyLanguage,
             storyDuration,
             NICHES[niche],
-            mindfulLanguage
+            mindfulLanguage,
+            greatPowerLanguage
           );
           const outlineLead = getParallelOutlineLeadContext();
 
@@ -3471,10 +3612,15 @@ ${segmentSourceText}
 
           // 2) 分段并行
           const config = NICHES[niche];
-          const sys = config.systemInstruction;
+          // 大国博弈走独立分支 bundle.segmentSystem；其他赛道用 NICHES.systemInstruction
+          const sys =
+            niche === NicheType.GREAT_POWER_GAME && (bundle as any).segmentSystem
+              ? (bundle as any).segmentSystem
+              : config.systemInstruction;
           const segResults = await Promise.all(
             parsed.chapters.map(async (ch, chIdx) => {
-              const user = buildParallelSegmentUserPrompt(
+              // 统一走 buildBoYiParallelSegmentUserPrompt（内部已根据 outputLanguage 输出中/英文）
+              const user = buildBoYiParallelSegmentUserPrompt(
                 {
                   topic: topicTitle,
                   coreTheme: parsed.core_theme,
@@ -3529,14 +3675,12 @@ ${segmentSourceText}
           const combined = segResults.join('\n\n');
           const mindfulLong =
             niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
+          // 大国博弈用专用英文 merge prompt，避免中文结构标签干扰
+          const mergeUser = buildBoYiParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
+            ...bundle.merge,
+          });
           const merged = await collectStreamText(
-            buildParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
-              ...bundle.merge,
-              englishMergedCharClamp: mindfulLong
-                ? mindfulMergeCharClamp(parallelTotalTargetChars)
-                : undefined,
-              mindfulLanguage,
-            }),
+            mergeUser,
             niche === NicheType.TCM_METAPHYSICS ? TCM_MERGE_SYSTEM : bundle.mergeSystem,
             32768
           );
@@ -4068,6 +4212,18 @@ ${segmentSourceText}
             .replace(/^\s*-----+\s*$/gm, '')
             .replace(/^\s*----+\s*$/gm, '')
             .replace(/-{4,}/g, '')
+            // 移除章节标记（第N节课等）——Claude fallback 模型会违规输出
+            .replace(/^#\s*第[一二三四五六七八九十百千0-9]+节课.*$/gm, '')
+            .replace(/^#\s*第[一二三四五六七八九十百千0-9]+堂课.*$/gm, '')
+            .replace(/^#\s*第\s*[0-9]+\s*节课.*$/gm, '')
+            .replace(/^第[一二三四五六七八九十百千0-9]+节课.*$/gm, '')
+            .replace(/^第[一二三四五六七八九十百千0-9]+堂课.*$/gm, '')
+            .replace(/^第\s*[0-9]+\s*节课.*$/gm, '')
+            .replace(/^\s*第[一二三四五六七八九十百千0-9]+节.*$/gm, '')
+            .replace(/^\s*第一层.*$/gm, '')
+            .replace(/^\s*模块[一二三四五六七八九十0-9]+.*$/gm, '')
+            .replace(/^\s*Part\s*[0-9]+.*$/gmi, '')
+            .replace(/^\s*Section\s*[0-9]+.*$/gmi, '')
             // 移除技术性提示词和元信息
             .replace(/^\s*Note[:：].*$/gmi, '')
             .replace(/^\s*提示[:：].*$/gmi, '')
@@ -4098,11 +4254,16 @@ ${segmentSourceText}
             .replace(/^\s*下期再见.*$/gm, '')
             .replace(/^\s*下期見.*$/gm, '')
             .replace(/^\s*下期见.*$/gm, '')
+            .replace(/^\s*下期拆.*$/gm, '')
+            .replace(/^\s*咱们下期拆.*$/gm, '')
+            .replace(/^\s*咱們下期拆.*$/gm, '')
             // 移除行内提前收尾语（避免“下期再见”后又被强行续写导致突兀）
             .replace(/(?:我們|我们|咱們|咱们)?下期再見[！!。,.，]*/gi, '')
             .replace(/(?:我們|我们|咱們|咱们)?下期再见[！!。,.，]*/gi, '')
             .replace(/(?:我們|我们|咱們|咱们)?下期見[！!。,.，]*/gi, '')
             .replace(/(?:我們|我们|咱們|咱们)?下期见[！!。,.，]*/gi, '')
+            .replace(/下期拆[！!。,.，]*/gi, '')
+            .replace(/(?:咱們|咱们)下期拆[！!。,.，]*/gi, '')
             .replace(/下課[！!。,.，]*/gi, '')
             .replace(/下课[！!。,.，]*/gi, '')
             .replace(/散會[！!。,.，]*/gi, '')
@@ -4210,6 +4371,8 @@ ${segmentSourceText}
             .replace(/(?:我們|我们|咱們|咱们)?下期節目再見[！!。,.，]*/gi, '')
             .replace(/(?:我們|我们|咱們|咱们)?下期見[！!。,.，]*/gi, '')
             .replace(/(?:我們|我们|咱們|咱们)?下期见[！!。,.，]*/gi, '')
+            .replace(/下期拆[！!。,.，]*/gi, '')
+            .replace(/(?:咱們|咱们)下期拆[！!。,.，]*/gi, '')
             .replace(/下課[！!。,.，]*/gi, '')
             .replace(/下课[！!。,.，]*/gi, '')
             .replace(/散會[！!。,.，]*/gi, '')
@@ -4268,12 +4431,49 @@ ${segmentSourceText}
 
         // 0. 如果文末有收尾语（说明不该截断），跳过截断直接返回原文
         // 用原始文本检测（sanitize 会删「咱们下期见」）
-        const tail = text.slice(-2000);
+        const tail = text.slice(-3000);
         if (
             /咱们下期见|咱们下期再见|咱们下期继续拆|咱们下期再聊|咱们下期再|下期再见/.test(tail)
         ) {
             console.log(`[Generator] truncateToMax: detected closing phrase, skipping truncation`);
             return text;
+        }
+
+        // 0b. 防止截断时切穿收尾语：如果在 maxChars + 200 范围内发现收尾语，截断到收尾语句末
+        const searchRange = text.slice(0, Math.min(text.length, maxChars + 200));
+        const closingPhrasePatterns = [
+            /咱们下期见/,
+            /咱们下期再见/,
+            /咱们下期继续拆/,
+            /咱们下期再聊/,
+            /咱们下期再/,
+            /下期再见/,
+        ];
+        let latestClosingEnd = -1;
+        for (const pattern of closingPhrasePatterns) {
+            const allMatches = [...searchRange.matchAll(new RegExp(pattern.source, 'gi'))];
+            for (const m of allMatches) {
+                if (m.index !== undefined) {
+                    const endPos = m.index + m[0].length;
+                    if (endPos > latestClosingEnd) {
+                        latestClosingEnd = endPos;
+                    }
+                }
+            }
+        }
+        if (latestClosingEnd > maxChars * 0.5) {
+            // 找到收尾语后，找后面的句末标点
+            const afterClosing = text.slice(latestClosingEnd);
+            const sentenceEndMatch = afterClosing.match(/[。！？.!?]/);
+            const sentenceEndOffset = sentenceEndMatch && sentenceEndMatch.index !== undefined
+                ? sentenceEndMatch.index + sentenceEndMatch[0].length
+                : 0;
+            const truncateTo = latestClosingEnd + sentenceEndOffset;
+            const result = text.slice(0, truncateTo).trim();
+            if (result.length > maxChars * 0.5) {
+                console.log(`[Generator] truncateToMax: found closing phrase at char ${latestClosingEnd}, truncated to sentence end`);
+                return result;
+            }
         }
 
         const slice = text.slice(0, maxChars);
@@ -4349,8 +4549,8 @@ ${segmentSourceText}
         if (strictPatterns.some((pattern) => pattern.test(text))) {
             return true;
         }
-        // 仅在文末 2000 字范围内检测新闻人设收尾，避免正文「咱们下期继续分析」误判
-        const tail = text.length <= 2000 ? text : text.slice(-2000);
+        // 仅在文末 3000 字范围内检测新闻人设收尾，避免正文「咱们下期继续分析」误判
+        const tail = text.length <= 3000 ? text : text.slice(-3000);
         const newsTailClosingPatterns = [
             // 狭义：仅「下期」+ 继续/再 X
             /咱[們们]下期[，,、]?\s*继续/i,
@@ -4374,63 +4574,118 @@ ${segmentSourceText}
         return true;
     };
 
-    /** 新闻终稿：扫描文末约 2000 字，找正式收尾语（含互动引导）。在原始文本上检测（sanitize 会删除收尾语） */
+    /** 新闻终稿：扫描文末约 3000 字，找正式收尾语（含互动引导）。在原始文本上检测（sanitize 会删除收尾语） */
     const hasNewsFormalClosingInTail = (text: string): boolean => {
         const cleaned = text; // 不用 sanitizeTtsScript，因为 sanitize 会删「咱们下期见」
         if (cleaned.length < 80) return false;
-        const t = cleaned.slice(-2000);
+        // 扫描文末 3000 字（扩大扫描范围，防止收尾语出现在 2000 字外时被漏检）
+        const t = cleaned.slice(-3000);
         if (/下期再见|下期再見/.test(t)) return true;
         if (/咱们下期见|咱們下期見|咱们下期再见|咱們下期再見/.test(t)) return true;
         if (/咱们下期继续拆/.test(t)) return true;
         if (/咱们下期再聊/.test(t)) return true;
         if (/咱们下期[，,、]?\s*继续撕/.test(t)) return true;
-        if (/咱们下期再/.test(t)) return true;
+        if (/下期拆/.test(t)) return true;
         if ((/评论区|留言区|留言/.test(t) || /点赞|转发/.test(t)) && /下期/.test(t)) return true;
         return false;
     };
 
-    /** 新闻/金融：找到收尾语「咱们下期见」等在文中的最后位置，截断其后所有内容，防止强制续写。在原始文本上检测 */
+    /** 新闻/金融：找到收尾语「咱们下期见」等在文中的最后位置，截断其后所有内容，防止强制续写。扫描全文找最后一个收尾语 */
     const stripAfterClosingPhrase = (text: string): string => {
         const cleaned = text; // 不用 sanitizeTtsScript
         if (cleaned.length < 200) return text;
 
-        // 从后往前扫描最后 2000 字，找「咱们下期见」等正式收尾语的最后位置
-        const tail = cleaned.slice(-2000);
+        // 扫描全文，从后往前找「咱们下期见」等正式收尾语的最后位置
         const closingPatterns = [
             /咱们下期见/,
             /咱们下期再见/,
             /咱们下期继续拆/,
             /咱们下期再聊/,
-            /咱们下期再/,
             /咱们下期[，,、]继续撕/,
-            /下期再见/,
+            /下期拆/,
+            /下期见/,
             /下期再見/,
         ];
 
         let lastClosingPos = -1;
+        let lastClosingLen = 0;
         for (const pattern of closingPatterns) {
-            const match = tail.match(pattern);
-            if (match && match.index !== undefined) {
-                const pos = cleaned.length - 2000 + match.index + match[0].length;
-                if (pos > lastClosingPos) lastClosingPos = pos;
+            // 用 allMatches 找出所有出现位置
+            const allMatches = [...cleaned.matchAll(new RegExp(pattern.source, 'gi'))];
+            for (const m of allMatches) {
+                if (m.index !== undefined) {
+                    const endPos = m.index + m[0].length;
+                    if (endPos > lastClosingPos) {
+                        lastClosingPos = m.index;
+                        lastClosingLen = m[0].length;
+                    }
+                }
             }
         }
 
-        // 收尾语在文末超过 30% 位置就截断（更激进保留）
+        if (lastClosingPos < 0) return text;
+
+        // 收尾语在文末超过 30% 位置才截断（激进保留，防止正文中途被误截）
         if (lastClosingPos > cleaned.length * 0.3) {
-            // 截断到句末（找收尾语后面的句号/感叹号/问号）
-            const afterClosing = cleaned.slice(lastClosingPos);
+            // 找收尾语后面的句号/感叹号/问号，截断到句末
+            const afterClosing = cleaned.slice(lastClosingPos + lastClosingLen);
             const sentenceEndMatch = afterClosing.match(/[。！？.!?]/);
-            if (sentenceEndMatch && sentenceEndMatch.index !== undefined) {
-                lastClosingPos = lastClosingPos + sentenceEndMatch.index + 1;
-            }
-            const truncated = cleaned.slice(0, lastClosingPos).trim();
+            const sentenceEndOffset = sentenceEndMatch && sentenceEndMatch.index !== undefined
+                ? sentenceEndMatch.index + sentenceEndMatch[0].length
+                : 0;
+            const truncateTo = lastClosingPos + lastClosingLen + sentenceEndOffset;
+            const truncated = cleaned.slice(0, truncateTo).trim();
             if (truncated.length > 5000) {
                 console.log(`[Generator] stripAfterClosingPhrase: stripped content after closing, kept ${truncated.length} chars`);
                 return truncated;
             }
         }
         return text;
+    };
+
+    /**
+     * 新闻/金融专用：更激进的收尾语清除。
+     * 与 stripAfterClosingPhrase 不同，本函数会移除收尾语本身（不只是收尾语后面的内容），
+     * 用于正文未达标时的 salvage 流程——清除任何位置的无效收尾语，让 AI 继续写正文。
+     * 策略：只保留最后一个收尾语及其前一句，其余全部删除。
+     */
+    const stripClosingPhraseAggressively = (text: string): string => {
+        const patterns = [
+            /咱们下期见/gi, /咱们下期再见/gi, /咱们下期继续拆/gi,
+            /咱们下期再聊/gi, /咱們下期見/gi, /咱們下期再見/gi,
+            /咱們下期繼續拆/gi, /咱們下期再聊/gi,
+            /下期拆/gi, /下期见/gi, /下期再見/gi,
+            /下期見/gi,
+        ];
+
+        // 找所有匹配的位置，保留最后一个
+        let lastMatchPos = -1;
+        let lastMatchLen = 0;
+        for (const p of patterns) {
+            let match;
+            const regex = new RegExp(p.source, 'gi');
+            while ((match = regex.exec(text)) !== null) {
+                if (match.index !== undefined) {
+                    lastMatchPos = match.index;
+                    lastMatchLen = match[0].length;
+                }
+            }
+        }
+
+        if (lastMatchPos < 0) return text;
+
+        // 删除最后一个收尾语及其之后的所有内容
+        const before = text.slice(0, lastMatchPos);
+        // 找最后一个句末标点，作为保留边界
+        const sentenceEndings = ['。', '！', '？', '.', '!', '?'];
+        let lastSentenceEnd = -1;
+        for (const punct of sentenceEndings) {
+            const idx = before.lastIndexOf(punct);
+            if (idx > lastSentenceEnd) lastSentenceEnd = idx;
+        }
+        const truncateTo = lastSentenceEnd >= 0 ? lastSentenceEnd + 1 : lastMatchPos;
+        const trimmed = text.slice(0, truncateTo).replace(/\n{3,}/g, '\n\n').trim();
+        return trimmed;
     };
 
     const getCtaKeyword = (topic: string) => {
@@ -4840,8 +5095,9 @@ ${segmentSourceText}
                     let salvageRounds = 0;
                     while (clLen < minC && salvageRounds < 3) {
                         salvageRounds += 1;
-                        // 如果有无效收尾语，先剥离
-                        localContent = stripAfterClosingPhrase(localContent);
+                        // 激进清除：移除任何位置的无效收尾语本身（不只是收尾语后面的内容）
+                        // 让 AI 能继续写正文，而不是被残留的收尾语干扰
+                        localContent = stripClosingPhraseAggressively(localContent);
                         clLen = sanitizeTtsScript(localContent).length;
                         if (clLen >= minC) break;
 
@@ -4888,6 +5144,17 @@ ${segmentSourceText}
 
                     // Step 3: 剥离收尾后可能又续写的内容（写完「咱们下期见」后又写了新内容）
                     localContent = stripAfterClosingPhrase(localContent);
+
+                    // Step 3b: 激进清除所有收尾语本身（防止 Claude fallback 模型输出「第N节课」结构导致多处残留）
+                    // 然后重新添加一个干净的收尾语（只允许一个「咱们下期见」或「咱们下期继续拆」）
+                    localContent = stripClosingPhraseAggressively(localContent);
+                    const finalClosingOption = [
+                        '各位朋友，这期内容如果让你觉得有点东西，别忘了点个赞，咱们下期见。',
+                        '如果你也有想让我拆解的国际热点，评论区留言，咱们下期见。',
+                        '各位观众，你们觉得这局面谁才是真正的输家？评论区告诉我，咱们下期继续拆。',
+                    ][Math.floor(Math.random() * 3)];
+                    localContent = localContent.trimEnd() + '\n\n' + finalClosingOption;
+
                     clLen = sanitizeTtsScript(localContent).length;
 
                     // Step 4: 语义截断，确保不超过硬上限
@@ -5166,8 +5433,8 @@ ${segmentSourceText}
                         let salvageRounds = 0;
                         while (finLen < minChars && salvageRounds < 3) {
                             salvageRounds += 1;
-                            // 先剥离可能无效的收尾语
-                            localContent = stripAfterClosingPhrase(localContent);
+                            // 激进清除：移除任何位置的无效收尾语本身，让 AI 继续写正文
+                            localContent = stripClosingPhraseAggressively(localContent);
                             finLen = sanitizeTtsScript(localContent).length;
                             if (finLen >= minChars) break;
 
@@ -5216,6 +5483,15 @@ ${segmentSourceText}
 
                         // Step 4: 剥离收尾后可能续写的内容（raw）
                         localContent = stripAfterClosingPhrase(localContent);
+
+                        // Step 4b: 激进清除所有收尾语本身，重新添加一个干净的收尾语
+                        localContent = stripClosingPhraseAggressively(localContent);
+                        const financeClosingOption = [
+                            '各位朋友，这期内容如果让你觉得有点东西，别忘了点个赞，咱们下期见。',
+                            '如果你也有想让我拆解的宏观热点，评论区留言，咱们下期见。',
+                            '各位观众，你们觉得这局面谁才是真正的输家？评论区告诉我，咱们下期继续拆。',
+                        ][Math.floor(Math.random() * 3)];
+                        localContent = localContent.trimEnd() + '\n\n' + financeClosingOption;
 
                         // Step 5: 语义截断（raw文本，在收尾检测之后）
                         const finFinalLen = localContent.length;
@@ -6087,6 +6363,45 @@ ${segmentSourceText}
             {mindfulLanguage !== 'en' && (
               <p className="text-[10px] text-purple-300/70 mt-2">
                 当前选择：{mindfulLanguages.find(l => l.id === mindfulLanguage)?.name} 输出，脚本将据此文化习惯调整
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* 大国博弈中英语言输出切换 */}
+        {niche === NicheType.GREAT_POWER_GAME && (
+          <div className="mb-6 animate-in fade-in duration-300 bg-gradient-to-r from-red-900/30 to-orange-900/30 p-4 rounded-xl border border-red-500/30">
+            <label className="text-xs font-bold text-red-400 flex items-center gap-1 mb-3">
+              <Globe size={14} /> 大国博弈语言输出
+            </label>
+            <p className="text-[10px] text-slate-500 mb-3">选择输出语言，默认英文，也可切换为中文输出</p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => setGreatPowerLanguage('en')}
+                className={`px-3 py-1.5 rounded text-xs border transition-all flex items-center gap-1.5 ${
+                  greatPowerLanguage === 'en'
+                    ? 'bg-red-600 text-white border-red-500'
+                    : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-red-500 hover:text-red-300'
+                }`}
+              >
+                <span>English</span>
+                <span className="text-[9px] opacity-60">(英文)</span>
+              </button>
+              <button
+                onClick={() => setGreatPowerLanguage('zh')}
+                className={`px-3 py-1.5 rounded text-xs border transition-all flex items-center gap-1.5 ${
+                  greatPowerLanguage === 'zh'
+                    ? 'bg-red-600 text-white border-red-500'
+                    : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-red-500 hover:text-red-300'
+                }`}
+              >
+                <span>中文</span>
+                <span className="text-[9px] opacity-60">(中文)</span>
+              </button>
+            </div>
+            {greatPowerLanguage !== 'en' && (
+              <p className="text-[10px] text-red-300/70 mt-2">
+                当前选择：中文输出，脚本将以博奕人设风格生成中文文案
               </p>
             )}
           </div>
@@ -7148,8 +7463,8 @@ ${segmentSourceText}
         {/* 全赛道·一键动画分镜区域 */}
           <div className="mt-8 p-4 bg-slate-800/50 border border-slate-700 rounded-xl">
             <div className="flex items-center gap-2 mb-4">
-              <span className="text-lg">{niche === NicheType.MINDFUL_PSYCHOLOGY ? '🐾' : niche === NicheType.PSYCHOLOGY ? '🧠' : niche === NicheType.PHILOSOPHY_WISDOM ? '🪷' : niche === NicheType.EMOTION_TABOO ? '🕯️' : niche === NicheType.STORY_REVENGE ? '⚔️' : niche === NicheType.GENERAL_VIRAL ? '🔥' : niche === NicheType.YI_JING_METAPHYSICS ? '📿' : niche === NicheType.RICH_MINDSET ? '💎' : niche === NicheType.TCM_METAPHYSICS ? '☯️' : niche === NicheType.FINANCE_CRYPTO ? '💰' : '🎬'}</span>
-              <span className="text-slate-200 font-medium">{niche === NicheType.MINDFUL_PSYCHOLOGY ? '治愈心理学频道' : niche === NicheType.PSYCHOLOGY ? '心理学' : niche === NicheType.PHILOSOPHY_WISDOM ? '哲学智慧' : niche === NicheType.EMOTION_TABOO ? '情感禁忌' : niche === NicheType.STORY_REVENGE ? '复仇故事' : niche === NicheType.GENERAL_VIRAL ? '新闻热点' : niche === NicheType.YI_JING_METAPHYSICS ? '易经命理' : niche === NicheType.RICH_MINDSET ? '富人思维' : niche === NicheType.TCM_METAPHYSICS ? '中医玄学' : niche === NicheType.FINANCE_CRYPTO ? '金融投资' : '一键动画分镜'}：动画分镜</span>
+              <span className="text-lg">{niche === NicheType.MINDFUL_PSYCHOLOGY ? '🐾' : niche === NicheType.PSYCHOLOGY ? '🧠' : niche === NicheType.PHILOSOPHY_WISDOM ? '🪷' : niche === NicheType.EMOTION_TABOO ? '🕯️' : niche === NicheType.STORY_REVENGE ? '⚔️' : niche === NicheType.GENERAL_VIRAL ? '🔥' : niche === NicheType.YI_JING_METAPHYSICS ? '📿' : niche === NicheType.GREAT_POWER_GAME ? '🎯' : niche === NicheType.TCM_METAPHYSICS ? '☯️' : niche === NicheType.FINANCE_CRYPTO ? '💰' : '🎬'}</span>
+              <span className="text-slate-200 font-medium">{niche === NicheType.MINDFUL_PSYCHOLOGY ? '治愈心理学频道' : niche === NicheType.PSYCHOLOGY ? '心理学' : niche === NicheType.PHILOSOPHY_WISDOM ? '哲学智慧' : niche === NicheType.EMOTION_TABOO ? '情感禁忌' : niche === NicheType.STORY_REVENGE ? '复仇故事' : niche === NicheType.GENERAL_VIRAL ? '新闻热点' : niche === NicheType.YI_JING_METAPHYSICS ? '易经命理' : niche === NicheType.GREAT_POWER_GAME ? '大国博弈' : niche === NicheType.TCM_METAPHYSICS ? '中医玄学' : niche === NicheType.FINANCE_CRYPTO ? '金融投资' : '一键动画分镜'}：动画分镜</span>
             </div>
             <div ref={storyboardAnchorRef}>
               <button

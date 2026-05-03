@@ -223,7 +223,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     const cnAnimalPsychologyPatterns = /猫主子|汪星人|喵星人|猫奴|狗奴|养猫|养狗|流浪猫|流浪狗|弃养|绝育|疫苗|驱虫|猫粮|狗粮|猫砂|猫爬架|狗窝|宠物店|宠物医院|猫舍|犬舍|繁殖|纯种|杂交|品种狗|品种猫|定点|如厕|分离焦虑|护食|扑咬|吠叫|纠正|社会化|猫罐头|狗罐头|猫包|狗包|牵引绳|项圈|驱虫药|猫三联|狗五联|领养|救助站|救助机构|寄养|宠物保险/i;
 
     // 中文富人思维（精简版，避免与金融理财混淆）
-    const cnRichMindsetPatterns = /富人思维|老板思维|创业|企业家|商业模式|盈利模式|资源整合|人脉|圈层|格局|副业|个人IP|品牌|裂变|私域|公域|斜杠/i;
+    const cnGreatPowerGamePatterns = /大国博弈|地缘政治|博弈|博弈论|地缘战略|大国竞争|战略博弈|权力博弈|国际博弈|战略竞争|战略误判|战略决策|中美博弈|博弈内幕|博弈真相|博弈逻辑|博弈格局|博弈视角/i;
 
     // 中文情感禁忌优先检测
     const cnEmotionTabooPatterns = /情感|恋爱|分手|暧昧|禁忌|婚姻|爱情|约会|相亲|出轨|小三|劈腿|备胎|绿茶|渣男|渣女|表白|告白|暗恋|追求|复合|挽回|离婚|再婚|闪婚|异地恋|姐弟恋|PUA|冷暴力|热暴力|家暴|原生家庭/i;
@@ -237,7 +237,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       { niche: NicheType.YI_JING_METAPHYSICS, words: ['易经', '卦', '爻', '八卦', '命理', '天干地支', '六十四卦', '乾卦', '坤卦', '震卦', '巽卦', '坎卦', '离卦', '艮卦', '兑卦', '太极', '两仪', '四象', '河图', '洛书', '先天八卦', '后天八卦', '梅花易数', '六爻预测', '奇门遁甲', '大六壬', '铁板神数', '邵雍', '孔子', '文王', '周公', '十天干', '十二地支', '甲子', '纳音', '神煞', '冲合', '刑害', '三合', '六合', '择日', '选吉', '方位'], reason: '检测到易经命理相关词' },
       { niche: NicheType.PHILOSOPHY_WISDOM, words: ['哲学', '尼采', '柏拉图', '亚里士多德', '康德', '黑格尔', '海德格尔', '萨特', '加缪', '笛卡尔', '休谟', '罗素', '维特根斯坦', '苏格拉底', '儒家', '道家', '佛学', '禅', '悟道', '涅槃', '般若', '中庸', '天人合一', '道法自然', '存在主义', '形而上学', '唯物主义', '唯心主义', '辩证法'], reason: '检测到哲学智慧相关词' },
       { niche: NicheType.EMOTION_TABOO, words: ['情感', '恋爱', '分手', '暧昧', '禁忌', '婚姻', '爱情', '约会', '相亲', '出轨', '小三', '劈腿', '备胎', '绿茶', '渣男', '渣女', '表白', '告白', '暗恋', '追求', '复合', '挽回', '离婚', '再婚', '闪婚', '异地恋', '姐弟恋', '师生恋', '办公室恋情', '三角恋', '性骚扰', 'PUA', '情感操控', '冷暴力', '热暴力', '家暴', '原生家庭', '原生创伤'], reason: '检测到情感关系相关词' },
-      { niche: NicheType.RICH_MINDSET, words: ['富人思维', '商业认知', '赚钱', '财富自由', '老板思维', '创业', '企业家', '商业模式', '盈利模式', '第一性原理', '复利思维', '资产配置', '被动收入', '睡后收入', '财务自由', '投资思维', '风险控制', '现金流', '负债', '杠杆', '资源整合', '人脉', '圈层', '格局', '认知升级', '思维破局', '副业', '斜杠', '个人IP', '品牌', '流量', '变现', '裂变', '私域', '公域'], reason: '检测到富人思维相关词' },
+      { niche: NicheType.GREAT_POWER_GAME, words: ['大国博弈', '地缘政治', '博弈', '博弈论', '地缘战略', '博弈视角', '博弈分析', '大国竞争', '战略博弈', '博弈格局', '博弈逻辑', '权力博弈', '国际博弈', '战略竞争', '博弈真相', '内幕', '内幕分析', '博弈内幕', '博弈真相', '博弈逻辑', '博弈格局', '战略误判', '战略决策', '大国博弈', '中美博弈', '博弈分析'], reason: '检测到大国博弈相关词' },
       { niche: NicheType.STORY_REVENGE, words: ['复仇', '反击', '剧情', '角色', '冲突', '叙事', '逆袭', '翻盘', '打脸', '打脸爽文', '爽文', '爽文男主', '爽文女主', '装逼', '打脸', '逆袭人生', '废柴逆袭', '王者归来', '战神', '龙王', '赘婿', '神医', '总裁', '豪门', '家族', '恩怨', '阴谋', '陷害', '背叛', '崛起', '蜕变', '黑化', '觉醒', '爆发', '秒杀', '碾压', '完虐', '绝地反击', '绝地翻盘'], reason: '检测到复仇故事相关词' },
     ];
 
@@ -268,9 +268,9 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       return { niche: NicheType.MINDFUL_PSYCHOLOGY, score: 5, reason: '检测到中文宠物/动物心理学特征词' };
     }
 
-    // 中文富人思维
-    if (cnRichMindsetPatterns.test(t)) {
-      return { niche: NicheType.RICH_MINDSET, score: 5, reason: '检测到中文富人思维特征词' };
+    // 中文大国博弈
+    if (cnGreatPowerGamePatterns.test(t)) {
+      return { niche: NicheType.GREAT_POWER_GAME, score: 5, reason: '检测到中文大国博弈特征词' };
     }
 
     // 中文情感禁忌
@@ -386,7 +386,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
 
   /** 深度洗稿 / 深度扩写（含同面板 5 段流）：Yunwu OpenAI 兼容流式主备模型 */
   const DEEP_REWRITE_STREAM_PRIMARY = 'gpt-5.4-mini';
-  const DEEP_REWRITE_STREAM_FALLBACK = 'gemini-3.1-pro-preview';
+  const DEEP_REWRITE_STREAM_FALLBACK = 'gemini-3-flash-preview';
   const deepRewriteStreamOptions: StreamContentOptions = {
     fallbackModelOnStall: DEEP_REWRITE_STREAM_FALLBACK,
   };
