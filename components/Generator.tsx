@@ -1142,6 +1142,10 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (niche === NicheType.YI_JING_METAPHYSICS && scriptLengthMode === 'LONG') {
       setYiJingTotalTargetChars(6500);
     }
+    // 新闻热点长视频：自动设置为 6000 字，短视频维持默认值 3500
+    if (niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG') {
+      setYiJingTotalTargetChars(6000);
+    }
   }, [niche, scriptLengthMode, greatPowerLanguage]);
   const parallelTotalTargetChars = useMemo(
     () =>
@@ -7059,6 +7063,8 @@ ${segmentSourceText}
                           ? `治愈心理学长视频：此处为英文正文目标总字符数（含空格与标点），${MINDFUL_EN_SCRIPT_CHARS_MIN}–${MINDFUL_EN_SCRIPT_CHARS_MAX}；失焦后均摊各章 min/max。`
                           : niche === NicheType.YI_JING_METAPHYSICS && scriptLengthMode === 'LONG'
                           ? `易经命理长视频：默认值 6500 字（曾氏长视频标准），允许 1000–70000 调整。失焦后均摊各章字数区间。`
+                          : niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG'
+                          ? `新闻热点长视频：默认值 6000 字，允许 1000–70000 调整。失焦后均摊各章字数区间。`
                           : '1000–70000；失焦后按总字数均摊各章字数区间。生成/全自动时按上式向模型要对应章数'}
                       </span>
                     </div>
