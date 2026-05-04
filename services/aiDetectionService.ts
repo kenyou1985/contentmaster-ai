@@ -739,9 +739,17 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
   const templateDensity = templateCount / Math.max(textLength / 1000, 1);
 
   let D1: number;
-  // 大国博弈/Bo Yi：极度宽容——8个/千字=0分，默认50分（战略术语非模板腔）
+  // 大国博弈/Bo Yi：极度宽容——默认50分，8个/千字=0分
   if (detectedNiche === 'great_power_game') {
-    D1 = Math.min(100, Math.max(50, Math.round(lerp(templateDensity, 0, 8, 100, 0))));
+    // lerp(8, 0, 8, 100, 0) = 0，所以 clamp(0, 50, 100) = 50 → 不对
+    // 用 clamp(50, 100) 会让满分=50。需要分段：
+    if (templateDensity >= 8) {
+      D1 = 0; // 超过阈值才扣分
+    } else if (templateDensity >= 4) {
+      D1 = Math.round(lerp(templateDensity, 4, 8, 50, 0)); // 4→50, 8→0
+    } else {
+      D1 = Math.round(lerp(templateDensity, 0, 4, 100, 50)); // 0→100, 4→50
+    }
   } else if (detectedNiche === 'tcm_metaphysics') {
     // 中医玄学倪海厦赛道使用放宽阈值：8个/千字=0分
     // 0个=100分, 8个=0分; 宽容区间更大
@@ -789,10 +797,15 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
   if (sentences.length >= 5) {
     const sentenceLengths = sentences.map(s => s.replace(/\s/g, '').length);
     const cv = coefficientOfVariation(sentenceLengths);
-    D3 = Math.min(100, Math.max(0, Math.round(lerp(cv, 0.12, 0.35, 0, 100))));
-    if (cv < 0.18 && sentences.length > 10) {
-      issues.push('句式过于工整统一，缺乏自然变化');
-      suggestions.push('增加长短句交替，打破规律性');
+    // 大国博弈：Bo Yi 文风偏正式，句长变化较小；宽容处理，默认50分
+    if (detectedNiche === 'great_power_game') {
+      D3 = Math.min(100, Math.max(50, Math.round(lerp(cv, 0.05, 0.35, 50, 100))));
+    } else {
+      D3 = Math.min(100, Math.max(0, Math.round(lerp(cv, 0.12, 0.35, 0, 100))));
+      if (cv < 0.18 && sentences.length > 10) {
+        issues.push('句式过于工整统一，缺乏自然变化');
+        suggestions.push('增加长短句交替，打破规律性');
+      }
     }
   }
 
@@ -805,9 +818,14 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
   if (paragraphs.length >= 3) {
     const paraLengths = paragraphs.map(p => p.replace(/\s/g, '').length);
     const cv = coefficientOfVariation(paraLengths);
-    D4 = Math.min(100, Math.max(0, Math.round(lerp(cv, 0.1, 0.25, 0, 100))));
-    if (cv < 0.15 && paragraphs.length > 4) {
-      issues.push('段落长度过于均匀，像工整模板');
+    // 大国博弈：Bo Yi 文风段落结构稳定；宽容处理，默认50分
+    if (detectedNiche === 'great_power_game') {
+      D4 = Math.min(100, Math.max(50, Math.round(lerp(cv, 0.05, 0.25, 50, 100))));
+    } else {
+      D4 = Math.min(100, Math.max(0, Math.round(lerp(cv, 0.1, 0.25, 0, 100))));
+      if (cv < 0.15 && paragraphs.length > 4) {
+        issues.push('段落长度过于均匀，像工整模板');
+      }
     }
   }
 
@@ -1014,18 +1032,23 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
   let D8 = 50; // 默认中等
   if (hasHardSell) {
     D8 = 20; // 有硬广但不是0分（避免一刀切）
-    issues.push('结尾使用硬广CTA（"请点赞订阅"等）');
-    suggestions.push('结尾改为随意自然的收尾，如"Good night"或"睡了"');
-  } else {
-    if (lang_ === 'en') {
-      if (/good\s*night|anyway[,，]?\s*(my|the)|time\s+to\s+(sleep|go)|I\s+should\s+go/i.test(lastText)) D8 = 100;
-      // 大国博弈英文：专属收尾语检测
-      if (detectedNiche === 'great_power_game' && /The game (?:never stops|continues)\.?$/i.test(text.trim())) D8 = 100;
-    } else {
-      if (/晚安|睡了|就这样吧|不急|写完了|打呼噜|关灯了|去睡了/i.test(lastText)) D8 = 100;
-      // 大国博弈中文：专属收尾语检测
-      if (detectedNiche === 'great_power_game' && /博弈(?:从未停止|还在继续)\。$/i.test(text.trim())) D8 = 100;
+    if (detectedNiche !== 'great_power_game') {
+      issues.push('结尾使用硬广CTA（"请点赞订阅"等）');
+      suggestions.push('结尾改为随意自然的收尾，如"Good night"或"睡了"');
     }
+  } else {
+    let hasGoodClosing = false;
+    if (lang_ === 'en') {
+      if (/good\s*night|anyway[,，]?\s*(my|the)|time\s+to\s+(sleep|go)|I\s+should\s+go/i.test(lastText)) hasGoodClosing = true;
+      // 大国博弈英文：专属收尾语检测
+      if (detectedNiche === 'great_power_game' && /The game (?:never stops|continues)\.?$/i.test(text.trim())) hasGoodClosing = true;
+    } else {
+      if (/晚安|睡了|就这样吧|不急|写完了|打呼噜|关灯了|去睡了/i.test(lastText)) hasGoodClosing = true;
+      // 大国博弈中文：专属收尾语检测
+      if (detectedNiche === 'great_power_game' && /博弈(?:从未停止|还在继续)\。$/i.test(text.trim())) hasGoodClosing = true;
+    }
+    // 大国博弈：无合适收尾 → 50分（非0分）；有收尾 → 100分
+    D8 = hasGoodClosing ? 100 : (detectedNiche === 'great_power_game' ? 50 : 50);
   }
 
   // ============================================================
