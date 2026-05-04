@@ -725,11 +725,25 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
     templateCount = Math.max(0, templateCount);
   }
 
+  // 大国博弈/Bo Yi赛道：排除其标志性表达后再统计（博弈术语不等于模板词）
+  if (detectedNiche === 'great_power_game') {
+    const gpExcluded = ['大国博弈', '博弈论', '地缘政治', '战略博弈', '博弈逻辑', '博弈格局', '台海', '南海', '俄乌', '中美', '博弈从未停止', '博弈仍在继续', '战略竞争', '战略博弈', '权力博弈', '博弈内幕', '博弈真相'];
+    const textLower = text.toLowerCase();
+    for (const word of gpExcluded) {
+      const regex = new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+      templateCount -= (textLower.match(regex) || []).length;
+    }
+    templateCount = Math.max(0, templateCount);
+  }
+
   const templateDensity = templateCount / Math.max(textLength / 1000, 1);
 
   let D1: number;
-  // 中医玄学倪海厦赛道使用放宽阈值：8个/千字=0分
-  if (detectedNiche === 'tcm_metaphysics') {
+  // 大国博弈/Bo Yi：极度宽容——8个/千字=0分，默认50分（战略术语非模板腔）
+  if (detectedNiche === 'great_power_game') {
+    D1 = Math.min(100, Math.max(50, Math.round(lerp(templateDensity, 0, 8, 100, 0))));
+  } else if (detectedNiche === 'tcm_metaphysics') {
+    // 中医玄学倪海厦赛道使用放宽阈值：8个/千字=0分
     // 0个=100分, 8个=0分; 宽容区间更大
     D1 = Math.min(100, Math.max(0, Math.round(lerp(templateDensity, 0, 8, 100, 0))));
   } else if (detectedNiche === 'yi_jing') {
@@ -739,7 +753,7 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
     D1 = Math.min(100, Math.max(0, Math.round(lerp(templateDensity, 0, 4, 100, 0))));
   }
 
-  if (templateDensity > 2) {
+  if (detectedNiche !== 'great_power_game' && templateDensity > 2) {
     issues.push(`模板词偏多（每千字${templateDensity.toFixed(1)}个）`);
     suggestions.push('删除"首先""其次""总而言之"等模板词，改用自然过渡');
   }
@@ -979,8 +993,8 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
   const depTableYiJing: Record<number, number> = { 0: 55, 1: 70, 2: 85, 3: 100 };
   // 新闻辣评小美赛道：强调互动引导语（"你们听好了""我告诉你们""各位"），宽容度最高
   const depTableNews: Record<number, number> = { 0: 60, 1: 75, 2: 90, 3: 100 };
-  // 大国博弈/Bo Yi：极度宽容，默认70分（内幕爆料风格以权威陈述为主）
-  const depTableGreatPower: Record<number, number> = { 0: 70, 1: 80, 2: 90, 3: 100 };
+  // 大国博弈/Bo Yi：极度宽容，默认50分（内幕爆料风格以权威陈述为主，自嘲口语打断极罕见）
+  const depTableGreatPower: Record<number, number> = { 0: 50, 1: 60, 2: 75, 3: 100 };
   const activeDepTable = detectedNiche === 'yi_jing' ? depTableYiJing : detectedNiche === 'news' ? depTableNews : detectedNiche === 'great_power_game' ? depTableGreatPower : depTable;
   const D7 = activeDepTable[Math.min(selfInterruptCount, 3)] ?? 100;
   if (D7 < 50 && detectedNiche !== 'great_power_game') {

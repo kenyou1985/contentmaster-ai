@@ -1038,7 +1038,7 @@ export function DigitalHumanPanel({
       return;
     }
 
-    const ready = tasks.filter((t) => t.audioPhase === 'done' && t.dhPhase === 'pending');
+    const ready = tasks.filter((t) => t.audioPhase === 'done' && (t.dhPhase === 'pending' || t.dhPhase === 'error'));
     if (ready.length === 0) {
       toast.warning('没有可生成数字人的段落（需要先完成配音）');
       return;
@@ -1715,20 +1715,22 @@ export function DigitalHumanPanel({
                   <button
                     onClick={handleBatchDh}
                     disabled={
-                      tasks.filter((t) => t.audioPhase === 'done' && t.dhPhase === 'pending')
-                        .length === 0
+                      tasks.filter(
+                        (t) => t.audioPhase === 'done' && (t.dhPhase === 'pending' || t.dhPhase === 'error')
+                      ).length === 0
                     }
                     className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-green-600 hover:bg-green-500 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg text-sm font-medium transition-colors"
                   >
                     <Film size={16} />
                     批量生成数字人
-                    {tasks.filter((t) => t.audioPhase === 'done' && t.dhPhase === 'pending')
-                      .length > 0 && (
+                    {tasks.filter(
+                      (t) => t.audioPhase === 'done' && (t.dhPhase === 'pending' || t.dhPhase === 'error')
+                    ).length > 0 && (
                       <span className="text-xs opacity-70">
                         (
                         {
                           tasks.filter(
-                            (t) => t.audioPhase === 'done' && t.dhPhase === 'pending'
+                            (t) => t.audioPhase === 'done' && (t.dhPhase === 'pending' || t.dhPhase === 'error')
                           ).length
                         }
                         段)

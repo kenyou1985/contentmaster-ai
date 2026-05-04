@@ -97,14 +97,14 @@ export function outlinePayloadToJsonPretty(parsed: YiJingOutlinePayload): string
 export const YI_JING_CHARS_PER_SEGMENT_SOFT_CAP = 3000;
 
 /** 三段式分章常量（长文） */
-export const YI_JING_BAND1_MAX = 10000; // ≤ 10000 → 固定 5 章
-export const YI_JING_BAND2_MAX = 25000; // 10001–25000 → 5–10 章
+export const YI_JING_BAND1_MAX = 12000; // ≤ 12000 → 固定 10 章
+export const YI_JING_BAND2_MAX = 30000; // 12001–30000 → 10–14 章
 
 /**
  * 长文自动章数：
- * - T ≤ 10000          → 固定 5 章
- * - 10000 < T ≤ 25000  → ceil(T / 3000)，限制 5–10 章
- * - T > 25000          → ceil(T / 3000)，限制 6–40 章
+ * - T ≤ 12000         → 固定 10 章（大国博弈中文版 8000-9000 字专用路径）
+ * - 12001 < T ≤ 30000 → ceil(T / 3000)，限制 10–14 章
+ * - T > 30000          → ceil(T / 3000)，限制 6–40 章
  */
 export function computeYiJingSegmentCount(totalTargetChars: number): number {
   const T = Math.min(PARALLEL_TOTAL_MAX, Math.max(PARALLEL_TOTAL_MIN, Math.round(totalTargetChars)));

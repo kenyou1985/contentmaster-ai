@@ -995,8 +995,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const MIN_NEWS_SCRIPT_CHARS = 7000; // 软目标下限
   const MAX_NEWS_SCRIPT_CHARS = 9000; // 硬上限
   // 大国博弈：中英文各自独立字数控制
-  const MIN_GREAT_POWER_ZH_CHARS = 6500; // 中文软目标下限
-  const MAX_GREAT_POWER_ZH_CHARS = 7500; // 中文硬上限
+  const MIN_GREAT_POWER_ZH_CHARS = 8000; // 中文软目标下限
+  const MAX_GREAT_POWER_ZH_CHARS = 9000; // 中文硬上限
   const MIN_GREAT_POWER_EN_CHARS = 18000; // 英文软目标下限
   const MAX_GREAT_POWER_EN_CHARS = 22000; // 英文硬上限
   const MAX_SCRIPT_CONTINUATIONS = 3;
@@ -1151,11 +1151,13 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   /** 按目标总字数与单次输出上限自动推算章数（非固定 3–7） */
   const yiJingComputedSegCount = useMemo(
     () =>
-      computeParallelSegmentCount(
-        parallelTotalTargetChars,
-        scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
-      ),
-    [parallelTotalTargetChars, scriptLengthMode]
+      niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'zh'
+        ? 10 // 大国博弈中文版：固定 10 段（每段约 800-900 字，合计 8000-9000 字）
+        : computeParallelSegmentCount(
+            parallelTotalTargetChars,
+            scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
+          ),
+    [niche, greatPowerLanguage, parallelTotalTargetChars, scriptLengthMode]
   );
   const [yiJingOutlineText, setYiJingOutlineText] = useState('');
   const [yiJingOutlineParsed, setYiJingOutlineParsed] = useState<YiJingOutlinePayload | null>(null);
@@ -3334,10 +3336,13 @@ ${segmentSourceText}
     initializeGemini(apiKey, { provider });
     setYiJingPipelineBusy(true);
 
-    const plannedSeg = computeParallelSegmentCount(
-      parallelTotalTargetChars,
-      scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
-    );
+    const plannedSeg =
+      niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'zh'
+        ? 10
+        : computeParallelSegmentCount(
+            parallelTotalTargetChars,
+            scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
+          );
     const bundle = getParallelPipelineBundle(
       niche,
       scriptLengthMode,
@@ -3658,10 +3663,10 @@ ${segmentSourceText}
       setParallelTopicSegStatusMap({});
 
       const plannedPerTopic =
-        computeParallelSegmentCount(
+        (niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'zh' ? 10 : computeParallelSegmentCount(
           parallelTotalTargetChars,
           scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
-        ) + 2;
+        )) + 2;
       const totalSteps = Math.max(1, plannedPerTopic * selectedTopics.length);
       let doneSteps = 0;
       const bumpProgress = (hint?: string) => {
@@ -3703,10 +3708,13 @@ ${segmentSourceText}
           const outlineLead = getParallelOutlineLeadContext();
 
           // 1) 大纲
-          const plannedSeg = computeParallelSegmentCount(
-            effectiveGpTarget,
-            scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
-          );
+          const plannedSeg =
+            niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'zh'
+              ? 10
+              : computeParallelSegmentCount(
+                  effectiveGpTarget,
+                  scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
+                );
           const raw = await collectStreamText(
             buildParallelOutlineUserPrompt(
               topicTitle,
