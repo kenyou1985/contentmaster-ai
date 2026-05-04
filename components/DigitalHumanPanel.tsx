@@ -49,6 +49,7 @@ import {
   updateDhSegmentVideo,
   packVideosToZip,
   dhConcurrency,
+  uploadAudioToRunningHub,
 } from '../services/digitalHumanService';
 import { runOneClickTts } from '../services/oneClickTtsService';
 import {
@@ -911,9 +912,23 @@ export function DigitalHumanPanel({
 
       try {
         const taskId_ = await dhConcurrency.run(async () => {
+          // blob: URL 无法被 RunningHub 工作流访问，需要先上传到 RunningHub
+          let audioPathForDh: string;
+          if (audioUrl.startsWith('blob:')) {
+            pushLog(`[段${task.index} 数字人] 本地音频，需先上传至 RunningHub…`);
+            console.log(`[数字人] 段${task.index} 检测到 blob URL，开始上传`);
+            audioPathForDh = await uploadAudioToRunningHub(runningHubApiKey, audioUrl);
+            const short = audioPathForDh.length > 64 ? `${audioPathForDh.slice(0, 64)}…` : audioPathForDh;
+            pushLog(`[段${task.index} 数字人] 音频已上传: ${short}`);
+            console.log(`[数字人] 段${task.index} 上传成功: ${audioPathForDh}`);
+          } else {
+            // 已经是 RunningHub 路径或 https: URL，提取路径
+            audioPathForDh = audioUrl.replace(/^https:\/\/www\.runninghub\.cn/, '').replace(/^\//, '');
+          }
+
           const tid = await submitDigitalHumanTask(runningHubApiKey, {
             referenceVideoPath: refVideoRhPath,
-            audioPath: audioUrl!.replace(/^https:\/\/www\.runninghub\.cn/, '').replace(/^\//, ''),
+            audioPath: audioPathForDh,
           });
           console.log(`[数字人] 段${task.index} 提交成功, taskId: ${tid?.slice(0, 16)}`);
           pushLog(`[段${task.index} 数字人] taskId: ${tid?.slice(0, 16)}…`);
