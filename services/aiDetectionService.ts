@@ -22,6 +22,7 @@
  * 赛道权重调整：
  *   新闻热点/小美赛道：D5权重降至5%，D6权重降至8%，D7权重降至5%，D2权重提至18%
  *   治愈心理学赛道：D10权重提至10%（宠物名一致性更重要）
+ *   大国博弈/Bo Yi赛道：D5权重3%，D6权重5%，D7权重8%，D9权重35%；D2/D5默认50分，D6/D10默认100分
  *
  * 公式：score = round(加权平均) / 10
  * 效果：
@@ -504,8 +505,9 @@ export function detectNicheType(text: string): NicheTypeForScoring {
     '心理健康', '情绪', '陪伴', '温暖', '放松',
   ];
 
-  // 大国博弈/Bo Yi赛道特征（英文为主）
+  // 大国博弈/Bo Yi赛道特征（中英文通用）
   const greatPowerGameKeywords = [
+    // 英文核心特征词
     'Bo Yi', '博弈', 'airspace', 'air defense', 'missile', 'strike',
     'strategic', 'military', 'deterrence', 'geopolitical', 'intelligence',
     'classified', 'operational', 'the documents', 'what the records show',
@@ -518,6 +520,19 @@ export function detectNicheType(text: string): NicheTypeForScoring {
     'what nobody is telling you', 'I have seen the data',
     'Insider', 'whistleblower', 'operational data',
     'surgical strike', 'proxy', 'sanctions', 'retaliation',
+    // 中文核心特征词
+    '博弈', '内幕', '文件曝光', '数据说话', '实际交火',
+    '兵力部署', '防空系统', '情报评估', '政治意志',
+    '真实立场', '大国博弈', '台海', '南海', '俄乌',
+    '中东', '伊朗', '以色列', '乌克兰', '北约',
+    '拦截', '禁飞区', '战略纵深', '核威慑', '军事基地',
+    '情报圈', '外交系统', '军方', '内部评估',
+    '博奕', '内幕爆料', '爆料人',
+    // Bo Yi 标志性句式（中英文）
+    'the game never stops', 'the game continues', 'air defense gap',
+    'this is what the data shows', 'here is what they buried',
+    'the arithmetic', 'operational data',
+    '这就是数据揭示', '文件说了什么', '内幕', '博弈',
   ];
 
   // 计算各赛道匹配度
@@ -739,8 +754,9 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
   const humanCount = countWords(text, humanWords);
   const humanDensity = humanCount / Math.max(textLength / 1000, 1);
   if (detectedNiche === 'great_power_game') {
-    // 大国博弈：极度宽容——0个=65分（默认宽容），15个=100分
-    D2 = Math.min(100, Math.max(65, Math.round(lerp(humanDensity, 0, 15, 65, 100))));
+    // 大国博弈：极度宽容——0个=50分，15个=100分
+    // Bo Yi风格以权威陈述为主，口语词极稀少，调整曲线让低密度也能得高分
+    D2 = Math.min(100, Math.max(50, Math.round(lerp(humanDensity, 0, 15, 50, 100))));
     // 不报口语词问题——Bo Yi风格以权威陈述为主
   } else {
     D2 = Math.min(100, Math.round(lerp(humanDensity, 1, 6, 0, 100)));
@@ -793,8 +809,8 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
     const totalWords = text.split(/\s+/).length;
     const fpRatio = firstPersonCount / Math.max(totalWords, 1);
     if (detectedNiche === 'great_power_game') {
-      // 大国博弈：极度宽容——0.1%-15%都是合理区间，默认65分
-      D5 = Math.min(100, Math.max(65, Math.round(lerp(fpRatio, 0.001, 0.15, 65, 100))));
+      // 大国博弈：极度宽容——0%=50分，15%+=100分
+      D5 = Math.min(100, Math.max(50, Math.round(lerp(fpRatio, 0.001, 0.15, 50, 100))));
     } else {
       D5 = Math.min(100, Math.round(lerp(fpRatio, 0.005, 0.05, 0, 100)));
     }
@@ -808,8 +824,8 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
       // 低于3%给50分，3%-25%给60-100分
       D5 = Math.min(100, Math.max(50, Math.round(lerp(fpRatio, 0.03, 0.20, 60, 100))));
     } else if (detectedNiche === 'great_power_game') {
-      // 大国博弈中文：极度宽容——0.1%-15%都是合理区间，默认65分
-      D5 = Math.min(100, Math.max(65, Math.round(lerp(fpRatio, 0.001, 0.15, 65, 100))));
+      // 大国博弈英文：极度宽容——0%=50分，15%+=100分
+      D5 = Math.min(100, Math.max(50, Math.round(lerp(fpRatio, 0.001, 0.15, 50, 100))));
     } else {
       D5 = Math.min(100, Math.round(lerp(fpRatio, 0.005, 0.05, 0, 100)));
     }
@@ -908,11 +924,10 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
 
     D6 = Math.max(25, Math.min(100, yiJingD6));
   } else if (detectedNiche === 'great_power_game') {
-    // 大国博弈/Bo Yi：极度宽容处理
+    // 大国博弈/Bo Yi：不存在具体细节问题，0-4个细节全部满分
     // Bo Yi风格以战略分析为主，不需要传统意义上的"具体细节"（宠物名/家庭场景）
-    // 极度放宽检测：0个=70分，1个=75分，2个=80分，3个=85分，4+=100分
-    const gpDetailTable: Record<number, number> = { 0: 70, 1: 75, 2: 80, 3: 85, 4: 90 };
-    D6 = gpDetailTable[detailsFound.length] ?? (detailsFound.length >= 5 ? 100 : 70);
+    const gpDetailTable: Record<number, number> = { 0: 100, 1: 100, 2: 100, 3: 100, 4: 100 };
+    D6 = gpDetailTable[detailsFound.length] ?? (detailsFound.length >= 5 ? 100 : 80);
     // 不报任何问题——Bo Yi风格以宏观战略分析为主，细节检测不适用
   } else {
     // 其他赛道：使用通用表格
@@ -964,8 +979,8 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
   const depTableYiJing: Record<number, number> = { 0: 55, 1: 70, 2: 85, 3: 100 };
   // 新闻辣评小美赛道：强调互动引导语（"你们听好了""我告诉你们""各位"），宽容度最高
   const depTableNews: Record<number, number> = { 0: 60, 1: 75, 2: 90, 3: 100 };
-  // 大国博弈/Bo Yi：极度宽容，默认50分（内幕爆料风格以权威陈述为主）
-  const depTableGreatPower: Record<number, number> = { 0: 50, 1: 60, 2: 75, 3: 100 };
+  // 大国博弈/Bo Yi：极度宽容，默认70分（内幕爆料风格以权威陈述为主）
+  const depTableGreatPower: Record<number, number> = { 0: 70, 1: 80, 2: 90, 3: 100 };
   const activeDepTable = detectedNiche === 'yi_jing' ? depTableYiJing : detectedNiche === 'news' ? depTableNews : detectedNiche === 'great_power_game' ? depTableGreatPower : depTable;
   const D7 = activeDepTable[Math.min(selfInterruptCount, 3)] ?? 100;
   if (D7 < 50 && detectedNiche !== 'great_power_game') {
@@ -990,8 +1005,12 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
   } else {
     if (lang_ === 'en') {
       if (/good\s*night|anyway[,，]?\s*(my|the)|time\s+to\s+(sleep|go)|I\s+should\s+go/i.test(lastText)) D8 = 100;
+      // 大国博弈英文：专属收尾语检测
+      if (detectedNiche === 'great_power_game' && /The game (?:never stops|continues)\.?$/i.test(text.trim())) D8 = 100;
     } else {
       if (/晚安|睡了|就这样吧|不急|写完了|打呼噜|关灯了|去睡了/i.test(lastText)) D8 = 100;
+      // 大国博弈中文：专属收尾语检测
+      if (detectedNiche === 'great_power_game' && /博弈(?:从未停止|还在继续)\。$/i.test(text.trim())) D8 = 100;
     }
   }
 
@@ -1005,7 +1024,14 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
     ) || [];
     const uniqueOpeners = new Set(storyOpeners.map(o => o.split(/\s+/).slice(0, 4).join(' ')));
     const variety = uniqueOpeners.size / Math.max(storyOpeners.length, 1);
-    if (storyOpeners.length >= 3) {
+    if (detectedNiche === 'great_power_game') {
+      // 大国博弈/Bo Yi 英文：分析型内容不需要故事开场
+      if (storyOpeners.length < 3) {
+        D9 = 100; // Bo Yi 分析不以故事开场
+      } else {
+        D9 = Math.min(100, Math.max(0, Math.round(lerp(variety, 0.05, 0.8, 40, 100))));
+      }
+    } else if (storyOpeners.length >= 3) {
       D9 = Math.min(100, Math.max(0, Math.round(lerp(variety, 0.1, 0.8, 0, 100))));
       if (variety < 0.2 && storyOpeners.length > 4) {
         issues.push(`故事开场方式重复度高（${storyOpeners.length}个故事仅${uniqueOpeners.size}种开场）`);
@@ -1020,6 +1046,20 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
       ) || [];
       if (storyOpeners.length < 3) {
         D9 = 100; // 新闻评论不依赖故事开场，无开场不等于缺陷，给满分
+      } else {
+        const uniqueOpeners = new Set(storyOpeners.map(o => o.slice(0, 8)));
+        const variety = uniqueOpeners.size / Math.max(storyOpeners.length, 1);
+        D9 = Math.min(100, Math.max(0, Math.round(lerp(variety, 0.05, 0.8, 40, 100))));
+      }
+    } else if (detectedNiche === 'great_power_game') {
+      // 大国博弈/Bo Yi：分析型内容，不需要传统故事开场
+      // Bo Yi 的结构是：内幕数据 → 多方博弈 → 战略结论
+      // 宽容处理：开场数少时给高分，多样性要求放低
+      const storyOpeners = text.match(
+        /(我记得[^.!?]{0,60}[.!?]|有一次[^.!?]{0,60}[.!?]|那天[^.!?]{0,60}[.!?]|后来[^.!?]{0,60}[.!?]|那之后[^.!?]{0,60}[.!?])/gi
+      ) || [];
+      if (storyOpeners.length < 3) {
+        D9 = 100; // Bo Yi 分析内容不以故事开场，无开场不等于缺陷
       } else {
         const uniqueOpeners = new Set(storyOpeners.map(o => o.slice(0, 8)));
         const variety = uniqueOpeners.size / Math.max(storyOpeners.length, 1);
@@ -1113,7 +1153,7 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
       const othersWithMultiple = sorted.slice(1).filter(([, c]) => c >= 3);
       if (othersWithMultiple.length >= 2) {
         if (detectedNiche === 'great_power_game') {
-          D10 = 50; // 大国博弈：宽容处理，多角色报道场景常见
+          D10 = 100; // 大国博弈：不存在角色一致性问题，默认100分
         } else {
           D10 = 20;
           issues.push(`角色名不一致：主角${sorted[0][0]}被多次称呼，但同时出现${othersWithMultiple.map(([n]) => n).join('、')}等多个不同名`);
@@ -1126,10 +1166,11 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
     }
     // sorted.length === 0：检测不到名字时不扣分（可能是纯人类主题），保持 D10=100
   } else {
-    // 新闻辣评赛道：D10（名字一致性）不适用于地缘政治报道，不做宠物名检测，直接给满分
-    if (detectedNiche === 'news') {
+    // 大国博弈/Bo Yi（中文）：地缘政治内容不使用宠物名，跳过宠物名检测，直接给满分
+    if (detectedNiche === 'great_power_game') {
       D10 = 100;
-    } else {
+    } else if (detectedNiche === 'news') {
+      D10 = 100;
       // 中文章检测宠物名一致性
       // 策略：只匹配已知宠物候选名单词（精确匹配），避免误捕获普通词组
       // 排除词：常见的非宠物名片段

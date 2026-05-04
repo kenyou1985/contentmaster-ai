@@ -385,20 +385,31 @@ export function buildBoYiParallelMergeUserPrompt(
     outputLanguage?: string;
     mindfulLanguage?: string;
     englishMergedCharClamp?: { min: number; max: number };
+    /** 显式指定合并后字数区间（优先级高于 auto 计算的 T*0.92/T*1.08） */
+    mergeCharRange?: { min: number; max: number };
   }
 ): string {
   const T = totalTargetChars
     ? Math.min(PARALLEL_TOTAL_MAX, Math.max(PARALLEL_TOTAL_MIN, Math.round(totalTargetChars)))
     : 10000;
-  const low = Math.round(T * 0.92);
-  const high = Math.round(T * 1.08);
+
+  // 优先使用显式区间；否则 auto 从 T 推导
+  const { low, high } = opts.mergeCharRange
+    ? { low: opts.mergeCharRange.min, high: opts.mergeCharRange.max }
+    : { low: Math.round(T * 0.92), high: Math.round(T * 1.08) };
+
   const isZhOutput = opts.outputLanguage === 'zh';
 
+  // Bo Yi 大国博弈：禁用字数目标强制约束，改为「自由输出 + 内容完整优先」
+  // 原因：6段并行分段约20000字符，强制字数目标会让模型删减内容来凑字数
+  // Bo Yi 赛道：去掉 enLengthRule/zhLengthRule 中的字数上限提示
   const clamp = opts.englishMergedCharClamp;
+  // 英文：改为「不得少于原文」，不提上限
   const enLengthRule = clamp
-    ? `Word count target: approximately ${clamp.min}–${clamp.max} characters (English, including spaces and punctuation). Content completeness takes priority over strict word count. Do NOT truncate any paragraph to meet word count.`
-    : `Target total: approximately ${low}–${high} characters. Content completeness takes priority. Do NOT truncate any paragraph.`;
-  const zhLengthRule = `全文字数目标：约 ${low}–${high} 个中文字符（含标点）。内容完整性优先。不要为了字数限制而截断任何段落。`;
+    ? `Length requirement: The merged script must be AT LEAST as long as the combined draft (approximately ${clamp.min}+ characters). Do NOT shorten, truncate, or delete any content to meet a word count target. If the draft is longer than ${clamp.max} characters, that is acceptable — content completeness is non-negotiable.`
+    : `Length requirement: The merged script must be AT LEAST as long as the combined draft. Do NOT shorten or delete any content to meet a word count target. If the merged result exceeds ${high} characters, that is acceptable — content completeness is non-negotiable.`;
+  // 中文：改为「不得少于原文」，不提上限
+  const zhLengthRule = `字数要求：合并后全文不得少于原文长度（至少约 ${low} 个中文字符）。不得因字数限制而删减任何内容。如合并后超出 ${high} 字，完全可以接受——内容完整性高于字数控制。`;
 
   if (isZhOutput) {
     // 中文合并 prompt

@@ -620,7 +620,7 @@ import { generateTopics, streamContentGeneration, initializeGemini } from '../se
 import { fetchMacroNewsDigestForPrompt } from '../services/macroNewsFeedService';
 import { fetchPsychologyDigestForPrompt } from '../services/psychologyFeedService';
 import { needsParagraphNormalization, normalizeDenseChineseParagraphs } from '../services/textFormat';
-import { detectAiFeatures, type AiDetectionResult } from '../services/aiDetectionService';
+import { detectAiFeatures, type AiDetectionResult, type NicheTypeForScoring } from '../services/aiDetectionService';
 import { polishTextForAntiAi } from '../services/antiAiPolishService';
 
 
@@ -740,6 +740,25 @@ type MindfulLanguage = 'en' | 'zh' | 'ko' | 'ja' | 'es' | 'de' | 'hi' | 'ru' | '
 // 大国博弈语言类型定义
 type GreatPowerLanguage = 'en' | 'zh';
 
+/**
+ * 将 NicheType 映射为评分专用的 NicheTypeForScoring
+ */
+function toNicheTypeForScoring(niche: NicheType): NicheTypeForScoring {
+  switch (niche) {
+    case NicheType.YI_JING_METAPHYSICS: return 'yi_jing';
+    case NicheType.TCM_METAPHYSICS: return 'tcm_metaphysics';
+    case NicheType.FINANCE_CRYPTO: return 'finance_crypto';
+    case NicheType.PSYCHOLOGY: return 'psychology';
+    case NicheType.PHILOSOPHY_WISDOM: return 'philosophy_wisdom';
+    case NicheType.EMOTION_TABOO: return 'emotion_taboo';
+    case NicheType.STORY_REVENGE: return 'story_revenge';
+    case NicheType.GENERAL_VIRAL: return 'news';
+    case NicheType.GREAT_POWER_GAME: return 'great_power_game';
+    case NicheType.MINDFUL_PSYCHOLOGY: return 'mindful_psychology';
+    default: return 'general';
+  }
+}
+
 /** 各赛道分段并行：大纲 / 分段 / 合并 的提示与人设 */
 function getParallelPipelineBundle(
   niche: NicheType,
@@ -831,41 +850,12 @@ function getParallelPipelineBundle(
       : 'You are a senior editor merging English voice-over scripts; keep warm, spoken, authentic English like a real person sharing their experience. Use first-person "I" as the dominant voice, not "you" or "your body". Allow for natural imperfections, self-corrections, and uneven paragraph lengths. Never add a "Please like and subscribe" CTA — preserve any casual ending that sounds like a friend saying goodnight.';
   }
 
-  const voiceRules = `1. 严格遵循下列「频道创作铁律摘要」与人设。\n2. 禁止【】、[] 舞台提示、禁止「模块一/第一节」等露骨章节标、禁止 Markdown 标题层级、避免纯列表骨架。\n【频道创作铁律摘要】\n${clampSystemSummary(nicheConfig.systemInstruction)}`;
-
-  return {
-    outline: {
-      channelLabel,
-      contentKind: contentKindOutline,
-      logicBlueprint,
-      englishCharOutline: mindfulEnglishLongParallel,
-    },
-    outlineSystem: buildParallelOutlineSystem(directorLine),
-    segment: {
-      outputLanguage,
-      voiceRules,
-      englishChapterCharStrict: mindfulEnglishLongParallel,
-      mindfulLanguage: effectiveLang,
-    },
-    merge: {
-      channelTag: baseName,
-      toneInstruction: mergeTone,
-      outputLanguage,
-
-
-
-      contentKind: contentKindMerge,
-      mindfulLanguage: effectiveLang,
-    },
-    mergeSystem: buildParallelMergeSystem(mergeEditorLine),
-  };
-
-  // ── GREAT_POWER_GAME（大国博弈主赛道）：独立赛道，不走新闻热点框架 ──
+  // ── GREAT_POWER_GAME（大国博弈主赛道）：独立赛道，必须优先处理 ──
   if (niche === NicheType.GREAT_POWER_GAME) {
     const gpLang = greatPowerLang || 'en';
     const isZhOutput = gpLang === 'zh';
 
-    // 英文输出的 prompt（已有）
+    // 英文输出的 prompt
     const enOutlineSystem = buildBoYiParallelOutlineSystem(
       'You are the lead producer for the "博弈" (Bo Yi) geopolitical analysis channel. ' +
       'Output a pure English voice-over outline only. No Chinese characters. ' +
@@ -889,12 +879,13 @@ function getParallelPipelineBundle(
       'Do NOT add "according to reports" or any hedging language. ' +
       'End with exactly one of: "The game continues." / "The game never stops." — then stop immediately.';
 
-    // 中文输出的 prompt（新增）
-    const zhOutlineSystem = buildBoYiParallelOutlineSystem(
+    // 中文输出的 prompt
+    const zhOutlineSystem = buildParallelOutlineSystem(
       '你是"博弈"（Bo Yi）地缘政治分析频道的总制作人。' +
       '输出纯中文的大纲。禁止出现任何英文字符。' +
       '禁止章节编号，禁止舞台标记，只用自然段落。' +
-      '全程中文——这是博奕内部爆料风格。'
+      '全程中文——这是博奕内部爆料风格。' +
+      '只输出合法 JSON，禁止其它文字。JSON 中的所有字段值必须是中文。'
     );
     const zhVoiceRules = '【语言强制】全文必须使用**简体中文**输出，包括所有正文、金句、衔接句。禁止出现任何英文字符。中文标点符号（，。：；？！）只用于中文内容。';
     const zhToneInstruction =
@@ -940,6 +931,32 @@ function getParallelPipelineBundle(
       mergeSystem: isZhOutput ? zhMergeSystem : enMergeSystem,
     };
   }
+
+  const voiceRules = `1. 严格遵循下列「频道创作铁律摘要」与人设。\n2. 禁止【】、[] 舞台提示、禁止「模块一/第一节」等露骨章节标、禁止 Markdown 标题层级、避免纯列表骨架。\n【频道创作铁律摘要】\n${clampSystemSummary(nicheConfig.systemInstruction)}`;
+
+  return {
+    outline: {
+      channelLabel,
+      contentKind: contentKindOutline,
+      logicBlueprint,
+      englishCharOutline: mindfulEnglishLongParallel,
+    },
+    outlineSystem: buildParallelOutlineSystem(directorLine),
+    segment: {
+      outputLanguage,
+      voiceRules,
+      englishChapterCharStrict: mindfulEnglishLongParallel,
+      mindfulLanguage: effectiveLang,
+    },
+    merge: {
+      channelTag: baseName,
+      toneInstruction: mergeTone,
+      outputLanguage,
+      contentKind: contentKindMerge,
+      mindfulLanguage: effectiveLang,
+    },
+    mergeSystem: buildParallelMergeSystem(mergeEditorLine),
+  };
 }
 
 interface GeneratorProps {
@@ -977,6 +994,11 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const MAX_FIN_SCRIPT_CHARS = 8200; // ~33 min * 250 chars/min, hard ceiling
   const MIN_NEWS_SCRIPT_CHARS = 7000; // 软目标下限
   const MAX_NEWS_SCRIPT_CHARS = 9000; // 硬上限
+  // 大国博弈：中英文各自独立字数控制
+  const MIN_GREAT_POWER_ZH_CHARS = 6500; // 中文软目标下限
+  const MAX_GREAT_POWER_ZH_CHARS = 7500; // 中文硬上限
+  const MIN_GREAT_POWER_EN_CHARS = 18000; // 英文软目标下限
+  const MAX_GREAT_POWER_EN_CHARS = 22000; // 英文硬上限
   const MAX_SCRIPT_CONTINUATIONS = 3;
   const MAX_TCM_SCRIPT_CONTINUATIONS = 20;
   const REVENGE_SHORT_MIN = 13500; // 15 min * 900 chars/min
@@ -1098,20 +1120,33 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const [greatPowerLanguage, setGreatPowerLanguage] = useState<GreatPowerLanguage>('en');
 
   /** 易经命理·长视频：大纲 + 分段并行 + 合并润色 */
-  /** 全文目标字数（分段并行的总目标，默认 3500，与各章 min/max 联动） */
+  /** 全文目标字数（分段并行的总目标）。大国博弈由 useEffect 自动覆盖；其他赛道默认 3500。 */
   const [yiJingTotalTargetChars, setYiJingTotalTargetChars] = useState(3500);
-  /** 治愈心理学长视频：并行目标为英文总字符数，限制在 10000–15000 */
+
+  /** 大国博弈专属：useMemo 确保始终从 yiJingTotalTargetChars 正确派生（依赖后置，避免 useEffect 时序问题） */
+  const effectiveGpTarget = useMemo(() => {
+    if (niche !== NicheType.GREAT_POWER_GAME) return 0;
+    return greatPowerLanguage === 'zh' ? MIN_GREAT_POWER_ZH_CHARS : MIN_GREAT_POWER_EN_CHARS;
+  }, [niche, greatPowerLanguage]);
+
   useEffect(() => {
     if (niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG') {
       setYiJingTotalTargetChars((prev) => clampMindfulParallelTargetChars(prev));
     }
-  }, [niche, scriptLengthMode]);
+    // 大国博弈：根据语言模式自动设置正确的目标字数
+    if (niche === NicheType.GREAT_POWER_GAME) {
+      const target = greatPowerLanguage === 'zh' ? MIN_GREAT_POWER_ZH_CHARS : MIN_GREAT_POWER_EN_CHARS;
+      setYiJingTotalTargetChars(target);
+    }
+  }, [niche, scriptLengthMode, greatPowerLanguage]);
   const parallelTotalTargetChars = useMemo(
     () =>
       niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG'
         ? clampMindfulParallelTargetChars(yiJingTotalTargetChars)
-        : yiJingTotalTargetChars,
-    [niche, scriptLengthMode, yiJingTotalTargetChars]
+        : niche === NicheType.GREAT_POWER_GAME
+          ? effectiveGpTarget
+          : yiJingTotalTargetChars,
+    [niche, scriptLengthMode, yiJingTotalTargetChars, effectiveGpTarget]
   );
   /** 按目标总字数与单次输出上限自动推算章数（非固定 3–7） */
   const yiJingComputedSegCount = useMemo(
@@ -1652,7 +1687,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (niche === NicheType.GREAT_POWER_GAME) {
       if (greatPowerLanguage === 'zh') {
         // 中文模式：完整中文选题 prompt（RSS digest 在下面追加）
-        prompt = `【角色】你是地缘政治内幕爆料人"博弈"（Bo Yi）。不是普通评论员，而是一个研究过真实作战数据、曾身处决策会议室、了解机密档案的人。
+        prompt = `【强制语言声明】本文档所有内容必须使用简体中文。选题标题必须是中文。每行一个标题。不要输出任何英文。
+【角色】你是地缘政治内幕爆料人"博弈"（Bo Yi）。不是普通评论员，而是一个研究过真实作战数据、曾身处决策会议室、了解机密档案的人。
 
 【用户输入】${inputVal.trim() || '（用户未指定方向，由你从当前国际局势中自行选取最震撼的内幕爆料角度）'}
 
@@ -1670,7 +1706,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 - 禁止写成通讯社导语或新闻综述——这不是新闻，这是内幕
 - 禁止"据报道""有分析认为""专家表示"——你是爆料人，不是传声筒
 - 标题要有让人"不看浑身难受"的冲动：悬念、反直觉、震撼数字至少有其一
-- 可用冒号/破折号/问号制造节奏，总长建议 20–45 汉字`;
+- 可用冒号/破折号/问号制造节奏，总长建议 20–45 汉字
+- 必须输出纯中文标题，不要任何英文`;
       } else {
         // 英文模式：用 constants 标准模板
         prompt = config.topicPromptTemplate.replace('{input}', inputVal || '（No specific direction given — draw from the most explosive geopolitical insider angles from current international situation）');
@@ -1686,7 +1723,9 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (isRssNiche) {
       toast.info('正在抓取国际 RSS 要闻（BBC / DW / Al Jazeera 等）…');
       try {
-        const digest = await fetchMacroNewsDigestForPrompt();
+        // 大国博弈赛道：根据语言模式选择 RSS 语言
+        const rssLang = niche === NicheType.GREAT_POWER_GAME ? greatPowerLanguage : 'en';
+        const digest = await fetchMacroNewsDigestForPrompt(32, rssLang);
         // 存入 ref 供 UI 显示
         if (niche === NicheType.GENERAL_VIRAL) {
           newsMacroNewsDigestRef.current = digest;
@@ -2403,14 +2442,14 @@ ${segmentSourceText}
       hint: `正在生成大纲（约 ${segN} 章）…`,
     });
     pushYiJingLog(
-      `开始生成大纲（自动约 ${segN} 章，全文目标约 ${parallelTotalTargetChars} 字）…`
+      `开始生成大纲（自动约 ${segN} 章，全文目标约 ${effectiveGpTarget} 字）…`
     );
     try {
       const raw = await collectStreamText(
         buildParallelOutlineUserPrompt(
           sel[0].title,
           segN,
-          parallelTotalTargetChars,
+          effectiveGpTarget,
           bundle.outline,
           lead || undefined
         ),
@@ -2611,8 +2650,10 @@ ${segmentSourceText}
     // 计算输出语言
     const isEnRevenge = niche === NicheType.STORY_REVENGE && storyLanguage === StoryLanguage.ENGLISH;
     const isMindfulEnglish = niche === NicheType.MINDFUL_PSYCHOLOGY;
-    const effectiveLang = mindfulLanguage || 'en';
-    const outputLanguage: 'zh' | 'en' = isMindfulEnglish ? (effectiveLang === 'en' ? 'en' : 'zh') : (isEnRevenge ? 'en' : 'zh');
+    const isGreatPowerGame = niche === NicheType.GREAT_POWER_GAME;
+    // 大国博弈赛道使用 greatPowerLanguage，其他赛道使用 mindfulLanguage
+    const effectiveLang = isGreatPowerGame ? greatPowerLanguage : (mindfulLanguage || 'en');
+    const outputLanguage: 'zh' | 'en' = isMindfulEnglish ? (effectiveLang === 'en' ? 'en' : 'zh') : (isEnRevenge ? 'en' : (isGreatPowerGame ? greatPowerLanguage : 'zh'));
 
     try {
       const bundle = getParallelPipelineBundle(
@@ -2627,20 +2668,45 @@ ${segmentSourceText}
       const combined = parts.join('\n\n');
       const mindfulLong =
         niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
+      // 大国博弈赛道使用专用 merge prompt，避免中文结构标签干扰
+      // 中英文各自独立字数控制
+      const mergeCharRange = isGreatPowerGame
+        ? (greatPowerLanguage === 'zh'
+            ? { min: MIN_GREAT_POWER_ZH_CHARS, max: MAX_GREAT_POWER_ZH_CHARS }
+            : { min: MIN_GREAT_POWER_EN_CHARS, max: MAX_GREAT_POWER_EN_CHARS })
+        : undefined;
+      const mergeUser = isGreatPowerGame
+        ? buildBoYiParallelMergeUserPrompt(sel[0].title, combined, parallelTotalTargetChars, {
+            ...bundle.merge,
+            mindfulLanguage: greatPowerLanguage,
+            mergeCharRange,
+          })
+        : buildParallelMergeUserPrompt(sel[0].title, combined, parallelTotalTargetChars, {
+            ...bundle.merge,
+            englishMergedCharClamp: mindfulLong
+              ? mindfulMergeCharClamp(parallelTotalTargetChars)
+              : undefined,
+            mindfulLanguage,
+          });
       const merged = await collectStreamText(
-        buildParallelMergeUserPrompt(sel[0].title, combined, parallelTotalTargetChars, {
-          ...bundle.merge,
-          englishMergedCharClamp: mindfulLong
-            ? mindfulMergeCharClamp(parallelTotalTargetChars)
-            : undefined,
-          mindfulLanguage,
-        }),
+        mergeUser,
         bundle.mergeSystem,
-        32768
+        niche === NicheType.GREAT_POWER_GAME ? 98304 : 65536
       );
       let norm = normalizeYiJingBody(merged);
       if (mindfulLong) {
         norm = truncateMindfulScript(norm, MINDFUL_EN_SCRIPT_CHARS_MAX);
+      }
+
+      // 大国博弈/Bo Yi：检查并确保收尾语存在
+      if (niche === NicheType.GREAT_POWER_GAME) {
+        const hasClosing = greatPowerLanguage === 'zh'
+          ? /这场博弈还在继续\。|博弈从未停止\。/.test(norm.trim())
+          : /The game (?:never stops|continues)\.?\s*$/i.test(norm.trim());
+        if (!hasClosing) {
+          pushYiJingLog('[合并] ⚠️ 收尾语缺失，正在追加…');
+          norm = norm.trimEnd() + (greatPowerLanguage === 'zh' ? '\n\n博弈从未停止。' : '\n\nThe game continues.');
+        }
       }
 
       // 治愈心理学：英文宠物名一致性后处理（所有语言都走英文 pipeline）
@@ -2764,6 +2830,7 @@ ${segmentSourceText}
             },
             outputLanguage,
             petNameConstraint: petConstraint,
+            nicheType: toNicheTypeForScoring(niche),
           },
           apiKey,
           { provider }
@@ -2771,9 +2838,9 @@ ${segmentSourceText}
         antiAiSuccess = antiAiPolishingResult.success;
 
         const polishedLen = (antiAiPolished || '').replace(/\s+/g, '').length;
-            if (petConstraint) {
-              pushYiJingLog(`[宠物名约束] 规范名: ${petConstraint.canonicalName}，全文统一使用`);
-            }
+        if (petConstraint) {
+          pushYiJingLog(`[宠物名约束] 规范名: ${petConstraint.canonicalName}，全文统一使用`);
+        }
         pushYiJingLog(`[去AI味] AI 返回结果长度: ${polishedLen} 字`);
 
         if (antiAiPolished.trim() && polishedLen > 0) {
@@ -2852,7 +2919,7 @@ ${segmentSourceText}
       pushYiJingLog('[人类感检测] 开始检测内容人类感...');
       setYiJingIsRunningAiDetection(true);
       try {
-        const detection = detectAiFeatures(norm);
+        const detection = detectAiFeatures(norm, undefined, toNicheTypeForScoring(niche));
         setYiJingAiDetection(detection);
         pushYiJingLog(`[人类感检测] 完成 - 人类感 ${detection.score}/10分 (${detection.level === 'weak' ? '优秀' : detection.level === 'medium' ? '一般' : '较弱'})`);
         if (detection.issues.length > 0) {
@@ -2935,8 +3002,10 @@ ${segmentSourceText}
     // 计算输出语言
     const isEnRevenge = niche === NicheType.STORY_REVENGE && storyLanguage === StoryLanguage.ENGLISH;
     const isMindfulEnglish = niche === NicheType.MINDFUL_PSYCHOLOGY;
-    const effectiveLang = mindfulLanguage || 'en';
-    const outputLanguage: 'zh' | 'en' = isMindfulEnglish ? (effectiveLang === 'en' ? 'en' : 'zh') : (isEnRevenge ? 'en' : 'zh');
+    const isGreatPowerGame = niche === NicheType.GREAT_POWER_GAME;
+    // 大国博弈赛道使用 greatPowerLanguage，其他赛道使用 mindfulLanguage
+    const effectiveLang = isGreatPowerGame ? greatPowerLanguage : (mindfulLanguage || 'en');
+    const outputLanguage: 'zh' | 'en' = isMindfulEnglish ? (effectiveLang === 'en' ? 'en' : 'zh') : (isEnRevenge ? 'en' : (isGreatPowerGame ? greatPowerLanguage : 'zh'));
 
     try {
       let textToPolish = yiJingMergedOutput;
@@ -2973,6 +3042,7 @@ ${segmentSourceText}
           },
           outputLanguage: effectiveLang === 'zh' ? 'en' : outputLanguage,
           ...(petConstraint ? { petNameConstraint: petConstraint } : {}),
+          nicheType: toNicheTypeForScoring(niche),
         },
         apiKey,
         { provider }
@@ -3005,7 +3075,7 @@ ${segmentSourceText}
         setYiJingMergedOutput(cleanedPolish);
         pushYiJingLog('[去AI味] 重新清洗完成');
 
-        const detection = detectAiFeatures(cleanedPolish);
+        const detection = detectAiFeatures(cleanedPolish, undefined, toNicheTypeForScoring(niche));
         setYiJingAiDetection(detection);
         pushYiJingLog(`[人类感检测] 重新检测完成 - 人类感 ${detection.score}/10分 (${detection.level === 'weak' ? '优秀' : detection.level === 'medium' ? '一般' : '较弱'})`);
 
@@ -3173,10 +3243,24 @@ ${segmentSourceText}
         greatPowerLanguage
       );
       const combined = parts.join('\n\n');
+      // 大国博弈赛道使用专用 merge prompt，避免中文结构标签干扰
+      // 中英文各自独立字数控制
+      const isGreatPowerGameHere = niche === NicheType.GREAT_POWER_GAME;
+      const mergeCharRangeHere = isGreatPowerGameHere
+        ? (greatPowerLanguage === 'zh'
+            ? { min: MIN_GREAT_POWER_ZH_CHARS, max: MAX_GREAT_POWER_ZH_CHARS }
+            : { min: MIN_GREAT_POWER_EN_CHARS, max: MAX_GREAT_POWER_EN_CHARS })
+        : undefined;
+      const mergeUser = isGreatPowerGameHere
+        ? buildBoYiParallelMergeUserPrompt(sel[0].title, combined, parallelTotalTargetChars, {
+            ...bundle.merge,
+            mergeCharRange: mergeCharRangeHere,
+          })
+        : buildParallelMergeUserPrompt(sel[0].title, combined, parallelTotalTargetChars, bundle.merge);
       const merged = await collectStreamText(
-        buildParallelMergeUserPrompt(sel[0].title, combined, parallelTotalTargetChars, bundle.merge),
+        mergeUser,
         bundle.mergeSystem,
-        32768
+        niche === NicheType.GREAT_POWER_GAME ? 98304 : 65536
       );
       let norm = merged.trim();
 
@@ -3265,6 +3349,8 @@ ${segmentSourceText}
     );
     const outlineLead = getParallelOutlineLeadContext();
 
+    // 调试：记录语言配置
+
     const initRuns: ParallelTopicRun[] = sel.map((t) => ({
       id: t.id,
       title: t.title,
@@ -3314,7 +3400,7 @@ ${segmentSourceText}
           buildParallelOutlineUserPrompt(
             topicTitle,
             plannedSeg,
-            parallelTotalTargetChars,
+            effectiveGpTarget,
             bundle.outline,
             outlineLead || undefined
           ),
@@ -3392,13 +3478,20 @@ ${segmentSourceText}
         const mindfulLongAp =
           niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
         // 统一走 buildBoYiParallelMergeUserPrompt（内部已根据 outputLanguage 输出中/英文）
+        // 大国博弈中英文各自独立字数控制
+        const mergeCharRangeAp = niche === NicheType.GREAT_POWER_GAME
+          ? (greatPowerLanguage === 'zh'
+              ? { min: MIN_GREAT_POWER_ZH_CHARS, max: MAX_GREAT_POWER_ZH_CHARS }
+              : { min: MIN_GREAT_POWER_EN_CHARS, max: MAX_GREAT_POWER_EN_CHARS })
+          : undefined;
         const mergeUser = buildBoYiParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
           ...bundle.merge,
           englishMergedCharClamp: mindfulLongAp
             ? mindfulMergeCharClamp(parallelTotalTargetChars)
             : undefined,
+          mergeCharRange: mergeCharRangeAp,
         });
-        const merged = await collectStreamText(mergeUser, bundle.mergeSystem, 32768);
+        const merged = await collectStreamText(mergeUser, bundle.mergeSystem, 98304);
         let norm = normalizeYiJingBody(merged);
         if (mindfulLongAp) {
           norm = truncateMindfulScript(norm, MINDFUL_EN_SCRIPT_CHARS_MAX);
@@ -3606,18 +3699,19 @@ ${segmentSourceText}
             mindfulLanguage,
             greatPowerLanguage
           );
+
           const outlineLead = getParallelOutlineLeadContext();
 
           // 1) 大纲
           const plannedSeg = computeParallelSegmentCount(
-            parallelTotalTargetChars,
+            effectiveGpTarget,
             scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
           );
           const raw = await collectStreamText(
             buildParallelOutlineUserPrompt(
               topicTitle,
               plannedSeg,
-              parallelTotalTargetChars,
+              effectiveGpTarget,
               bundle.outline,
               outlineLead || undefined
             ),
@@ -3626,7 +3720,7 @@ ${segmentSourceText}
           );
           const parsedRaw = parseYiJingOutline(raw);
           if (!parsedRaw) throw new Error('大纲解析失败');
-          const parsed = rescaleChapterWordCounts(parsedRaw, parallelTotalTargetChars);
+          const parsed = rescaleChapterWordCounts(parsedRaw, effectiveGpTarget);
           setParallelTopicOutlineMap((prev) => ({
             ...prev,
             [topic.id]: outlinePayloadToJsonPretty(parsed),
@@ -3703,18 +3797,46 @@ ${segmentSourceText}
           const combined = segResults.join('\n\n');
           const mindfulLong =
             niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
-          // 大国博弈用专用英文 merge prompt，避免中文结构标签干扰
+          // 大国博弈用专用英文 merge prompt，中英文各自独立字数控制
+          const mergeCharRangeYi = niche === NicheType.GREAT_POWER_GAME
+            ? (greatPowerLanguage === 'zh'
+                ? { min: MIN_GREAT_POWER_ZH_CHARS, max: MAX_GREAT_POWER_ZH_CHARS }
+                : { min: MIN_GREAT_POWER_EN_CHARS, max: MAX_GREAT_POWER_EN_CHARS })
+            : undefined;
           const mergeUser = buildBoYiParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
             ...bundle.merge,
+            mergeCharRange: mergeCharRangeYi,
           });
-          const merged = await collectStreamText(
-            mergeUser,
-            niche === NicheType.TCM_METAPHYSICS ? TCM_MERGE_SYSTEM : bundle.mergeSystem,
-            32768
-          );
+          console.log('[runPipelineForTopic] 合并前检查:', {
+            niche,
+            bundleMergeOutputLang: (bundle.merge as any).outputLanguage,
+            bundleMergeSystemPreview: (bundle.mergeSystem as string)?.slice(0, 100),
+            mergePromptHasChinese: /[\u4e00-\u9fff]/.test(mergeUser),
+            mergePromptPreview: mergeUser.slice(0, 200),
+            combinedPreview: combined.slice(0, 200),
+          });
+      const merged = await collectStreamText(
+        mergeUser,
+        niche === NicheType.TCM_METAPHYSICS ? TCM_MERGE_SYSTEM : bundle.mergeSystem,
+        98304
+      );
+          console.log('[runPipelineForTopic] 合并后检查:', {
+            mergedHasChinese: /[\u4e00-\u9fff]/.test(merged),
+            mergedPreview: merged.slice(0, 300),
+          });
           let finalText = normalizeYiJingBody(merged);
           if (mindfulLong) {
             finalText = truncateMindfulScript(finalText, MINDFUL_EN_SCRIPT_CHARS_MAX);
+          }
+          // 大国博弈/Bo Yi：检查并确保收尾语存在
+          if (niche === NicheType.GREAT_POWER_GAME) {
+            const hasClosing = greatPowerLanguage === 'zh'
+              ? /这场博弈还在继续\。|博弈从未停止\。/.test(finalText.trim())
+              : /The game (?:never stops|continues)\.?\s*$/i.test(finalText.trim());
+            if (!hasClosing) {
+              pushYiJingLog('[合并] ⚠️ 收尾语缺失，正在追加…');
+              finalText = finalText.trimEnd() + (greatPowerLanguage === 'zh' ? '\n\n博弈从未停止。' : '\n\nThe game continues.');
+            }
           }
           // 治愈心理学中文：宠物名一致性后处理
           if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
@@ -4022,8 +4144,10 @@ ${segmentSourceText}
           // 计算输出语言
           const isEnRevengeBatch = niche === NicheType.STORY_REVENGE && storyLanguage === StoryLanguage.ENGLISH;
           const isMindfulEnglishBatch = niche === NicheType.MINDFUL_PSYCHOLOGY;
-          const effectiveLangBatch = mindfulLanguage || 'en';
-          const outputLanguageBatch: 'zh' | 'en' = isMindfulEnglishBatch ? (effectiveLangBatch === 'en' ? 'en' : 'zh') : (isEnRevengeBatch ? 'en' : 'zh');
+          const isGreatPowerGameBatch = niche === NicheType.GREAT_POWER_GAME;
+          // 大国博弈赛道使用 greatPowerLanguage，其他赛道使用 mindfulLanguage
+          const effectiveLangBatch = isGreatPowerGameBatch ? greatPowerLanguage : (mindfulLanguage || 'en');
+          const outputLanguageBatch: 'zh' | 'en' = isMindfulEnglishBatch ? (effectiveLangBatch === 'en' ? 'en' : 'zh') : (isEnRevengeBatch ? 'en' : (isGreatPowerGameBatch ? greatPowerLanguage : 'zh'));
 
           // 提取宠物名约束：中文走英文 pipeline，内容是英文，不需要宠物名约束
           const petConstraintBatch = isMindfulEnglishBatch && effectiveLangBatch === 'zh'
@@ -4050,6 +4174,7 @@ ${segmentSourceText}
                 },
                 outputLanguage: outputLanguageBatch,
                 petNameConstraint: petConstraintBatch,
+                nicheType: toNicheTypeForScoring(niche),
               },
               apiKey,
               { provider }
@@ -4079,8 +4204,11 @@ ${segmentSourceText}
                 pushYiJingLog('[去AI味] 已补充保留的末尾自然结尾');
               }
 
-              if (!/[。！？.!?]$/.test(cleanedPolish.trim())) {
-                cleanedPolish = cleanedPolish.trim() + '。';
+              // 根据语言模式添加结尾标点
+              const endsWithPunct = /[。！？.!?]$/.test(cleanedPolish.trim());
+              if (!endsWithPunct) {
+                // 英文模式用英文句号，中文模式用中文句号
+                cleanedPolish = cleanedPolish.trim() + (outputLanguageBatch === 'zh' ? '。' : '.');
               }
 
               const cleanedLen = (cleanedPolish || '').replace(/\s+/g, '').length;
@@ -5297,6 +5425,33 @@ ${segmentSourceText}
                             localContent = truncateMindfulScript(localContent, maxChars);
                         }
                         console.log(`[Generator] Mindful Psychology (${mindfulLanguage}) truncated to ${localContent.length} chars`);
+                    }
+                } else if (niche === NicheType.GREAT_POWER_GAME) {
+                    // 大国博弈赛道：合并后截断保护 + 收尾语兜底
+                    // 中英文各自独立字数控制
+                    const gpMinC = greatPowerLanguage === 'zh' ? MIN_GREAT_POWER_ZH_CHARS : MIN_GREAT_POWER_EN_CHARS;
+                    const gpMaxC = greatPowerLanguage === 'zh' ? MAX_GREAT_POWER_ZH_CHARS : MAX_GREAT_POWER_EN_CHARS;
+                    let gpLen = localContent.length;
+
+                    // 大国博弈收尾语兜底（中文/英文各自对应）
+                    if (greatPowerLanguage === 'zh') {
+                        const hasZhClosing = /这场博弈还在继续\。|博弈从未停止\。/.test(localContent.trim());
+                        if (!hasZhClosing) {
+                            console.log('[Generator] GP: No Chinese closing phrase found, appending...');
+                            localContent = localContent.trimEnd() + '\n\n博弈从未停止。';
+                        }
+                    } else {
+                        const hasEnClosing = /The game (?:never stops|continues)\.?\s*$/i.test(localContent.trim());
+                        if (!hasEnClosing) {
+                            console.log('[Generator] GP: No English closing phrase found, appending...');
+                            localContent = localContent.trimEnd() + '\n\nThe game continues.';
+                        }
+                    }
+
+                    // 语义截断保护
+                    if (localContent.length > gpMaxC) {
+                        localContent = truncateToMax(localContent, gpMaxC);
+                        console.log(`[Generator] Great Power Game truncated to ${localContent.length} chars (max: ${gpMaxC})`);
                     }
                 } else {
                     // 需要续写的情况

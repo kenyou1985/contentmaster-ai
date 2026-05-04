@@ -16,9 +16,17 @@ export type MacroNewsHeadline = {
 };
 
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-const FETCH_TIMEOUT_MS = 10000;
-const MAX_RETRIES = 2;
+const FETCH_TIMEOUT_MS = 5000;
+const MAX_RETRIES = 1;
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 分钟缓存
+
+// 中文 RSS Feed 列表（用于中文模式）
+const ZH_FEEDS: { url: string; label: string }[] = [
+  { url: 'https://www.cna.com.tw/rss/latest_news_module.xml', label: '中央社' },
+  { url: 'https://feeds.bbc.com/zhongwen/simp/rss.xml', label: 'BBC中文网' },
+  { url: 'https://rss.dw.com/rdf/rss-zh-cn', label: 'DW中文网' },
+  { url: 'https://www.channelnewsasia.com/rss.xml', label: 'CNA' },
+];
 
 // CORS 代理列表（按可靠性排序）
 const CORS_PROXIES = [
@@ -28,16 +36,13 @@ const CORS_PROXIES = [
   (u: string) => `https://yacdn.org/proxy/${encodeURIComponent(u)}`,
 ];
 
-// RSS Feed 列表
+// RSS Feed 列表（精简为最可靠的来源，避免被代理封锁）
 const FEEDS: { url: string; label: string }[] = [
   { url: 'https://feeds.bbci.co.uk/news/world/rss.xml', label: 'BBC World' },
   { url: 'https://rss.dw.com/rdf/rss-en-world', label: 'DW World' },
   { url: 'https://www.aljazeera.com/xml/rss/all.xml', label: 'Al Jazeera' },
   { url: 'https://www.france24.com/en/rss', label: 'France 24' },
-  { url: 'https://feeds.skynews.com/feeds/rss/world.xml', label: 'Sky News' },
-  { url: 'https://www.cnbc.com/id/100003114/device/rss/rss.html', label: 'CNBC' },
   { url: 'https://feeds.reuters.com/reuters/worldNews', label: 'Reuters' },
-  { url: 'https://www.theguardian.com/world/rss', label: 'Guardian' },
 ];
 
 // 内置备选新闻（当 RSS 全部失败时使用）
@@ -55,7 +60,7 @@ const FALLBACK_HEADLINES: MacroNewsHeadline[] = [
 ];
 
 // 内存缓存
-let cachedDigest: { content: string; timestamp: number } | null = null;
+let cachedDigest: { lang: string; content: string; timestamp: number } | null = null;
 
 function stripCdata(s: string): string {
   return s.replace(/^\s*<!\[CDATA\[/, '').replace(/\]\]>\s*$/, '').trim();
@@ -208,22 +213,29 @@ function dedupeHeadlines(items: MacroNewsHeadline[], max: number): MacroNewsHead
 /**
  * 拉取多源 RSS，合并去重，返回可插入 LLM 的纯文本块。
  * 特性：
- * - 10 分钟内存缓存
+ * - 10 分钟内存缓存（按语言分开缓存）
  * - 多代理重试
  * - RSS 全部失败时自动降级到内置备选
+ * @param maxLines 最大新闻条数
+ * @param lang 语言：'en' | 'zh'，默认为 'en'
  */
-export async function fetchMacroNewsDigestForPrompt(maxLines = 32): Promise<string> {
+export async function fetchMacroNewsDigestForPrompt(maxLines = 32, lang: 'en' | 'zh' = 'en'): Promise<string> {
+  const cacheKey = `digest_${lang}`;
+
   // 检查缓存
-  if (cachedDigest && Date.now() - cachedDigest.timestamp < CACHE_TTL_MS) {
+  if (cachedDigest && cachedDigest.lang === cacheKey && Date.now() - cachedDigest.timestamp < CACHE_TTL_MS) {
     return cachedDigest.content;
   }
 
-  const perFeed = 8;
+  const perFeed = 4;
   const results: MacroNewsHeadline[][] = [];
   let successCount = 0;
 
+  // 根据语言选择 feed 列表
+  const feedsToFetch = lang === 'zh' ? [...FEEDS, ...ZH_FEEDS] : FEEDS;
+
   // 并发抓取所有 feed
-  const fetchPromises = FEEDS.map(async ({ url, label }) => {
+  const fetchPromises = feedsToFetch.map(async ({ url, label }) => {
     try {
       const xml = await fetchWithRetry(url);
       if (!xml) return [] as MacroNewsHeadline[];
@@ -257,7 +269,7 @@ export async function fetchMacroNewsDigestForPrompt(maxLines = 32): Promise<stri
   }
 
   const iso = new Date().toISOString();
-  const successInfo = successCount > 0 ? `（成功抓取 ${successCount}/${FEEDS.length} 个 RSS 源）` : '（RSS 全部失败，使用内置备选）';
+  const successInfo = successCount > 0 ? `（成功抓取 ${successCount}/${feedsToFetch.length} 个 RSS 源）` : '（RSS 全部失败，使用内置备选）';
 
   const header =
     `# 【国际要闻投喂】系统自动抓取\n` +
@@ -271,6 +283,7 @@ export async function fetchMacroNewsDigestForPrompt(maxLines = 32): Promise<stri
 
   // 更新缓存
   cachedDigest = {
+    lang: cacheKey,
     content: digest,
     timestamp: Date.now()
   };

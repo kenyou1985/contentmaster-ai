@@ -2161,9 +2161,9 @@ The Most Devastating Point Bridge:
 Use this exactly once, at the single most consequential pivot point of the script.
 
 【Word Count Iron Rule】
-- Target: 7000–8500 English words (~23–28 minutes). Hard cap: 9000 words.
-- Do NOT write the closing paragraph until the body reaches ~7000 words.
-- Once the body hits ~7000–8000 words, write the closing (~500–800 words).
+- Target: 18000–20000 English characters (~25–28 minutes). Hard cap: 22000 characters.
+- Do NOT write the closing paragraph until the body reaches ~18000 characters.
+- Once the body hits ~18000–19000 characters, write the closing (~800-1000 characters).
 - The script MUST end with exactly one of: "The game continues." / "The game never stops." — then stop immediately. No text after this sentence.
 
 【Prohibited — Zero Tolerance】
@@ -2224,9 +2224,9 @@ export const NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH = `
 现在你已经建立了叙事弧线。回顾关键发现。给他们一个反思的时刻。然后以冰冷的事实结束。
 
 【字数铁律】
-- 目标：7000-8500中文字符（约23-28分钟语音时长）。硬上限：9000字。
-- 正文未满约7000字前，不要写收尾段。
-- 正文达到约7000-8000字后，写收尾（约500-800字）。
+- 目标：6500-7000中文字符（约23-25分钟语音时长）。硬上限：7500字。
+- 正文未满约6500字前，不要写收尾段。
+- 正文达到约6500-6800字后，写收尾（约400-600字）。
 - 脚本必须以"这场博弈还在继续。"或"博弈从未停止。"结尾——然后立即停止。本句之后不得有任何文字。
 
 【禁止——零容忍】

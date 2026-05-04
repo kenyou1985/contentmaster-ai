@@ -1,11 +1,11 @@
 import React from 'react';
-import { Settings, Cpu, PenTool, Layout as LayoutIcon, ExternalLink, Zap, Video, ImagePlus, Rss, Mic, Youtube } from 'lucide-react';
+import { Settings, Cpu, PenTool, Layout as LayoutIcon, ExternalLink, Zap, Video, ImagePlus, Rss, Mic, Youtube, User } from 'lucide-react';
 import { ApiProvider } from '../types';
 
 interface LayoutProps {
   children: React.ReactNode;
-  activeTab: 'generate' | 'tools' | 'media' | 'dubbing' | 'cover' | 'monitor' | 'channel';
-  setActiveTab: (tab: 'generate' | 'tools' | 'media' | 'dubbing' | 'cover' | 'monitor' | 'channel') => void;
+  activeTab: 'generate' | 'tools' | 'media' | 'dubbing' | 'digitalHuman' | 'cover' | 'monitor' | 'channel';
+  setActiveTab: (tab: 'generate' | 'tools' | 'media' | 'dubbing' | 'digitalHuman' | 'cover' | 'monitor' | 'channel') => void;
   apiKey: string;
   setApiKey: (key: string) => void;
   provider: ApiProvider;
@@ -93,6 +93,17 @@ export const Layout: React.FC<LayoutProps> = ({
                 <div className="flex items-center gap-2">
                     <Mic size={14} />
                     一键配音
+                </div>
+              </button>
+              <button
+                onClick={() => setActiveTab('digitalHuman')}
+                className={`px-3 sm:px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-200 ${
+                  activeTab === 'digitalHuman' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                    <User size={14} />
+                    数字人
                 </div>
               </button>
               <button

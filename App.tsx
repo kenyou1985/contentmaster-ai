@@ -4,6 +4,7 @@ import { Generator } from './components/Generator';
 import { Tools } from './components/Tools';
 import { MediaGenerator } from './components/MediaGenerator';
 import { OneClickDubbing } from './components/OneClickDubbing';
+import { DigitalHumanPanel } from './components/DigitalHumanPanel';
 import { CoverDesign } from './components/CoverDesign';
 import { YouTubeMonitor } from './components/YouTubeMonitor';
 import { QueueTaskViewer } from './components/QueueTaskViewer';
@@ -16,7 +17,7 @@ import { Rss } from 'lucide-react';
 import { cleanExpiredAndOversizedCache, getCacheStats } from './services/videoCacheService';
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'generate' | 'tools' | 'media' | 'dubbing' | 'cover' | 'monitor' | 'channel'>('generate');
+  const [activeTab, setActiveTab] = useState<'generate' | 'tools' | 'media' | 'dubbing' | 'digitalHuman' | 'cover' | 'monitor' | 'channel'>('generate');
   const toast = useToast();
 
   // 应用启动时清理过期和过大的视频缓存
@@ -206,6 +207,14 @@ const App: React.FC = () => {
         </div>
         <div className={activeTab === 'dubbing' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'dubbing'}>
           <OneClickDubbing
+            apiKey={apiKey}
+            runningHubApiKey={runningHubApiKey}
+            setRunningHubApiKey={setRunningHubApiKey}
+            toast={toast}
+          />
+        </div>
+        <div className={activeTab === 'digitalHuman' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'digitalHuman'}>
+          <DigitalHumanPanel
             apiKey={apiKey}
             runningHubApiKey={runningHubApiKey}
             setRunningHubApiKey={setRunningHubApiKey}
