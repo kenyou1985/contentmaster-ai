@@ -850,6 +850,11 @@ function getParallelPipelineBundle(
       : 'You are a senior editor merging English voice-over scripts; keep warm, spoken, authentic English like a real person sharing their experience. Use first-person "I" as the dominant voice, not "you" or "your body". Allow for natural imperfections, self-corrections, and uneven paragraph lengths. Never add a "Please like and subscribe" CTA — preserve any casual ending that sounds like a friend saying goodnight.';
   }
 
+  // ── 新闻热点 GENERAL_VIRAL 赛道：长视频强制字数目标 ──
+  if (niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG') {
+    mergeTone = `你是资深新闻口播编辑，合并各段草稿。**必须将全文扩展至 ${parallelTotalTargetChars} 字左右**，不得删除任何内容，不得截断任何段落。各段衔接自然，用过渡句串联，保持新闻辣评风格。`;
+  }
+
   // ── GREAT_POWER_GAME（大国博弈主赛道）：独立赛道，必须优先处理 ──
   if (niche === NicheType.GREAT_POWER_GAME) {
     const gpLang = greatPowerLang || 'en';
@@ -2679,11 +2684,13 @@ ${segmentSourceText}
       const mindfulLong =
         niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
       // 大国博弈赛道使用专用 merge prompt，避免中文结构标签干扰
-      // 中英文各自独立字数控制
+      // 中英文各自独立字数控制；新闻热点长视频也强制字数目标
       const mergeCharRange = isGreatPowerGame
         ? (greatPowerLanguage === 'zh'
             ? { min: MIN_GREAT_POWER_ZH_CHARS, max: MAX_GREAT_POWER_ZH_CHARS }
             : { min: MIN_GREAT_POWER_EN_CHARS, max: MAX_GREAT_POWER_EN_CHARS })
+        : niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG'
+        ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
         : undefined;
       const mergeUser = isGreatPowerGame
         ? buildBoYiParallelMergeUserPrompt(sel[0].title, combined, parallelTotalTargetChars, {
@@ -2697,6 +2704,7 @@ ${segmentSourceText}
               ? mindfulMergeCharClamp(parallelTotalTargetChars)
               : undefined,
             mindfulLanguage,
+            mergeCharRange,
           });
       const merged = await collectStreamText(
         mergeUser,
@@ -3254,19 +3262,24 @@ ${segmentSourceText}
       );
       const combined = parts.join('\n\n');
       // 大国博弈赛道使用专用 merge prompt，避免中文结构标签干扰
-      // 中英文各自独立字数控制
+      // 中英文各自独立字数控制；新闻热点长视频也强制字数目标
       const isGreatPowerGameHere = niche === NicheType.GREAT_POWER_GAME;
       const mergeCharRangeHere = isGreatPowerGameHere
         ? (greatPowerLanguage === 'zh'
             ? { min: MIN_GREAT_POWER_ZH_CHARS, max: MAX_GREAT_POWER_ZH_CHARS }
             : { min: MIN_GREAT_POWER_EN_CHARS, max: MAX_GREAT_POWER_EN_CHARS })
+        : niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG'
+        ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
         : undefined;
       const mergeUser = isGreatPowerGameHere
         ? buildBoYiParallelMergeUserPrompt(sel[0].title, combined, parallelTotalTargetChars, {
             ...bundle.merge,
             mergeCharRange: mergeCharRangeHere,
           })
-        : buildParallelMergeUserPrompt(sel[0].title, combined, parallelTotalTargetChars, bundle.merge);
+        : buildParallelMergeUserPrompt(sel[0].title, combined, parallelTotalTargetChars, {
+            ...bundle.merge,
+            mergeCharRange: mergeCharRangeHere,
+          });
       const merged = await collectStreamText(
         mergeUser,
         bundle.mergeSystem,
@@ -3491,11 +3504,13 @@ ${segmentSourceText}
         const mindfulLongAp =
           niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
         // 统一走 buildBoYiParallelMergeUserPrompt（内部已根据 outputLanguage 输出中/英文）
-        // 大国博弈中英文各自独立字数控制
+        // 大国博弈中英文各自独立字数控制；新闻热点长视频也强制字数目标
         const mergeCharRangeAp = niche === NicheType.GREAT_POWER_GAME
           ? (greatPowerLanguage === 'zh'
               ? { min: MIN_GREAT_POWER_ZH_CHARS, max: MAX_GREAT_POWER_ZH_CHARS }
               : { min: MIN_GREAT_POWER_EN_CHARS, max: MAX_GREAT_POWER_EN_CHARS })
+          : niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG'
+          ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
           : undefined;
         const mergeUser = buildBoYiParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
           ...bundle.merge,
@@ -3814,10 +3829,13 @@ ${segmentSourceText}
           const mindfulLong =
             niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
           // 大国博弈用专用英文 merge prompt，中英文各自独立字数控制
+          // 新闻热点长视频也需要强制字数目标
           const mergeCharRangeYi = niche === NicheType.GREAT_POWER_GAME
             ? (greatPowerLanguage === 'zh'
                 ? { min: MIN_GREAT_POWER_ZH_CHARS, max: MAX_GREAT_POWER_ZH_CHARS }
                 : { min: MIN_GREAT_POWER_EN_CHARS, max: MAX_GREAT_POWER_EN_CHARS })
+            : niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG'
+            ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
             : undefined;
           const mergeUser = buildBoYiParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
             ...bundle.merge,
