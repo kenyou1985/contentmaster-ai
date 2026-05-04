@@ -22,7 +22,7 @@
  * 赛道权重调整：
  *   新闻热点/小美赛道：D5权重降至5%，D6权重降至8%，D7权重降至5%，D2权重提至18%
  *   治愈心理学赛道：D10权重提至10%（宠物名一致性更重要）
- *   大国博弈/Bo Yi赛道：D5权重3%，D6权重5%，D7权重8%，D9权重35%；D2/D5默认50分，D6/D10默认100分
+ *   大国博弈/Bo Yi赛道：D5权重3%，D6权重5%，D7权重8%，D9权重35%；D1/D3/D4默认50分，D6/D7/D9/D10默认80分
  *
  * 公式：score = round(加权平均) / 10
  * 效果：
@@ -956,9 +956,9 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
 
     D6 = Math.max(25, Math.min(100, yiJingD6));
   } else if (detectedNiche === 'great_power_game') {
-    // 大国博弈/Bo Yi：不存在具体细节问题，0-4个细节全部满分
-    // Bo Yi风格以战略分析为主，不需要传统意义上的"具体细节"（宠物名/家庭场景）
-    const gpDetailTable: Record<number, number> = { 0: 100, 1: 100, 2: 100, 3: 100, 4: 100 };
+    // 大国博弈/Bo Yi：细节宽容，默认80分
+    // Bo Yi风格以战略分析为主，不需要传统"具体细节"
+    const gpDetailTable: Record<number, number> = { 0: 80, 1: 85, 2: 90, 3: 95, 4: 100 };
     D6 = gpDetailTable[detailsFound.length] ?? (detailsFound.length >= 5 ? 100 : 80);
     // 不报任何问题——Bo Yi风格以宏观战略分析为主，细节检测不适用
   } else {
@@ -1064,9 +1064,9 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
     if (detectedNiche === 'great_power_game') {
       // 大国博弈/Bo Yi 英文：分析型内容不需要故事开场
       if (storyOpeners.length < 3) {
-        D9 = 100; // Bo Yi 分析不以故事开场
+        D9 = 80; // Bo Yi 分析不以故事开场，默认80分
       } else {
-        D9 = Math.min(100, Math.max(0, Math.round(lerp(variety, 0.05, 0.8, 40, 100))));
+        D9 = Math.min(100, Math.max(50, Math.round(lerp(variety, 0.05, 0.8, 50, 100))));
       }
     } else if (storyOpeners.length >= 3) {
       D9 = Math.min(100, Math.max(0, Math.round(lerp(variety, 0.1, 0.8, 0, 100))));
@@ -1091,16 +1091,16 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
     } else if (detectedNiche === 'great_power_game') {
       // 大国博弈/Bo Yi：分析型内容，不需要传统故事开场
       // Bo Yi 的结构是：内幕数据 → 多方博弈 → 战略结论
-      // 宽容处理：开场数少时给高分，多样性要求放低
+      // 宽容处理：默认80分，多样性要求放低
       const storyOpeners = text.match(
         /(我记得[^.!?]{0,60}[.!?]|有一次[^.!?]{0,60}[.!?]|那天[^.!?]{0,60}[.!?]|后来[^.!?]{0,60}[.!?]|那之后[^.!?]{0,60}[.!?])/gi
       ) || [];
       if (storyOpeners.length < 3) {
-        D9 = 100; // Bo Yi 分析内容不以故事开场，无开场不等于缺陷
+        D9 = 80; // Bo Yi 分析内容不以故事开场，默认80分
       } else {
         const uniqueOpeners = new Set(storyOpeners.map(o => o.slice(0, 8)));
         const variety = uniqueOpeners.size / Math.max(storyOpeners.length, 1);
-        D9 = Math.min(100, Math.max(0, Math.round(lerp(variety, 0.05, 0.8, 40, 100))));
+        D9 = Math.min(100, Math.max(50, Math.round(lerp(variety, 0.05, 0.8, 50, 100))));
       }
     } else {
       const storyOpeners = text.match(
@@ -1122,6 +1122,8 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
   // 同一动物名全文贯穿=100分，出现2种不同名字=0分
   // ============================================================
   let D10 = 50; // 默认中等（避免零分惩罚）
+  // 大国博弈/Bo Yi：默认80分，不因名字检测失败而扣分
+  if (detectedNiche === 'great_power_game') D10 = 80;
   if (lang_ === 'en') {
     // 英文排除列表：所有句首大写的普通英文词（非宠物名）
     const ENGLISH_STOPWORDS = new Set([
