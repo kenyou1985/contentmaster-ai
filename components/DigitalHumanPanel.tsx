@@ -1101,8 +1101,11 @@ export function DigitalHumanPanel({
       const a = document.createElement('a');
       a.href = url;
       a.download = `数字人对口型视频_${Date.now()}.zip`;
+      a.target = '_blank';
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
       toast.success(`打包下载成功: ${selected.length} 个视频`);
     } catch (err: any) {
       toast.error(`打包失败: ${err.message}`);
@@ -1133,8 +1136,11 @@ export function DigitalHumanPanel({
       const a = document.createElement('a');
       a.href = url;
       a.download = `数字人对口型视频_${Date.now()}.zip`;
+      a.target = '_blank';
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
       toast.success(`打包下载成功: ${done.length} 个视频`);
     } catch (err: any) {
       toast.error(`打包失败: ${err.message}`);
@@ -1280,8 +1286,11 @@ export function DigitalHumanPanel({
       const a = document.createElement('a');
       a.href = url;
       a.download = `数字人对口型_${Date.now()}.zip`;
+      a.target = '_blank';
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
       pushLog(`[一键成片] ✅ 全部完成 · ${done.length} 个视频已下载`);
       toast.success(`一键成片完成: ${done.length} 个视频已打包下载`);
     } catch (err: any) {

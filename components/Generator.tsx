@@ -1138,6 +1138,10 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       const target = greatPowerLanguage === 'zh' ? MIN_GREAT_POWER_ZH_CHARS : MIN_GREAT_POWER_EN_CHARS;
       setYiJingTotalTargetChars(target);
     }
+    // 易经命理长视频：自动设置为 6500 字（曾氏长视频标准目标），短视频维持默认值 3500
+    if (niche === NicheType.YI_JING_METAPHYSICS && scriptLengthMode === 'LONG') {
+      setYiJingTotalTargetChars(6500);
+    }
   }, [niche, scriptLengthMode, greatPowerLanguage]);
   const parallelTotalTargetChars = useMemo(
     () =>
@@ -2444,14 +2448,14 @@ ${segmentSourceText}
       hint: `正在生成大纲（约 ${segN} 章）…`,
     });
     pushYiJingLog(
-      `开始生成大纲（自动约 ${segN} 章，全文目标约 ${effectiveGpTarget} 字）…`
+      `开始生成大纲（自动约 ${segN} 章，全文目标约 ${parallelTotalTargetChars} 字）…`
     );
     try {
       const raw = await collectStreamText(
         buildParallelOutlineUserPrompt(
           sel[0].title,
           segN,
-          effectiveGpTarget,
+          parallelTotalTargetChars,
           bundle.outline,
           lead || undefined
         ),
@@ -3405,7 +3409,7 @@ ${segmentSourceText}
           buildParallelOutlineUserPrompt(
             topicTitle,
             plannedSeg,
-            effectiveGpTarget,
+            parallelTotalTargetChars,
             bundle.outline,
             outlineLead || undefined
           ),
@@ -3712,14 +3716,14 @@ ${segmentSourceText}
             niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'zh'
               ? 10
               : computeParallelSegmentCount(
-                  effectiveGpTarget,
+                  parallelTotalTargetChars,
                   scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
                 );
           const raw = await collectStreamText(
             buildParallelOutlineUserPrompt(
               topicTitle,
               plannedSeg,
-              effectiveGpTarget,
+              parallelTotalTargetChars,
               bundle.outline,
               outlineLead || undefined
             ),
@@ -3728,7 +3732,7 @@ ${segmentSourceText}
           );
           const parsedRaw = parseYiJingOutline(raw);
           if (!parsedRaw) throw new Error('大纲解析失败');
-          const parsed = rescaleChapterWordCounts(parsedRaw, effectiveGpTarget);
+          const parsed = rescaleChapterWordCounts(parsedRaw, parallelTotalTargetChars);
           setParallelTopicOutlineMap((prev) => ({
             ...prev,
             [topic.id]: outlinePayloadToJsonPretty(parsed),
@@ -7053,6 +7057,8 @@ ${segmentSourceText}
                       <span className="text-[10px] text-slate-500">
                         {niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG'
                           ? `治愈心理学长视频：此处为英文正文目标总字符数（含空格与标点），${MINDFUL_EN_SCRIPT_CHARS_MIN}–${MINDFUL_EN_SCRIPT_CHARS_MAX}；失焦后均摊各章 min/max。`
+                          : niche === NicheType.YI_JING_METAPHYSICS && scriptLengthMode === 'LONG'
+                          ? `易经命理长视频：默认值 6500 字（曾氏长视频标准），允许 1000–70000 调整。失焦后均摊各章字数区间。`
                           : '1000–70000；失焦后按总字数均摊各章字数区间。生成/全自动时按上式向模型要对应章数'}
                       </span>
                     </div>
