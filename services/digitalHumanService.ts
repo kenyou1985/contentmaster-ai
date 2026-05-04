@@ -611,25 +611,36 @@ export function splitTextByLanguage(
  */
 export async function packVideosToZip(
   items: Array<{ url: string; filename: string }>,
-  zipFilename = '数字人对口型视频.zip'
+  zipFilename = '数字人对口型视频.zip',
+  onProgress?: (loaded: number, total: number) => void
 ): Promise<Blob> {
   const { default: JSZip } = await import('jszip');
 
   const zip = new JSZip();
   const folder = zip.folder('数字人对口型');
 
-  await Promise.all(
+  const results = await Promise.allSettled(
     items.map(async ({ url, filename }) => {
-      try {
-        const res = await fetch(url);
-        if (!res.ok) return;
-        const blob = await res.blob();
-        folder?.file(filename, blob);
-      } catch {
-        // 跳过下载失败的文件
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} for ${filename}: ${url}`);
       }
+      const blob = await res.blob();
+      if (blob.size < 1024) {
+        throw new Error(`视频文件过小 (${blob.size}B)，可能下载失败: ${filename}`);
+      }
+      folder?.file(filename, blob);
+      return filename;
     })
   );
 
-  return zip.generateAsync({ type: 'blob' });
+  const failed = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
+  if (failed.length > 0) {
+    const msgs = failed.map((f) => (f.reason as Error).message).join('; ');
+    console.error('[packVideosToZip] 部分视频下载失败:', msgs);
+    // 仍然生成 ZIP（包含成功的文件）
+    console.warn(`[packVideosToZip] ${failed.length}/${items.length} 个视频下载失败，将打包剩余视频`);
+  }
+
+  return zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 1 } });
 }

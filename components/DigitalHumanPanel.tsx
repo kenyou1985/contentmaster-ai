@@ -465,6 +465,71 @@ function VideoLibraryModal({
 }
 
 // ============================================================
+// 一键成片进度条
+// ============================================================
+function OneClickProgressBar({
+  progress,
+  currentPhase,
+}: {
+  progress: { phase: 'audio' | 'dh'; done: number; total: number; startMs: number };
+  currentPhase: 'audio' | 'dh' | 'done';
+}) {
+  const [elapsed, setElapsed] = useState(Date.now() - progress.startMs);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setElapsed(Date.now() - progress.startMs);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [progress.startMs]);
+
+  // 直接用 props 计算，避免 local state 闭包延迟
+  const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
+  const phaseLabel = progress.phase === 'audio' ? '配音' : '数字人';
+  const phaseColor = progress.phase === 'audio' ? 'from-blue-500 to-purple-500' : 'from-green-500 to-emerald-500';
+  const barColor = progress.phase === 'audio' ? 'bg-blue-500' : 'bg-green-500';
+
+  return (
+    <div className="bg-gray-800/80 rounded-xl p-3 border border-gray-700/60 space-y-2">
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-gray-300 font-medium">
+          {currentPhase === 'done' ? '✅ 一键成片完成' : `阶段${progress.phase === 'audio' ? '①' : '②'} · ${phaseLabel}中`}
+        </span>
+        <span className="text-gray-500 tabular-nums">{formatElapsed(elapsed)}</span>
+      </div>
+
+      <div className="relative h-3 bg-gray-700 rounded-full overflow-hidden">
+        <div
+          className={`absolute inset-y-0 left-0 rounded-full bg-gradient-to-r ${phaseColor} transition-all duration-500 ease-out`}
+          style={{ width: `${pct}%` }}
+        />
+        <div className="absolute inset-0 flex items-center justify-center">
+          <span className="text-[10px] font-bold text-white drop-shadow-sm tabular-nums">
+            {pct}%
+          </span>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between text-[11px]">
+        <span className={`${barColor} text-white font-bold px-2 py-0.5 rounded`}>
+          {progress.done}/{progress.total} 段
+        </span>
+        {currentPhase !== 'done' && (
+          <span className="text-gray-500">
+            剩余 {progress.total - progress.done} 段 · {formatElapsed(elapsed)}
+          </span>
+        )}
+        {currentPhase === 'done' && (
+          <span className="text-emerald-400 font-medium">
+            打包下载中…
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // 主面板
 // ============================================================
 
@@ -499,6 +564,14 @@ export function DigitalHumanPanel({
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
 
+  // --- 一键成片进度 ---
+  const [ocProgress, setOcProgress] = useState<{
+    phase: 'audio' | 'dh';
+    done: number;
+    total: number;
+    startMs: number;
+  } | null>(null);
+
   // --- 数字人会话（自动保存历史） ---
   const [dhSessionId, setDhSessionId] = useState<string>('');
   const [sessionInitialized, setSessionInitialized] = useState(false);
@@ -525,6 +598,14 @@ export function DigitalHumanPanel({
   const oneClickRef = useRef<'idle' | 'audio' | 'dh' | 'done'>('idle');
   const genAudioRef = useRef<((taskId: string) => Promise<void>) | null>(null);
   const genDhRef = useRef<((taskId: string) => Promise<void>) | null>(null);
+  // 用于一键成片 Phase1 判断：setTasks 是异步的，tasksRef 在下次渲染前不会更新
+  // 因此在 setTasks 成功后同步写入这两个 Set，Phase1 可直接查询
+  const completedAudioPhasesRef = useRef<Map<string, 'done' | 'error'>>(new Map());
+  const completedAudioUrlsRef = useRef<Map<string, string>>(new Map()); // 记录已完成音频的 URL（setTasks 后 tasksRef 不会立即同步）
+  const completedDhPhasesRef = useRef<Map<string, 'done' | 'error'>>(new Map());
+  const completedDhVideoUrlsRef = useRef<Map<string, string>>(new Map()); // 记录 DH 视频 URL（用于 ZIP 打包）
+  // 一键成片实时进度：{ phase, done, total, startMs }
+  const oneClickProgressRef = useRef<{ phase: 'audio' | 'dh'; done: number; total: number; startMs: number } | null>(null);
 
   // Keep tasksRef in sync
   useEffect(() => {
@@ -762,6 +843,9 @@ export function DigitalHumanPanel({
               : t
           )
         );
+        // 同步写入 ref，供 Phase1 一键成片流程立即查询（setTasks 是异步的）
+        completedAudioPhasesRef.current.set(taskId, 'done');
+        completedAudioUrlsRef.current.set(taskId, result.audioUrl);
         const audioMs = task.audioStartMs ? Date.now() - task.audioStartMs : undefined;
         if (dhSessionId) {
           updateDhSegmentAudio(dhSessionId, task.index, result.audioUrl, audioMs);
@@ -776,6 +860,7 @@ export function DigitalHumanPanel({
               : t
           )
         );
+        completedAudioPhasesRef.current.set(taskId, 'error');
         if (dhSessionId) {
           updateDhSegmentAudio(dhSessionId, task.index, '', undefined, err.message);
         }
@@ -797,7 +882,9 @@ export function DigitalHumanPanel({
         return;
       }
 
-      if (!task.audioUrl) {
+      // setTasks 是异步的，tasksRef 不会立即同步，所以从 completedAudioUrlsRef 取音频 URL
+      const audioUrl = task.audioUrl || completedAudioUrlsRef.current.get(taskId);
+      if (!audioUrl) {
         console.error(`[数字人] 段${task.index} 无音频URL，无法生成数字人`);
         toast.error(`段${task.index} 请先完成配音`);
         return;
@@ -820,13 +907,13 @@ export function DigitalHumanPanel({
       );
 
       pushLog(`[段${task.index} 数字人] 提交任务…`);
-      console.log(`[数字人] 段${task.index} 开始, audioUrl: ${task.audioUrl?.slice(0, 80)}, refVideoPath: ${refVideoRhPath}`);
+      console.log(`[数字人] 段${task.index} 开始, audioUrl: ${audioUrl?.slice(0, 80)}, refVideoPath: ${refVideoRhPath}`);
 
       try {
         const taskId_ = await dhConcurrency.run(async () => {
           const tid = await submitDigitalHumanTask(runningHubApiKey, {
             referenceVideoPath: refVideoRhPath,
-            audioPath: task.audioUrl!.replace(/^https:\/\/www\.runninghub\.cn/, '').replace(/^\//, ''),
+            audioPath: audioUrl!.replace(/^https:\/\/www\.runninghub\.cn/, '').replace(/^\//, ''),
           });
           console.log(`[数字人] 段${task.index} 提交成功, taskId: ${tid?.slice(0, 16)}`);
           pushLog(`[段${task.index} 数字人] taskId: ${tid?.slice(0, 16)}…`);
@@ -853,6 +940,8 @@ export function DigitalHumanPanel({
               : t
           )
         );
+        completedDhPhasesRef.current.set(taskId, 'done');
+        completedDhVideoUrlsRef.current.set(taskId, taskId_);
         if (dhSessionId) {
           const dhMs = task.dhStartMs ? Date.now() - task.dhStartMs : undefined;
           updateDhSegmentVideo(dhSessionId, task.index, taskId_, dhMs);
@@ -867,6 +956,7 @@ export function DigitalHumanPanel({
               : t
           )
         );
+        completedDhPhasesRef.current.set(taskId, 'error');
         if (dhSessionId) {
           updateDhSegmentVideo(dhSessionId, task.index, '', undefined, err.message);
         }
@@ -1057,10 +1147,10 @@ export function DigitalHumanPanel({
       return;
     }
 
-    const pendingIds = pending.map((t) => t.id);
     // 必须先同步更新 ref，再创建 workers，避免 workers 一创建就检测到 idle 退出
     oneClickRef.current = 'audio';
     setOneClickFilm('audio');
+    setOcProgress({ phase: 'audio', done: 0, total: pending.length, startMs: Date.now() });
     pushLog(`[一键成片] 开始… 阶段① 批量配音 ${pending.length} 段`);
 
     // Phase 1: 批量配音
@@ -1077,6 +1167,7 @@ export function DigitalHumanPanel({
           try {
             await generateSingleAudio(task.id);
             console.log(`[一键成片] worker 段${task.index} 配音完成`);
+            setOcProgress((p) => p ? { ...p, done: p.done + 1 } : null);
           } catch (err: any) {
             console.error(`[一键成片] worker 段${task.index} 配音异常:`, err.message);
             pushLog(`[一键成片] ⚠️ 段${task.index} 配音异常: ${err.message}`);
@@ -1089,14 +1180,12 @@ export function DigitalHumanPanel({
     console.log('[一键成片] Phase1 配音阶段全部 worker 完成');
 
     // 配音完成后，检查是否还有失败的
-    const afterAudio = tasksRef.current;
-    const failedAudio = afterAudio.filter(
-      (t) => t.audioPhase !== 'done' && pendingIds.includes(t.id)
-    );
-    const doneAudio = afterAudio.filter(
-      (t) => t.audioPhase === 'done' && pendingIds.includes(t.id)
-    );
+    // 用 completedAudioPhasesRef 判断（setTasks 是异步的，直接查 tasksRef 拿不到最新状态）
+    const phaseRefEntries = [...completedAudioPhasesRef.current.entries()];
+    const failedAudio = phaseRefEntries.filter(([, phase]) => phase === 'error').map(([id]) => tasksRef.current.find((t) => t.id === id)).filter(Boolean);
+    const doneAudio = phaseRefEntries.filter(([, phase]) => phase === 'done').map(([id]) => tasksRef.current.find((t) => t.id === id)).filter(Boolean);
     console.log(`[一键成片] Phase1 结果: 成功 ${doneAudio.length}, 失败 ${failedAudio.length}`);
+    console.log(`[一键成片] completedAudioPhasesRef:`, [...completedAudioPhasesRef.current.entries()]);
     failedAudio.forEach((t) => {
       pushLog(`[一键成片] ⚠️ 段${t.index} 配音失败: ${t.audioError || '未知错误'}`);
       console.error(`[一键成片] 段${t.index} 失败详情:`, t.audioError);
@@ -1106,18 +1195,19 @@ export function DigitalHumanPanel({
       pushLog(`[一键成片] ⚠️ ${failedAudio.length} 段配音失败，跳过数字人阶段`);
       toast.warning(`${failedAudio.length} 段配音失败，一键成片中断`);
       setOneClickFilm('idle');
+      setOcProgress(null);
       return;
     }
 
-    pushLog(`[一键成片] 阶段① 完成 → 阶段② 批量数字人`);
-    oneClickRef.current = 'dh';
-    setOneClickFilm('dh');
-
     // Phase 2: 批量数字人
-    const ready = tasksRef.current.filter((t) => t.audioPhase === 'done' && t.dhPhase === 'pending');
-    const readyIds = ready.map((t) => t.id);
+    // 用 completedAudioPhasesRef 判断（tasksRef 在 setTasks 后不会立即同步）
+    const completedAudioIds = new Set([...completedAudioPhasesRef.current.entries()].filter(([, p]) => p === 'done').map(([id]) => id));
+    const ready = tasksRef.current.filter((t) => completedAudioIds.has(t.id) && t.dhPhase === 'pending');
     console.log(`[一键成片] Phase2 待处理: ${ready.length} 段`);
     pushLog(`[一键成片] 阶段② 开始批量数字人: ${ready.length} 段`);
+    setOcProgress((p) => (p ? { ...p, phase: 'dh', done: 0, total: ready.length } : null));
+    oneClickRef.current = 'dh';
+    setOneClickFilm('dh');
     const dhQueue = [...ready];
     const dhWorkers = Array.from({ length: Math.min(dhQueue.length, MAX_CONCURRENT) }, () => {
       const worker = async () => {
@@ -1131,6 +1221,7 @@ export function DigitalHumanPanel({
           try {
             await generateSingleDh(task.id);
             console.log(`[一键成片] dh worker 段${task.index} 完成`);
+            setOcProgress((p) => p ? { ...p, done: p.done + 1 } : null);
           } catch (err: any) {
             console.error(`[一键成片] dh worker 段${task.index} 异常:`, err.message);
             pushLog(`[一键成片] ⚠️ 段${task.index} 数字人异常: ${err.message}`);
@@ -1142,9 +1233,10 @@ export function DigitalHumanPanel({
     await Promise.all(dhWorkers);
     console.log('[一键成片] Phase2 数字人阶段全部 worker 完成');
 
-    const done = tasksRef.current.filter((t) => t.dhPhase === 'done' && t.dhVideoUrl);
-    const failedDh = tasksRef.current.filter((t) => t.dhPhase === 'error' && readyIds.includes(t.id));
+    const done = [...completedDhPhasesRef.current.entries()].filter(([, phase]) => phase === 'done').map(([id]) => tasksRef.current.find((t) => t.id === id)).filter(Boolean);
+    const failedDh = [...completedDhPhasesRef.current.entries()].filter(([, phase]) => phase === 'error').map(([id]) => tasksRef.current.find((t) => t.id === id)).filter(Boolean);
     console.log(`[一键成片] Phase2 结果: 成功 ${done.length}, 失败 ${failedDh.length}`);
+    console.log(`[一键成片] completedDhPhasesRef:`, [...completedDhPhasesRef.current.entries()]);
     failedDh.forEach((t) => {
       pushLog(`[一键成片] ⚠️ 段${t.index} 数字人失败: ${t.dhError || '未知错误'}`);
       console.error(`[一键成片] 段${t.index} DH 失败详情:`, t.dhError);
@@ -1162,12 +1254,13 @@ export function DigitalHumanPanel({
 
     pushLog(`[一键成片] 打包 ${done.length} 个视频…`);
     try {
-      const blob = await packVideosToZip(
-        done.map((t) => ({
-          url: t.dhVideoUrl!,
-          filename: `段${t.index}.mp4`,
-        }))
-      );
+      // 从 completedDhVideoUrlsRef 取真实 URL（tasksRef.dhVideoUrl 可能在 setTasks 异步后尚未同步）
+      const videoItems = done.map((t) => ({
+        url: completedDhVideoUrlsRef.current.get(t.id) || t.dhVideoUrl!,
+        filename: `段${t.index}.mp4`,
+      }));
+      console.log(`[一键成片] ZIP 打包视频 URLs:`, videoItems.map((v) => v.url?.slice(0, 80)));
+      const blob = await packVideosToZip(videoItems);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -1180,6 +1273,7 @@ export function DigitalHumanPanel({
       toast.error(`打包失败: ${err.message}`);
     }
     setOneClickFilm('idle');
+    setOcProgress(null);
   }, [
     runningHubApiKey,
     refVideoRhPath,
@@ -1674,6 +1768,14 @@ export function DigitalHumanPanel({
                       查看历史
                     </button>
                   </div>
+
+                  {/* 一键成片进度条 */}
+                  {ocProgress && (oneClickFilm === 'audio' || oneClickFilm === 'dh' || oneClickFilm === 'done') && (
+                    <OneClickProgressBar
+                      progress={ocProgress}
+                      currentPhase={oneClickFilm as 'audio' | 'dh' | 'done'}
+                    />
+                  )}
 
                   {/* 一键成片 */}
                   <button

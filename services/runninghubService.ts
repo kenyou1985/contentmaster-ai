@@ -1181,7 +1181,12 @@ export const generateAudio = async (
     };
 
     const runUrl = `${OPENAPI_V2_BASE}/run/ai-app/${TTS_AI_APP_RUN_ID}`;
-    console.log('[RunningHub] TTS ai-app 请求:', { endpoint: runUrl, textLen: text.length });
+    console.log('[RunningHub] TTS ai-app 请求:', {
+      endpoint: runUrl,
+      textLen: text.length,
+      refAudio: refAudio?.slice(0, 80),
+      speed: requestBody.speed,
+    });
 
     const response = await fetch(runUrl, {
       method: 'POST',
@@ -1194,17 +1199,16 @@ export const generateAudio = async (
     try {
       data = JSON.parse(raw);
     } catch {
-      if (!response.ok) {
-        return { success: false, error: raw || `HTTP ${response.status}` };
-      }
-      return { success: false, error: 'TTS 响应不是有效 JSON' };
+      /* not JSON — e.g. 500 error page */
     }
 
     if (!response.ok) {
-      return {
-        success: false,
-        error: data.errorMessage || data.message || data.msg || raw || `HTTP ${response.status}`,
-      };
+      const status = response.status;
+      const serverMsg = data?.errorMessage || data?.message || data?.msg || '';
+      const htmlHint = !data?.code && raw.toLowerCase().includes('<!doctype') ? '（服务器返回 HTML，可能是接口临时不可用）' : '';
+      const errText = serverMsg || (raw.length > 200 ? raw.slice(0, 200) + '…' : raw) || `HTTP ${status}`;
+      console.error(`[RunningHub] TTS HTTP ${status}:`, errText);
+      return { success: false, error: `${errText}${htmlHint}` };
     }
 
     const errCode = data.errorCode ?? data.error_code ?? '';
