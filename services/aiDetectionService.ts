@@ -16,13 +16,14 @@
  *   D6  具体细节锚点   权重15%   >=5个=100分，0个=0分
  *   D7  自嘲/口语打断  权重10%   >=3次=100分，0次=30分（默认50）
  *   D8  硬广结尾检测   权重8%    自然结尾=100分，硬广=20分（默认50）
- *   D9  故事结构多样性 权重7%    多种开场=100分，重复=0分（默认50）
- *   D10 角色名一致性   权重5%    一致=100分，不一致=20分（默认50）
+ *   D9  故事结构多样性 权重7%    多种开场=100分，重复=0分（默认80，宽容处理）
+ *   D10 角色名一致性   权重5%    一致=100分，不一致=20分（默认80，宽容处理）
  *
  * 赛道权重调整：
  *   新闻热点/小美赛道：D5权重降至5%，D6权重降至8%，D7权重降至5%，D2权重提至18%
  *   治愈心理学赛道：D10权重提至10%（宠物名一致性更重要）
  *   大国博弈/Bo Yi赛道：D5权重3%，D6权重5%，D7权重8%，D9权重35%；D1/D3/D4默认50分，D6/D7/D9/D10默认80分
+ *   金融投资/芒格赛道：D2/D9/D10默认80分（分析型内容宽容处理）；D1/D3/D4默认50分
  *
  * 公式：score = round(加权平均) / 10
  * 效果：
@@ -252,6 +253,17 @@ const HUMAN_COLLOQUIAL_WORDS: Record<string, string[]> = {
     '你自己去悟', '你自己去体会',
     '柔能克刚', '刚柔相济',
     '各家有各家的', '各家不一样',
+    // 查理·芒格/金融投资赛道
+    '芒格', '查理', '巴菲特', '波克夏',
+    '逆向思维', '反过来想', '凡事反过来想',
+    '我年轻的时候', '我当时就发现', '我在诊所里', '我在临床上',
+    '各位', '各位朋友', '各位观众', '你懂的',
+    '华尔街那帮人', '华尔街的', '那些分析师', '那些基金经理',
+    '这就是人性的弱点', '人性就是这样', '人性就是这样',
+    '说白了', '说句不好听的', '不好听的话',
+    '你可能不信', '你也许不信', '你大概不信',
+    '你听听就好', '信不信随你', '你掂量掂量',
+    '愚蠢', '荒谬', '可笑', '荒唐',
   ],
   en: [
     'honestly', 'you know', 'I feel like', 'it seems like', 'maybe', 'probably',
@@ -767,19 +779,19 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
   }
 
   // ============================================================
-  // D2: 口语词密度 (权重 10%)
+  // D2: 口语词密度 (权重 15%)
   // 每千字6个以上=100分，低于1个=0分
-  // 大国博弈：降低要求，默认50分（宽容处理）
+  // 大国博弈/金融投资：降低要求，默认宽容（芒格/Bo Yi以权威陈述为主，口语词极稀少）
   // 0个/千字=50分，3个/千字=70分，6个/千字=90分，12个/千字=100分
   // ============================================================
   let D2: number;
   const humanCount = countWords(text, humanWords);
   const humanDensity = humanCount / Math.max(textLength / 1000, 1);
-  if (detectedNiche === 'great_power_game') {
-    // 大国博弈：极度宽容——0个=50分，15个=100分
-    // Bo Yi风格以权威陈述为主，口语词极稀少，调整曲线让低密度也能得高分
+  if (detectedNiche === 'great_power_game' || detectedNiche === 'finance_crypto') {
+    // 大国博弈 + 金融投资：极度宽容——0个=50分，15个=100分
+    // 芒格风格以毒舌分析为主，口语词极稀少，调整曲线让低密度也能得高分
     D2 = Math.min(100, Math.max(50, Math.round(lerp(humanDensity, 0, 15, 50, 100))));
-    // 不报口语词问题——Bo Yi风格以权威陈述为主
+    // 不报口语词问题——芒格/Bo Yi风格以权威陈述为主
   } else {
     D2 = Math.min(100, Math.round(lerp(humanDensity, 1, 6, 0, 100)));
     if (humanDensity < 3) {
@@ -1053,8 +1065,9 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
 
   // ============================================================
   // D9: 故事结构多样性 (权重 10%)
-  // ============================================================
-  let D9 = 50; // 默认中等（避免零分惩罚）
+  // 大国博弈/金融投资：分析型内容不以传统故事开场，宽容处理默认80分
+  // ====================================
+  let D9 = 80; // 默认80分（宽容处理）
   if (lang_ === 'en') {
     const storyOpeners = text.match(
       /(I\s+remember\s+[^.!?]{0,80}[.!?]|There\s+was\s+[^.!?]{0,80}[.!?]|One\s+time\s+[^.!?]{0,80}[.!?]|I\s+had\s+[^.!?]{0,80}[.!?]|After\s+[^.!?]{0,80}[.!?])/gi
@@ -1102,6 +1115,20 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
         const variety = uniqueOpeners.size / Math.max(storyOpeners.length, 1);
         D9 = Math.min(100, Math.max(50, Math.round(lerp(variety, 0.05, 0.8, 50, 100))));
       }
+    } else if (detectedNiche === 'finance_crypto') {
+      // 金融投资/芒格：分析型内容，结构多样性不以传统故事开场衡量
+      // 芒格风格以毒舌分析、跨学科案例、反讽为主，不依赖"我记得/有一次"类故事
+      // 宽容处理：默认80分，故事开场少时得高分
+      const storyOpeners = text.match(
+        /(我记得[^.!?]{0,60}[.!?]|有一次[^.!?]{0,60}[.!?]|那天[^.!?]{0,60}[.!?]|后来[^.!?]{0,60}[.!?]|那之后[^.!?]{0,60}[.!?])/gi
+      ) || [];
+      if (storyOpeners.length < 3) {
+        D9 = 80; // 芒格风格不以故事开场为主，默认80分
+      } else {
+        const uniqueOpeners = new Set(storyOpeners.map(o => o.slice(0, 8)));
+        const variety = uniqueOpeners.size / Math.max(storyOpeners.length, 1);
+        D9 = Math.min(100, Math.max(50, Math.round(lerp(variety, 0.05, 0.8, 50, 100))));
+      }
     } else {
       const storyOpeners = text.match(
         /(我记得[^.!?]{0,60}[.!?]|有一次[^.!?]{0,60}[.!?]|那天[^.!?]{0,60}[.!?]|后来[^.!?]{0,60}[.!?]|那之后[^.!?]{0,60}[.!?])/gi
@@ -1118,12 +1145,14 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
   }
 
   // ============================================================
-  // D10: 名字一致性 (权重 10%) —— 新增
+  // D10: 名字一致性 (权重 5%) —— 默认80分宽容处理
   // 同一动物名全文贯穿=100分，出现2种不同名字=0分
   // ============================================================
-  let D10 = 50; // 默认中等（避免零分惩罚）
+  let D10 = 80; // 默认80分（宽容处理）
   // 大国博弈/Bo Yi：默认80分，不因名字检测失败而扣分
   if (detectedNiche === 'great_power_game') D10 = 80;
+  // 金融投资/芒格：内容以人名和机构名为主，宽容处理
+  if (detectedNiche === 'finance_crypto') D10 = 80;
   if (lang_ === 'en') {
     // 英文排除列表：所有句首大写的普通英文词（非宠物名）
     const ENGLISH_STOPWORDS = new Set([
@@ -1208,6 +1237,8 @@ export function detectAiFeatures(text: string, lang?: string, nicheType?: NicheT
     // 大国博弈/Bo Yi（中文）：地缘政治内容不使用宠物名，跳过宠物名检测，直接给满分
     if (detectedNiche === 'great_power_game') {
       D10 = 100;
+    } else if (detectedNiche === 'finance_crypto') {
+      D10 = 80; // 金融投资内容以人名/机构名/股票名为主，跳过宠物名检测，宽容处理
     } else if (detectedNiche === 'news') {
       D10 = 100;
       // 中文章检测宠物名一致性

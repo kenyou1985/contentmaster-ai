@@ -825,9 +825,9 @@ const ANTI_AI_POLISH_PROMPT_AGGRESSIVE_TEMPLATE_EN = `You are a deep rewrite edi
 - ❌ Output the original text unchanged
 
 ## OUTPUT REQUIREMENTS
-- **Length: within ±10% of original**
+- **Length: MUST be ≥ original length (do NOT shorten)**
 - **Every sentence from the input MUST appear in the output**
-- Preserve ALL original meaning and details
+- **Preserve ALL original meaning, details, and sentence count**
 
 Text to rewrite:
 
@@ -923,8 +923,8 @@ export async function polishTextForAntiAi(
   while (attempt < MAX_RETRY) {
     attempt++;
 
+    let polished = '';
     try {
-      let polished = '';
 
       // 构造 prompt
       let currentPrompt: string;
@@ -945,17 +945,27 @@ export async function polishTextForAntiAi(
       }
 
       const isEnglish = lang === 'en';
+      // 强化版指令：明确禁止删除任何内容，必须完整保留原文所有句子
+      const preserveMandatory = '【强制要求】禁止删除任何句子！原文有多少句，输出必须保留多少句！禁止缩写、禁止合并、禁止省略！';
       const systemInstruction = attempt === 1
         ? (
           isEnglish
-            ? 'You are a content de-AI editor. Rewrite the text to sound more human: (1) Replace formal AI template words with natural ones. (2) Vary sentence structure — mix long and short sentences, change opening words. (3) Add natural spoken markers: "honestly", "you know", "I mean", "actually", "well", "basically". (4) Do NOT delete any original content. Keep all sentences. Length must be within ±10% of original.' + (petNameConstraint ? ` | 宠物名铁律：全文宠物统一叫「${petNameConstraint.canonicalName}」，禁止换成其他名字。` : '')
-            : 'You are a content de-AI editor. Deeply rewrite the text, replace template words, add human colloquial features, do not delete original content.' + (petNameConstraint ? ` | 宠物名铁律：全文宠物统一叫「${petNameConstraint.canonicalName}」，禁止换成其他名字。` : '')
+            ? `${preserveMandatory} You are a content de-AI editor. Rewrite to sound human: (1) Replace formal AI template words with natural ones. (2) Vary sentence structure — mix long and short sentences. (3) Add spoken markers: "honestly", "you know", "I mean", "actually", "well", "basically". (4) NEVER delete content. Keep ALL original sentences. Length must be ≥ original length.` + (petNameConstraint ? ` | 宠物名铁律：全文宠物统一叫「${petNameConstraint.canonicalName}」，禁止换成其他名字。` : '')
+            : `${preserveMandatory} 你是内容去AI味编辑。重写文本使其更有人味：(1) 替换正式AI模板词为自然词。(2) 变化句式——混合长短句。(3) 添加口语词。(4) 禁止删除任何内容！必须保留原文所有句子！输出字数必须 ≥ 原文字数！` + (petNameConstraint ? ` | 宠物名铁律：全文宠物统一叫「${petNameConstraint.canonicalName}」，禁止换成其他名字。` : '')
         )
         : (
           isEnglish
-            ? 'You are a deep rewrite editor. Must thoroughly rewrite: (1) Replace all formal words. (2) Vary sentence structure significantly. (3) Add at least 5 colloquial markers. (4) NEVER delete original content — every sentence must be preserved.' + (petNameConstraint ? ` | 宠物名铁律：全文宠物统一叫「${petNameConstraint.canonicalName}」，禁止换成其他名字。` : '')
-            : 'You are a deep rewrite editor. Must thoroughly rewrite the text, add more colloquial words.' + (petNameConstraint ? ` | 宠物名铁律：全文宠物统一叫「${petNameConstraint.canonicalName}」，禁止换成其他名字。` : '')
+            ? `${preserveMandatory} Deep rewrite editor: (1) Replace all formal words. (2) Vary sentence structure significantly. (3) Add at least 5 colloquial markers. (4) NEVER delete any content — EVERY sentence from the original MUST appear in the output. Output must be ≥ original length.` + (petNameConstraint ? ` | 宠物名铁律：全文宠物统一叫「${petNameConstraint.canonicalName}」，禁止换成其他名字。` : '')
+            : `${preserveMandatory} 深度重写编辑：(1) 替换所有模板词。(2) 显著变化句式。(3) 添加口语词。(4) 禁止删除任何内容——原文每个句子都必须保留在输出中！输出字数必须 ≥ 原文字数！` + (petNameConstraint ? ` | 宠物名铁律：全文宠物统一叫「${petNameConstraint.canonicalName}」，禁止换成其他名字。` : '')
         );
+
+      // 优先使用调用者传入的 maxTokens（已在 Tools.tsx 中用 calcMaxTokens 精确计算）
+      // 若未传入，则使用基于输入长度的保守默认值
+      const [modelNameFromArgs, existingOptions] = modelArgs as [string | undefined, { maxTokens?: number; [key: string]: unknown } | undefined];
+      const callerMaxTokens = existingOptions?.maxTokens;
+      const dynamicMaxTokens = Math.ceil(originalLen * 1.5) + 512;
+      const effectiveMaxTokens = callerMaxTokens ?? dynamicMaxTokens;
+      const mergedOptions = { ...existingOptions, maxTokens: effectiveMaxTokens };
 
       await streamContentGeneration(
         currentPrompt,
@@ -964,7 +974,8 @@ export async function polishTextForAntiAi(
           polished += chunk;
           onChunk?.(polished);
         },
-        ...modelArgs
+        modelNameFromArgs,
+        mergedOptions
       );
 
       const result = (polished || '').trim();

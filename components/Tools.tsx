@@ -387,13 +387,23 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   /** 深度洗稿 / 深度扩写（含同面板 5 段流）：Yunwu OpenAI 兼容流式主备模型 */
   const DEEP_REWRITE_STREAM_PRIMARY = 'gpt-5.4-mini';
   const DEEP_REWRITE_STREAM_FALLBACK = 'gemini-3-flash-preview';
-  const deepRewriteStreamOptions: StreamContentOptions = {
+  const buildDeepRewriteStreamOptions = (maxTokens: number): StreamContentOptions => ({
     fallbackModelOnStall: DEEP_REWRITE_STREAM_FALLBACK,
-  };
-  const deepRewriteStreamModelArgs: [string | undefined, StreamContentOptions | undefined] =
+    maxTokens,
+  });
+  const deepRewriteStreamModelArgs = (maxTokens: number): [string | undefined, StreamContentOptions | undefined] =>
     provider === 'yunwu'
-      ? [DEEP_REWRITE_STREAM_PRIMARY, deepRewriteStreamOptions]
-      : [undefined, undefined];
+      ? [DEEP_REWRITE_STREAM_PRIMARY, buildDeepRewriteStreamOptions(maxTokens)]
+      : [undefined, { maxTokens }];
+
+  /**
+   * 根据目标输出长度计算合适的 maxTokens
+   * 中文约 1.5 tokens/字符（留足 buffer），洗稿/去AI味输出 ≈ 输入
+   * 使用 1.5 倍确保模型有足够空间生成完整内容，不会因 buffer 不足而提前截断
+   */
+  const calcMaxTokens = (targetOutputChars: number): number => {
+    return Math.ceil(targetOutputChars * 1.5) + 512;
+  };
 
   /**
    * 洗稿/润色字数策略（相对原文去空白后的字符数）：
@@ -2329,10 +2339,10 @@ ${inputSection}
 2. **禁止课程编号标记**：⚠️ 全文禁止出现"第一节课："、"第二节课："..."第九节课："等固定标签——这是导致重复的根源！改为自然段落过渡，每节之间用过渡句承接。
 3. **禁止重复开场白**：全文只允许出现一次"各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。"，且只在文章最开头出现一次。
 4. **禁止重复过渡语**：全文只允许出现一次"好了，我们开始上课。"，放在引子与正文之间。
-5. **禁止重复自我纠正故事**：全文只允许出现一次"我年轻时候也铁齿，有年交运日偏要去爬山，结果摔了一跤，膝盖肿了半个月。"
-6. **语气词限量**："我跟你讲""你听懂没有""说真的"全文各不超过3次；"我讲到这里，你可能觉得""你们不要笑"全文各不超过2次。
-7. **案例限量**：全文只使用1-2个案例，要有具体人名/地名/细节，禁止泛化（如"属龙中年男人"改为具体描述）。
-8. **禁止提前收尾**：未满7500字前禁止出现"下课""下期再见""今天就讲到这"等收尾语。
+5. **禁止重复自我纠正故事**：全文只允许出现一次"我年轻时候也铁齿，有年交运日偏要去爬山，结果摔了一跤，膝盖肿了半个月。"（禁止在其他节重复出现同一故事）
+6. **语气词限量**："我跟你讲""你听懂没有""说真的"全文各不超过2次；"我讲到这里，你可能觉得""你们不要笑""我年轻时候也铁齿"全文各只出现1次。
+7. **案例限量**：全文只使用1个案例，要有具体人名/地名/细节，禁止泛化。爬山故事只写一次，不要在多处重复。
+8. **禁止提前收尾**：未满7000字前禁止出现"下课""下期再见""今天就讲到这"等收尾语。
 9. **结尾风格**：结尾用倪海厦霸气收尾，如"好了，我话讲完了，信不信随你。下课！"——禁止"晚安"。
 10. **开场白**：必须以"各位老友们好，欢迎来到我的频道，我是你们的老朋友倪海厦。"开头，引子结束后原样输出"好了，我们开始上课。"。
 ` : '';
@@ -3737,7 +3747,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
           outline += chunk;
           setOutlineText(outline);
         },
-        ...deepRewriteStreamModelArgs
+        ...deepRewriteStreamModelArgs(calcMaxTokens(600))
       );
 
       const parsed = parseOutlineToFiveItems(outline || raw);
@@ -3920,7 +3930,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
     }
   }
 
-  const handleRegenerateSingleSegment = async (idx: number, forcedSource?: string): Promise<string> => {
+  const handleRegenerateSingleSegment = async (idx: number, forcedSource?: string, forcedMode?: ToolMode): Promise<string> => {
     const source = (forcedSource ?? rewriteSegments[idx] ?? '').trim();
     if (!apiKey || !source) {
       toast.warning('该分段为空，无法重新生成');
@@ -3928,7 +3938,9 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
     }
 
     const segSource = source;
-    const sourceCharCount = segSource.replace(/\s+/g, '').length;
+      const effectiveMode = forcedMode ?? mode;
+
+      const sourceCharCount = segSource.replace(/\s+/g, '').length;
     setSegmentGenerating(prev => prev.map((v, i) => (i === idx ? true : v)));
     appendTerminal(`开始生成第 ${idx + 1} 段...`);
 
@@ -3936,18 +3948,18 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
       initializeGemini(apiKey, { provider });
       let out = '';
       const modeText =
-        mode === ToolMode.EXPAND ? '深度扩写' : mode === ToolMode.POLISH ? '润色优化' : '深度洗稿';
+        effectiveMode === ToolMode.EXPAND ? '深度扩写' : effectiveMode === ToolMode.POLISH ? '润色优化' : '深度洗稿';
       const targetLang = getRewriteTargetLanguageInstruction(segSource);
       const segmentOutline = outlineItems[idx] || `第${idx + 1}段`;
       const rewriteRange = rewriteRangeMap[rewriteLengthMode] || rewriteRangeMap.balanced;
       const expandRange = expandRangeMap[rewriteLengthMode] || expandRangeMap.balanced;
       const rewritePolicy = rewriteRangeMap[rewriteLengthMode] || rewriteRangeMap.balanced;
       const rewriteTargetMin =
-        mode === ToolMode.EXPAND
+        effectiveMode === ToolMode.EXPAND
           ? (sourceCharCount > 0 ? Math.round(sourceCharCount * expandRange.min) : 40)
           : Math.max(Math.round(sourceCharCount * rewritePolicy.segmentMin), 40);
       const rewriteTargetMax =
-        mode === ToolMode.EXPAND
+        effectiveMode === ToolMode.EXPAND
           ? Math.max(
               sourceCharCount > 0 ? Math.round(sourceCharCount * expandRange.max) : 80,
               rewriteTargetMin + 10
@@ -4032,27 +4044,43 @@ ${niche === NicheType.TCM_METAPHYSICS ? tcmSegmentConstraint : `【赛道】${ni
 【字数要求（去空白计字）】${rewriteTargetMin} ~ ${rewriteTargetMax} ${charUnit}
 - 不得照抄原句，不得只换同义词
 - 保留核心中心思想，但表达必须重构`}
-- ${mode === ToolMode.EXPAND
+- ${effectiveMode === ToolMode.EXPAND
     ? `【深度扩写 · 扩写强度策略】该段原文约 ${sourceCharCount} 字，输出必须控制在 ${rewriteTargetMin}~${rewriteTargetMax} 字，约为原文 ${expandPctMin}%~${expandPctMax}% 体量（约 ${expandRange.min}~${expandRange.max} 倍），且必须明显长于原文`
     : `输出字数（去空白计字）控制在 ${rewriteTargetMin} ~ ${rewriteTargetMax} 字（${modeText}，按当前洗稿字数策略执行）`}
 ${niche !== NicheType.TCM_METAPHYSICS ? `- 必须完整收尾，结尾句闭环` : ''}
 - 输出字数必须在 ${rewriteTargetMin} ~ ${rewriteTargetMax} ${charUnit} 之间，超出上限算失败！
 - 只输出正文，不要解释，不要标题`;
+      // 强制字数上限（按非空白字符计）：目标上限 * 1.3，安全截止不截断
+      const hardCap = Math.ceil(rewriteTargetMax * 1.3);
       await streamContentGeneration(
         prompt,
         '你是资深多语种内容总编，必须深度重写并满足长度与维度约束。',
         (chunk) => {
-          out += chunk;
+          const nonWhiteAcc = (out || '').replace(/\s+/g, '');
+          const remaining = hardCap - nonWhiteAcc.length;
+          if (remaining <= 0) return;
+          const nonWhiteChunk = (chunk || '').replace(/\s+/g, '');
+          if (nonWhiteChunk.length <= remaining) {
+            out += chunk;
+          } else {
+            // 按非空白字符数截断，防止截断到 char 中间导致乱码
+            let ci = 0;
+            let count = 0;
+            for (ci = 0; ci < (chunk || '').length && count < remaining; ci++) {
+              if (!/\s/.test(chunk[ci])) count++;
+            }
+            out += (chunk || '').slice(0, ci);
+          }
           setSegmentOutputs(prev => prev.map((v, i) => (i === idx ? out : v)));
         },
-        ...deepRewriteStreamModelArgs
+        ...deepRewriteStreamModelArgs(calcMaxTokens(hardCap))
       );
 
       let finalOut = out.trim();
       const segMin = rewriteTargetMin;
       const segMax = rewriteTargetMax;
 
-      if (mode === ToolMode.EXPAND) {
+      if (effectiveMode === ToolMode.EXPAND) {
         const maxExpandPasses = 3;
         let segLen = finalOut.replace(/\s+/g, '').length;
         let pass = 0;
@@ -4076,14 +4104,19 @@ ${segSource}
 
 【当前成稿】
 ${finalOut}`;
+          const expandHardCap = Math.ceil(segMax * 1.3);
           await streamContentGeneration(
             deepenPrompt,
             '你是深度扩写编辑，只在成稿上增量扩写直至字数达标。',
             (chunk) => {
-              expanded += chunk;
+              const accLen = (expanded || '').replace(/\s+/g, '').length;
+              const remaining = expandHardCap - accLen;
+              if (remaining <= 0) return;
+              const chunkLen = (chunk || '').replace(/\s+/g, '').length;
+              expanded += chunkLen <= remaining ? chunk : chunk.slice(0, Math.max(0, remaining));
               setSegmentOutputs(prev => prev.map((v, i) => (i === idx ? expanded : v)));
             },
-            ...deepRewriteStreamModelArgs
+            ...deepRewriteStreamModelArgs(calcMaxTokens(expandHardCap))
           );
           if (expanded.trim()) finalOut = expanded.trim();
           segLen = finalOut.replace(/\s+/g, '').length;
@@ -4106,10 +4139,14 @@ ${finalOut}`;
             compressExpandPrompt,
             '你是精简编辑，只做保真压缩以回到目标区间。',
             (chunk) => {
-              compressed += chunk;
+              const accLen = (compressed || '').replace(/\s+/g, '').length;
+              const remaining = segMax - accLen;
+              if (remaining <= 0) return;
+              const chunkLen = (chunk || '').replace(/\s+/g, '').length;
+              compressed += chunkLen <= remaining ? chunk : chunk.slice(0, Math.max(0, remaining));
               setSegmentOutputs(prev => prev.map((v, i) => (i === idx ? compressed : v)));
             },
-            ...deepRewriteStreamModelArgs
+            ...deepRewriteStreamModelArgs(calcMaxTokens(segMax))
           );
           if (compressed.trim()) finalOut = compressed.trim();
           segLen = finalOut.replace(/\s+/g, '').length;
@@ -4136,16 +4173,17 @@ ${finalOut}`;
               expanded += chunk;
               setSegmentOutputs(prev => prev.map((v, i) => (i === idx ? expanded : v)));
             },
-            ...deepRewriteStreamModelArgs
+            ...deepRewriteStreamModelArgs(calcMaxTokens(rewriteTargetMax))
           );
           if (expanded.trim()) finalOut = expanded.trim();
           segLen = finalOut.replace(/\s+/g, '').length;
         }
 
-        // 压缩：超出即触发，最多3次
+        // 压缩：超出即触发，最多2次；2次后切换补强扩写（而非继续压短导致内容被过度删除）
         if (segLen > segMax) {
           let compressPass = 0;
-          const maxCompressPasses = 3;
+          const maxCompressPasses = 2;
+          let lastCompressed = finalOut;
           while (segLen > segMax && compressPass < maxCompressPasses) {
             compressPass++;
             const targetCompress = Math.ceil((segLen - segMax) / segMax * 100);
@@ -4181,16 +4219,47 @@ ${finalOut}
                 compressed += chunk;
                 setSegmentOutputs(prev => prev.map((v, i) => (i === idx ? compressed : v)));
               },
-              ...deepRewriteStreamModelArgs
+              ...deepRewriteStreamModelArgs(calcMaxTokens(rewriteTargetMax))
             );
             if (compressed.trim()) {
-              finalOut = compressed.trim();
+              lastCompressed = compressed.trim();
+              finalOut = lastCompressed;
               segLen = finalOut.replace(/\s+/g, '').length;
             }
           }
 
+          // 压缩2次后仍未达标 → 切换为补强扩写：保留较长的那次结果，在此基础上扩展至达标
           if (segLen > segMax && compressPass >= maxCompressPasses) {
-            appendTerminal(`⚠️ 第 ${idx + 1} 段压缩${maxCompressPasses}次后仍偏长（${segLen} > ${segMax}），已保留原段，可手动调整。`);
+            appendTerminal(`⚠️ 第 ${idx + 1} 段压缩${maxCompressPasses}次后仍偏长（${segLen} > ${segMax}），切换补强扩写而非继续压短...`);
+            // 保留 lastCompressed（已精简的版本），在其基础上做补强扩写
+            const expandAfterCompressPrompt = `请在"当前精简后成稿"基础上做补强扩写，使其达到目标字数。
+
+要求：
+1) 输出字数控制在 ${segMin}~${segMax} 字
+2) 保留当前成稿核心内容，只做适度扩展（增加细节/过渡/案例）
+3) 不得推翻精简后的结构，不得删除任何已有内容
+4) 结尾必须完整闭环
+5) 只输出正文，不要解释
+
+【原文分段】
+${segSource}
+
+【当前精简成稿】
+${finalOut}`;
+            let expandedAfterCompress = '';
+            await streamContentGeneration(
+              expandAfterCompressPrompt,
+              '你是补强扩写编辑，在精简稿基础上适度扩展至目标字数。',
+              (chunk) => {
+                expandedAfterCompress += chunk;
+                setSegmentOutputs(prev => prev.map((v, i) => (i === idx ? expandedAfterCompress : v)));
+              },
+              ...deepRewriteStreamModelArgs(calcMaxTokens(rewriteTargetMax))
+            );
+            if (expandedAfterCompress.trim()) {
+              finalOut = expandedAfterCompress.trim();
+              segLen = finalOut.replace(/\s+/g, '').length;
+            }
           }
         }
 
@@ -4260,7 +4329,7 @@ ${finalOut}
       return;
     }
 
-    const generatedList = await Promise.all(indexes.map((i) => handleRegenerateSingleSegment(i, sourceSegs[i])));
+    const generatedList = await Promise.all(indexes.map((i) => handleRegenerateSingleSegment(i, sourceSegs[i], ToolMode.EXPAND)));
     const finalSegments = [...sourceSegs];
     indexes.forEach((idx, p) => {
       const generated = (generatedList[p] || '').trim();
@@ -4317,7 +4386,15 @@ ${finalOut}
           : '';
 
       let cleanedSegmentsForMerge = [...effectiveSegments];
-      appendTerminal('开始逐段“衔接检查式清洗”（并行执行，仅检查段首/段尾衔接，不改主体）...');
+      const preCleanTotal = cleanedSegmentsForMerge.reduce((s, seg) => s + ((seg || '').replace(/\s+/g, '').length), 0);
+      // 关键修外\uff1a如果合并前总字数已低于下限\uff0c行接清洗时禁止压缩\uff0c只能轻微衔接调整
+      const skipCompressInClean = preCleanTotal < minFinalLen;
+      if (skipCompressInClean) {
+        appendTerminal(`⚠️ 合并前总字数 ${preCleanTotal} 已低于目标下限 ${minFinalLen}\uff0c行接清洗跳过压缩\uff0c直接拼接...`);
+      } else {
+        appendTerminal('开始逐段“衔接检查式清洗”（并行执行，仅检查段首/段尾衔接，不改主体）...');
+      }
+
 
       const cleanedResults = await Promise.all(
         cleanedSegmentsForMerge.map(async (segRaw, i) => {
@@ -4363,7 +4440,7 @@ ${next ? next.slice(0, 220) : '（无）'}`;
             (chunk) => {
               cleaned += chunk;
             },
-            ...deepRewriteStreamModelArgs
+            ...deepRewriteStreamModelArgs(calcMaxTokens(segMax))
           );
 
           const cleanedText = (cleaned || '').trim();
@@ -4377,7 +4454,6 @@ ${next ? next.slice(0, 220) : '（无）'}`;
             return { idx: i, text: segRaw, changed: false, note: `第 ${i + 1} 段衔接清洗超出长度边界（${segLen} -> ${cleanedLen}，边界 ${segMin}~${segMax}），已回退原段。` };
           }
 
-          return { idx: i, text: cleanedText, changed: true, note: `第 ${i + 1} 段衔接清洗完成：${segLen} -> ${cleanedLen} 字` };
           return { idx: i, text: cleanedText, changed: true, note: `第 ${i + 1} 段衔接清洗完成：${segLen} -> ${cleanedLen} 字` };
         })
       );
@@ -4433,8 +4509,11 @@ ${next ? next.slice(0, 220) : '（无）'}`;
         : '';
 
       const cleanedMerged = mergeFiveSegments(cleanedSegmentsForMerge);
-      // 非扩写模式：跳过AI合并重写，直接拼接（避免AI合并时再次增加字数）
-      if (mode !== ToolMode.EXPAND) {
+      const cleanedTotalLen = cleanedSegmentsForMerge.reduce((s, seg) => s + (seg || '').replace(/\s+/g, '').length, 0);
+      const needsStrengthen = mode !== ToolMode.EXPAND && cleanedTotalLen < sourceLen * 0.9;
+
+      // 非扩写模式：检查5段总字数是否达标，若不达标则调用补强扩写
+      if (mode !== ToolMode.EXPAND && !needsStrengthen) {
         polished = cleanedMerged;
         // 治愈心理学赛道：确保结尾有CTA引导
         if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
@@ -4444,39 +4523,90 @@ ${next ? next.slice(0, 220) : '（无）'}`;
           }
         }
         setMergedOutput(polished);
-        appendTerminal('衔接清洗完成，直接拼接（跳过AI合并重写，避免字数再次增加）。');
+        appendTerminal('衔接清洗完成，直接拼接（字数达标，跳过补强）。');
       } else {
-        // 扩写模式：保留AI合并，但加入字数上限强制约束
-        const expandMergeRule =
-          `最终成稿（去空白计字）控制在 ${minFinalLen}~${maxFinalLen} 字，对应扩写强度策略约 ${expandRange.min}~${expandRange.max} 倍全文原文（约 ${Math.round(expandRange.min * 100)}%~${Math.round(expandRange.max * 100)}% 体量），必须长于原文，并增强扩写维度（场景/情绪/细节/逻辑/对比/故事/金句/数据）`;
-        const mindfulCtaSuffix = niche === NicheType.MINDFUL_PSYCHOLOGY
-          ? `\n\n【治愈心理学赛道特判】结尾必须包含：\n1. 互动引导（至少2句，自然邀请评论）\n2. 订阅引导（固定句式）\n3. 互动引导在前，订阅引导在后`
-          : '';
-        const prompt = `请基于以下5段已清洗优化的内容，执行"无缝衔接合并"。${mindfulCtaSuffix}
+        // 补强扩写 OR EXPAND 模式：调用 AI 合并，目标是让总字数 >= 原文
+        // 补强扩写\u6a21式\uff1a\u8c03\u7528AI\u5408并\uff0c\u76ee\u6807\u662f\u8ba9\u603b\u5b57\u6570 >= \u539f\u6587\uff08\u591a\u6b21\u91cd\u8bd5\uff09
+        const strengthenMinLen = Math.max(cleanedTotalLen, Math.round(sourceLen * 0.95));
+        const strengthenMaxLen = Math.round(sourceLen * 1.10);
+        // \u91cd\u8bd5\u903b\u8f91\uff1a\u6bcf\u6b21\u8c03\u7528AI\u5c1d\u8bd5\u8fbe\u5230\u76ee\u6807\u533a\u95f4\uff0c\u5982\u672a\u8fbe\u6807\u5219\u5728\u6b64\u57fa\u7840\u4e0a\u7ee7\u7eed\u6269\u5c55\uff0c\u6700\u591a3\u6b21
+        let strengthenPolished = '';
+        let bestStrengthenResult = '';
+        let bestStrengthenLen = 0;
+        let strengthenRound = 0;
+        const maxStrengthenRounds = 3;
+        // \u6bcf\u6b21\u8c03\u7528\u7684\u76ee\u6807\u533a\u95f4\uff1a\u4ece\u5f53\u524d\u5df2\u6709\u5185\u5bb9\u7684\u957f\u5ea6\u5f00\u59cb\uff0c\u9010\u6b21\u63d0\u9ad8
+        while (strengthenRound < maxStrengthenRounds) {
+          strengthenRound++;
+          const roundMin = Math.max(strengthenPolished.replace(/\s+/g, '').length, Math.round(sourceLen * 0.95));
+          const roundMax = strengthenMaxLen;
+          const mergeHardCap = Math.ceil(roundMax * 2.5);
+          appendTerminal(`\u884c\u63a5\u6e05\u6d17 \u2192 \u8865\u5f3a\u6269\u5199\u5408\u5e76\uff08\u7b2c ${strengthenRound}/${maxStrengthenRounds} \u6b21\uff09\uff1a\u76ee\u6807 ${roundMin}~${roundMax} \u5b57\uff0c\u5f53\u524d ${strengthenPolished.replace(/\s+/g, '').length} \u5b57...`);
+          const strengthenPrompt = strengthenRound === 1
+            ? `\u8bf7\u57fa\u4e8e\u4ee5\u4e0b\u5df2\u6e05\u6d17\u76845\u6bb5\u5185\u5bb9\uff0c\u8fdb\u884c\u8865\u5f3a\u6269\u5199\u5408\u5e76\uff0c\u6700\u7ec8\u603b\u5b57\u6570\u5fc5\u987b >= ${roundMin} \u5b57\uff08\u539f\u6587\u7ea6 ${sourceLen} \u5b57\uff09\u3002
 
-【5段待合并内容】
-${cleanedSegmentsForMerge.map((seg, i) => `【第${i + 1}段】\n${seg}\n---`).join('\n')}
+\u3010\u5df2\u6709\u5185\u5bb9\u3011
+${strengthenPolished || cleanedSegmentsForMerge.map((seg, i) => `\u3010\u7b2c${i + 1}\u6bb5\u3011
+${seg}
+---`).join('\n')}
 
-要求：
-1) 保留每段核心信息，不丢观点，必须完整包含全部5段内容
-2) 在段间补上承上启下过渡句，让全文连贯自然
-3) 统一口吻与时态
-4) 输出语言：${targetLang}
-5) ${expandMergeRule}
-6) 只做衔接清洗与必要删改，不得推翻5段结构重写
-7) 必须完整输出全部5段内容，不得遗漏任何一段
-8) ⚠️ 输出字数不得超出 ${maxFinalLen} 字！超出则任务失败！
-9) 只输出最终正文，不要解释`;
+\u8981\u6c42\uff1a
+1) \u4fdd\u7559\u6bcf\u6bb5\u6838\u5fc3\u4fe1\u606f\uff0c\u4e0d\u4e22\u89c2\u70b9\uff0c\u5fc5\u987b\u5b8c\u6574\u5305\u542b\u51685\u6bb5\u5185\u5bb9
+2) \u5728\u6bb5\u95f4\u8865\u4e0a\u627f\u4e0a\u542f\u4e0b\u8fc7\u6e21\u53e5\uff0c\u8ba9\u5168\u6587\u8fde\u8d2f\u81ea\u7136
+3) \u7ed9\u6bcf\u6bb5\u589e\u52a0\u66f4\u591a\u7ec6\u8282\u3001\u6848\u4f8b\u3001\u8bdd\u9898\u548c\u8fc7\u6e21\uff0c\u8ba9\u5185\u5bb9\u66f4\u5145\u5b9e
+4) \u8f93\u51fa\u8bed\u8a00\uff1a${targetLang}
+5) \u6700\u7ec8\u603b\u5b57\u6570\uff08\u53bb\u7a7a\u767d\uff09\u5fc5\u987b\u5728 ${roundMin}~${roundMax} \u5b57\u4e4b\u95f4\u2014\u2014\u4e0d\u5f97\u4f4e\u4e8e ${roundMin} \u5b57\uff01
+6) \u5fc5\u987b\u5b8c\u6574\u8f93\u51fa\u51685\u6bb5\u5185\u5bb9\uff0c\u4e0d\u5f97\u9057\u6f0c\u4efb\u4f55\u4e00\u6bb5
+7) \u53ea\u8f93\u51fa\u6b63\u6587\uff0c\u4e0d\u8981\u89e3\u91ca`
+            : `\u8bf7\u5728\u300c\u5f53\u524d\u6210\u7a3f\u300d\u5e95\u7840\u4e0a\u7ee7\u7eed\u6269\u5199\uff0c\u6bcf\u6bb5\u81f3\u5c11\u518d\u586b\u51452-3\u4e2a\u7ef4\u5ea6\u7684\u5185\u5bb9\uff0c\u76ee\u6807\u603b\u5b57\u6570 >= ${roundMin} \u5b57\u3002
 
-        await streamContentGeneration(
-          prompt,
-          '你是专业总编，请基于清洗后的5段做高连贯合并。',
-          (chunk) => {
-            polished += chunk;
-            if (polished.trim()) setMergedOutput(polished);
-          },
-          ...deepRewriteStreamModelArgs
-        );
+\u3010\u5f53\u524d\u6210\u7a3f\u3011
+${strengthenPolished}
+
+\u8981\u6c42\uff1a
+1) \u4fdd\u6301\u7b56\u7565\u4e0d\u53d8\uff0c\u5728\u6b64\u57fa\u7840\u4e0a\u6bcf\u6bb5\u5185\u5bb9\u7ee7\u7eed\u6269\u5145
+2) \u589e\u52a0\u66f4\u591a\u7ec6\u8282\u3001\u6848\u4f8b\u3001\u6570\u636e\u3001\u8bdd\u9898\u548c\u8fc7\u6e21\uff0c\u8ba9\u5185\u5bb9\u66f4\u5145\u5b9e
+3) \u8f93\u51fa\u5b57\u6570\uff08\u53bb\u7a7a\u767d\uff09\u5fc5\u987b >= ${roundMin} \u5b57\uff0c\u4e0d\u5f97\u4f4e\u4e8e ${roundMin} \u5b57
+4) \u53ea\u8f93\u51fa\u6b63\u6587\uff0c\u4e0d\u8981\u89e3\u91ca`;
+          let roundResult = '';
+          await streamContentGeneration(
+            strengthenPrompt,
+            '\u4f60\u662f\u4e13\u4e1a\u603b\u7f16\uff0c\u8bf7\u5728\u5df2\u6709\u5185\u5bb9\u4e0a\u505a\u8865\u5f3a\u6269\u5199\u5408\u5e76\uff0c\u786e\u4fdd\u603b\u5b57\u6570\u8fbe\u6807\u3002',
+            (chunk) => {
+              roundResult += chunk;
+            },
+            ...deepRewriteStreamModelArgs(calcMaxTokens(mergeHardCap))
+          );
+          const roundLen = (roundResult || '').replace(/\s+/g, '').length;
+          appendTerminal(`  \u7b2c ${strengthenRound} \u6b21\u8fd4\u56de ${roundLen} \u5b57\uff0c\u76ee\u6807 ${roundMin} \u5b57...`);
+          if (roundLen > bestStrengthenLen) {
+            bestStrengthenResult = roundResult || '';
+            bestStrengthenLen = roundLen;
+          }
+          // \u5982\u679c\u8fd4\u56de\u7684\u5b57\u6570\u5df2\u8fbe\u5230\u76ee\u6807\u533a\u95f4\uff0c\u63a5\u53d7\u7ed3\u679c
+          if (roundLen >= roundMin) {
+            strengthenPolished = roundResult.trim();
+            appendTerminal(`  \u7b2c ${strengthenRound} \u6b21\u8fbe\u6807\uff01${roundLen} \u5b57 >= ${roundMin} \u5b57\uff0c\u5b8c\u6210\u8865\u5f3a\u3002`);
+            break;
+          } else if (strengthenRound >= maxStrengthenRounds) {
+            // \u6700\u591a\u91cd\u8bd5\u540e\u4ecd\u672a\u8fbe\u6807\uff0c\u4f7f\u7528\u6700\u957f\u7684\u7ed3\u679c
+            strengthenPolished = bestStrengthenResult.trim();
+            appendTerminal(`\u26a0\ufe0f \u8865\u5f3a\u6269\u5199${maxStrengthenRounds}\u6b21\u540e\u672a\u8fbe\u5230\u76ee\u6807\u533a\u95f4\uff08${bestStrengthenLen} \u5b57 < ${roundMin}\uff09\uff0c\u4f7f\u7528\u6700\u957f\u7ed3\u679c ${bestStrengthenLen} \u5b57\u3002`);
+          } else {
+            // \u672a\u8fbe\u6807\uff0c\u5c06\u5f53\u524d\u7ed3\u679c\u5408\u5e76\u5185\u5bb9\u540e\u7ee7\u7eed\u91cd\u8bd5
+            if (roundResult && roundResult.trim().length > 0) {
+              strengthenPolished = (strengthenPolished + '\n\n' + roundResult).trim();
+            }
+          }
+        }
+        const strengthenLen = strengthenPolished.replace(/\s+/g, '').length;
+        if (strengthenLen >= strengthenMinLen) {
+          polished = strengthenPolished.trim();
+          appendTerminal(`衔接清洗完成，补强扩写合并完成（${strengthenLen} 字 >= ${strengthenMinLen} 字）。`);
+        } else {
+          polished = cleanedMerged;
+          appendTerminal(`⚠️ 补强扩写未达标（${strengthenLen} < ${strengthenMinLen}），保留拼接结果（${cleanedTotalLen} 字）。`);
+        }
       }
 
 if (polished.trim()) {
@@ -4518,10 +4648,14 @@ ${finalText}`;
               strengthenPrompt,
               '你是增量扩写编辑，只在成稿末尾追加新内容，直至全文达标。',
               (chunk) => {
-                pass2 += chunk;
+                const accLen = (pass2 || '').replace(/\s+/g, '').length;
+                const remaining = maxFinalLenExpand - accLen;
+                if (remaining <= 0) return;
+                const chunkLen = (chunk || '').replace(/\s+/g, '').length;
+                pass2 += chunkLen <= remaining ? chunk : chunk.slice(0, Math.max(0, remaining));
                 if (pass2.trim()) setMergedOutput(pass2);
               },
-              ...deepRewriteStreamModelArgs
+              ...deepRewriteStreamModelArgs(calcMaxTokens(maxFinalLenExpand))
             );
             if (pass2.trim()) finalText = pass2.trim();
             const newLen = finalText.replace(/\s+/g, '').length;
@@ -4690,7 +4824,7 @@ ${finalText}`;
                 }
               },
             },
-            ...deepRewriteStreamModelArgs
+            ...deepRewriteStreamModelArgs(calcMaxTokens(Math.max(mergedLen, 1000)))
           );
           antiAiSuccess = antiAiPolishingResult.success;
 
@@ -4725,7 +4859,12 @@ ${finalText}`;
             const cleanedLen = (cleanedPolish || '').replace(/\s+/g, '').length;
             appendTerminal(`[去AI味] 清理残留后长度: ${cleanedLen} 字`);
 
+            // 关键修外\uff1a如果去AI味后字数重降\uff08<合并结果的70%\uff09\uff0c保畏合并结果\uff0c跳过去AI味清洗
+            if (cleanedLen < mergedLen * 0.7) {
+              appendTerminal(`\u26a0\ufe0f 去AI味后字数重降\uff08${cleanedLen} < ${mergedLen}\uff09\uff0c保畏合并结果\uff0c跳过去AI味清洗。`);
+            } else {
             finalText = cleanedPolish;
+            }
             setMergedOutput(finalText);
             appendTerminal('[去AI味] ✅ 清洗完成');
             antiAiSuccess = true;
@@ -4830,7 +4969,8 @@ ${finalText}`;
       // 自动检测输入语言，用于去AI味清洗
       const detectedLang2 = detectToolsInputLanguage(mergedOutput);
       const outputLang2 = detectedLang2.includes('English') ? 'en' : 'zh';
-      
+      const reAntiAiMergedLen = (mergedOutput || '').replace(/\s+/g, '').length;
+
       antiAiPolishingResult = await polishTextForAntiAi(
         mergedOutput,
         {
@@ -4842,7 +4982,8 @@ ${finalText}`;
             setMergedOutput(antiAiPolished);
           },
         },
-        ...deepRewriteStreamModelArgs
+        undefined,
+        { maxTokens: calcMaxTokens(Math.max(reAntiAiMergedLen, 1000)) }
       );
       antiAiSuccess = antiAiPolishingResult.success;
 

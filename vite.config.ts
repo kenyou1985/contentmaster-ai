@@ -1,6 +1,7 @@
 import path from 'path';
 import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
+import compression from 'vite-plugin-compression';
 import { buildMetubeCookiesMultipart } from './api/metube/_multipartCookies';
 
 /**
@@ -341,12 +342,26 @@ export default defineConfig(({ mode }) => {
       },
       plugins: [
         react(),
+        compression({ algorithm: 'gzip', threshold: 1024 }),
+        compression({ algorithm: 'brotliCompress', threshold: 1024 }),
         imageProxyDevPlugin(),
         metubeProxyDevPlugin({
           metubeUrl,
           metubeYtdlOverridesJson,
         }),
       ],
+      build: {
+        rollupOptions: {
+          output: {
+            manualChunks: {
+              'vendor-react': ['react', 'react-dom'],
+              'vendor-lucide': ['lucide-react'],
+              'vendor-utils': ['jszip'],
+            },
+          },
+        },
+        chunkSizeWarningLimit: 600,
+      },
       define: {
         'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
         'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)

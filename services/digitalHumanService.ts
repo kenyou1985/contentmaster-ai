@@ -24,6 +24,9 @@ const DH_AUDIO_NODE_ID = '4';
 /** 全局并发上限 */
 const MAX_CONCURRENT_TASKS = 20;
 
+/** 分批打包：每批最多多少个视频文件 */
+export const BATCH_ZIP_SIZE = 5;
+
 /** 轮询配置 */
 const POLL_INTERVAL_MS = 20000;   // 20 秒
 const POLL_MAX_MS = 30 * 60 * 1000;  // 30 分钟
@@ -606,22 +609,60 @@ export function splitTextByLanguage(
 // 批量打包下载
 // ============================================================
 
+/** 单个文件下载进度回调 */
+export type DownloadProgressCallback = (info: {
+  filename: string;
+  loaded: number;
+  total: number;
+  /** 所有文件的整体进度（0-100） */
+  overallPercent: number;
+  /** 当前正在处理的文件索引 */
+  currentIndex: number;
+  totalFiles: number;
+  /** 'downloading' | 'zipping' | 'done' */
+  phase: 'downloading' | 'zipping' | 'done';
+  /** 累计已下载字节数 */
+  downloadedBytes: number;
+  /** 预估总字节数（已知时） */
+  totalBytes?: number;
+}) => void;
+
 /**
- * 将多个视频 URL 打包为 ZIP
+ * 将多个视频 URL 打包为单个 ZIP
  */
 export async function packVideosToZip(
   items: Array<{ url: string; filename: string }>,
   zipFilename = '数字人对口型视频.zip',
-  onProgress?: (loaded: number, total: number) => void
+  onProgress?: DownloadProgressCallback
 ): Promise<Blob> {
   const { default: JSZip } = await import('jszip');
 
   const zip = new JSZip();
   const folder = zip.folder('数字人对口型');
 
+  let downloadedBytes = 0;
+  let totalBytes: number | undefined;
+  const fileSizes: number[] = [];
+
   const results = await Promise.allSettled(
-    items.map(async ({ url, filename }) => {
-      const res = await fetch(url);
+    items.map(async ({ url, filename }, idx) => {
+      const res = await fetch(url, {
+        onProgress: (event) => {
+          if (event.lengthComputable) {
+            onProgress?.({
+              filename,
+              loaded: event.loaded,
+              total: event.total,
+              overallPercent: -1,
+              currentIndex: idx,
+              totalFiles: items.length,
+              phase: 'downloading',
+              downloadedBytes,
+              totalBytes,
+            });
+          }
+        },
+      });
       if (!res.ok) {
         throw new Error(`HTTP ${res.status} for ${filename}: ${url}`);
       }
@@ -630,6 +671,20 @@ export async function packVideosToZip(
         throw new Error(`视频文件过小 (${blob.size}B)，可能下载失败: ${filename}`);
       }
       folder?.file(filename, blob);
+      downloadedBytes += blob.size;
+      fileSizes.push(blob.size);
+      totalBytes = downloadedBytes;
+      onProgress?.({
+        filename,
+        loaded: blob.size,
+        total: blob.size,
+        overallPercent: Math.round(((idx + 1) / items.length) * 100),
+        currentIndex: idx + 1,
+        totalFiles: items.length,
+        phase: 'downloading',
+        downloadedBytes,
+        totalBytes,
+      });
       return filename;
     })
   );
@@ -638,9 +693,91 @@ export async function packVideosToZip(
   if (failed.length > 0) {
     const msgs = failed.map((f) => (f.reason as Error).message).join('; ');
     console.error('[packVideosToZip] 部分视频下载失败:', msgs);
-    // 仍然生成 ZIP（包含成功的文件）
     console.warn(`[packVideosToZip] ${failed.length}/${items.length} 个视频下载失败，将打包剩余视频`);
   }
 
-  return zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 1 } });
+  const successful = results.filter((r) => r.status === 'fulfilled').length;
+  onProgress?.({
+    filename: '',
+    loaded: successful,
+    total: items.length,
+    overallPercent: 99,
+    currentIndex: successful,
+    totalFiles: items.length,
+    phase: 'zipping',
+    downloadedBytes,
+    totalBytes,
+  });
+
+  const blob = await zip.generateAsync(
+    { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 1 } },
+    (metadata) => {
+      if (metadata.percent > 0) {
+        onProgress?.({
+          filename: metadata.currentFile || '',
+          loaded: 0,
+          total: 0,
+          overallPercent: Math.round(metadata.percent),
+          currentIndex: successful,
+          totalFiles: items.length,
+          phase: 'zipping',
+          downloadedBytes,
+          totalBytes,
+        });
+      }
+    }
+  );
+
+  onProgress?.({
+    filename: '',
+    loaded: successful,
+    total: items.length,
+    overallPercent: 100,
+    currentIndex: successful,
+    totalFiles: items.length,
+    phase: 'done',
+    downloadedBytes,
+    totalBytes,
+  });
+
+  return blob;
+}
+
+/**
+ * 将视频分批打包为多个 ZIP，每个 ZIP 最多 BATCH_ZIP_SIZE 个文件。
+ * 每个批次完成后立即通过 onBatchDone 回调返回（触发下载），
+ * 避免等待全部完成才一次性下载导致部分浏览器下载被忽略。
+ * 返回所有批次的元信息。
+ */
+export async function packVideosToBatches(
+  items: Array<{ url: string; filename: string }>,
+  onBatchProgress?: (batchIndex: number, totalBatches: number, batchProgress: number, filename: string) => void,
+  onBatchDone?: (batchIndex: number, totalBatches: number, batch: { partLabel: string; zipBlob: Blob; filenames: string[] }) => void
+): Promise<Array<{ partLabel: string; zipBlob: Blob; filenames: string[] }>> {
+  const totalBatches = Math.ceil(items.length / BATCH_ZIP_SIZE);
+  const batches: Array<{ partLabel: string; zipBlob: Blob; filenames: string[] }> = [];
+
+  for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
+    const start = batchIdx * BATCH_ZIP_SIZE;
+    const batchItems = items.slice(start, start + BATCH_ZIP_SIZE);
+    const partLabel = `第${batchIdx + 1}批（共${totalBatches}批）`;
+
+    onBatchProgress?.(batchIdx, totalBatches, 0, '');
+
+    const blob = await packVideosToZip(batchItems, `数字人对口型_part${batchIdx + 1}.zip`, (info) => {
+      onBatchProgress?.(batchIdx, totalBatches, info.overallPercent >= 0 ? info.overallPercent : 0, info.filename);
+    });
+
+    const batch = {
+      partLabel,
+      zipBlob: blob,
+      filenames: batchItems.map((i) => i.filename),
+    };
+    batches.push(batch);
+
+    // 立即触发该批次下载，不必等全部完成
+    onBatchDone?.(batchIdx, totalBatches, batch);
+  }
+
+  return batches;
 }

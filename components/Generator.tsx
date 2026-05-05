@@ -767,7 +767,8 @@ function getParallelPipelineBundle(
   storyDuration: StoryDuration,
   nicheConfig: NicheConfig,
   mindfulLang?: MindfulLanguage,
-  greatPowerLang?: GreatPowerLanguage
+  greatPowerLang?: GreatPowerLanguage,
+  totalTargetChars?: number
 ) {
   const baseName = nicheConfig.name;
   const isEnRevenge =
@@ -808,7 +809,7 @@ function getParallelPipelineBundle(
     contentKindMerge = '口播';
     directorLine = '你是倪海厦教授风格的中医玄学长视频总编导。';
     mergeEditorLine = '你是资深口播编辑，熟悉倪海厦讲学风格，必须删除各段重复的开场白、套话和案例。';
-    mergeTone = '全文语气统一为倪海厦式骂醒风格：犀利、直接、口语化，但禁止机械重复任何套话。金句只出现一次，全文只保留一个"下课！"。各段衔接自然，禁止出现两段内容高度相似的重复段落。';
+    mergeTone = '全文语气统一为倪海厦式骂醒风格：犀利、直接、口语化。全文禁止重复套话，以下句式只允许出现1次：爬山故事、"你们不要笑……说不下去了"叹息句、"我跟你讲……算了不说这个了"省略句。语气词"我跟你讲""说真的""我这话难听"各不超过2次。各段衔接自然，禁止出现两段内容高度相似的重复段落。结尾段必须包含互动引导（请观众在评论区输入正向祈福词语：安康、顺遂、平安、吉祥、福寿、如意、康宁、无恙之一），并以"咱们下期再见"、"下期再见"或"咱们下期见"自然收尾。禁止使用大国博弈式结尾（"博弈还在继续"等）。';
   }
 
   if (niche === NicheType.STORY_REVENGE) {
@@ -852,7 +853,7 @@ function getParallelPipelineBundle(
 
   // ── 新闻热点 GENERAL_VIRAL 赛道：长视频强制字数目标 ──
   if (niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG') {
-    mergeTone = `你是资深新闻口播编辑，合并各段草稿。**必须将全文扩展至 ${parallelTotalTargetChars} 字左右**，不得删除任何内容，不得截断任何段落。各段衔接自然，用过渡句串联，保持新闻辣评风格。`;
+    mergeTone = `你是资深新闻口播编辑，合并各段草稿。**必须将全文扩展至 ${totalTargetChars} 字左右**，不得删除任何内容，不得截断任何段落。各段衔接自然，用过渡句串联，保持新闻辣评风格。`;
   }
 
   // ── GREAT_POWER_GAME（大国博弈主赛道）：独立赛道，必须优先处理 ──
@@ -986,15 +987,15 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   /** 中医玄学长文：达到此字数后才允许节目收尾语；与续写停止条件一致 */
-  const MIN_TCM_SCRIPT_CHARS = 7500;
-  const MAX_TCM_SCRIPT_CHARS = 12000;
+  const MIN_TCM_SCRIPT_CHARS = 7000;
+  const MAX_TCM_SCRIPT_CHARS = 7500;
   const MIN_YI_JING_SCRIPT_CHARS = 8000;
   const MAX_YI_JING_SCRIPT_CHARS = 12000;
   const MAX_YI_JING_SCRIPT_CONTINUATIONS = 20;
   /** 清洗后字数未满此时，禁止出现最后一节（第9节/第5节等）标题与收束 */
-  const TCM_MIN_CHARS_BEFORE_FINAL_LESSON = 7000;
+  const TCM_MIN_CHARS_BEFORE_FINAL_LESSON = 6300;
   /** 清洗后字数未满此时，剥离提前出现的收尾语 */
-  const TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES = 7500;
+  const TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES = 7000;
   const MIN_FIN_SCRIPT_CHARS = 7000; // 28 min * 250 chars/min
   const MAX_FIN_SCRIPT_CHARS = 8200; // ~33 min * 250 chars/min, hard ceiling
   const MIN_NEWS_SCRIPT_CHARS = 7000; // 软目标下限
@@ -1146,6 +1147,10 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     // 易经命理长视频：自动设置为 6500 字（曾氏长视频标准目标），短视频维持默认值 3500
     if (niche === NicheType.YI_JING_METAPHYSICS && scriptLengthMode === 'LONG') {
       setYiJingTotalTargetChars(6500);
+    }
+    // 中医玄学长视频：自动设置为 7000 字（约 30 分钟口播），短视频维持默认值 3500
+    if (niche === NicheType.TCM_METAPHYSICS && scriptLengthMode === 'LONG') {
+      setYiJingTotalTargetChars(7000);
     }
     // 新闻热点长视频：自动设置为 6000 字，短视频维持默认值 3500
     if (niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG') {
@@ -1572,6 +1577,12 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const handlePlanTopics = async () => {
     if (!apiKey || !apiKey.trim()) {
         toast.error("请先在设置中输入您的 API Key。");
+        return;
+    }
+
+    // 时辰禁忌必须输入日期
+    if (niche === NicheType.TCM_METAPHYSICS && tcmSubMode === TcmSubModeId.TIME_TABOO && !inputVal.trim()) {
+        toast.warning("请输入具体日期或节气（如清明、谷雨、立春等），时辰禁忌选题需要日期才能推演。");
         return;
     }
 
@@ -2228,7 +2239,7 @@ ${segmentSourceText}
         // then append. This prevents uncontrolled expansion even if the model ignores instructions.
         let segmentOut = '';
         const segmentMaxLength = targetSegmentLength + segmentTolerance;
-        const maxTokens = Math.min(2048, Math.max(256, Math.ceil(segmentMaxLength * 1.2) + 64));
+        const maxTokens = Math.min(8192, Math.max(512, Math.ceil(segmentMaxLength * 1.2) + 128));
 
         const onSegmentChunk = (chunk: string) => {
           const globalRemaining = maxLength - getControlLength(localContent);
@@ -2375,7 +2386,7 @@ ${segmentSourceText}
       let acc = '';
       await streamContentGeneration(prompt, systemInstruction, (chunk) => {
         acc += chunk;
-      }, undefined, { maxTokens: maxTokens ?? 8192 });
+      }, undefined, { maxTokens: maxTokens ?? 32768 });
       return acc;
     },
     []
@@ -2448,7 +2459,8 @@ ${segmentSourceText}
       storyDuration,
       NICHES[niche],
       mindfulLanguage,
-      greatPowerLanguage
+      greatPowerLanguage,
+      parallelTotalTargetChars
     );
     const lead = getParallelOutlineLeadContext();
     setBatchProgress({
@@ -2549,7 +2561,8 @@ ${segmentSourceText}
       storyDuration,
       config,
       mindfulLanguage,
-      greatPowerLanguage
+      greatPowerLanguage,
+      parallelTotalTargetChars
     );
     const topicTitle = sel[0].title;
     const n = parsed.chapters.length;
@@ -2678,7 +2691,8 @@ ${segmentSourceText}
         storyDuration,
         NICHES[niche],
         mindfulLanguage,
-        greatPowerLanguage
+        greatPowerLanguage,
+        parallelTotalTargetChars
       );
       const combined = parts.join('\n\n');
       const mindfulLong =
@@ -3138,7 +3152,8 @@ ${segmentSourceText}
       storyDuration,
       config,
       mindfulLanguage,
-      greatPowerLanguage
+      greatPowerLanguage,
+      parallelTotalTargetChars
     );
     const topicTitle = sel[0].title;
     // 倪海厦风格5大模块
@@ -3258,7 +3273,8 @@ ${segmentSourceText}
         storyDuration,
         NICHES[niche],
         mindfulLanguage,
-        greatPowerLanguage
+        greatPowerLanguage,
+        parallelTotalTargetChars
       );
       const combined = parts.join('\n\n');
       // 大国博弈赛道使用专用 merge prompt，避免中文结构标签干扰
@@ -3371,7 +3387,8 @@ ${segmentSourceText}
       storyDuration,
       NICHES[niche],
       mindfulLanguage,
-      greatPowerLanguage
+      greatPowerLanguage,
+      parallelTotalTargetChars
     );
     const outlineLead = getParallelOutlineLeadContext();
 
@@ -3725,7 +3742,8 @@ ${segmentSourceText}
             storyDuration,
             NICHES[niche],
             mindfulLanguage,
-            greatPowerLanguage
+            greatPowerLanguage,
+            parallelTotalTargetChars
           );
 
           const outlineLead = getParallelOutlineLeadContext();
@@ -3908,10 +3926,11 @@ ${segmentSourceText}
             const phraseKeepFirst: Array<{ patt: RegExp }> = [
               { patt: /我在临床上看太多了[。．，,\s]/ },
               { patt: /从那以后我才知道，有些事不是迷信，是经验[。！？]?/ },
+              // 爬山故事只出现1次——"铁齿"和"气机"各触发一次时，删除后出现的那个
               { patt: /我年轻时候[也很]?铁齿[，,]?[有一]?[年个]?交运[日天]?[偏]?要去爬山，结果摔了一跤，膝盖肿了半个月[。！？]?/ },
-              // 完整版（含"真的，说不下去了"）
+              // 你们不要笑只出现1次
               { patt: /你们不要笑[，,]?这种事情我见太多了[，,]?(?:有时候我自己回想起来也觉得[…⋯.儿]*[，,]?)?真的[，,]?说不下去了[。！？]?/ },
-              // 诊所版
+              // 诊所叹气只出现1次
               { patt: /我[跟跟]?你[说说讲]?[，,]?(?:有时候我自己在诊所里也[…⋯.儿]*)?[唉算]?[了得]?(?:算了|不说这个了)[。！？]?/ },
               // 你说你不信版
               { patt: /你说你不信[？?]?[，,]?行[，,]?你继续不信[，,]?我讲完你自己掂量[。！？]?/ },
@@ -4759,7 +4778,7 @@ ${segmentSourceText}
             /我們下期节目再見/i,
             /我们下期节目再见/i,
             /下課/i,
-            /下课/i,
+            /下课[!！]/i,
             /散會/i,
             /散会/i,
             /今天的課到這裡/i,
@@ -4774,14 +4793,24 @@ ${segmentSourceText}
             /今天這堂課講到這裡/i,
             /节目再见/i,
             /節目再見/i,
+            // 倪师"好了"结尾套话（仅文末）
+            /好了[，,]?(?:(?:话)?(?:讲)?(?:完|到这(?:儿|里)?)|(?:就)?(?:讲)?(?:到这(?:儿|里)?))[。！？]?/i,
+            /好了[，,]?(?:(?:我)?话?(?:讲)?(?:完|完了)|(?:就)?(?:讲)?(?:到这(?:儿|里)?))[。！？]?/i,
+            /好了[，,]?(?:(?:(?:你)?(?:自己)?)?去悟|(?:就)?(?:讲)?(?:完))[,。]?/i,
+            /好了[，,]?(?:信不信[由随]你)[。！？]?/i,
+            /好了[，,]?(?:(?:(?:我)?(?:话)?)?(?:讲)?(?:完|完了))[。！？]?/i,
             /诸位乡亲.*再见/i,
             /諸位鄉親.*再見/i,
+            // 中医玄学倪师收尾特有模式（互动引导 + 结尾）
+            /评论区.*(安康|顺遂|平安|吉祥|福寿|如意|康宁|无恙)/i,
+            /评论区打上.*(安康|顺遂|平安|吉祥|福寿|如意|康宁|无恙)/i,
+            /留言.*(安康|顺遂|平安|吉祥|福寿|如意|康宁|无恙)/i,
         ];
-        if (strictPatterns.some((pattern) => pattern.test(text))) {
+        const tail = text.length <= 3000 ? text : text.slice(-3000);
+        if (strictPatterns.some((pattern) => pattern.test(tail))) {
             return true;
         }
         // 仅在文末 3000 字范围内检测新闻人设收尾，避免正文「咱们下期继续分析」误判
-        const tail = text.length <= 3000 ? text : text.slice(-3000);
         const newsTailClosingPatterns = [
             // 狭义：仅「下期」+ 继续/再 X
             /咱[們们]下期[，,、]?\s*继续/i,
@@ -5487,6 +5516,26 @@ ${segmentSourceText}
                         localContent = truncateToMax(localContent, gpMaxC);
                         console.log(`[Generator] Great Power Game truncated to ${localContent.length} chars (max: ${gpMaxC})`);
                     }
+                } else if (niche === NicheType.TCM_METAPHYSICS) {
+                    // 中医玄学赛道：收尾语兜底（时辰禁忌风格：互动引导 + 结尾）
+                    // 检测文末 2000 字是否有完整收尾（结束语 + 评论区互动引导）
+                    const tcmTail = localContent.length <= 2000 ? localContent : localContent.slice(-2000);
+                    const hasEndingPhrase = /(?:咱们?|我们|咱們?|我)下期再见|下期再见|下期节目再见|(?:咱们?|我们|咱們?|我)下期见|(?:咱们?|我们|咱們?|我)下期节目见|下课[!！]/.test(tcmTail);
+                    const hasCommentInteraction = /(?:评论区|留言|留言区).*(?:安康|顺遂|平安|吉祥|福寿|如意|康宁|无恙)|打上.*(?:安康|顺遂|平安|吉祥|福寿|如意|康宁|无恙).*(?:咱们?下期|下期再见)/.test(tcmTail);
+                    if (!hasEndingPhrase) {
+                        console.log('[Generator] TCM: No ending phrase, appending...');
+                        localContent = localContent.trimEnd() + '\n\n身体是本钱，评论区打上"安康"两字，咱们下期再见。';
+                    } else if (!hasCommentInteraction) {
+                        // 有结束语但没有评论区互动引导 → 截断并替换为完整收尾
+                        console.log('[Generator] TCM: Has ending but no comment interaction, replacing with full closing...');
+                        const lastEndingMatch = tcmTail.match(/(?:咱们?|我们|咱們?|我)下期再见|下期再见|下期节目再见|(?:咱们?|我们|咱們?|我)下期见|下课[!！]/);
+                        if (lastEndingMatch) {
+                            const posInTail = lastEndingMatch.index!;
+                            const posInContent = localContent.length - tcmTail.length + posInTail + lastEndingMatch[0].length;
+                            localContent = localContent.slice(0, posInContent);
+                        }
+                        localContent = localContent.trimEnd() + '\n\n身体是本钱，评论区打上"安康"两字，咱们下期再见。';
+                    }
                 } else {
                     // 需要续写的情况
                     const continuationLimit =
@@ -5546,7 +5595,11 @@ ${segmentSourceText}
                                                 : `请继续补充短视频文案，保持一环接一环的节奏与排比句结构，加入“第一、第二、第三”的总结排列。当前已写${currentLength}字，目标300-500字，必须有标点。`)
                                 : niche === NicheType.TCM_METAPHYSICS
                                     ? (tcmNeedClosingOnly
-                                        ? `请承接上文，仅输出自然收尾段落（约150–400字）：感谢收听、叮嘱身体、引导点赞订阅转发与留言区互动。必须以「下期再见」「下期节目再见」「咱们下期再见」或「我们下期见」之一结尾。禁止重复已写正文、禁止从第一节重讲、禁止输出分隔符。当前已写${currentLength}字，节数已齐，只需收束。`
+                                        ? `请承接上文，输出中医玄学倪海厦风格自然收尾段落（约150–400字），必须包含以下全部要素：
+1. 倪师式叮嘱：嘱咐观众照顾身体，语气自然诚恳，像老师对学生说话
+2. 互动引导（核心）：请观众在评论区留言时输入以下**正向祈福词语之一**：「安康」「顺遂」「平安」「吉祥」「福寿」「如意」「康宁」「无恙」——**引导语示例**：「身体是本钱，评论区打上'安康'两字，咱们下期再见。」
+3. 订阅引导：最后一句必须以「下期再见」「下期节目再见」「咱们下期再见」或「我们下期见」之一自然结尾
+禁止重复已写正文、禁止从第一节重讲、禁止输出分隔符。当前已写${currentLength}字，节数已齐，只需收束。`
                                         : tcmSubMode === TcmSubModeId.TIME_TABOO
                                         ? `请严格继续生成中医玄学长文（时辰禁忌），必须遵循9节课铁律且按顺序推进，当前已写${currentLength}字，目标总字数${MIN_TCM_SCRIPT_CHARS}-${MAX_TCM_SCRIPT_CHARS}字。在未满约${TCM_MIN_CHARS_BEFORE_FINAL_LESSON}字前禁止出现「第九节课/第九堂课」及其正文；在未满${TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES}字前禁止任何节目收尾语（如下期再见/下课/节目再见/这堂课讲到这里等）。严禁第十节课及以上。满${TCM_MIN_CHARS_BEFORE_FINAL_LESSON}字后才可进入第9节；满${TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES}字且第9节写完后才可收尾。严禁输出第十节课及以上内容。不要改写已生成内容，不要跳节，不要输出分隔符。`
                                         : `请严格继续生成中医玄学长文（${tcmSubMode}），按课程化结构顺序推进（至少${requiredLessonCount}节课，建议5或7节），当前已写${currentLength}字，目标${MIN_TCM_SCRIPT_CHARS}-${MAX_TCM_SCRIPT_CHARS}字。在未满约${TCM_MIN_CHARS_BEFORE_FINAL_LESSON}字前禁止出现「第${TCM_LESSON_CN[requiredLessonCount - 1]}节课/堂课」及最后一节收束；在未满${TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES}字前禁止任何节目收尾语。满${TCM_MIN_CHARS_BEFORE_FINAL_LESSON}字后再写最后一节；满${TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES}字并完成全部节次后才可收尾。不要改写已生成内容，不要跳节，不要输出分隔符。`)
@@ -6798,7 +6851,7 @@ ${segmentSourceText}
 
             <button
                 onClick={handlePlanTopics}
-                disabled={status === GenerationStatus.PLANNING}
+                disabled={status === GenerationStatus.PLANNING || (isInputRequired() && niche === NicheType.TCM_METAPHYSICS && tcmSubMode === TcmSubModeId.TIME_TABOO && !inputVal.trim())}
                 className={`mt-0 md:mt-7 px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-medium rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 w-full md:w-auto justify-center whitespace-nowrap shadow-lg shadow-emerald-900/20`}
             >
                 {status === GenerationStatus.PLANNING ? <Loader2 className="animate-spin" /> : <Sparkles />}

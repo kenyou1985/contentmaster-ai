@@ -66,3 +66,48 @@ body {
     opacity: 1;
   }
 }
+
+:root {
+  --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  font-family: 'Inter', sans-serif;
+  background-color: #020617;
+  color: #e2e8f0;
+  overscroll-behavior-y: contain;
+}
+
+.safe-area-pb {
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 0.5rem);
+}
+
+/* Focus visible */
+*:focus-visible {
+  outline: 2px solid rgba(16, 185, 129, 0.5);
+  outline-offset: 2px;
+}
+
+/* Touch targets */
+button, nav, label {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+@media (hover: none) {
+  button:active {
+    opacity: 0.85;
+  }
+}
+
+/* iOS Safari safe area + fill available */
+@supports (-webkit-touch-callout: none) {
+  .min-h-screen {
+    min-height: -webkit-fill-available;
+  }
+}

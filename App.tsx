@@ -1,20 +1,21 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense, lazy } from 'react';
 import { Layout } from './components/Layout';
 import { Generator } from './components/Generator';
 import { Tools } from './components/Tools';
-import { MediaGenerator } from './components/MediaGenerator';
-import { OneClickDubbing } from './components/OneClickDubbing';
-import { DigitalHumanPanel } from './components/DigitalHumanPanel';
-import { CoverDesign } from './components/CoverDesign';
-import { YouTubeMonitor } from './components/YouTubeMonitor';
 import { QueueTaskViewer } from './components/QueueTaskViewer';
-import { ChannelGenerator } from './components/ChannelGenerator';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { initializeGemini } from './services/geminiService';
 import { ApiProvider } from './types';
 import { ToastContainer, useToast } from './components/Toast';
-import { Rss } from 'lucide-react';
-import { cleanExpiredAndOversizedCache, getCacheStats } from './services/videoCacheService';
+import { cleanExpiredAndOversizedCache } from './services/videoCacheService';
+
+// Code-split heavy tab components
+const LazyMediaGenerator = lazy(() => import('./components/MediaGenerator').then(m => ({ default: m.MediaGenerator })));
+const LazyOneClickDubbing = lazy(() => import('./components/OneClickDubbing').then(m => ({ default: m.OneClickDubbing })));
+const LazyDigitalHumanPanel = lazy(() => import('./components/DigitalHumanPanel').then(m => ({ default: m.DigitalHumanPanel })));
+const LazyCoverDesign = lazy(() => import('./components/CoverDesign').then(m => ({ default: m.CoverDesign })));
+const LazyYouTubeMonitor = lazy(() => import('./components/YouTubeMonitor').then(m => ({ default: m.YouTubeMonitor })));
+const LazyChannelGenerator = lazy(() => import('./components/ChannelGenerator').then(m => ({ default: m.ChannelGenerator })));
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'generate' | 'tools' | 'media' | 'dubbing' | 'digitalHuman' | 'cover' | 'monitor' | 'channel'>('generate');
@@ -177,6 +178,16 @@ const App: React.FC = () => {
     return <QueueTaskViewer />;
   }
 
+  // Shared skeleton for all lazy-loaded tabs
+  const TabSkeleton = () => (
+    <div className="animate-pulse space-y-4 p-4">
+      <div className="h-8 bg-slate-800 rounded w-1/3" />
+      <div className="h-4 bg-slate-800 rounded w-2/3" />
+      <div className="h-40 bg-slate-800 rounded" />
+      <div className="h-4 bg-slate-800 rounded w-1/2" />
+    </div>
+  );
+
   return (
     <>
       <Layout
@@ -189,64 +200,78 @@ const App: React.FC = () => {
         runningHubApiKey={runningHubApiKey}
         setRunningHubApiKey={setRunningHubApiKey}
       >
-        {/* 各主模块同时挂载、用 hidden 切换，避免切页卸载导致状态丢失（进行中任务可继续跑） */}
+        {/* Generator + Tools are always loaded (most-used pages) */}
         <div className={activeTab === 'generate' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'generate'}>
           <Generator apiKey={apiKey} provider={provider} toast={toast} />
         </div>
         <div className={activeTab === 'tools' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'tools'}>
           <Tools apiKey={apiKey} provider={provider} toast={toast} />
         </div>
-        <div className={activeTab === 'media' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'media'}>
-          <MediaGenerator
-            apiKey={apiKey}
-            provider={provider}
-            toast={toast}
-            runningHubApiKey={runningHubApiKey}
-            setRunningHubApiKey={setRunningHubApiKey}
-          />
-        </div>
-        <div className={activeTab === 'dubbing' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'dubbing'}>
-          <OneClickDubbing
-            apiKey={apiKey}
-            runningHubApiKey={runningHubApiKey}
-            setRunningHubApiKey={setRunningHubApiKey}
-            toast={toast}
-          />
-        </div>
-        <div className={activeTab === 'digitalHuman' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'digitalHuman'}>
-          <DigitalHumanPanel
-            apiKey={apiKey}
-            runningHubApiKey={runningHubApiKey}
-            setRunningHubApiKey={setRunningHubApiKey}
-            toast={toast}
-          />
-        </div>
-        <div className={activeTab === 'cover' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'cover'}>
-          <CoverDesign apiKey={apiKey} provider={provider} toast={toast} />
-        </div>
-        <div className={activeTab === 'monitor' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'monitor'}>
-          <YouTubeMonitor />
-        </div>
-        <div className={activeTab === 'channel' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'channel'}>
-          <ErrorBoundary
-            fallback={
-              <div className="p-6 bg-red-900/20 border border-red-700 rounded-lg">
-                <h2 className="text-lg font-semibold text-red-400 mb-2">频道生成器加载失败</h2>
-                <p className="text-sm text-red-300">
-                  请检查浏览器控制台获取详细信息，或尝试刷新页面。
-                </p>
-                <button
-                  onClick={() => window.location.reload()}
-                  className="mt-4 px-4 py-2 bg-red-700 hover:bg-red-600 text-white text-sm rounded transition-colors"
-                >
-                  刷新页面
-                </button>
-              </div>
-            }
-          >
-            <ChannelGenerator apiKey={apiKey} provider={provider} toast={toast} />
-          </ErrorBoundary>
-        </div>
+
+        {/* Code-split tabs: loaded on demand */}
+        <Suspense fallback={<TabSkeleton />}>
+          <div className={activeTab === 'media' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'media'}>
+            <LazyMediaGenerator
+              apiKey={apiKey}
+              provider={provider}
+              toast={toast}
+              runningHubApiKey={runningHubApiKey}
+              setRunningHubApiKey={setRunningHubApiKey}
+            />
+          </div>
+        </Suspense>
+        <Suspense fallback={<TabSkeleton />}>
+          <div className={activeTab === 'dubbing' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'dubbing'}>
+            <LazyOneClickDubbing
+              apiKey={apiKey}
+              runningHubApiKey={runningHubApiKey}
+              setRunningHubApiKey={setRunningHubApiKey}
+              toast={toast}
+            />
+          </div>
+        </Suspense>
+        <Suspense fallback={<TabSkeleton />}>
+          <div className={activeTab === 'digitalHuman' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'digitalHuman'}>
+            <LazyDigitalHumanPanel
+              apiKey={apiKey}
+              runningHubApiKey={runningHubApiKey}
+              setRunningHubApiKey={setRunningHubApiKey}
+              toast={toast}
+            />
+          </div>
+        </Suspense>
+        <Suspense fallback={<TabSkeleton />}>
+          <div className={activeTab === 'cover' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'cover'}>
+            <LazyCoverDesign apiKey={apiKey} provider={provider} toast={toast} />
+          </div>
+        </Suspense>
+        <Suspense fallback={<TabSkeleton />}>
+          <div className={activeTab === 'monitor' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'monitor'}>
+            <LazyYouTubeMonitor />
+          </div>
+        </Suspense>
+        <Suspense fallback={<TabSkeleton />}>
+          <div className={activeTab === 'channel' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'channel'}>
+            <ErrorBoundary
+              fallback={
+                <div className="p-6 bg-red-900/20 border border-red-700 rounded-lg">
+                  <h2 className="text-lg font-semibold text-red-400 mb-2">频道生成器加载失败</h2>
+                  <p className="text-sm text-red-300">
+                    请检查浏览器控制台获取详细信息，或尝试刷新页面。
+                  </p>
+                  <button
+                    onClick={() => window.location.reload()}
+                    className="mt-4 px-4 py-2 bg-red-700 hover:bg-red-600 text-white text-sm rounded transition-colors"
+                  >
+                    刷新页面
+                  </button>
+                </div>
+              }
+            >
+              <LazyChannelGenerator apiKey={apiKey} provider={provider} toast={toast} />
+            </ErrorBoundary>
+          </div>
+        </Suspense>
       </Layout>
       <ToastContainer toasts={toast.toasts} onClose={toast.closeToast} />
     </>

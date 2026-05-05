@@ -48,6 +48,9 @@ import {
   updateDhSegmentAudio,
   updateDhSegmentVideo,
   packVideosToZip,
+  packVideosToBatches,
+  BATCH_ZIP_SIZE,
+  type DownloadProgressCallback,
   dhConcurrency,
   uploadAudioToRunningHub,
 } from '../services/digitalHumanService';
@@ -592,6 +595,22 @@ export function DigitalHumanPanel({
   const selectedVoice = useMemo(() => getSelectedVoice(), [voiceEpoch]);
   const [oneClickFilm, setOneClickFilm] = useState<'idle' | 'audio' | 'dh' | 'done'>('idle');
 
+  /** 下载进度状态 */
+  const [downloadProgress, setDownloadProgress] = useState<{
+    totalFiles: number;
+    currentIndex: number;
+    phase: 'downloading' | 'zipping' | 'done';
+    overallPercent: number;
+    currentFilename: string;
+    /** 当前批次进度（如分批导出） */
+    batchIndex?: number;
+    totalBatches?: number;
+    /** 已下载字节数 */
+    downloadedBytes?: number;
+    /** 总字节数（所有文件） */
+    totalBytes?: number;
+  } | null>(null);
+
   // --- Refs ---
   const audioRefs = useRef<Map<string, HTMLAudioElement>>(new Map());
   const tasksRef = useRef(tasks);
@@ -1068,6 +1087,25 @@ export function DigitalHumanPanel({
   // ============================================================
   // 下载
   // ============================================================
+  /** 触发一个 ZIP blob 的浏览器下载 */
+  const triggerZipDownload = (blob: Blob, prefix: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${prefix}_${Date.now()}.zip`;
+    a.target = '_blank';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  };
+
+  /** 构造视频下载项列表 */
+  const makeVideoItems = (taskList: DhSegmentTask[]) =>
+    taskList
+      .filter((t) => !!t.dhVideoUrl)
+      .map((t) => ({ url: t.dhVideoUrl!, filename: `段${t.index}.mp4` }));
+
   const handleDownloadSingle = useCallback((task: DhSegmentTask) => {
     if (!task.dhVideoUrl) return;
     const a = document.createElement('a');
@@ -1089,28 +1127,58 @@ export function DigitalHumanPanel({
       return;
     }
 
-    pushLog(`[打包下载] 打包 ${selected.length} 个视频…`);
+    const items = makeVideoItems(selected);
+    const totalBatches = Math.ceil(items.length / BATCH_ZIP_SIZE);
+    pushLog(`[打包下载] 分 ${totalBatches} 批打包 ${items.length} 个视频…`);
+    setDownloadProgress({ totalFiles: items.length, currentIndex: 0, phase: 'downloading', overallPercent: 0, currentFilename: '', downloadedBytes: 0, totalBytes: undefined });
+
     try {
-      const blob = await packVideosToZip(
-        selected.map((t) => ({
-          url: t.dhVideoUrl!,
-          filename: `段${t.index}.mp4`,
-        }))
-      );
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `数字人对口型视频_${Date.now()}.zip`;
-      a.target = '_blank';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-      toast.success(`打包下载成功: ${selected.length} 个视频`);
+      const onProgress: DownloadProgressCallback = (info) => {
+        setDownloadProgress((p) =>
+          p ? {
+            ...p,
+            overallPercent: info.overallPercent >= 0 ? info.overallPercent : (p?.overallPercent ?? 0),
+            currentIndex: info.currentIndex,
+            currentFilename: info.filename,
+            phase: info.phase,
+            downloadedBytes: info.downloadedBytes,
+            totalBytes: info.totalBytes,
+          } : null
+        );
+      };
+
+      if (totalBatches > 1) {
+        // 分多批下载，每批单独触发浏览器下载
+        let downloadedBatches = 0;
+        await packVideosToBatches(
+          items,
+          (batchIndex, total, batchPct, filename) => {
+            setDownloadProgress((p) =>
+              p ? { ...p, batchIndex, totalBatches: total, overallPercent: batchPct, currentFilename: filename, phase: 'downloading' } : null
+            );
+          },
+          (batchIndex, total, batch) => {
+            triggerZipDownload(batch.zipBlob, `数字人对口型_${batch.partLabel}`);
+            downloadedBatches++;
+            pushLog(`[打包下载] ✅ ${batch.partLabel}（含 ${batch.filenames.length} 个视频）已下载`);
+            setDownloadProgress((p) =>
+              p ? { ...p, batchIndex, totalBatches: total, overallPercent: Math.round((downloadedBatches / total) * 100) } : null
+            );
+          }
+        );
+        toast.success(`${items.length} 个视频分 ${totalBatches} 批打包完成`);
+      } else {
+        // 单批，直接打包下载
+        const blob = await packVideosToZip(items, '数字人对口型视频.zip', onProgress);
+        triggerZipDownload(blob, '数字人对口型视频');
+        toast.success(`打包下载成功: ${items.length} 个视频`);
+      }
     } catch (err: any) {
       toast.error(`打包失败: ${err.message}`);
+    } finally {
+      setDownloadProgress(null);
     }
-  }, [tasks, selectedIds, handleDownloadSingle, toast, pushLog]);
+  }, [tasks, selectedIds, handleDownloadSingle, toast, pushLog, setDownloadProgress, makeVideoItems, packVideosToBatches, packVideosToZip]);
 
   const handleDownloadAll = useCallback(async () => {
     const done = tasks.filter((t) => t.dhPhase === 'done' && t.dhVideoUrl);
@@ -1124,28 +1192,48 @@ export function DigitalHumanPanel({
       return;
     }
 
-    pushLog(`[打包下载] 打包 ${done.length} 个视频…`);
+    const items = makeVideoItems(done);
+    const totalBatches = Math.ceil(items.length / BATCH_ZIP_SIZE);
+    pushLog(`[打包下载] 分 ${totalBatches} 批打包 ${items.length} 个视频…`);
+    setDownloadProgress({ totalFiles: items.length, currentIndex: 0, phase: 'downloading', overallPercent: 0, currentFilename: '' });
+
     try {
-      const blob = await packVideosToZip(
-        done.map((t) => ({
-          url: t.dhVideoUrl!,
-          filename: `段${t.index}.mp4`,
-        }))
-      );
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `数字人对口型视频_${Date.now()}.zip`;
-      a.target = '_blank';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-      toast.success(`打包下载成功: ${done.length} 个视频`);
+      if (totalBatches > 1) {
+        pushLog(`[打包下载] 分 ${totalBatches} 批打包 ${items.length} 个视频…`);
+        let downloadedBatches = 0;
+        await packVideosToBatches(
+          items,
+          (batchIndex, total, batchPct, filename) => {
+            setDownloadProgress((p) =>
+              p ? { ...p, batchIndex, totalBatches: total, overallPercent: batchPct, currentFilename: filename, phase: 'downloading' } : null
+            );
+          },
+          (batchIndex, total, batch) => {
+            triggerZipDownload(batch.zipBlob, `数字人对口型_${batch.partLabel}`);
+            downloadedBatches++;
+            pushLog(`[打包下载] ✅ ${batch.partLabel}（含 ${batch.filenames.length} 个视频）已下载`);
+            setDownloadProgress((p) =>
+              p ? { ...p, batchIndex, totalBatches: total, overallPercent: Math.round((downloadedBatches / total) * 100) } : null
+            );
+          }
+        );
+        toast.success(`${items.length} 个视频分 ${totalBatches} 批打包完成`);
+      } else {
+        const onProgress: DownloadProgressCallback = (info) => {
+          setDownloadProgress((p) =>
+            p ? { ...p, overallPercent: info.overallPercent >= 0 ? info.overallPercent : (p?.overallPercent ?? 0), currentIndex: info.currentIndex, currentFilename: info.filename, phase: info.phase } : null
+          );
+        };
+        const blob = await packVideosToZip(items, '数字人对口型视频.zip', onProgress);
+        triggerZipDownload(blob, '数字人对口型视频');
+        toast.success(`打包下载成功: ${items.length} 个视频`);
+      }
     } catch (err: any) {
       toast.error(`打包失败: ${err.message}`);
+    } finally {
+      setDownloadProgress(null);
     }
-  }, [tasks, handleDownloadSingle, toast, pushLog]);
+  }, [tasks, handleDownloadSingle, toast, pushLog, setDownloadProgress, makeVideoItems, packVideosToBatches, packVideosToZip, triggerZipDownload]);
 
   // ============================================================
   // 一键成片：配音 → 数字人 → 下载
@@ -1274,27 +1362,50 @@ export function DigitalHumanPanel({
     }
 
     pushLog(`[一键成片] 打包 ${done.length} 个视频…`);
+    setDownloadProgress({ totalFiles: done.length, currentIndex: 0, phase: 'downloading', overallPercent: 0, currentFilename: '' });
     try {
-      // 从 completedDhVideoUrlsRef 取真实 URL（tasksRef.dhVideoUrl 可能在 setTasks 异步后尚未同步）
       const videoItems = done.map((t) => ({
         url: completedDhVideoUrlsRef.current.get(t.id) || t.dhVideoUrl!,
         filename: `段${t.index}.mp4`,
       }));
-      console.log(`[一键成片] ZIP 打包视频 URLs:`, videoItems.map((v) => v.url?.slice(0, 80)));
-      const blob = await packVideosToZip(videoItems);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `数字人对口型_${Date.now()}.zip`;
-      a.target = '_blank';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-      pushLog(`[一键成片] ✅ 全部完成 · ${done.length} 个视频已下载`);
-      toast.success(`一键成片完成: ${done.length} 个视频已打包下载`);
+      const totalBatches = Math.ceil(videoItems.length / BATCH_ZIP_SIZE);
+      if (totalBatches > 1) {
+        pushLog(`[一键成片] 分 ${totalBatches} 批打包下载…`);
+        let downloadedBatches = 0;
+        await packVideosToBatches(
+          videoItems,
+          (batchIndex, total, batchPct, filename) => {
+            setDownloadProgress((p) =>
+              p ? { ...p, batchIndex, totalBatches: total, overallPercent: batchPct, currentFilename: filename, phase: 'downloading' } : null
+            );
+          },
+          (batchIndex, total, batch) => {
+            // 每批完成后立即触发下载，不必等全部完成
+            triggerZipDownload(batch.zipBlob, `数字人对口型_${batch.partLabel}`);
+            downloadedBatches++;
+            pushLog(`[一键成片] ✅ ${batch.partLabel}（含 ${batch.filenames.length} 个视频）已下载`);
+            setDownloadProgress((p) =>
+              p ? { ...p, batchIndex, totalBatches: total, overallPercent: Math.round((downloadedBatches / total) * 100), phase: 'downloading' } : null
+            );
+          }
+        );
+        pushLog(`[一键成片] ✅ 全部完成 · ${done.length} 个视频已下载`);
+        toast.success(`一键成片完成: ${done.length} 个视频分 ${totalBatches} 批打包下载`);
+      } else {
+        const onProgress: DownloadProgressCallback = (info) => {
+          setDownloadProgress((p) =>
+            p ? { ...p, overallPercent: info.overallPercent >= 0 ? info.overallPercent : (p?.overallPercent ?? 0), currentIndex: info.currentIndex, currentFilename: info.filename, phase: info.phase } : null
+          );
+        };
+        const blob = await packVideosToZip(videoItems, '数字人对口型视频.zip', onProgress);
+        triggerZipDownload(blob, '数字人对口型视频');
+        pushLog(`[一键成片] ✅ 全部完成 · ${done.length} 个视频已下载`);
+        toast.success(`一键成片完成: ${done.length} 个视频已打包下载`);
+      }
     } catch (err: any) {
       toast.error(`打包失败: ${err.message}`);
+    } finally {
+      setDownloadProgress(null);
     }
     setOneClickFilm('idle');
     setOcProgress(null);
@@ -1306,6 +1417,10 @@ export function DigitalHumanPanel({
     dhSessionId,
     generateSingleAudio,
     generateSingleDh,
+    setDownloadProgress,
+    triggerZipDownload,
+    packVideosToBatches,
+    packVideosToZip,
   ]);
 
   // ============================================================
@@ -1801,6 +1916,41 @@ export function DigitalHumanPanel({
                       progress={ocProgress}
                       currentPhase={oneClickFilm as 'audio' | 'dh' | 'done'}
                     />
+                  )}
+
+                  {/* 下载打包进度条 */}
+                  {downloadProgress && downloadProgress.phase !== 'done' && (
+                    <div className="space-y-1.5 p-3 bg-slate-800/60 rounded-lg border border-slate-600">
+                      <div className="flex items-center justify-between text-xs text-slate-300">
+                        <span className="flex items-center gap-1.5">
+                          <Download size={12} className="text-blue-400" />
+                          {downloadProgress.phase === 'downloading'
+                            ? downloadProgress.totalBatches && downloadProgress.totalBatches > 1
+                              ? `打包下载中（第 ${(downloadProgress.batchIndex ?? 0) + 1}/${downloadProgress.totalBatches} 批）`
+                              : '下载中…'
+                            : '打包中…'}
+                        </span>
+                        <span className="text-blue-400 font-mono">{downloadProgress.overallPercent}%</span>
+                      </div>
+                      <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-gradient-to-r from-blue-500 to-cyan-400 rounded-full transition-all duration-300"
+                          style={{ width: `${downloadProgress.overallPercent}%` }}
+                        />
+                      </div>
+                      {downloadProgress.currentFilename && (
+                        <p className="text-[10px] text-slate-500 truncate">
+                          {downloadProgress.currentFilename}
+                        </p>
+                      )}
+                      <p className="text-[10px] text-slate-500">
+                        {downloadProgress.totalBatches && downloadProgress.totalBatches > 1
+                          ? `已处理 ${downloadProgress.currentIndex}/${downloadProgress.totalFiles} 个文件`
+                          : downloadProgress.totalFiles > 0
+                          ? `文件 ${downloadProgress.currentIndex}/${downloadProgress.totalFiles}`
+                          : ''}
+                      </p>
+                    </div>
                   )}
 
                   {/* 一键成片 */}
