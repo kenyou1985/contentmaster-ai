@@ -167,10 +167,31 @@ function stripLeadingTrailingCodeFence(s: string): string {
 const TTS_POLISH_BASE_SYSTEM = `You are a professional dubbing script editor for neural TTS.
 Optimize the user's lines for natural, fluent speech: improve punctuation and phrase breaks for breathing, remove timestamps/meta noise, keep emotional tone and facts intact.
 Rules:
-- Output ONLY the final text to be spoken. Same language as input (do not translate).
+- Output ONLY the final text to be spoken. Preserve the exact same language as the input.
+- Do NOT translate. Do NOT convert English to Chinese or vice versa. The input language must match the output language.
 - Do NOT add role names, shot labels, markdown, or quotes wrapping the entire output.
 - Keep the content complete; do not summarize away substantive lines.
 - Input is expected to stay within about 5000 characters; keep the output in the same ballpark—no gratuitous lengthening or filler.`;
+
+/** 简单检测文本是否以中文字符为主（混合文本时以多数判断） */
+function detectLanguage(text: string): 'zh' | 'en' | 'mixed' {
+  const cleaned = text.replace(/\s+/g, '');
+  if (!cleaned) return 'mixed';
+  const chineseCount = (cleaned.match(/[\u4e00-\u9fff]/g) || []).length;
+  const total = cleaned.length;
+  const zhRatio = chineseCount / total;
+  if (zhRatio > 0.5) return 'zh';
+  if (zhRatio < 0.1) return 'en';
+  return 'mixed';
+}
+
+/** 构建带语言检测的 TTS 润色 system prompt */
+function buildTtsPolishSystem(text: string): string {
+  const lang = detectLanguage(text);
+  const langLabel = lang === 'zh' ? '中文（Chinese）' : lang === 'en' ? '英文（English）' : '原文本（保留输入语言）';
+  return `${TTS_POLISH_BASE_SYSTEM}
+- IMPORTANT: The input text is in ${langLabel}. You MUST output in the SAME language. NEVER translate.`;
+}
 
 async function runTtsPolishChat(
   apiKey: string,
@@ -225,7 +246,7 @@ export async function polishTextForTtsSpeech(apiKey: string, rawText: string): P
   if (text.length < 8) return text;
 
   const user = `以下是一段需要配音朗读的口播正文，请只做「导演级切行与朗读友好化」优化后输出：\n\n${text}`;
-  return runTtsPolishChat(apiKey, TTS_POLISH_BASE_SYSTEM, user, text);
+  return runTtsPolishChat(apiKey, buildTtsPolishSystem(text), user, text);
 }
 
 /**
@@ -250,7 +271,7 @@ export async function polishTextForTtsSpeechWithStyle(
   const styleBlock = persona
     ? `\n\n【演绎风格 / 人设】\n${persona}\n请在此风格下做断句与语气调整，使口播更贴人设，但不歪曲事实、不删减关键信息。`
     : '';
-  const system = TTS_POLISH_BASE_SYSTEM + styleBlock;
+  const system = buildTtsPolishSystem(text) + styleBlock;
 
   let user = `以下是一段需要配音朗读的口播正文，请只做「导演级切行与朗读友好化」优化后输出：\n\n${text}`;
   if (hint) {
