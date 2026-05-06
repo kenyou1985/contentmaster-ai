@@ -849,6 +849,9 @@ function getParallelPipelineBundle(
     mergeEditorLine = isZhOutput
       ? '你是资深编辑，合并中文口播脚本，保持温暖、口语化、真诚的叙事风格。中文内容应以第一人称「我」为中心，分享真实经历，段落长短不一，允许口语打断和自嘲。禁止使用「请点赞并订阅我的频道」等营销腔结尾。结尾应为随意、自嘲或开放式的自然收尾。'
       : 'You are a senior editor merging English voice-over scripts; keep warm, spoken, authentic English like a real person sharing their experience. Use first-person "I" as the dominant voice, not "you" or "your body". Allow for natural imperfections, self-corrections, and uneven paragraph lengths. Never add a "Please like and subscribe" CTA — preserve any casual ending that sounds like a friend saying goodnight.';
+    mergeTone = isZhOutput
+      ? '全文保持温暖、口语化、真诚的叙事风格。第一人称「我」为中心。禁止使用「请点赞并订阅」「好了今天就到这里」「保重」「晚安各位」等营销腔或旁观式结尾。禁止使用大国博弈式结尾（「博弈还在继续」「博弈从未停止」等）。结尾应是随意、自嘲或开放式的自然收尾——如「好了，不说了，家里那只正催我停了」。'
+      : 'Merge in a warm, spoken, authentic first-person voice. **ABSOLUTELY FORBIDDEN closing phrases**: "Please like and subscribe", "Good night, my friends", "The game continues.", "The game never stops.", "Take care, everyone", or any public/broadcast-style ending. The final line must be casual, self-deprecating, or open-ended — like a friend saying goodnight. No CTA. No Markdown. No bold.';
   }
 
   // ── 新闻热点 GENERAL_VIRAL 赛道：长视频强制字数目标 ──
@@ -953,6 +956,7 @@ function getParallelPipelineBundle(
       voiceRules,
       englishChapterCharStrict: mindfulEnglishLongParallel,
       mindfulLanguage: effectiveLang,
+      closingStyle: (niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.TCM_METAPHYSICS) ? 'yijin' : 'mindful',
     },
     merge: {
       channelTag: baseName,
@@ -960,6 +964,7 @@ function getParallelPipelineBundle(
       outputLanguage,
       contentKind: contentKindMerge,
       mindfulLanguage: effectiveLang,
+      closingStyle: (niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.TCM_METAPHYSICS) ? 'yijin' : 'mindful',
     },
     mergeSystem: buildParallelMergeSystem(mergeEditorLine),
   };
@@ -2743,6 +2748,8 @@ ${segmentSourceText}
 
       // 治愈心理学：英文宠物名一致性后处理（所有语言都走英文 pipeline）
       if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+        // 安全兜底：删除大国博弈式结尾（如果 AI 误生成）
+        norm = norm.replace(/The game (?:never stops|continues)\.?\s*$/gi, '').trimEnd();
         norm = normalizeEnglishPetNames(norm);
         norm = removeDuplicateEndings(norm);
       }

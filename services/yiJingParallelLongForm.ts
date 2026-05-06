@@ -245,6 +245,8 @@ export type ParallelSegmentPromptOpts = {
   englishChapterCharStrict?: boolean;
   /** 多语言输出时的语言，用于生成正确的结尾 CTA */
   mindfulLanguage?: string;
+  /** 结语风格：yijin=曾仕强口吻，mindful=治愈心理学自然随意风（默认 mindful） */
+  closingStyle?: 'yijin' | 'mindful';
 };
 
 export function buildParallelSegmentUserPrompt(
@@ -271,10 +273,16 @@ export function buildParallelSegmentUserPrompt(
     ? `【本章字数】英文正文有效字符（含空格与标点）尽量控制在 ${chapter.min_chars}–${chapter.max_chars} 之间；如字数略有偏差可以接受，**内容完整性优先**。`
     : `【本章字数】有效字符尽量在 ${chapter.min_chars}–${chapter.max_chars} 字范围内；字数略有偏差可接受，**内容完整性优先**。`;
 
+  const closingStyle = opts.closingStyle ?? 'mindful';
+
   const lastChapterInstruction = isLast
     ? (isEnglishOutput
-        ? `\\n\\n【结语收尾方式（英文内容）】\\n- 英文内容**禁止**使用「please like and subscribe」等营销腔结尾，也**禁止**使用「Good night, my friends」「Take care, everyone」「Rest well, my friends」等偏公开化的收尾——全文是曾仕强口吻，"my friends"会让读者从「我」的讲学里被拽出来。\\n- 推荐收尾方式（用曾仕强风格自然收束）：\\n  - "Okay, that's all for today. You figure it out yourself."\\n  - "I have said what I needed to say. Believe it or not, it's up to you."\\n  - "Remember what the ancients taught. Figure it out yourself."\\n- 禁止加粗、禁止 Markdown。`
-        : `\\n\\n【结语收尾方式（中文内容）】\\n- 中文内容**禁止**使用旁观式互动话术结尾：禁止「好了，我今天就讲到这里」「好了，今天就到这里。」「各位朋友」「各位家人」「保重」「晚安各位」「我们下次再聊」「感谢观看」等——这些词一出口，读者会立刻从「我」的讲学里被拽出来。\\n- 推荐收尾方式（用曾仕强风格自然收束）：\\n  - 「好了，讲了这么多，你自己去悟。」\\n  - 「我今天就讲到这里，信不信由你。」\\n  - 「记住老祖宗的话，自己去体会。」\\n- 禁止加粗、禁止 Markdown。`
+        ? closingStyle === 'yijin'
+          ? `\\n\\n【结语收尾方式（英文内容）】\\n- 英文内容**禁止**使用「please like and subscribe」等营销腔结尾，也**禁止**使用「Good night, my friends」「Take care, everyone」「Rest well, my friends」等偏公开化的收尾——全文是曾仕强口吻，"my friends"会让读者从「我」的讲学里被拽出来。\\n- 推荐收尾方式（用曾仕强风格自然收束）：\\n  - "Okay, that's all for today. You figure it out yourself."\\n  - "I have said what I needed to say. Believe it or not, it's up to you."\\n  - "Remember what the ancients taught. Figure it out yourself."\\n- 禁止加粗、禁止 Markdown。`
+          : `\\n\\n【Ending (English content)】\\n- **ABSOLUTELY FORBIDDEN**: Do NOT use "Please like and subscribe", "Good night, my friends", "Take care, everyone", "Rest well, my friends", "The game continues.", "The game never stops.", or any other public/broadcast-style closing.\\n- **ONLY use casual, first-person endings** — like a friend saying goodnight or a quiet self-reflective moment. Examples:\\n  - "Anyway, that's it from me."\\n  - "I guess that's enough for now."\\n  - "Okay. I'll stop here."\\n  - "That's all I've got."\\n- Keep it under 2 sentences. No Markdown, no bold.`
+        : closingStyle === 'yijin'
+          ? `\\n\\n【结语收尾方式（中文内容）】\\n- 中文内容**禁止**使用旁观式互动话术结尾：禁止「好了，我今天就讲到这里」「好了，今天就到这里。」「各位朋友」「各位家人」「保重」「晚安各位」「我们下次再聊」「感谢观看」等——这些词一出口，读者会立刻从「我」的讲学里被拽出来。\\n- 推荐收尾方式（用曾仕强风格自然收束）：\\n  - 「好了，讲了这么多，你自己去悟。」\\n  - 「我今天就讲到这里，信不信由你。」\\n  - 「记住老祖宗的话，自己去体会。」\\n- 禁止加粗、禁止 Markdown。`
+          : `\\n\\n【结语收尾方式（中文内容）】\\n- 中文内容**禁止**使用旁观式互动话术结尾：禁止「好了，我今天就讲到这里」「好了，今天就到这里。」「各位朋友」「各位家人」「保重」「晚安各位」「我们下次再聊」「感谢观看」等。\\n- 推荐收尾方式：用宠物行为描写+自嘲直接收束，例如：\\n  - 「好了，不说了。家里的那只正用尾巴敲我键盘催我停了。」\\n  - 「好了，就到这儿吧。角落里有双眼睛正在催我睡了。」\\n- 禁止加粗、禁止 Markdown。`
     )
     : '';
 

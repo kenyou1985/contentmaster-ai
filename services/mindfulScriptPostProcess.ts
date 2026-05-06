@@ -5,13 +5,13 @@
  * 如果需要控制字数，应在分段生成阶段控制，不应在后期截断。
  */
 
-export const MINDFUL_EN_SCRIPT_CHARS_MIN = 10000;
-export const MINDFUL_EN_SCRIPT_CHARS_MAX = 15000;
+export const MINDFUL_EN_SCRIPT_CHARS_MIN = 18000;
+export const MINDFUL_EN_SCRIPT_CHARS_MAX = 20000;
 
 export function clampMindfulParallelTargetChars(v: number): number {
   return Math.min(
     MINDFUL_EN_SCRIPT_CHARS_MAX,
-    Math.max(MINDFUL_EN_SCRIPT_CHARS_MIN, Math.round(Number.isFinite(v) ? v : 12000))
+    Math.max(MINDFUL_EN_SCRIPT_CHARS_MIN, Math.round(Number.isFinite(v) ? v : 19000))
   );
 }
 
@@ -19,8 +19,8 @@ export function clampMindfulParallelTargetChars(v: number): number {
 export function mindfulMergeCharClamp(totalTarget: number): { min: number; max: number } {
   // 内容完整性优先，字数范围仅作参考
   return {
-    min: 8000,   // 宽松下限
-    max: 20000,  // 宽松上限
+    min: 16000,   // 宽松下限
+    max: 24000,  // 宽松上限
   };
 }
 
