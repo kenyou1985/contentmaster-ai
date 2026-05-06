@@ -1388,56 +1388,68 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       appendTerminalLog('Pipeline', '一键成片设置：仅图片+音频，已跳过视频生成');
       patchTaskProgress(88, '跳过视频…');
     } else {
-      let vDone = 0;
-      const vTotal = Math.max(1, videoSlots);
-      for (const shot of targetShots) {
+      // 收集需要生成视频的镜头
+      const videoShots: { shot: Shot; slotIndex: number }[] = [];
+      targetShots.forEach((shot, idx) => {
         const current = getLiveShot(shot.id);
-        if (!current) continue;
+        if (!current) return;
         if (current.videoUrl || current.videoUrls?.length) {
           appendTerminalLog('VideoGen', `镜头${current.number}: 已有视频，跳过`);
-          continue;
+          return;
         }
         if (!current.videoPrompt?.trim()) {
           appendTerminalLog('VideoGen', `镜头${current.number}: 无视频提示词，跳过`);
-          continue;
+          return;
         }
-        const slotIndex = vDone;
-        setOneClickPipelineProgress(`生成视频 ${targetShots.indexOf(shot) + 1}/${targetShots.length} (镜头${shot.number})`);
-        appendTerminalLog('VideoGen', `镜头${current.number}: 开始生成视频`);
-        let retries = 3;
-        while (retries > 0) {
-          try {
-            const c2 = getLiveShot(current.id);
-            if (!c2) break;
-            if (c2.videoUrl || c2.videoUrls?.length) {
-              appendTerminalLog('VideoGen', `镜头${c2.number}: 已有视频，跳过`);
-              break;
-            }
-            await handleGenerateVideo(c2, false, {
-              onVideoHubProgress: (hub) => {
-                const base = 40;
-                const span = 48;
-                const overall = base + ((slotIndex + hub / 100) / vTotal) * span;
-                patchTaskProgress(Math.min(87, overall), `视频 ${slotIndex + 1}/${videoSlots || 1} · ${Math.round(hub)}%`);
-              },
-            });
-            appendTerminalLog('VideoGen', `镜头${current.number}: 视频生成完成`);
-            vDone++;
-            patchTaskProgress(40 + (vDone / vTotal) * 48, `视频完成 ${vDone}/${videoSlots}`);
-            break;
-          } catch (err: any) {
-            retries--;
-            appendTerminalLog('VideoGen', `镜头${current.number}: 视频生成失败 (${err.message}), 剩余${retries}次`);
-            if (retries === 0) {
-              updateShot(current.id, { videoGenerating: false });
-            } else {
-              await new Promise(r => setTimeout(r, 5000));
+        videoShots.push({ shot: current, slotIndex: idx });
+      });
+
+      const vTotal = Math.max(1, videoShots.length);
+
+      if (videoShots.length === 0) {
+        patchTaskProgress(88, '无待生成视频');
+      } else {
+        // 视频并行生成，最多 runningHubConcurrency 个并发
+        appendTerminalLog('Pipeline', `开始生成 ${videoShots.length} 个镜头的视频（并发 ${runningHubConcurrency}）…`);
+        const tasks = videoShots.map(({ shot, slotIndex }, idx) => async () => {
+          setOneClickPipelineProgress(`生成视频 ${idx + 1}/${vTotal} (镜头${shot.number})`);
+          appendTerminalLog('VideoGen', `镜头${shot.number}: 开始生成视频`);
+
+          let retries = 3;
+          while (retries > 0) {
+            try {
+              const c2 = getLiveShot(shot.id);
+              if (!c2) break;
+              if (c2.videoUrl || c2.videoUrls?.length) {
+                appendTerminalLog('VideoGen', `镜头${c2.number}: 已有视频，跳过`);
+                break;
+              }
+              await handleGenerateVideo(c2, false, {
+                onVideoHubProgress: (hub) => {
+                  const base = 40;
+                  const span = 48;
+                  const overall = base + ((slotIndex + hub / 100) / vTotal) * span;
+                  patchTaskProgress(Math.min(87, overall), `视频 ${slotIndex + 1}/${videoSlots || 1} · ${Math.round(hub)}%`);
+                },
+              });
+              appendTerminalLog('VideoGen', `镜头${shot.number}: 视频生成完成`);
+              patchTaskProgress(40 + ((slotIndex + 1) / vTotal) * 48, `视频完成 ${slotIndex + 1}/${vTotal}`);
+              return true;
+            } catch (err: any) {
+              retries--;
+              appendTerminalLog('VideoGen', `镜头${shot.number}: 视频生成失败 (${err.message}), 剩余${retries}次`);
+              if (retries === 0) {
+                updateShot(shot.id, { videoGenerating: false });
+                throw err;
+              } else {
+                await new Promise(r => setTimeout(r, 5000));
+              }
             }
           }
-        }
-      }
-      if (videoSlots === 0) {
-        patchTaskProgress(88, '无待生成视频');
+          return true;
+        });
+
+        await runConcurrentTasks(tasks, runningHubConcurrency, () => {});
       }
     }
 
