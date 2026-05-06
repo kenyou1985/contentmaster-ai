@@ -7,8 +7,16 @@
 
 export const MINDFUL_EN_SCRIPT_CHARS_MIN = 18000;
 export const MINDFUL_EN_SCRIPT_CHARS_MAX = 20000;
+export const MINDFUL_ZH_SCRIPT_CHARS_MIN = 5500;
+export const MINDFUL_ZH_SCRIPT_CHARS_MAX = 6500;
 
-export function clampMindfulParallelTargetChars(v: number): number {
+export function clampMindfulParallelTargetChars(v: number, isZhOutput: boolean = false): number {
+  if (isZhOutput) {
+    return Math.min(
+      MINDFUL_ZH_SCRIPT_CHARS_MAX,
+      Math.max(MINDFUL_ZH_SCRIPT_CHARS_MIN, Math.round(Number.isFinite(v) ? v : 6000))
+    );
+  }
   return Math.min(
     MINDFUL_EN_SCRIPT_CHARS_MAX,
     Math.max(MINDFUL_EN_SCRIPT_CHARS_MIN, Math.round(Number.isFinite(v) ? v : 19000))
@@ -16,11 +24,16 @@ export function clampMindfulParallelTargetChars(v: number): number {
 }
 
 /** 合并阶段：给出宽松的字数范围提示，内容完整性优先 */
-export function mindfulMergeCharClamp(totalTarget: number): { min: number; max: number } {
-  // 内容完整性优先，字数范围仅作参考
+export function mindfulMergeCharClamp(totalTarget: number, isZhOutput: boolean = false): { min: number; max: number } {
+  if (isZhOutput) {
+    return {
+      min: 5000,   // 中文宽松下限
+      max: 7000,   // 中文宽松上限
+    };
+  }
   return {
-    min: 16000,   // 宽松下限
-    max: 24000,  // 宽松上限
+    min: 16000,   // 英文宽松下限
+    max: 24000,   // 英文宽松上限
   };
 }
 

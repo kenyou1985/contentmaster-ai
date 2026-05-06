@@ -670,11 +670,13 @@ import {
   MEDIA_IMAGE_STYLE_SELECT_OPTIONS,
 } from '../services/coverStylePresets';
 import {
-  MINDFUL_EN_SCRIPT_CHARS_MAX,
-  MINDFUL_EN_SCRIPT_CHARS_MIN,
+  MINDFUL_ZH_SCRIPT_CHARS_MAX,
+  MINDFUL_ZH_SCRIPT_CHARS_MIN,
   clampMindfulParallelTargetChars,
   truncateMindfulScript,
   mindfulMergeCharClamp,
+  MINDFUL_EN_SCRIPT_CHARS_MIN,
+  MINDFUL_EN_SCRIPT_CHARS_MAX,
 } from '../services/mindfulScriptPostProcess';
 import { normalizePetNames, getPetNameStats, normalizeEnglishPetNames, cleanResidualEnglishInChinese } from '../services/normalizePetNames';
 import { translateToDisplayLanguage } from '../services/translateService';
@@ -992,15 +994,15 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   /** 中医玄学长文：达到此字数后才允许节目收尾语；与续写停止条件一致 */
-  const MIN_TCM_SCRIPT_CHARS = 7000;
-  const MAX_TCM_SCRIPT_CHARS = 7500;
+  const MIN_TCM_SCRIPT_CHARS = 8000;
+  const MAX_TCM_SCRIPT_CHARS = 8500;
   const MIN_YI_JING_SCRIPT_CHARS = 8000;
   const MAX_YI_JING_SCRIPT_CHARS = 12000;
   const MAX_YI_JING_SCRIPT_CONTINUATIONS = 20;
   /** 清洗后字数未满此时，禁止出现最后一节（第9节/第5节等）标题与收束 */
-  const TCM_MIN_CHARS_BEFORE_FINAL_LESSON = 6300;
+  const TCM_MIN_CHARS_BEFORE_FINAL_LESSON = 7200;
   /** 清洗后字数未满此时，剥离提前出现的收尾语 */
-  const TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES = 7000;
+  const TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES = 8000;
   const MIN_FIN_SCRIPT_CHARS = 7000; // 28 min * 250 chars/min
   const MAX_FIN_SCRIPT_CHARS = 8200; // ~33 min * 250 chars/min, hard ceiling
   const MIN_NEWS_SCRIPT_CHARS = 7000; // 软目标下限
@@ -1142,7 +1144,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
   useEffect(() => {
     if (niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG') {
-      setYiJingTotalTargetChars((prev) => clampMindfulParallelTargetChars(prev));
+      const isZhOutput = mindfulLanguage === 'zh';
+      setYiJingTotalTargetChars((prev) => clampMindfulParallelTargetChars(prev, isZhOutput));
     }
     // 大国博弈：根据语言模式自动设置正确的目标字数
     if (niche === NicheType.GREAT_POWER_GAME) {
@@ -1153,23 +1156,23 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (niche === NicheType.YI_JING_METAPHYSICS && scriptLengthMode === 'LONG') {
       setYiJingTotalTargetChars(6500);
     }
-    // 中医玄学长视频：自动设置为 7000 字（约 30 分钟口播），短视频维持默认值 3500
+    // 中医玄学长视频：自动设置为 8000 字（约 30 分钟口播），短视频维持默认值 3500
     if (niche === NicheType.TCM_METAPHYSICS && scriptLengthMode === 'LONG') {
-      setYiJingTotalTargetChars(7000);
+      setYiJingTotalTargetChars(8000);
     }
     // 新闻热点长视频：自动设置为 6000 字，短视频维持默认值 3500
     if (niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG') {
       setYiJingTotalTargetChars(6000);
     }
-  }, [niche, scriptLengthMode, greatPowerLanguage]);
+  }, [niche, scriptLengthMode, greatPowerLanguage, mindfulLanguage]);
   const parallelTotalTargetChars = useMemo(
     () =>
       niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG'
-        ? clampMindfulParallelTargetChars(yiJingTotalTargetChars)
+        ? clampMindfulParallelTargetChars(yiJingTotalTargetChars, mindfulLanguage === 'zh')
         : niche === NicheType.GREAT_POWER_GAME
           ? effectiveGpTarget
           : yiJingTotalTargetChars,
-    [niche, scriptLengthMode, yiJingTotalTargetChars, effectiveGpTarget]
+    [niche, scriptLengthMode, yiJingTotalTargetChars, effectiveGpTarget, mindfulLanguage]
   );
   /** 按目标总字数与单次输出上限自动推算章数（非固定 3–7） */
   const yiJingComputedSegCount = useMemo(
@@ -2431,7 +2434,7 @@ ${segmentSourceText}
   const applyYiJingTotalTargetToOutline = useCallback(
     (total: number) => {
       const mindfulLong = niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
-      const n = mindfulLong ? clampMindfulParallelTargetChars(total) : clampYiJingTotalTarget(total);
+      const n = mindfulLong ? clampMindfulParallelTargetChars(total, mindfulLanguage === 'zh') : clampYiJingTotalTarget(total);
       setYiJingTotalTargetChars(n);
       setYiJingOutlineParsed((prev) => {
         if (!prev) return null;
@@ -2720,7 +2723,7 @@ ${segmentSourceText}
         : buildParallelMergeUserPrompt(sel[0].title, combined, parallelTotalTargetChars, {
             ...bundle.merge,
             englishMergedCharClamp: mindfulLong
-              ? mindfulMergeCharClamp(parallelTotalTargetChars)
+              ? mindfulMergeCharClamp(parallelTotalTargetChars, mindfulLanguage === 'zh')
               : undefined,
             mindfulLanguage,
             mergeCharRange,
@@ -2744,6 +2747,15 @@ ${segmentSourceText}
           pushYiJingLog('[合并] ⚠️ 收尾语缺失，正在追加…');
           norm = norm.trimEnd() + (greatPowerLanguage === 'zh' ? '\n\n博弈从未停止。' : '\n\nThe game continues.');
         }
+      }
+
+      // 易经命理/中医玄学：安全兜底——删除大国博弈式结尾（如果 AI 误生成）
+      if (niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.TCM_METAPHYSICS) {
+        norm = norm
+          .replace(/博弈从未停止\。?\s*$/g, '')
+          .replace(/博弈还在继续\。?\s*$/g, '')
+          .replace(/The game (?:never stops|continues)\.?\s*$/gi, '')
+          .trimEnd();
       }
 
       // 治愈心理学：英文宠物名一致性后处理（所有语言都走英文 pipeline）
@@ -3315,6 +3327,26 @@ ${segmentSourceText}
       norm = norm.replace(/^.*?好了[\s\S]*?我们开始上课[。！？].*?/g, '');
       norm = norm.replace(/^第[一二三四五六七八九十\d]+节课[:：]?\s*/gm, '');
 
+      // 中医玄学 CTA 兜底（合并后立即检查，防止去 AI 味时丢失）
+      const TCM_CLOSING = '身体是本钱，评论区打上"安康"两字，咱们下期再见。';
+      const tcmTail0 = norm.length <= 2000 ? norm : norm.slice(-2000);
+      const hasTcmEnding0 = /(?:咱们?|我们|咱們?|我)下期再见|下期再见|下期节目再见|(?:咱们?|我们|咱們?|我)下期见|(?:咱们?|我们|咱們?|我)下期节目见|下课[!！]/.test(tcmTail0);
+      const hasTcmComment0 = /(?:评论区|留言|留言区).*(?:安康|顺遂|平安|吉祥|福寿|如意|康宁|无恙)|打上.*(?:安康|顺遂|平安|吉祥|福寿|如意|康宁|无恙).*(?:咱们?下期|下期再见)/.test(tcmTail0);
+      if (!hasTcmEnding0) {
+        pushTcmLog('[合并] ⚠️ 收尾语缺失，追加倪师式收尾');
+        norm = norm.trimEnd() + '\n\n' + TCM_CLOSING;
+      } else if (!hasTcmComment0) {
+        pushTcmLog('[合并] ⚠️ 收尾语无评论互动引导，追加评论区引导');
+        const lastEnding = tcmTail0.match(/(?:咱们?|我们|咱們?|我)下期再见|下期再见|下期节目再见|(?:咱们?|我们|咱們?|我)下期见|(?:咱们?|我们|咱們?|我)下期节目见|下课[!！]/);
+        if (lastEnding) {
+          const posInTail = lastEnding.index!;
+          const posInNorm = norm.length - tcmTail0.length + posInTail + lastEnding[0].length;
+          norm = norm.slice(0, posInNorm);
+        }
+        norm = norm.trimEnd() + '\n\n' + TCM_CLOSING;
+      }
+
+      let finalPolish = norm;
       setTcmMergedOutput(norm);
       setBatchProgress({ current: 1, total: 1, hint: '合并完成' });
       pushTcmLog(`合并完成，终稿约 ${norm.length} 字`);
@@ -3332,8 +3364,27 @@ ${segmentSourceText}
         }, apiKey, { provider });
         setTcmIsPolishing(false);
         if (antiAiPolished.trim()) {
-          setTcmMergedOutput(antiAiPolished.trim());
-          pushTcmLog(`[去AI味] 清洗完成（约 ${antiAiPolished.length} 字）`);
+          // 去 AI 味后再次检查 CTA 是否完整
+          const polished = antiAiPolished.trim();
+          const tcmTailPolish = polished.length <= 2000 ? polished : polished.slice(-2000);
+          const hasEndingPolish = /(?:咱们?|我们|咱們?|我)下期再见|下期再见|下期节目再见|(?:咱们?|我们|咱們?|我)下期见|(?:咱们?|我们|咱們?|我)下期节目见|下课[!！]/.test(tcmTailPolish);
+          const hasCommentPolish = /(?:评论区|留言|留言区).*(?:安康|顺遂|平安|吉祥|福寿|如意|康宁|无恙)|打上.*(?:安康|顺遂|平安|吉祥|福寿|如意|康宁|无恙).*(?:咱们?下期|下期再见)/.test(tcmTailPolish);
+          let finalPolish = polished;
+          if (!hasEndingPolish) {
+            pushTcmLog('[去AI味] ⚠️ CTA 收尾语被清洗丢失，追加倪师式收尾');
+            finalPolish = finalPolish.trimEnd() + '\n\n' + TCM_CLOSING;
+          } else if (!hasCommentPolish) {
+            pushTcmLog('[去AI味] ⚠️ CTA 评论区引导被清洗丢失，追加评论区引导');
+            const lastEndingP = tcmTailPolish.match(/(?:咱们?|我们|咱們?|我)下期再见|下期再见|下期节目再见|(?:咱们?|我们|咱咱?|我)下期见|(?:咱们?|我们|咱們?|我)下期节目见|下课[!！]/);
+            if (lastEndingP) {
+              const posInTailP = lastEndingP.index!;
+              const posInFinal = finalPolish.length - tcmTailPolish.length + posInTailP + lastEndingP[0].length;
+              finalPolish = finalPolish.slice(0, posInFinal);
+            }
+            finalPolish = finalPolish.trimEnd() + '\n\n' + TCM_CLOSING;
+          }
+          setTcmMergedOutput(finalPolish);
+          pushTcmLog(`[去AI味] 清洗完成（约 ${finalPolish.length} 字）`);
         }
       } catch (e: any) {
         setTcmIsPolishing(false);
@@ -3342,13 +3393,13 @@ ${segmentSourceText}
 
       // 保存到 generatedContents
       setGeneratedContents((prev) => {
-        if (prev.length === 0) return [{ topic: sel[0].title, content: antiAiPolished.trim() || norm }];
+        if (prev.length === 0) return [{ topic: sel[0].title, content: finalPolish }];
         const next = [...prev];
         const hit = next.findIndex((x) => x.topic === sel[0].title);
         if (hit >= 0) {
-          next[hit] = { ...next[hit], content: antiAiPolished.trim() || norm };
+          next[hit] = { ...next[hit], content: finalPolish };
         } else {
-          next.push({ topic: sel[0].title, content: antiAiPolished.trim() || norm });
+          next.push({ topic: sel[0].title, content: finalPolish });
         }
         return next;
       });
@@ -3563,6 +3614,15 @@ ${segmentSourceText}
             console.log('[GP Cleanup] No closing phrase found, appending...');
             norm = norm.trimEnd() + '\n\nThe game continues.';
           }
+        }
+
+        // 易经命理/中医玄学：安全兜底——删除大国博弈式结尾（如果 AI 误生成）
+        if (niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.TCM_METAPHYSICS) {
+          norm = norm
+            .replace(/博弈从未停止\。?\s*$/g, '')
+            .replace(/博弈还在继续\。?\s*$/g, '')
+            .replace(/The game (?:never stops|continues)\.?\s*$/gi, '')
+            .trimEnd();
         }
 
         patchRun(topic.id, { status: 'done', stage: 'done', progress: 100 });
@@ -3897,6 +3957,16 @@ ${segmentSourceText}
               finalText = finalText.trimEnd() + (greatPowerLanguage === 'zh' ? '\n\n博弈从未停止。' : '\n\nThe game continues.');
             }
           }
+
+          // 易经命理/中医玄学：安全兜底——删除大国博弈式结尾（如果 AI 误生成）
+          if (niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.TCM_METAPHYSICS) {
+            finalText = finalText
+              .replace(/博弈从未停止\。?\s*$/g, '')
+              .replace(/博弈还在继续\。?\s*$/g, '')
+              .replace(/The game (?:never stops|continues)\.?\s*$/gi, '')
+              .trimEnd();
+          }
+
           // 治愈心理学中文：宠物名一致性后处理
           if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
             const batchLang = mindfulLanguage || 'en';
@@ -5058,12 +5128,14 @@ ${segmentSourceText}
                             ? 450
                             : 500;
                 } else {
+                    const isMindfulZh = niche === NicheType.MINDFUL_PSYCHOLOGY && mindfulLanguage === 'zh';
                     const minChars =
                         niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO
                             ? 3000
                             : niche === NicheType.MINDFUL_PSYCHOLOGY
                                 ? Math.round(
-                                    (MINDFUL_EN_SCRIPT_CHARS_MIN + MINDFUL_EN_SCRIPT_CHARS_MAX) / 2
+                                    (isMindfulZh ? (MINDFUL_ZH_SCRIPT_CHARS_MIN + MINDFUL_ZH_SCRIPT_CHARS_MAX) / 2
+                                      : (MINDFUL_EN_SCRIPT_CHARS_MIN + MINDFUL_EN_SCRIPT_CHARS_MAX) / 2)
                                   )
                                 : niche === NicheType.YI_JING_METAPHYSICS
                                     ? MIN_YI_JING_SCRIPT_CHARS
@@ -5378,7 +5450,7 @@ ${segmentSourceText}
                                 : niche === NicheType.FINANCE_CRYPTO
                                     ? MIN_FIN_SCRIPT_CHARS
                                     : niche === NicheType.MINDFUL_PSYCHOLOGY
-                                        ? MINDFUL_EN_SCRIPT_CHARS_MIN
+                                        ? (mindfulLanguage === 'zh' ? MINDFUL_ZH_SCRIPT_CHARS_MIN : MINDFUL_EN_SCRIPT_CHARS_MIN)
                                         : MIN_NEWS_SCRIPT_CHARS;
                 const maxChars = isShortScript
                     ? 500
@@ -5391,7 +5463,7 @@ ${segmentSourceText}
                                 : niche === NicheType.FINANCE_CRYPTO
                                     ? MAX_FIN_SCRIPT_CHARS
                                     : niche === NicheType.MINDFUL_PSYCHOLOGY
-                                        ? MINDFUL_EN_SCRIPT_CHARS_MAX
+                                        ? (mindfulLanguage === 'zh' ? MINDFUL_ZH_SCRIPT_CHARS_MAX : MINDFUL_EN_SCRIPT_CHARS_MAX)
                                         : MAX_NEWS_SCRIPT_CHARS;
                 
                 // GENERAL_VIRAL（小美）：严格字数控制，禁止强制续写
@@ -6705,7 +6777,9 @@ ${segmentSourceText}
                     : niche === NicheType.YI_JING_METAPHYSICS
                       ? '长视频：默认「大纲→多段并行→合并润色」生成约万字口播，减轻单请求截断；仍沿用曾氏口吻；短视频：≤500字快讲。'
                       : niche === NicheType.MINDFUL_PSYCHOLOGY
-                        ? `长视频：英文全文约 ${MINDFUL_EN_SCRIPT_CHARS_MIN}–${MINDFUL_EN_SCRIPT_CHARS_MAX} 字符（含空格）；分段并行工作台「目标全文字数」与此一致。短视频：≤500 字。`
+                        ? mindfulLanguage === 'zh'
+                          ? `长视频：中文全文约 ${MINDFUL_ZH_SCRIPT_CHARS_MIN}–${MINDFUL_ZH_SCRIPT_CHARS_MAX} 字符；分段并行工作台「目标全文字数」与此一致。短视频：≤500 字。`
+                          : `长视频：英文全文约 ${MINDFUL_EN_SCRIPT_CHARS_MIN}–${MINDFUL_EN_SCRIPT_CHARS_MAX} 字符（含空格）；分段并行工作台「目标全文字数」与此一致。短视频：≤500 字。`
                         : '短视频：在选题基础上详细展开，加入排比与总结排列，输出 500 字以内短视频文案。'}
             </p>
           </div>
@@ -7118,12 +7192,12 @@ ${segmentSourceText}
                         type="number"
                         min={
                           niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG'
-                            ? MINDFUL_EN_SCRIPT_CHARS_MIN
+                            ? (mindfulLanguage === 'zh' ? MINDFUL_ZH_SCRIPT_CHARS_MIN : MINDFUL_EN_SCRIPT_CHARS_MIN)
                             : 1000
                         }
                         max={
                           niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG'
-                            ? MINDFUL_EN_SCRIPT_CHARS_MAX
+                            ? (mindfulLanguage === 'zh' ? MINDFUL_ZH_SCRIPT_CHARS_MAX : MINDFUL_EN_SCRIPT_CHARS_MAX)
                             : 70000
                         }
                         step={100}
@@ -7138,7 +7212,9 @@ ${segmentSourceText}
                       />
                       <span className="text-[10px] text-slate-500">
                         {niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG'
-                          ? `治愈心理学长视频：此处为英文正文目标总字符数（含空格与标点），${MINDFUL_EN_SCRIPT_CHARS_MIN}–${MINDFUL_EN_SCRIPT_CHARS_MAX}；失焦后均摊各章 min/max。`
+                          ? (mindfulLanguage === 'zh'
+                            ? `治愈心理学长视频（中文）：正文目标总字符数，${MINDFUL_ZH_SCRIPT_CHARS_MIN}–${MINDFUL_ZH_SCRIPT_CHARS_MAX}；失焦后均摊各章 min/max。`
+                            : `治愈心理学长视频（英文）：正文目标总字符数（含空格），${MINDFUL_EN_SCRIPT_CHARS_MIN}–${MINDFUL_EN_SCRIPT_CHARS_MAX}；失焦后均摊各章 min/max。`)
                           : niche === NicheType.YI_JING_METAPHYSICS && scriptLengthMode === 'LONG'
                           ? `易经命理长视频：默认值 6500 字（曾氏长视频标准），允许 1000–70000 调整。失焦后均摊各章字数区间。`
                           : niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG'
