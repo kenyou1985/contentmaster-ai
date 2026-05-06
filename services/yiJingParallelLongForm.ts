@@ -326,20 +326,25 @@ export function buildBoYiParallelSegmentUserPrompt(
     outputLanguage?: string;
     englishChapterCharStrict?: boolean;
     mindfulLanguage?: string;
+    closingStyle?: 'yijin' | 'mindful';
   }
 ): string {
   const { topic, coreTheme, logicLine, chapter, chapterIndex, totalChapters } = params;
   const isFirst = chapterIndex === 0;
   const isLast = chapterIndex === totalChapters - 1;
   const isZhOutput = opts.outputLanguage === 'zh';
+  const closingStyle = opts.closingStyle ?? 'yijin';
 
   // 英文输出
   const enCharRule = `Target: approximately ${chapter.min_chars}–${chapter.max_chars} English characters (including spaces and punctuation). Content completeness takes priority over strict word count.`;
   const enOpening = isFirst
     ? `Opening: Begin directly with the most counterintuitive, most devastating point. No preamble. No "In this video..." or "Today I want to talk about..."`
     : `Opening: Begin with 1-3 sentences that naturally承接 the previous chapter ("${chapter.opening_echo}"). Then immediately dive into the core argument.`;
+
   const enClosing = isLast
-    ? `CLOSING: Summarize the core revelation. Then close with one of: "The game continues." or "The game never stops." — then stop immediately. No text after.`
+    ? (closingStyle === 'mindful'
+      ? `ENDING: Summarize the core reflection. Then end naturally — like a friend saying goodnight. **ABSOLUTELY FORBIDDEN**: "Please like and subscribe", "Good night, my friends", "The game continues.", "The game never stops.", "Take care, everyone", or any broadcast-style closing. Casual, first-person only. Stop immediately after the closing line.`
+      : `CLOSING: Summarize the core revelation. Then close with one of: "The game continues." or "The game never stops." — then stop immediately. No text after.`)
     : `Closing: Provide a natural closing thought and a 1-2 sentence bridge to the next chapter ("${chapter.bridge_to_next}").`;
 
   // 中文输出
@@ -348,7 +353,9 @@ export function buildBoYiParallelSegmentUserPrompt(
     ? `开篇：直接切入最反直觉、最震撼的内幕爆料点。不要任何开场白。不要"在本视频中"或"今天我想讲讲"。`
     : `开篇：用 1–3 句话自然承接上一章（「${chapter.opening_echo}」），然后立即深入核心论点。`;
   const zhClosing = isLast
-    ? `结语：总结核心内幕爆料，然后以"这场博弈还在继续。"或"博弈从未停止。"结尾——立即停止，不要任何后续文字。`
+    ? (closingStyle === 'mindful'
+      ? `结语：自然收束，用随意、自嘲或开放式的结尾。**禁止**使用旁观式话术（「好了，我今天就讲到这里」「各位朋友」「保重」等），**禁止**使用大国博弈式结尾（「博弈还在继续」等）。`
+      : `结语：总结核心内幕爆料，然后以"这场博弈还在继续。"或"博弈从未停止。"结尾——立即停止，不要任何后续文字。`)
     : `结语：提供自然的收束语句，以及 1–2 句衔接下一章的过渡（「${chapter.bridge_to_next}」）。`;
 
   const charRule = isZhOutput ? zhCharRule : enCharRule;
