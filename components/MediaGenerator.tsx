@@ -5059,7 +5059,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                     <span className="text-xs font-semibold text-emerald-400">{shot.number}</span>
                   </div>
 
-                  {/* 文案列：仅展示与 TTS 一致的配音正文；编辑时改完整 caption（可含「角色-语气：」前缀） */}
+                      {/* 文案列：直接展示完整 caption（可含「角色-语气：」前缀），不做截断 */}
                   <div className="flex flex-col gap-1">
                     {editingCaptionShotId === shot.id && isMainWorkspace ? (
                       <textarea
@@ -5071,7 +5071,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                     ) : (
                       <>
                         {(() => {
-                          const dub = getTtsSpeakText(shot).trim() || '無文案';
+                          const dub = (shot.caption || '').trim() || '無文案';
                           const longForClamp = dub.length;
                           return (
                             <>
