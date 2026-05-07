@@ -610,8 +610,6 @@ export function DigitalHumanPanel({
     sessionIds: string[];
     /** 挂起的段落快照（sessionId -> segmentIds[]） */
     pendingSegmentsBySession: Record<string, string[]>;
-    /** 当前正在等待的任务数 */
-    waitingCount: number;
   } | null>(null);
 
   /** 挂起队列的完整任务快照（用于独立显示和执行） */
@@ -650,6 +648,16 @@ export function DigitalHumanPanel({
   const tasksRef = useRef(tasks);
   const pollingTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const oneClickRef = useRef<'idle' | 'audio' | 'dh' | 'done'>('idle');
+  /** 自动继续模式：跳过排队检查，直接从队列取出下一个任务执行 */
+  const autoContinueRef = useRef(false);
+  /** handleOneClickFilm 的稳定引用（避免 useEffect 依赖问题） */
+  const handleOneClickFilmRef = useRef<(() => void) | null>(null);
+  /** 防止 Phase 3 sync 代码与 useEffect 同时触发队列执行 */
+  const queueRunningRef = useRef(false);
+  /** Phase 3 刚完成标志：用于触发 useEffect 执行队列（用 state 确保 React 感知变化） */
+  const [phase3JustFinished, setPhase3JustFinished] = useState(false);
+  /** 队列处理中标志：防止 useEffect 重复触发队列逻辑 */
+  const queueProcessingRef = useRef(false);
   const genAudioRef = useRef<((taskId: string) => Promise<void>) | null>(null);
   const genDhRef = useRef<((taskId: string) => Promise<void>) | null>(null);
   // 用于一键成片 Phase1 判断：setTasks 是异步的，tasksRef 在下次渲染前不会更新
@@ -661,12 +669,22 @@ export function DigitalHumanPanel({
   // 一键成片实时进度：{ phase, done, total, startMs }
   const oneClickProgressRef = useRef<{ phase: 'audio' | 'dh'; done: number; total: number; startMs: number } | null>(null);
   // 挂起队列 ref（用于异步函数中访问最新状态）
-  const oneClickQueueRef = useRef<{ sessionIds: string[]; pendingSegmentsBySession: Record<string, string[]>; waitingCount: number } | null>(null);
+  const oneClickQueueRef = useRef<{ sessionIds: string[]; pendingSegmentsBySession: Record<string, string[]> } | null>(null);
+  // 当前执行中的任务 ID（用于 Phase 3 隔离下载范围，避免 ref 累积导致跨任务打包）
+  const currentTaskSessionIdRef = useRef<string>('');
+  // 当前任务的 segment IDs（用于 Phase 3 隔离下载，避免跨任务打包）
+  const currentTaskSegmentIdsRef = useRef<Set<string>>(new Set());
+  // 保存主任务的 segments（用于队列任务执行时恢复 UI）
+  const mainTasksRef = useRef<DhSegmentTask[]>([]);
 
   // Keep tasksRef in sync
   useEffect(() => {
     tasksRef.current = tasks;
   }, [tasks]);
+
+  // Always-fresh ref for newTaskSessions (updated synchronously to avoid stale closure in Phase 3)
+  const newTaskSessionsRef = useRef(newTaskSessions);
+  newTaskSessionsRef.current = newTaskSessions;
 
   useEffect(() => {
     oneClickRef.current = oneClickFilm;
@@ -692,6 +710,109 @@ export function DigitalHumanPanel({
       logEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [logLines]);
+
+  // ============================================================
+  // 监听队列变化：任务完成后自动执行下一个
+  // 触发条件：phase3JustFinished 变为 true（Phase3 完成后设置），
+  //           或者 oneClickFilm 变为 idle（数字人阶段完成后）
+  // ============================================================
+  useEffect(() => {
+    console.log('[队列调试] useEffect 触发 phase3Flag=', phase3JustFinished, 'oneClickFilm=', oneClickFilm, 'queue=', oneClickQueue?.sessionIds);
+
+    // 只有 Phase 3 完成标志触发时才执行（避免 Phase 2 设置 idle 时误触发）
+    if (!phase3JustFinished && oneClickFilm !== 'idle') {
+      console.log('[队列调试] 守卫1跳过: phase3JustFinished=false 且 oneClickFilm!==idle');
+      return;
+    }
+    setPhase3JustFinished(false); // 重置标志
+
+    // 防止重复触发：如果队列逻辑正在执行中，跳过
+    if (queueProcessingRef.current) {
+      console.log('[队列调试] 守卫1b跳过: queueProcessingRef=true，队列处理中');
+      return;
+    }
+    // 防止重复触发：如果 Phase3 sync 代码正在执行独立任务，跳过
+    if (queueRunningRef.current) {
+      console.log('[队列调试] 守卫1c跳过: queueRunningRef=true，队列任务执行中');
+      return;
+    }
+
+    if (!oneClickQueueRef.current) {
+      console.log('[队列调试] 守卫2跳过: oneClickQueue=null');
+      queueProcessingRef.current = false;
+      return;
+    }
+
+    // sessionIds 只包含"待执行"的任务，不包含正在执行的任务
+    // 取出第一个待执行任务
+    const nextSessionId = oneClickQueueRef.current.sessionIds[0];
+    console.log('[队列调试] sessionIds:', oneClickQueueRef.current.sessionIds, '即将执行:', nextSessionId);
+    if (!nextSessionId) {
+      console.log('[队列调试] 守卫3跳过: sessionIds 已空');
+      queueProcessingRef.current = false;
+      return; // 队列已空
+    }
+
+    // 有任务要处理，标记队列处理中（防止 useEffect 重复触发）
+    queueProcessingRef.current = true;
+
+    // 从 sessionIds 中移除正在执行的任务（这样队列里只剩待执行的）
+    const newQueue = {
+      sessionIds: oneClickQueueRef.current.sessionIds.slice(1), // 移除 [0]，剩下的才是真正"待执行"的
+      pendingSegmentsBySession: Object.fromEntries(
+        Object.entries(oneClickQueueRef.current.pendingSegmentsBySession).filter(([k]) => k !== nextSessionId)
+      ),
+    };
+    oneClickQueueRef.current = newQueue;
+    setOneClickQueue(newQueue);
+
+    const isMainTask = nextSessionId === '';
+    const sessionData = !isMainTask ? newTaskSessionsRef.current.find((s) => s.id === nextSessionId) : null;
+    const nextSegments: DhSegmentTask[] = isMainTask
+      ? tasks
+      : (sessionData?.segments.map((seg) => ({
+          id: seg.id,
+          index: seg.index,
+          text: seg.text,
+          textLength: seg.text.length,
+          audioPhase: seg.audioPhase as 'pending' | 'running' | 'done' | 'error',
+          audioUrl: seg.audioUrl,
+          dhPhase: seg.dhPhase as 'pending' | 'running' | 'done' | 'error',
+          dhVideoUrl: seg.dhVideoUrl,
+        })) ?? []);
+
+    if (nextSegments.length === 0) {
+      queueProcessingRef.current = false;
+      return;
+    }
+
+    // 记录当前任务信息
+    currentTaskSessionIdRef.current = nextSessionId;
+    currentTaskSegmentIdsRef.current = new Set(nextSegments.map((t) => t.id));
+
+    const name = isMainTask ? '主任务' : nextSessionId.split('_')[1];
+
+    if (isMainTask) {
+      // 主任务：更新 tasks 并调用 handleOneClickFilm
+      setTasks(nextSegments);
+      pushLog(`[一键成片] 🔄 自动执行下一个: ${name}`);
+      toast.info(`自动执行下一个任务…`);
+      setTimeout(() => {
+        queueProcessingRef.current = false;
+        autoContinueRef.current = true;
+        handleOneClickFilmRef.current?.();
+      }, 300);
+    } else {
+      // 独立任务：直接调用 handleOneClickFilm，不更新 tasks（主任务保持显示）
+      pushLog(`[一键成片] 🔄 自动执行下一个: ${name}`);
+      toast.info(`自动执行下一个任务…`);
+      setTimeout(() => {
+        queueProcessingRef.current = false;
+        autoContinueRef.current = true;
+        handleOneClickFilmRef.current?.();
+      }, 300);
+    }
+  }, [phase3JustFinished, setPhase3JustFinished]);
 
   // ============================================================
   // 日志工具
@@ -1035,6 +1156,12 @@ export function DigitalHumanPanel({
         );
         completedAudioPhasesRef.current.set(taskId, 'done');
         completedAudioUrlsRef.current.set(taskId, result.audioUrl);
+        // 同步到 tasksRef，确保队列任务能读到最新音频状态
+        tasksRef.current = tasksRef.current.map((t) =>
+          t.id === taskId
+            ? { ...t, audioPhase: 'done' as const, audioUrl: result.audioUrl }
+            : t
+        );
         const audioMs = task.audioStartMs ? Date.now() - task.audioStartMs : undefined;
         if (dhSessionId) {
           updateDhSegmentAudio(dhSessionId, task.index, result.audioUrl, audioMs);
@@ -1406,9 +1533,160 @@ export function DigitalHumanPanel({
   }, [tasks, handleDownloadSingle, toast, pushLog, setDownloadProgress, makeVideoItems, packVideosToBatches, packVideosToZip, triggerZipDownload]);
 
   // ============================================================
+  // 队列任务执行：直接执行独立任务的配音→数字人→下载流程
+  // 不操作 tasks（主任务 UI 保持不变）
+  // ============================================================
+  const runQueueTask = useCallback(
+    async (sessionId: string, segments: DhSegmentTask[]) => {
+      console.log(`[队列任务] runQueueTask 开始 sessionId=${sessionId} segments=${segments.length}个 ids=${segments.map(s => s.id.slice(-6)).join(',')}`);
+      // 从 tasksRef.current 获取最新音频状态（避免使用 stale 的 segments 参数）
+      const tasksSnapshot = tasksRef.current;
+
+      const segs = segments.filter((t) => {
+        // 优先用 tasksRef.current 中的最新状态
+        const latest = tasksSnapshot.find((tt) => tt.id === t.id);
+        const phase = latest?.audioPhase ?? t.audioPhase;
+        const url = latest?.audioUrl ?? t.audioUrl;
+        console.log(`[队列任务] Phase1 段${t.index} 检查: tasksSnapshot中=${!!latest} phase=${phase} url=${!!url}`);
+        return phase === 'pending' || (phase === 'running' && !url);
+      });
+      console.log(`[队列任务] Phase1 过滤结果: segs=${segs.length}个 tasksSnapshot=${tasksSnapshot.map(t => `${t.id.slice(-6)}:audio=${t.audioPhase}`).join(', ')}`);
+
+      // 全部已完成则跳过配音
+      if (segs.length === 0) {
+        console.log('[队列任务] 全部配音已完成，跳过 Phase1，直接进入 Phase2');
+      } else {
+        setOneClickFilm('audio');
+        setOcProgress({ phase: 'audio', done: 0, total: segs.length, startMs: Date.now() });
+        pushLog(`[队列任务] 开始… 阶段① 批量配音 ${segs.length} 段`);
+
+        // 并发配音
+        const queue = [...segs];
+        await Promise.all(
+          Array.from({ length: Math.min(queue.length, MAX_CONCURRENT) }, () =>
+            (async () => {
+              while (queue.length > 0) {
+                if (oneClickRef.current === 'idle') return;
+                const task = queue.shift()!;
+                completedAudioPhasesRef.current.set(task.id, 'running');
+                try {
+                  await generateSingleAudioDirect(task);
+                  setOcProgress((p) => p ? { ...p, done: p.done + 1 } : null);
+                } catch (err: any) {
+                  pushLog(`[队列任务] ⚠️ 段${task.index} 配音异常: ${err.message}`);
+                }
+              }
+            })()
+          )
+        );
+      }
+
+      // Phase 2: 数字人
+      console.log(`[队列任务] Phase2 开始检查: sessionSegIds=${segments.map(s => s.id.slice(-6)).join(',')} tasksRef=${tasksRef.current.map(t => `${t.id.slice(-6)}:audio=${t.audioPhase},url=${!!t.audioUrl}`).join(', ')} completedDh=${[...completedDhPhasesRef.current.entries()].map(([id, phase]) => `${id.slice(-6)}:${phase}`).join(', ')}`);
+      // 同时从 completedAudioUrlsRef 补充 audioUrl（tasksRef 可能尚未同步完成）
+      // 注意：只处理当前 queue task 的 segments（通过 sessionId 关联），
+      // tasksRef 可能混合了主任务和其他队列任务的 segments，需要过滤
+      const sessionSegIds = new Set(segments.map((s) => s.id));
+      const ready = tasksRef.current
+        .filter((t) => sessionSegIds.has(t.id) && completedDhPhasesRef.current.get(t.id) !== 'done')
+        .map((t) => ({
+          id: t.id,
+          index: t.index,
+          audioUrl: t.audioUrl || completedAudioUrlsRef.current.get(t.id),
+          text: t.text,
+        }))
+        .filter((t) => !!t.audioUrl);
+
+      if (ready.length === 0) {
+        pushLog(`[队列任务] 无可生成数字人的段`);
+        setOneClickFilm('idle');
+        setOcProgress(null);
+        return;
+      }
+
+      setOneClickFilm('dh');
+      setOcProgress({ phase: 'dh', done: 0, total: ready.length, startMs: Date.now() });
+      pushLog(`[队列任务] 阶段② 开始批量数字人: ${ready.length} 段`);
+
+      // 并发数字人
+      const dhQueue = [...ready];
+      await Promise.all(
+        Array.from({ length: Math.min(dhQueue.length, MAX_CONCURRENT) }, () =>
+          (async () => {
+            while (dhQueue.length > 0) {
+              if (oneClickRef.current === 'idle') return;
+              const task = dhQueue.shift()!;
+              try {
+                await generateSingleDh(task.id, task.audioUrl);
+                setOcProgress((p) => p ? { ...p, done: p.done + 1 } : null);
+              } catch (err: any) {
+                pushLog(`[队列任务] ⚠️ 段${task.index} 数字人异常: ${err.message}`);
+              }
+            }
+          })()
+        )
+      );
+
+      // Phase 3: 下载
+      const currIds = currentTaskSegmentIdsRef.current;
+      const doneEntries = [...completedDhPhasesRef.current.entries()]
+        .filter(([id, phase]) => phase === 'done' && currIds.has(id));
+
+      if (doneEntries.length === 0) {
+        toast.warning('数字人全部失败，无视频可下载');
+        setOneClickFilm('idle');
+        setOcProgress(null);
+        return;
+      }
+
+      const videoItems = doneEntries.map(([id]) => {
+        const videoUrl = completedDhVideoUrlsRef.current.get(id)!;
+        const originalSeg = segments.find((s) => s.id === id);
+        return { url: videoUrl, filename: `段${originalSeg?.index ?? 0}.mp4` };
+      });
+
+      pushLog(`[队列任务] 打包 ${videoItems.length} 个视频…`);
+      setDownloadProgress({ totalFiles: videoItems.length, currentIndex: 0, phase: 'downloading', overallPercent: 0, currentFilename: '' });
+      try {
+        const blob = await packVideosToZip(videoItems, '数字人对口型视频.zip', (info) => {
+          setDownloadProgress((p) => p ? { ...p, overallPercent: info.overallPercent >= 0 ? info.overallPercent : (p?.overallPercent ?? 0), currentIndex: info.currentIndex, currentFilename: info.filename, phase: info.phase } : null);
+        });
+        triggerZipDownload(blob, '数字人对口型视频');
+        pushLog(`[队列任务] ✅ 完成 · ${videoItems.length} 个视频已下载`);
+        toast.success(`队列任务完成: ${videoItems.length} 个视频已打包下载`);
+      } catch (err: any) {
+        toast.error(`打包失败: ${err.message}`);
+      } finally {
+        setDownloadProgress(null);
+      }
+
+      // 更新 newTaskSessions 状态
+      setNewTaskSessions((prev) =>
+        prev.map((s) => (s.id === sessionId ? { ...s, ocState: 'done' as const } : s))
+      );
+      setOneClickFilm('idle');
+      setOcProgress(null);
+      console.log('[队列任务] 执行完成');
+
+      // 触发队列处理下一个任务
+      queueRunningRef.current = false;
+      setPhase3JustFinished(true);
+    },
+    [generateSingleAudioDirect, generateSingleDh, pushLog, toast, setDownloadProgress, triggerZipDownload, packVideosToZip, setPhase3JustFinished]
+  );
+
+  // ============================================================
   // 一键成片：配音 → 数字人 → 下载
   // ============================================================
   const handleOneClickFilm = useCallback(async () => {
+    // 如果是自动继续模式（任务完成后自动调用），跳过排队检查
+    const isAutoContinue = autoContinueRef.current;
+    if (isAutoContinue) {
+      autoContinueRef.current = false;
+    }
+
+    // auto-continue 模式：跳过排队检查，直接执行
+    // currentTaskSessionIdRef 在 setOneClickFilm('audio') 时已由下方逻辑设置
     if (!runningHubApiKey.trim()) {
       toast.error('请先配置 RunningHub API Key');
       return;
@@ -1419,94 +1697,121 @@ export function DigitalHumanPanel({
     }
 
     // ============================================================
-    // 排队目标逻辑：
+    // 排队目标逻辑（auto-continue 时跳过）
     // 1. 有选中独立任务 → 排队选中任务
     // 2. 无选中但有独立任务 → 默认排队全部独立任务
     // 3. 无独立任务 → 排队主任务
+    // 无论哪种情况，如果主任务有待配音段落，排队后继续执行主任务
     // ============================================================
-    const selectedForQueue = selectedSessionIds.size > 0
-      ? newTaskSessions.filter((s) => selectedSessionIds.has(s.id))
-      : (newTaskSessions.length > 0 ? newTaskSessions : []);
+    if (!isAutoContinue) {
+      const selectedForQueue = selectedSessionIds.size > 0
+        ? newTaskSessions.filter((s) => selectedSessionIds.has(s.id))
+        : (newTaskSessions.length > 0 ? newTaskSessions : []);
 
-    const isMainTaskQueue = selectedForQueue.length === 0 && newTaskSessions.length === 0;
+      // 检查主任务待配音段落
+      const pending = tasks.filter((t) => t.audioPhase === 'pending' || (t.audioPhase === 'running' && !t.audioUrl));
+      const hasRunningTasks = tasks.some((t) => t.audioPhase === 'running');
 
-    // --- 有选中/默认独立任务：排队独立任务 ---
-    if (selectedForQueue.length > 0) {
-      const existingQueue = oneClickQueueRef.current;
-      const alreadyQueuedIds = existingQueue?.sessionIds || [];
-      const newSessions = selectedForQueue.filter((s) => !alreadyQueuedIds.includes(s.id));
+      console.log('[一键成片] 入参状态:', {
+        oneClickFilm,
+        tasksCount: tasks.length,
+        pendingCount: pending.length,
+        hasRunningTasks,
+        selectedForQueue: selectedForQueue.map(s => s.id),
+        queueState: oneClickQueueRef.current ? { sessionIds: oneClickQueueRef.current.sessionIds } : null,
+      });
 
-      if (newSessions.length === 0) {
-        pushLog('[一键成片] 选中任务已在队列中，无需重复添加');
-        toast.info('选中任务已在队列中');
+      // --- 有选中/默认独立任务：排队独立任务 ---
+      if (selectedForQueue.length > 0) {
+        const existingQueue = oneClickQueueRef.current;
+        const alreadyQueuedIds = existingQueue?.sessionIds || [];
+        const newSessions = selectedForQueue.filter((s) => !alreadyQueuedIds.includes(s.id));
+
+        if (newSessions.length > 0) {
+          const newQueue = {
+            sessionIds: [...alreadyQueuedIds, ...newSessions.map((s) => s.id)],
+            pendingSegmentsBySession: {
+              ...(existingQueue?.pendingSegmentsBySession || {}),
+              ...Object.fromEntries(newSessions.map((s) => [s.id, s.segments.map((seg) => seg.id)])),
+            },
+          };
+          setOneClickQueue(newQueue);
+          oneClickQueueRef.current = newQueue;
+          console.log('[一键成片] 队列已设置:', { sessionIds: newQueue.sessionIds, queueRef: oneClickQueueRef.current?.sessionIds });
+
+          const names = newSessions.map((s) => s.id.split('_')[1]).join(', ');
+          pushLog(`[一键成片] ⏳ 已加入队列: ${newSessions.length} 个任务 (${names})`);
+          toast.info(`已加入队列: ${newSessions.length} 个任务`);
+        } else {
+          pushLog('[一键成片] 选中任务已在队列中');
+          toast.info('选中任务已在队列中');
+        }
+
+        // 清除选中状态，下次可重新选择
+        setSelectedSessionIds(new Set());
+
+        // 有主任务待配音 → 继续执行主任务；否则排队结束
+        if (pending.length > 0) {
+          pushLog(`[一键成片] 同时执行主任务: ${pending.length} 段待配音`);
+        } else {
+          return;
+        }
+      }
+
+      // --- 无独立任务，排队主任务 ---
+      // === 主任务挂起逻辑（当前有任务在执行时挂起） ===
+      if (oneClickFilm !== 'idle' || hasRunningTasks) {
+        const pendingIds = pending.map((t) => t.id);
+        const existingIds = oneClickQueueRef.current?.pendingSegmentsBySession[''] || [];
+        const newPendingIds = pendingIds.filter((id) => !existingIds.includes(id));
+
+        if (newPendingIds.length === 0) {
+          pushLog('[一键成片] 主任务已在队列中');
+          toast.info('主任务已在队列中');
+          return;
+        }
+
+        const newQueue = {
+          sessionIds: ['', ...(oneClickQueueRef.current?.sessionIds || [])],
+          pendingSegmentsBySession: {
+            ...(oneClickQueueRef.current?.pendingSegmentsBySession || {}),
+            '': [...existingIds, ...newPendingIds],
+          },
+        };
+        setOneClickQueue(newQueue);
+        oneClickQueueRef.current = newQueue;
+
+        pushLog(`[一键成片] ⏳ 主任务 ${newPendingIds.length} 段已挂起，当前任务完成后自动开始`);
+        toast.info(`主任务已挂起，等待中…`);
         return;
       }
 
-      const allPendingIds = newSessions.flatMap((s) => s.segments.map((seg) => seg.id));
-      const newQueue = {
-        sessionIds: [...alreadyQueuedIds, ...newSessions.map((s) => s.id)],
-        pendingSegmentsBySession: {
-          ...(existingQueue?.pendingSegmentsBySession || {}),
-          ...Object.fromEntries(newSessions.map((s) => [s.id, s.segments.map((seg) => seg.id)])),
-        },
-        waitingCount: (existingQueue?.waitingCount ?? 0) + newSessions.length,
-      };
-      setOneClickQueue(newQueue);
-      oneClickQueueRef.current = newQueue;
-
-      const names = newSessions.map((s) => s.id.split('_')[1]).join(', ');
-      pushLog(`[一键成片] ⏳ 已加入队列: ${newSessions.length} 个任务 (${names})，当前任务完成后自动开始`);
-      toast.info(`已加入队列: ${newSessions.length} 个任务`);
-      return;
-    }
-
-    // --- 无独立任务，排队主任务 ---
-    const pending = tasks.filter((t) => t.audioPhase === 'pending' || (t.audioPhase === 'running' && !t.audioUrl));
-    const hasRunningTasks = tasks.some((t) => t.audioPhase === 'running');
-
-    // === 主任务挂起逻辑 ===
-    if (oneClickFilm !== 'idle' || hasRunningTasks) {
-      const pendingIds = pending.map((t) => t.id);
-      const currentWaiting = oneClickQueueRef.current?.waitingCount ?? 0;
-      const existingIds = oneClickQueueRef.current?.pendingSegmentsBySession[''] || [];
-      const newPendingIds = pendingIds.filter((id) => !existingIds.includes(id));
-
-      if (newPendingIds.length === 0) {
-        pushLog('[一键成片] 主任务已在队列中');
-        toast.info('主任务已在队列中');
+      if (pending.length === 0) {
+        toast.warning('没有待配音的段落');
         return;
       }
-
-      const newQueue = {
-        sessionIds: ['', ...(oneClickQueueRef.current?.sessionIds || [])],
-        pendingSegmentsBySession: {
-          ...(oneClickQueueRef.current?.pendingSegmentsBySession || {}),
-          '': [...existingIds, ...newPendingIds],
-        },
-        waitingCount: currentWaiting + newPendingIds.length,
-      };
-      setOneClickQueue(newQueue);
-      oneClickQueueRef.current = newQueue;
-
-      pushLog(`[一键成片] ⏳ 主任务 ${newPendingIds.length} 段已挂起，当前任务完成后自动开始`);
-      toast.info(`主任务已挂起，等待中…`);
-      return;
     }
 
-    if (pending.length === 0) {
-      toast.warning('没有待配音的段落');
-      return;
-    }
+    // auto-continue 时 pending 仍需要（上面已确保它被定义）
+    const execPending = tasks.filter((t) => t.audioPhase === 'pending' || (t.audioPhase === 'running' && !t.audioUrl));
 
     // 必须先同步更新 ref，再创建 workers，避免 workers 一创建就检测到 idle 退出
     oneClickRef.current = 'audio';
     setOneClickFilm('audio');
-    setOcProgress({ phase: 'audio', done: 0, total: pending.length, startMs: Date.now() });
-    pushLog(`[一键成片] 开始… 阶段① 批量配音 ${pending.length} 段`);
+    setOcProgress({ phase: 'audio', done: 0, total: execPending.length, startMs: Date.now() });
+    pushLog(`[一键成片] 开始… 阶段① 批量配音 ${execPending.length} 段`);
+
+    // 记录当前任务的 segment IDs，Phase 3 只打包这些 ID 的视频（避免跨任务打包）
+    // 如果 execPending 非空用它；为空则用 tasks（配音全完成的情况）
+    currentTaskSegmentIdsRef.current = new Set(
+      execPending.length > 0 ? execPending.map((t) => t.id) : tasks.map((t) => t.id)
+    );
+    // 主任务执行时清空 session ID（独立任务由队列执行逻辑设置）
+    currentTaskSessionIdRef.current = '';
 
     // Phase 1: 批量配音
-    console.log(`[一键成片] Phase1 调试: pending=${pending.length}个, ids=${pending.map(t => t.id.slice(-6)).join(',')}`);
-    const queue = [...pending];
+    console.log(`[一键成片] Phase1 调试: pending=${execPending.length}个, ids=${execPending.map(t => t.id.slice(-6)).join(',')}`);
+    const queue = [...execPending];
     const workers = Array.from({ length: Math.min(queue.length, MAX_CONCURRENT) }, () => {
       const worker = async () => {
         while (queue.length > 0) {
@@ -1561,20 +1866,28 @@ export function DigitalHumanPanel({
     }
 
     // Phase 2: 批量数字人
-    // 直接从 tasksRef 检查配音完成的任务，不再依赖 completedAudioPhasesRef 的 ID 匹配
-    const audioDoneTasks = tasksRef.current.filter((t) => 
-      t.audioPhase === 'done' && t.audioUrl && completedDhPhasesRef.current.get(t.id) !== 'done'
-    );
-
-    const ready = audioDoneTasks.map((t) => ({
-      id: t.id,
-      index: t.index,
-      audioUrl: t.audioUrl!,
-      text: t.text,
-    }));
+    // 从 completedAudioPhasesRef 和 completedAudioUrlsRef 构建 ready 列表
+    // tasksRef 可能是 stale 的（setTasks 异步），但 ref 是同步更新的
+    const doneAudioIds = [...completedAudioPhasesRef.current.entries()]
+      .filter(([, phase]) => phase === 'done')
+      .map(([id]) => id);
+    const ready = doneAudioIds
+      .filter((id) => completedDhPhasesRef.current.get(id) !== 'done')
+      .map((id) => {
+        const audioUrl = completedAudioUrlsRef.current.get(id);
+        if (!audioUrl) return null;
+        const taskFromRef = tasksRef.current.find((t) => t.id === id);
+        return {
+          id,
+          index: taskFromRef?.index ?? 0,
+          audioUrl,
+          text: taskFromRef?.text ?? '',
+        };
+      })
+      .filter(Boolean) as Array<{ id: string; index: number; audioUrl: string; text: string }>;
 
     console.log(`[一键成片] Phase2 待处理: ${ready.length} 段`);
-    console.log(`[一键成片] Phase2 调试: audioDoneTasks=${audioDoneTasks.length}个`);
+    console.log(`[一键成片] Phase2 调试: audioDoneIds=${doneAudioIds.length}个, ready=${ready.length}个`);
     console.log(`[一键成片] Phase2 调试: tasksRef=${tasksRef.current.map(t => `${t.id.slice(-6)}:audio=${t.audioPhase},dh=${t.dhPhase},url=${!!t.audioUrl}`).join(', ')}`);
 
     // 如果没有可处理的配音完成任务，用 completedAudioPhasesRef 重试（setTasks 是异步的，tasksRef 可能未同步）
@@ -1644,8 +1957,8 @@ export function DigitalHumanPanel({
           setOneClickFilm('idle');
           setOcProgress(null);
           const nextQueue = oneClickQueueRef.current;
-          if (nextQueue && nextQueue.waitingCount > 0) {
-            pushLog(`[一键成片] 🔄 检测到 ${nextQueue.waitingCount} 个挂起任务，自动继续…`);
+          if (nextQueue && nextQueue.sessionIds.length > 0) {
+            pushLog(`[一键成片] 🔄 检测到 ${nextQueue.sessionIds.length} 个挂起任务，自动继续…`);
             setTimeout(() => {
               void handleOneClickFilm();
             }, 500);
@@ -1668,6 +1981,13 @@ export function DigitalHumanPanel({
     setOcProgress((p) => (p ? { ...p, phase: 'dh', done: 0, total: ready.length } : null));
     oneClickRef.current = 'dh';
     setOneClickFilm('dh');
+    // 更新独立任务的数字人阶段状态
+    const currSessionId = currentTaskSessionIdRef.current;
+    if (currSessionId) {
+      setNewTaskSessions((prev) =>
+        prev.map((s) => (s.id === currSessionId ? { ...s, ocState: 'dh' as const } : s))
+      );
+    }
     const dhQueue = [...ready];
     const dhWorkers = Array.from({ length: Math.min(dhQueue.length, MAX_CONCURRENT) }, () => {
       const worker = async () => {
@@ -1694,9 +2014,29 @@ export function DigitalHumanPanel({
     await Promise.all(dhWorkers);
     console.log('[一键成片] Phase2 数字人阶段全部 worker 完成');
 
-    // 从 completedDhPhasesRef 获取已完成任务的 ID 和视频 URL
-    const doneEntries = [...completedDhPhasesRef.current.entries()].filter(([, phase]) => phase === 'done');
-    const failedDhEntries = [...completedDhPhasesRef.current.entries()].filter(([, phase]) => phase === 'error');
+    // 等待所有段落数字人完成（防止手动触发的数字人在 workers 完成后才完成）
+    // 只等待当前任务的段落
+    const currentIds = currentTaskSegmentIdsRef.current;
+    let waitCount = 0;
+    while (true) {
+      const pendingDh = [...completedDhPhasesRef.current.entries()]
+        .filter(([id, phase]) => phase !== 'done' && phase !== 'error' && currentIds.has(id));
+      if (pendingDh.length === 0) break;
+      waitCount++;
+      if (waitCount % 10 === 0) {
+        pushLog(`[一键成片] 等待数字人完成: ${pendingDh.length} 段进行中…`);
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    if (waitCount > 0) {
+      pushLog(`[一键成片] 所有数字人已完成，开始打包…`);
+    }
+
+    // 只打包当前任务的视频（currentTaskSegmentIdsRef），避免 ref 累积导致跨任务打包
+    const doneEntries = [...completedDhPhasesRef.current.entries()]
+      .filter(([id, phase]) => phase === 'done' && currentIds.has(id));
+    const failedDhEntries = [...completedDhPhasesRef.current.entries()]
+      .filter(([id, phase]) => phase === 'error' && currentIds.has(id));
 
     // 从 tasksRef 获取任务详情（用于日志显示 index），如果 tasksRef 未同步则从 pending 列表构造
     const done = doneEntries.map(([id]) => {
@@ -1724,6 +2064,7 @@ export function DigitalHumanPanel({
     // Phase 3: 打包下载
     if (done.length === 0) {
       toast.warning('数字人全部失败，无视频可下载');
+      setPhase3JustFinished(true);
       setOneClickFilm('idle');
       return;
     }
@@ -1779,35 +2120,106 @@ export function DigitalHumanPanel({
       toast.error(`打包失败: ${err.message}`);
     } finally {
       setDownloadProgress(null);
+      console.log('[一键成片] Phase3 finally 到达');
     }
-
-    // === 任务完成后，检查并自动执行挂起的任务 ===
-    const nextQueue = oneClickQueueRef.current;
-    if (nextQueue && nextQueue.waitingCount > 0) {
-      // 弹出已完成的任务（当前 session 从队列中移除）
-      const remaining = nextQueue.waitingCount - 1;
-      if (remaining === 0) {
-        // 队列全部完成，清空
-        setOneClickQueue(null);
-        oneClickQueueRef.current = null;
-        pushLog('[一键成片] ✅ 队列全部完成');
-        toast.success('队列全部完成');
-        setOneClickFilm('idle');
-        setOcProgress(null);
-        return;
-      }
-      // 还有剩余，清空队列（下次点击再处理）
-      setOneClickQueue(null);
-      oneClickQueueRef.current = null;
-      pushLog(`[一键成片] 🔄 任务完成，剩余 ${remaining} 个在队列中`);
-      toast.info(`${remaining} 个任务仍在队列中，请手动点击继续`);
-      setOneClickFilm('idle');
-      setOcProgress(null);
-      return;
-    }
-
+    // 标记 Phase 3 完成，触发 useEffect 执行队列
+    console.log('[一键成片] 🔥 Phase3 即将设置 setPhase3JustFinished(true)');
+    setPhase3JustFinished(true);
+    // 任务完成后状态恢复（队列自动执行由 useEffect 监听 phase3JustFinished 触发）
     setOneClickFilm('idle');
     setOcProgress(null);
+
+    // 更新 newTaskSessions 中已完成 session 的状态（显示完成标记）
+    const completedSessionId = currentTaskSessionIdRef.current;
+    if (completedSessionId) {
+      setNewTaskSessions((prev) =>
+        prev.map((s) =>
+          s.id === completedSessionId ? { ...s, ocState: 'done' as const } : s
+        )
+      );
+    }
+
+    // 同步检查队列：是否有更多待执行的任务？直接执行下一个（不走 useEffect）
+    const queueAfterDone = oneClickQueueRef.current;
+    const nextId = queueAfterDone?.sessionIds[0];
+    if (nextId) {
+      console.log('[一键成片] 队列中还有任务，直接执行下一个:', nextId);
+
+      // 用函数式更新：React 会把最新 state 作为参数传入，
+      // 这样可以拿到最新 newTaskSessions（不受闭包过时影响）
+      setOneClickQueue((prevQueue) => {
+        const queue = prevQueue || queueAfterDone!;
+        const isMainTask = nextId === '';
+        const sessionData = !isMainTask ? newTaskSessionsRef.current.find((s) => s.id === nextId) : null;
+        console.log('[一键成片] 队列查找: nextId=', nextId, 'isMainTask=', isMainTask, 'newTaskSessions长度=', newTaskSessionsRef.current.length, 'sessionData=', sessionData ? sessionData.id : null);
+        const nextSegments: DhSegmentTask[] = isMainTask
+          ? tasks
+          : (sessionData?.segments.map((seg) => ({
+              id: seg.id, index: seg.index, text: seg.text,
+              textLength: seg.text.length,
+              audioPhase: seg.audioPhase as 'pending' | 'running' | 'done' | 'error',
+              audioUrl: seg.audioUrl,
+              dhPhase: seg.dhPhase as 'pending' | 'running' | 'done' | 'error',
+              dhVideoUrl: seg.dhVideoUrl,
+            })) ?? []);
+
+        // 从队列中移除正在执行的任务
+        const cleanedQueue = {
+          sessionIds: queue.sessionIds.slice(1),
+          pendingSegmentsBySession: Object.fromEntries(
+            Object.entries(queue.pendingSegmentsBySession).filter(([k]) => k !== nextId)
+          ),
+        };
+        oneClickQueueRef.current = cleanedQueue;
+
+        // 保存主任务的 segments（用于完成后恢复 UI）
+        mainTasksRef.current = tasks;
+        // 记录当前 session ID，用于 Phase 3 更新 newTaskSessions 状态
+        currentTaskSessionIdRef.current = nextId;
+
+        if (!isMainTask) {
+          // 更新独立任务的执行状态
+          setNewTaskSessions((prev) =>
+            prev.map((s) => (s.id === nextId ? { ...s, ocState: 'audio' as const } : s))
+          );
+          // 将队列任务的 segments 合并到 tasksRef（runQueueTask Phase 2 从 tasksRef 读取最新音频状态）
+          const existingIds = new Set(tasksRef.current.map((t) => t.id));
+          const newSegs = nextSegments.filter((s) => !existingIds.has(s.id));
+          tasksRef.current = [...tasksRef.current, ...newSegs];
+        } else {
+          // 主任务：直接覆盖
+          tasksRef.current = nextSegments;
+        }
+
+        if (isMainTask) {
+          // 主任务：更新 tasks 并调用 handleOneClickFilm
+          setTasks(nextSegments);
+          setTimeout(() => {
+            autoContinueRef.current = true;
+            handleOneClickFilmRef.current?.();
+          }, 300);
+        } else {
+          // 独立任务：直接执行，不操作 tasks（主任务 UI 保持不变）
+          setTimeout(() => {
+            queueRunningRef.current = true;
+            void runQueueTask(nextId, nextSegments);
+          }, 300);
+        }
+
+        return cleanedQueue;
+      });
+    } else {
+      // 队列已空，清空队列状态，并恢复主任务显示
+      console.log('[一键成片] 队列已空，清空并恢复主任务');
+      setOneClickQueue(null);
+      oneClickQueueRef.current = null;
+      // 恢复主任务到 UI
+      if (mainTasksRef.current.length > 0) {
+        tasksRef.current = mainTasksRef.current;
+        setTasks(mainTasksRef.current);
+        mainTasksRef.current = [];
+      }
+    }
   }, [
     runningHubApiKey,
     refVideoRhPath,
@@ -1825,7 +2237,12 @@ export function DigitalHumanPanel({
     oneClickQueue,
     selectedSessionIds,
     newTaskSessions,
+    setSelectedSessionIds,
+    setPhase3JustFinished,
   ]);
+
+  // 保持 ref 指向最新版本的 handleOneClickFilm
+  handleOneClickFilmRef.current = handleOneClickFilm;
 
   // ============================================================
   // 取消挂起队列
@@ -2102,11 +2519,48 @@ export function DigitalHumanPanel({
               {/* 独立任务列表 */}
               {newTaskSessions.length > 0 && (
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-medium text-gray-300 flex items-center gap-2">
-                      <ExternalLink size={14} className="text-purple-400" />
-                      独立任务 ({newTaskSessions.length})
-                    </h3>
+                  {/* 醒目的加入队列按钮 */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        const toQueue = selectedSessionIds.size > 0
+                          ? newTaskSessions.filter((s) => selectedSessionIds.has(s.id))
+                          : newTaskSessions;
+                        if (toQueue.length === 0) return;
+
+                        const existingQueue = oneClickQueueRef.current;
+                        const alreadyQueuedIds = existingQueue?.sessionIds || [];
+                        const newSessions = toQueue.filter((s) => !alreadyQueuedIds.includes(s.id));
+
+                        if (newSessions.length === 0) {
+                          toast.info('选中任务已在队列中');
+                          return;
+                        }
+
+                        const newQueue = {
+                          sessionIds: [...alreadyQueuedIds, ...newSessions.map((s) => s.id)],
+                          pendingSegmentsBySession: {
+                            ...(existingQueue?.pendingSegmentsBySession || {}),
+                            ...Object.fromEntries(newSessions.map((s) => [s.id, s.segments.map((seg) => seg.id)])),
+                          },
+                        };
+                        setOneClickQueue(newQueue);
+                        oneClickQueueRef.current = newQueue;
+                        setSelectedSessionIds(new Set());
+
+                        const names = newSessions.map((s) => s.id.split('_')[1]).join(', ');
+                        pushLog(`[一键成片] ⏳ 已加入队列: ${newSessions.length} 个任务 (${names})`);
+                        toast.info(`已加入队列: ${newSessions.length} 个任务`);
+                      }}
+                      disabled={selectedSessionIds.size === 0}
+                      className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed text-white shadow-lg shadow-amber-500/20 transition-all"
+                    >
+                      <Clock size={16} />
+                      加入队列
+                      {selectedSessionIds.size > 0
+                        ? `（${selectedSessionIds.size} 个）`
+                        : `（${newTaskSessions.length} 个）`}
+                    </button>
                     <button
                       onClick={() => {
                         if (selectedSessionIds.size === newTaskSessions.length) {
@@ -2115,10 +2569,16 @@ export function DigitalHumanPanel({
                           setSelectedSessionIds(new Set(newTaskSessions.map((s) => s.id)));
                         }
                       }}
-                      className="text-xs text-purple-400 hover:text-purple-300 px-2 py-1 rounded hover:bg-purple-900/30 transition-colors"
+                      className="text-xs text-purple-400 hover:text-purple-300 px-3 py-2.5 rounded-xl hover:bg-purple-900/30 transition-colors border border-purple-500/30"
                     >
                       {selectedSessionIds.size === newTaskSessions.length ? '取消全选' : '全选'}
                     </button>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+                      <ExternalLink size={14} className="text-purple-400" />
+                      独立任务 ({newTaskSessions.length})
+                    </h3>
                   </div>
                   {newTaskSessions.map((session) => {
                     const audioDone = session.segments.filter((s) => s.audioPhase === 'done').length;
@@ -2150,17 +2610,21 @@ export function DigitalHumanPanel({
                                 <Square size={16} />
                               )}
                             </button>
-                            <span className="text-xs font-medium text-purple-300">
-                              任务 {session.id.split('_')[1]}
+                            <span className="text-xs font-bold text-purple-200 bg-purple-800/60 px-1.5 py-0.5 rounded">
+                              {session.id.split('_')[1]}
                             </span>
+                            {/* 状态徽章 */}
+                            {session.ocState === 'audio' && (
+                              <span className="text-[10px] font-medium text-blue-400 bg-blue-900/50 px-1.5 py-0.5 rounded animate-pulse">配音中</span>
+                            )}
+                            {session.ocState === 'dh' && (
+                              <span className="text-[10px] font-medium text-amber-400 bg-amber-900/50 px-1.5 py-0.5 rounded animate-pulse">数字人中</span>
+                            )}
+                            {session.ocState === 'done' && (
+                              <span className="text-[10px] font-medium text-green-400 bg-green-900/50 px-1.5 py-0.5 rounded">已完成</span>
+                            )}
                             <span className="text-xs text-gray-500">
-                              {session.segments.length} 段 · {session.text.length} 字
-                            </span>
-                            <span className="text-xs text-gray-600">
-                              配音 {audioDone}/{session.segments.length}
-                            </span>
-                            <span className="text-xs text-gray-600">
-                              数字人 {dhDone}/{session.segments.length}
+                              {session.segments.length}段 · {session.text.length}字
                             </span>
                           </div>
                           <div className="flex items-center gap-2">
@@ -2510,14 +2974,14 @@ export function DigitalHumanPanel({
                   </button>
 
                   {/* 挂起队列状态显示 */}
-                  {oneClickQueue && oneClickQueue.waitingCount > 0 && (
+                  {oneClickQueue && oneClickQueue.sessionIds.length > 0 && (
                     <div className="flex flex-col gap-1.5 px-3 py-2.5 bg-amber-900/40 border border-amber-500/50 rounded-lg shadow-lg">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <Clock size={16} className="text-amber-400 animate-pulse" />
                           <div className="flex flex-col">
                             <span className="text-xs text-amber-300 font-medium">
-                              ⏳ 等待队列: {oneClickQueue.waitingCount} 个任务
+                              ⏳ 等待队列: {oneClickQueue.sessionIds.length} 个任务
                             </span>
                             {oneClickQueue.sessionIds.length > 0 && (
                               <span className="text-[10px] text-amber-500">

@@ -2739,13 +2739,23 @@ ${segmentSourceText}
       }
 
       // 大国博弈/Bo Yi：检查并确保收尾语存在
+      // 仅在 AI 原文未包含收尾语时才追加（如果 AI 已自行生成，不重复追加）
       if (niche === NicheType.GREAT_POWER_GAME) {
-        const hasClosing = greatPowerLanguage === 'zh'
-          ? /这场博弈还在继续\。|博弈从未停止\。/.test(norm.trim())
-          : /The game (?:never stops|continues)\.?\s*$/i.test(norm.trim());
-        if (!hasClosing) {
+        const closingPhrase = greatPowerLanguage === 'zh' ? '博弈从未停止。' : 'The game continues.';
+        const closingRegex = greatPowerLanguage === 'zh'
+          ? /这场博弈还在继续\。|博弈从未停止\。$/
+          : /The game (?:never stops|continues)\.?\s*$/i;
+        const aiHasClosing = closingRegex.test(norm.trim());
+        // 追加前的 AI 原文片段（取最后一段用于对比）
+        const lastAiSeg = results[results.length - 1] || '';
+        const originalHasClosing = closingRegex.test(lastAiSeg.trim());
+        if (!aiHasClosing && !originalHasClosing) {
           pushYiJingLog('[合并] ⚠️ 收尾语缺失，正在追加…');
-          norm = norm.trimEnd() + (greatPowerLanguage === 'zh' ? '\n\n博弈从未停止。' : '\n\nThe game continues.');
+          norm = norm.trimEnd() + '\n\n' + closingPhrase;
+        } else if (!aiHasClosing && originalHasClosing) {
+          // AI 原文有收尾但 merge 时丢失了，恢复追加
+          pushYiJingLog('[合并] ⚠️ 收尾语在合并中被截断，恢复追加…');
+          norm = norm.trimEnd() + '\n\n' + closingPhrase;
         }
       }
 
@@ -2998,6 +3008,76 @@ ${segmentSourceText}
         setYiJingIsRunningAiDetection(false);
       }
       // ===== 去AI味清洗结束 =====
+
+      // ===== 大国博弈英文：字数下限续写保护（单选题流水线） =====
+      if (niche === NicheType.GREAT_POWER_GAME && outputLanguage === 'en') {
+        const gpTarget = MIN_GREAT_POWER_EN_CHARS; // 18000
+        let gpExpandCount = 0;
+        const MAX_GP_EN_CONTINUATIONS = 3;
+        while (norm.length < gpTarget && gpExpandCount < MAX_GP_EN_CONTINUATIONS) {
+          gpExpandCount += 1;
+          const remaining = gpTarget - norm.length;
+          pushYiJingLog(`[大国博弈] 当前 ${norm.length} 字，目标 ${gpTarget}，需补足约 ${remaining} 字（第${gpExpandCount}次续写）...`);
+          const expandPrompt = [
+            `TASK: Continue the Bo Yi geopolitical insider analysis script below.`,
+            `IMPORTANT: The current script is ${norm.length} characters. The target is at least ${gpTarget} characters.`,
+            `You MUST add approximately ${Math.min(remaining, 4000)} more characters of new substantive content.`,
+            `CRITICAL RULES:`,
+            `- Do NOT repeat or rephrase any content from the existing script`,
+            `- Do NOT add any titles, headings, chapter markers, or meta text`,
+            `- Do NOT add a closing statement — just add more body content`,
+            `- Pure English prose only, no Chinese characters`,
+            `- Maintain Bo Yi's ice-cold insider whistleblower voice`,
+            ``,
+            `EXISTING SCRIPT (last 3000 chars):`,
+            norm.slice(-3000)
+          ].join('\n');
+          try {
+            let expanded = '';
+            await streamContentGeneration(
+              expandPrompt,
+              NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT,
+              (chunk) => { expanded = chunk; },
+              undefined,
+              { maxTokens: 8192 }
+            );
+            if (expanded.trim()) {
+              norm = norm.trimEnd() + '\n\n' + expanded.trim();
+              setYiJingMergedOutput(norm);
+              setGeneratedContents((prev) => {
+                const next = [...prev];
+                const hit = next.findIndex((x) => x.topic === sel[0].title);
+                if (hit >= 0) { next[hit] = { ...next[hit], content: norm }; }
+                return next;
+              });
+              pushYiJingLog(`[大国博弈] 续写完成，追加后共 ${norm.length} 字`);
+            } else {
+              pushYiJingLog(`[大国博弈] 续写返回为空，停止续写`);
+              break;
+            }
+          } catch (e: any) {
+            pushYiJingLog(`[大国博弈] 续写失败: ${e?.message || e}，停止续写`);
+            break;
+          }
+        }
+        // 硬上限截断保护
+        if (norm.length > MAX_GREAT_POWER_EN_CHARS) {
+          const truncated = norm.slice(0, MAX_GREAT_POWER_EN_CHARS);
+          const lastPeriod = truncated.lastIndexOf('.');
+          norm = lastPeriod > MAX_GREAT_POWER_EN_CHARS - 500
+            ? truncated.slice(0, lastPeriod + 1)
+            : truncated;
+          setYiJingMergedOutput(norm);
+          setGeneratedContents((prev) => {
+            const next = [...prev];
+            const hit = next.findIndex((x) => x.topic === sel[0].title);
+            if (hit >= 0) { next[hit] = { ...next[hit], content: norm }; }
+            return next;
+          });
+          pushYiJingLog(`[大国博弈] 硬上限截断至 ${norm.length} 字`);
+        }
+      }
+      // ===== 大国博弈英文字数续写保护结束 =====
 
       toast.success('已合并并写入右侧编辑器');
       try {
@@ -3609,9 +3689,17 @@ ${segmentSourceText}
 
         // 大国博弈/Bo Yi：检查并确保收尾语存在
         if (niche === NicheType.GREAT_POWER_GAME) {
-          const hasClosing = /The game (?:never stops|continues)\.?\s*$/i.test(norm.trim());
+          const closingRegex = /The game (?:never stops|continues)\.?\s*$/i;
+          const hasClosing = closingRegex.test(norm.trim());
+          // 追加前的 AI merge 结果片段（取末尾用于对比）
+          const mergedTail = (merged || '').trim().slice(-200);
+          const originalHasClosing = closingRegex.test(mergedTail);
           if (!hasClosing) {
-            console.log('[GP Cleanup] No closing phrase found, appending...');
+            if (originalHasClosing) {
+              console.log('[GP Cleanup] Closing phrase truncated during merge, restoring...');
+            } else {
+              console.log('[GP Cleanup] No closing phrase found, appending...');
+            }
             norm = norm.trimEnd() + '\n\nThe game continues.';
           }
         }
@@ -3948,13 +4036,23 @@ ${segmentSourceText}
             finalText = truncateMindfulScript(finalText, MINDFUL_EN_SCRIPT_CHARS_MAX);
           }
           // 大国博弈/Bo Yi：检查并确保收尾语存在
+          // 如果 AI 原文已有收尾，不重复追加；如果 merge 后丢失则恢复
           if (niche === NicheType.GREAT_POWER_GAME) {
-            const hasClosing = greatPowerLanguage === 'zh'
-              ? /这场博弈还在继续\。|博弈从未停止\。/.test(finalText.trim())
-              : /The game (?:never stops|continues)\.?\s*$/i.test(finalText.trim());
-            if (!hasClosing) {
-              pushYiJingLog('[合并] ⚠️ 收尾语缺失，正在追加…');
-              finalText = finalText.trimEnd() + (greatPowerLanguage === 'zh' ? '\n\n博弈从未停止。' : '\n\nThe game continues.');
+            const closingRegex = greatPowerLanguage === 'zh'
+              ? /这场博弈还在继续\。|博弈从未停止\。$/
+              : /The game (?:never stops|continues)\.?\s*$/i;
+            const mergeHasClosing = closingRegex.test(finalText.trim());
+            const originalLastSeg = combined.split('\n\n').slice(-1)[0] || '';
+            const originalHasClosing = closingRegex.test(originalLastSeg.trim());
+            if (!mergeHasClosing) {
+              if (originalHasClosing) {
+                pushYiJingLog('[合并] ⚠️ 收尾语在合并中被截断，恢复追加…');
+              } else {
+                pushYiJingLog('[合并] ⚠️ 收尾语缺失，正在追加…');
+              }
+              finalText = finalText.trimEnd() + '\n\n' + (
+                greatPowerLanguage === 'zh' ? '博弈从未停止。' : 'The game continues.'
+              );
             }
           }
 
@@ -4400,6 +4498,66 @@ ${segmentSourceText}
             setYiJingIsRunningAiDetection(false);
           }
           // ===== 去AI味清洗结束 =====
+
+          // ===== 大国博弈英文：字数下限续写保护 =====
+          // 如果合并+去AI味后字数仍不足18000，触发续写补足
+          if (niche === NicheType.GREAT_POWER_GAME && outputLanguageBatch === 'en') {
+            const gpTarget = MIN_GREAT_POWER_EN_CHARS; // 18000
+            let gpExpandCount = 0;
+            const MAX_GP_EN_CONTINUATIONS = 3;
+            while (finalText.length < gpTarget && gpExpandCount < MAX_GP_EN_CONTINUATIONS) {
+              gpExpandCount += 1;
+              const remaining = gpTarget - finalText.length;
+              pushYiJingLog(`[大国博弈] 当前 ${finalText.length} 字，目标 ${gpTarget}，需补足约 ${remaining} 字（第${gpExpandCount}次续写）...`);
+              const expandPrompt = [
+                `TASK: Continue the Bo Yi geopolitical insider analysis script below.`,
+                `IMPORTANT: The current script is ${finalText.length} characters. The target is at least ${gpTarget} characters.`,
+                `You MUST add approximately ${Math.min(remaining, 4000)} more characters of new substantive content.`,
+                `CRITICAL RULES:`,
+                `- Do NOT repeat or rephrase any content from the existing script`,
+                `- Do NOT add any titles, headings, chapter markers, or meta text`,
+                `- Do NOT add a closing statement — just add more body content`,
+                `- Pure English prose only, no Chinese characters`,
+                `- Maintain Bo Yi's ice-cold insider whistleblower voice`,
+                ``,
+                `EXISTING SCRIPT (last 3000 chars):`,
+                finalText.slice(-3000)
+              ].join('\n');
+              try {
+                let expanded = '';
+                await streamContentGeneration(
+                  expandPrompt,
+                  NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT,
+                  (chunk) => { expanded = chunk; },
+                  undefined,
+                  { maxTokens: 8192 }
+                );
+                if (expanded.trim()) {
+                  // 追加新内容，但避免重复句子
+                  const appended = expanded.trim();
+                  finalText = finalText.trimEnd() + '\n\n' + appended;
+                  pushYiJingLog(`[大国博弈] 续写完成，追加后共 ${finalText.length} 字`);
+                } else {
+                  pushYiJingLog(`[大国博弈] 续写返回为空，停止续写`);
+                  break;
+                }
+              } catch (e: any) {
+                pushYiJingLog(`[大国博弈] 续写失败: ${e?.message || e}，停止续写`);
+                break;
+              }
+            }
+            // 硬上限截断保护
+            if (finalText.length > MAX_GREAT_POWER_EN_CHARS) {
+              const truncated = finalText.slice(0, MAX_GREAT_POWER_EN_CHARS);
+              // 截断到最后一个完整句
+              const lastPeriod = truncated.lastIndexOf('.');
+              finalText = lastPeriod > MAX_GREAT_POWER_EN_CHARS - 500
+                ? truncated.slice(0, lastPeriod + 1)
+                : truncated;
+              pushYiJingLog(`[大国博弈] 硬上限截断至 ${finalText.length} 字`);
+            }
+          }
+          // ===== 大国博弈英文字数续写保护结束 =====
 
           setGeneratedContents((prev) => {
             const next = [...prev];
@@ -5571,29 +5729,27 @@ ${segmentSourceText}
                 } else if (niche === NicheType.GREAT_POWER_GAME) {
                     // 大国博弈赛道：合并后截断保护 + 收尾语兜底
                     // 中英文各自独立字数控制
-                    const gpMinC = greatPowerLanguage === 'zh' ? MIN_GREAT_POWER_ZH_CHARS : MIN_GREAT_POWER_EN_CHARS;
-                    const gpMaxC = greatPowerLanguage === 'zh' ? MAX_GREAT_POWER_ZH_CHARS : MAX_GREAT_POWER_EN_CHARS;
-                    let gpLen = localContent.length;
-
-                    // 大国博弈收尾语兜底（中文/英文各自对应）
-                    if (greatPowerLanguage === 'zh') {
-                        const hasZhClosing = /这场博弈还在继续\。|博弈从未停止\。/.test(localContent.trim());
-                        if (!hasZhClosing) {
-                            console.log('[Generator] GP: No Chinese closing phrase found, appending...');
-                            localContent = localContent.trimEnd() + '\n\n博弈从未停止。';
-                        }
-                    } else {
-                        const hasEnClosing = /The game (?:never stops|continues)\.?\s*$/i.test(localContent.trim());
-                        if (!hasEnClosing) {
-                            console.log('[Generator] GP: No English closing phrase found, appending...');
-                            localContent = localContent.trimEnd() + '\n\nThe game continues.';
-                        }
-                    }
-
-                    // 语义截断保护
+                    const closingRegex = greatPowerLanguage === 'zh'
+                        ? /这场博弈还在继续\。|博弈从未停止\。$/
+                        : /The game (?:never stops|continues)\.?\s*$/i;
+                    // 检查 AI 原文中是否已有收尾语（避免在 AI 已自行生成的情况下重复追加）
+                    const originalHasClosing = closingRegex.test(localContent.trim());
+                    // 语义截断保护（可能在截断过程中丢失收尾语）
                     if (localContent.length > gpMaxC) {
                         localContent = truncateToMax(localContent, gpMaxC);
                         console.log(`[Generator] Great Power Game truncated to ${localContent.length} chars (max: ${gpMaxC})`);
+                    }
+                    // 截断后再次检查，如果 AI 原文有收尾但截断丢失则恢复
+                    const afterTruncateHasClosing = closingRegex.test(localContent.trim());
+                    if (!afterTruncateHasClosing) {
+                        if (originalHasClosing) {
+                            console.log('[Generator] GP: Closing phrase was truncated, restoring...');
+                        } else {
+                            console.log('[Generator] GP: No closing phrase found in AI output, appending...');
+                        }
+                        localContent = localContent.trimEnd() + '\n\n' + (
+                            greatPowerLanguage === 'zh' ? '博弈从未停止。' : 'The game continues.'
+                        );
                     }
                 } else if (niche === NicheType.TCM_METAPHYSICS) {
                     // 中医玄学赛道：收尾语兜底（时辰禁忌风格：互动引导 + 结尾）
