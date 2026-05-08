@@ -697,14 +697,16 @@ export function DigitalHumanPanel({
     oneClickQueueRef.current = oneClickQueue;
   }, [oneClickQueue]);
 
-  // Live ticker for running tasks
+  // Live ticker for running tasks (主任务 + 独立任务)
   useEffect(() => {
-    const hasRunning =
-      tasks.some((t) => t.audioPhase === 'running' || t.dhPhase === 'running');
-    if (!hasRunning) return;
+    const mainRunning = tasks.some((t) => t.audioPhase === 'running' || t.dhPhase === 'running');
+    const newTaskRunning = newTaskSessions.some((s) =>
+      s.segments.some((seg) => seg.audioPhase === 'running' || seg.dhPhase === 'running')
+    );
+    if (!mainRunning && !newTaskRunning) return;
     const id = setInterval(() => setTick((t) => t + 1), 400);
     return () => clearInterval(id);
-  }, [tasks]);
+  }, [tasks, newTaskSessions]);
 
   // Auto-scroll log
   useEffect(() => {
@@ -1142,6 +1144,17 @@ export function DigitalHumanPanel({
             : t
         )
       );
+      // 同步更新独立任务的 segments 状态（用于独立任务列表的实时显示）
+      setNewTaskSessions((prev) =>
+        prev.map((session) => ({
+          ...session,
+          segments: session.segments.map((seg) =>
+            seg.id === taskId
+              ? { ...seg, audioPhase: 'running' as const, audioStartMs: Date.now() }
+              : seg
+          ),
+        }))
+      );
 
       try {
         console.log(`[配音] 段${task.index} 直接调用 runOneClickTts, 文本长度: ${task.text.length}`);
@@ -1190,6 +1203,17 @@ export function DigitalHumanPanel({
         if (dhSessionId) {
           updateDhSegmentAudio(dhSessionId, task.index, result.audioUrl, audioMs);
         }
+        // 同步更新独立任务的 segments 状态（用于独立任务列表的实时显示）
+        setNewTaskSessions((prev) =>
+          prev.map((session) => ({
+            ...session,
+            segments: session.segments.map((seg) =>
+              seg.id === taskId
+                ? { ...seg, audioPhase: 'done' as const, audioUrl: result.audioUrl }
+                : seg
+            ),
+          }))
+        );
         pushLog(`[段${task.index} 配音] ✅ 完成，音频: ${result.audioUrl?.slice(0, 60)}`);
       } catch (err: any) {
         console.error(`[配音] 段${task.index} 异常:`, err);
@@ -1269,6 +1293,17 @@ export function DigitalHumanPanel({
             : t
         )
       );
+      // 同步更新独立任务的 segments 状态（用于独立任务列表的实时显示）
+      setNewTaskSessions((prev) =>
+        prev.map((session) => ({
+          ...session,
+          segments: session.segments.map((seg) =>
+            seg.id === taskId
+              ? { ...seg, dhPhase: 'running' as const, dhStartMs: Date.now() }
+              : seg
+          ),
+        }))
+      );
 
       pushLog(`[段${taskIndex} 数字人] 提交任务…`);
       console.log(`[数字人] 段${taskIndex} 开始, audioUrl: ${audioUrl?.slice(0, 80)}, refVideoPath: ${refVideoRhPath}`);
@@ -1324,6 +1359,17 @@ export function DigitalHumanPanel({
           const dhMs = taskFromRef?.dhStartMs ? Date.now() - taskFromRef.dhStartMs : undefined;
           updateDhSegmentVideo(dhSessionId, taskIndex, taskId_, dhMs);
         }
+        // 同步更新独立任务的 segments 状态（用于独立任务列表的实时显示）
+        setNewTaskSessions((prev) =>
+          prev.map((session) => ({
+            ...session,
+            segments: session.segments.map((seg) =>
+              seg.id === taskId
+                ? { ...seg, dhPhase: 'done' as const, dhVideoUrl: taskId_ }
+                : seg
+            ),
+          }))
+        );
         pushLog(`[段${taskIndex} 数字人] ✅ 完成`);
       } catch (err: any) {
         console.error(`[数字人] 段${taskIndex} 异常:`, err);
@@ -1338,6 +1384,17 @@ export function DigitalHumanPanel({
         if (dhSessionId) {
           updateDhSegmentVideo(dhSessionId, taskIndex, '', undefined, err.message);
         }
+        // 同步更新独立任务的 segments 状态（用于独立任务列表的实时显示）
+        setNewTaskSessions((prev) =>
+          prev.map((session) => ({
+            ...session,
+            segments: session.segments.map((seg) =>
+              seg.id === taskId
+                ? { ...seg, dhPhase: 'error' as const, dhError: err.message }
+                : seg
+            ),
+          }))
+        );
         pushLog(`[段${taskIndex} 数字人] ❌ 失败: ${err.message}`);
         toast.error(`段${taskIndex} 数字人失败: ${err.message}`);
         // 如果是网络错误（CORS 或 Failed to fetch），自动重试一次
@@ -2707,170 +2764,161 @@ export function DigitalHumanPanel({
                       <span className="sr-only">{tick}</span>
                     </h3>
                   </div>
-                  {newTaskSessions.map((session) => {
-                    // 合并 tasksRef 中的最新状态
-                    const getSegFromRef = (segId: string) => {
-                      const exact = tasksRef.current.find((t) => t.id === segId);
-                      if (exact) return exact;
-                      const parts = segId.split('_');
-                      const suffix = parts.slice(-2).join('_');
-                      const found = tasksRef.current.find((t) =>
-                        t.id.endsWith('_' + suffix) || t.id.includes(suffix)
-                      );
-                      if (found) return found;
-                      const timestampPart = parts.slice(1, -2).join('_');
-                      if (timestampPart) {
-                        return tasksRef.current.find((t) => t.id.includes(timestampPart));
-                      }
-                      return undefined;
-                    };
-                    const mergedSegments = session.segments.map((seg) => {
-                      const ref = getSegFromRef(seg.id);
-                      return {
-                        ...seg,
-                        audioPhase: ref?.audioPhase || seg.audioPhase,
-                        audioUrl: ref?.audioUrl || seg.audioUrl,
-                        dhPhase: ref?.dhPhase || seg.dhPhase,
-                        dhVideoUrl: ref?.dhVideoUrl || seg.dhVideoUrl,
-                      };
-                    });
-                    const audioDone = mergedSegments.filter((s) => s.audioPhase === 'done').length;
-                    const dhDone = mergedSegments.filter((s) => s.dhPhase === 'done').length;
-                    const isSelected = selectedSessionIds.has(session.id);
-                    return (
-                      <div
-                        key={session.id}
-                        className={`bg-gray-900/80 rounded-xl p-3 border transition-colors ${
-                          isSelected ? 'border-purple-400 bg-purple-900/20' : 'border-purple-500/30'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => {
-                                setSelectedSessionIds((prev) => {
-                                  const next = new Set(prev);
-                                  if (next.has(session.id)) next.delete(session.id);
-                                  else next.add(session.id);
-                                  return next;
-                                });
-                              }}
-                              className="text-purple-400 hover:text-white flex-shrink-0"
-                            >
-                              {isSelected ? (
-                                <CheckSquare size={16} />
-                              ) : (
-                                <Square size={16} />
-                              )}
-                            </button>
-                            <span className="text-xs font-bold text-purple-200 bg-purple-800/60 px-1.5 py-0.5 rounded">
-                              {session.id.split('_')[1]}
-                            </span>
-                            {/* 状态徽章 - 使用合并后的状态 */}
-                            {audioDone < mergedSegments.length && audioDone === 0 && dhDone === 0 && (
-                              <span className="text-[10px] font-medium text-gray-400 bg-gray-700/50 px-1.5 py-0.5 rounded">等待执行</span>
-                            )}
-                            {audioDone < mergedSegments.length && audioDone > 0 && (
-                              <span className="text-[10px] font-medium text-blue-400 bg-blue-900/50 px-1.5 py-0.5 rounded animate-pulse">配音中</span>
-                            )}
-                            {audioDone === mergedSegments.length && dhDone < mergedSegments.length && dhDone === 0 && (
-                              <span className="text-[10px] font-medium text-amber-400 bg-amber-900/50 px-1.5 py-0.5 rounded animate-pulse">数字人中</span>
-                            )}
-                            {dhDone === mergedSegments.length && (
-                              <span className="text-[10px] font-medium text-green-400 bg-green-900/50 px-1.5 py-0.5 rounded">已完成</span>
-                            )}
-                            <span className="text-xs text-gray-500">
-                              {session.segments.length}段 · {session.text.length}字
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => setNewTaskSessions((prev) => prev.filter((s) => s.id !== session.id))}
-                              className="text-gray-500 hover:text-red-400 p-1"
-                              title="移除此任务"
-                            >
-                              <X size={14} />
-                            </button>
-                          </div>
-                        </div>
-                        {mergedSegments.map((seg) => {
-                          const audioUrl = seg.audioUrl;
-                          const dhVideoUrl = seg.dhVideoUrl;
-                          return (
-                            <div key={seg.id} className="flex items-center gap-2 text-xs py-1.5 border-t border-gray-800/50">
-                              <span className="text-gray-500 w-8 flex-shrink-0">段{seg.index}</span>
-                              <span className="text-gray-600 flex-1 truncate">{seg.text.slice(0, 50)}{seg.text.length > 50 ? '…' : ''}</span>
-                              {/* 配音状态 - 使用合并后的状态 */}
-                              <span className={
-                                seg.audioPhase === 'done' ? 'text-green-400' :
-                                seg.audioPhase === 'error' ? 'text-red-400' :
-                                seg.audioPhase === 'running' ? 'text-blue-400' : 'text-gray-600'
-                              }>
-                                {seg.audioPhase === 'done' ? '✓ 配音' :
-                                 seg.audioPhase === 'error' ? '✗ 失败' :
-                                 seg.audioPhase === 'running' ? '… 配音' : '○ 待配音'}
+                  {/* tick 变化时重新从 history 读取最新状态 */}
+                  {(() => {
+                    const latestHistory = tick >= 0 ? loadDhHistory() : [];
+                    return newTaskSessions.map((session) => {
+                      // 从最新 history 中查找该 session 的最新数据
+                      const historyRec = latestHistory.find((r: DhHistoryRecord) => r.id === session.id);
+                      // 合并 session 初始数据和 history 最新状态
+                      const mergedSegments = session.segments.map((seg) => {
+                        const histSeg = historyRec?.segments.find((s) => s.index === seg.index);
+                        return {
+                          ...seg,
+                          audioPhase: histSeg?.audioUrl ? 'done' : seg.audioPhase,
+                          audioUrl: histSeg?.audioUrl || seg.audioUrl,
+                          dhPhase: histSeg?.videoUrl ? 'done' : seg.dhPhase,
+                          dhVideoUrl: histSeg?.videoUrl || seg.dhVideoUrl,
+                        };
+                      });
+                      const audioDone = mergedSegments.filter((s) => s.audioPhase === 'done').length;
+                      const dhDone = mergedSegments.filter((s) => s.dhPhase === 'done').length;
+                      const isSelected = selectedSessionIds.has(session.id);
+                      return (
+                        <div
+                          key={session.id}
+                          className={`bg-gray-900/80 rounded-xl p-3 border transition-colors ${
+                            isSelected ? 'border-purple-400 bg-purple-900/20' : 'border-purple-500/30'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => {
+                                  setSelectedSessionIds((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(session.id)) next.delete(session.id);
+                                    else next.add(session.id);
+                                    return next;
+                                  });
+                                }}
+                                className="text-purple-400 hover:text-white flex-shrink-0"
+                              >
+                                {isSelected ? (
+                                  <CheckSquare size={16} />
+                                ) : (
+                                  <Square size={16} />
+                                )}
+                              </button>
+                              <span className="text-xs font-bold text-purple-200 bg-purple-800/60 px-1.5 py-0.5 rounded">
+                                {session.id.split('_')[1]}
                               </span>
-                              {/* 音频试听按钮 */}
-                              {audioUrl && (
-                                <button
-                                  onClick={() => {
-                                    if (playingId === seg.id) {
-                                      setPlayingId(null);
-                                    } else {
-                                      setPlayingId(seg.id);
-                                      const audio = new Audio(audioUrl);
-                                      audio.onended = () => setPlayingId(null);
-                                      audio.play().catch(console.error);
-                                    }
-                                  }}
-                                  className="text-blue-400 hover:text-blue-300 p-0.5"
-                                  title="试听音频"
-                                >
-                                  {playingId === seg.id ? <Pause size={11} /> : <Play size={11} />}
-                                </button>
+                              {/* 状态徽章 - 使用合并后的状态 */}
+                              {audioDone < mergedSegments.length && audioDone === 0 && dhDone === 0 && (
+                                <span className="text-[10px] font-medium text-gray-400 bg-gray-700/50 px-1.5 py-0.5 rounded">等待执行</span>
                               )}
-                              {/* 数字人状态 - 使用合并后的状态 */}
-                              <span className={
-                                seg.dhPhase === 'done' ? 'text-green-400' :
-                                seg.dhPhase === 'error' ? 'text-red-400' :
-                                seg.dhPhase === 'running' ? 'text-blue-400' : 'text-gray-600'
-                              }>
-                                {seg.dhPhase === 'done' ? '✓ 数字人' :
-                                 seg.dhPhase === 'error' ? '✗ 失败' :
-                                 seg.dhPhase === 'running' ? '… 数字人' : '○ 待生成'}
+                              {audioDone < mergedSegments.length && audioDone > 0 && (
+                                <span className="text-[10px] font-medium text-blue-400 bg-blue-900/50 px-1.5 py-0.5 rounded animate-pulse">配音中</span>
+                              )}
+                              {audioDone === mergedSegments.length && dhDone < mergedSegments.length && dhDone === 0 && (
+                                <span className="text-[10px] font-medium text-amber-400 bg-amber-900/50 px-1.5 py-0.5 rounded animate-pulse">数字人中</span>
+                              )}
+                              {dhDone === mergedSegments.length && (
+                                <span className="text-[10px] font-medium text-green-400 bg-green-900/50 px-1.5 py-0.5 rounded">已完成</span>
+                              )}
+                              <span className="text-xs text-gray-500">
+                                {mergedSegments.length}段 · {session.text.length}字
                               </span>
-                              {/* 视频预览按钮 */}
-                              {dhVideoUrl && (
-                                <button
-                                  onClick={() => setPreviewVideo({ url: dhVideoUrl, name: `段${seg.index}` })}
-                                  className="text-purple-400 hover:text-purple-300 p-0.5"
-                                  title="预览视频"
-                                >
-                                  <Video size={11} />
-                                </button>
-                              )}
-                              {/* 视频下载按钮 */}
-                              {dhVideoUrl && (
-                                <button
-                                  onClick={() => {
-                                    const a = document.createElement('a');
-                                    a.href = dhVideoUrl;
-                                    a.download = `数字人对口型_段${seg.index}.mp4`;
-                                    a.target = '_blank';
-                                    a.click();
-                                  }}
-                                  className="text-gray-500 hover:text-white p-0.5"
-                                  title="下载视频"
-                                >
-                                  <Download size={11} />
-                                </button>
-                              )}
                             </div>
-                          );
-                        })}
-                      </div>
-                    );
-                  })}
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => setNewTaskSessions((prev) => prev.filter((s) => s.id !== session.id))}
+                                className="text-gray-500 hover:text-red-400 p-1"
+                                title="移除此任务"
+                              >
+                                <X size={14} />
+                              </button>
+                            </div>
+                          </div>
+                          {mergedSegments.map((seg) => {
+                            const audioUrl = seg.audioUrl;
+                            const dhVideoUrl = seg.dhVideoUrl;
+                            return (
+                              <div key={seg.id} className="flex items-center gap-2 text-xs py-1.5 border-t border-gray-800/50">
+                                <span className="text-gray-500 w-8 flex-shrink-0">段{seg.index}</span>
+                                <span className="text-gray-600 flex-1 truncate">{seg.text.slice(0, 50)}{seg.text.length > 50 ? '…' : ''}</span>
+                                {/* 配音状态 - 使用合并后的状态 */}
+                                <span className={
+                                  seg.audioPhase === 'done' ? 'text-green-400' :
+                                  seg.audioPhase === 'error' ? 'text-red-400' :
+                                  seg.audioPhase === 'running' ? 'text-blue-400' : 'text-gray-600'
+                                }>
+                                  {seg.audioPhase === 'done' ? '✓ 配音' :
+                                   seg.audioPhase === 'error' ? '✗ 失败' :
+                                   seg.audioPhase === 'running' ? '… 配音' : '○ 待配音'}
+                                </span>
+                                {/* 音频试听按钮 */}
+                                {audioUrl && (
+                                  <button
+                                    onClick={() => {
+                                      if (playingId === seg.id) {
+                                        setPlayingId(null);
+                                      } else {
+                                        setPlayingId(seg.id);
+                                        const audio = new Audio(audioUrl);
+                                        audio.onended = () => setPlayingId(null);
+                                        audio.play().catch(console.error);
+                                      }
+                                    }}
+                                    className="text-blue-400 hover:text-blue-300 p-0.5"
+                                    title="试听音频"
+                                  >
+                                    {playingId === seg.id ? <Pause size={11} /> : <Play size={11} />}
+                                  </button>
+                                )}
+                                {/* 数字人状态 - 使用合并后的状态 */}
+                                <span className={
+                                  seg.dhPhase === 'done' ? 'text-green-400' :
+                                  seg.dhPhase === 'error' ? 'text-red-400' :
+                                  seg.dhPhase === 'running' ? 'text-blue-400' : 'text-gray-600'
+                                }>
+                                  {seg.dhPhase === 'done' ? '✓ 数字人' :
+                                   seg.dhPhase === 'error' ? '✗ 失败' :
+                                   seg.dhPhase === 'running' ? '… 数字人' : '○ 待生成'}
+                                </span>
+                                {/* 视频预览按钮 */}
+                                {dhVideoUrl && (
+                                  <button
+                                    onClick={() => setPreviewVideo({ url: dhVideoUrl, name: `段${seg.index}` })}
+                                    className="text-purple-400 hover:text-purple-300 p-0.5"
+                                    title="预览视频"
+                                  >
+                                    <Video size={11} />
+                                  </button>
+                                )}
+                                {/* 视频下载按钮 */}
+                                {dhVideoUrl && (
+                                  <button
+                                    onClick={() => {
+                                      const a = document.createElement('a');
+                                      a.href = dhVideoUrl;
+                                      a.download = `数字人对口型_段${seg.index}.mp4`;
+                                      a.target = '_blank';
+                                      a.click();
+                                    }}
+                                    className="text-gray-500 hover:text-white p-0.5"
+                                    title="下载视频"
+                                  >
+                                    <Download size={11} />
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    });
+                  })()}
                 </div>
               )}
 
@@ -3335,7 +3383,7 @@ export function DigitalHumanPanel({
                 {/* 独立任务列表 */}
                 {newTaskSessions.length > 0 && (
                   <div className="mt-4 pt-4 border-t border-gray-700">
-                    {/* tick 用于触发实时刷新 */}
+                    {/* tick 用于触发实时刷新，tick 变化时重新从 history 读取最新状态 */}
                     <h3 className="text-sm font-medium text-purple-300 mb-3 flex items-center gap-2">
                       <ExternalLink size={14} className="text-purple-400" />
                       独立任务列表 ({newTaskSessions.length})
@@ -3343,53 +3391,32 @@ export function DigitalHumanPanel({
                       <span className="sr-only">{tick}</span>
                     </h3>
                     <div className="space-y-3 max-h-[400px] overflow-y-auto">
-                      {newTaskSessions.map((session) => {
-                        // 从 tasksRef 获取最新状态（独立任务 segment.id 包含在 tasksRef 完整 id 中）
-                        // 例如: seg_1778225882938_0_wbwp (完整) 匹配 938_0_wbwp 或 seg_xxx_0_wbwp (部分)
-                        const getSegFromRef = (segId: string) => {
-                          // 尝试多种匹配方式：
-                          // 1. 直接匹配
-                          const exact = tasksRef.current.find((t) => t.id === segId);
-                          if (exact) return exact;
-                          
-                          // 2. 包含匹配（tasksRef 中的 id 包含 segId 的后缀部分）
-                          // segId 格式可能是: seg_timestamp_index_random 或 timestamp_index_random
-                          const parts = segId.split('_');
-                          // 提取时间戳后面的部分: index_random
-                          const suffix = parts.slice(-2).join('_'); // 例如: 0_wbwp
-                          const found = tasksRef.current.find((t) => 
-                            t.id.endsWith('_' + suffix) || t.id.includes(suffix)
-                          );
-                          if (found) return found;
-                          
-                          // 3. 尝试用时间戳部分匹配
-                          const timestampPart = parts.slice(1, -2).join('_'); // 例如: 1778225882938
-                          if (timestampPart) {
-                            return tasksRef.current.find((t) => t.id.includes(timestampPart));
-                          }
-                          
-                          return undefined;
-                        };
-                        // 实时计算 session 的整体状态
-                        const sessionSegTasks = session.segments.map((seg) => {
-                          const refSeg = getSegFromRef(seg.id);
-                          return {
-                            ...seg,
-                            audioPhase: refSeg?.audioPhase || seg.audioPhase,
-                            audioUrl: refSeg?.audioUrl || seg.audioUrl,
-                            dhPhase: refSeg?.dhPhase || seg.dhPhase,
-                            dhVideoUrl: refSeg?.dhVideoUrl || seg.dhVideoUrl,
-                            dhStartMs: refSeg?.dhStartMs || seg.dhStartMs,
-                            dhError: refSeg?.dhError || seg.dhError,
-                          };
-                        });
-                        // 计算 session 的整体状态
-                        const hasRunningAudio = sessionSegTasks.some((t) => t.audioPhase === 'running');
-                        const hasRunningDh = sessionSegTasks.some((t) => t.dhPhase === 'running');
-                        const allAudioDone = sessionSegTasks.every((t) => t.audioPhase === 'done');
-                        const allDhDone = sessionSegTasks.every((t) => t.dhPhase === 'done');
-                        const anyDhError = sessionSegTasks.some((t) => t.dhPhase === 'error');
-                        const sessionState = hasRunningAudio ? 'audio' : hasRunningDh ? 'dh' : allDhDone ? 'done' : allAudioDone ? 'audio_done' : 'idle';
+                      {/* tick 变化时重新读取 history 获取最新状态 */}
+                      {(() => {
+                        // 每次 tick 变化时重新读取 history（避免闭包问题）
+                        const latestHistory = tick >= 0 ? loadDhHistory() : [];
+                        return newTaskSessions.map((session) => {
+                          // 从最新 history 中查找该 session 的最新数据
+                          const historyRec = latestHistory.find((r: DhHistoryRecord) => r.id === session.id);
+                          // 合并 session 初始数据和 history 最新状态
+                          const mergedSegments = session.segments.map((seg) => {
+                            const histSeg = historyRec?.segments.find((s) => s.index === seg.index);
+                            return {
+                              ...seg,
+                              audioPhase: histSeg?.audioUrl ? 'done' : seg.audioPhase,
+                              audioUrl: histSeg?.audioUrl || seg.audioUrl,
+                              dhPhase: histSeg?.videoUrl ? 'done' : seg.dhPhase,
+                              dhVideoUrl: histSeg?.videoUrl || seg.dhVideoUrl,
+                              dhError: histSeg?.dhError || seg.dhError,
+                            };
+                          });
+                          // 实时计算 session 的整体状态
+                          const hasRunningAudio = mergedSegments.some((t) => t.audioPhase === 'running');
+                          const hasRunningDh = mergedSegments.some((t) => t.dhPhase === 'running');
+                          const allAudioDone = mergedSegments.every((t) => t.audioPhase === 'done');
+                          const allDhDone = mergedSegments.every((t) => t.dhPhase === 'done');
+                          const sessionState = hasRunningAudio ? 'audio' : hasRunningDh ? 'dh' : allDhDone ? 'done' : allAudioDone ? 'audio_done' : 'idle';
+                          const anyDhError = mergedSegments.some((t) => t.dhPhase === 'error');
 
                         return (
                           <div
@@ -3420,11 +3447,11 @@ export function DigitalHumanPanel({
                                 {anyDhError && !hasRunningAudio && !hasRunningDh && (
                                   <span className="text-[10px] font-medium text-red-400 bg-red-900/50 px-1.5 py-0.5 rounded">部分失败</span>
                                 )}
-                                {!hasRunningAudio && !hasRunningDh && !allAudioDone && !anyDhError && (
+                                {!hasRunningAudio && !hasRunningDh && !allAudioDone && (
                                   <span className="text-[10px] font-medium text-gray-400 bg-gray-700/50 px-1.5 py-0.5 rounded">等待执行</span>
                                 )}
                                 <span className="text-xs text-gray-500">
-                                  {session.segments.length}段 · {session.text.length}字
+                                  {mergedSegments.length}段 · {session.text.length}字
                                 </span>
                               </div>
                               <button
@@ -3437,7 +3464,7 @@ export function DigitalHumanPanel({
                             </div>
                             {/* 独立任务段列表 */}
                             <div className="space-y-2">
-                              {sessionSegTasks.map((task) => (
+                              {mergedSegments.map((task) => (
                                 <div
                                   key={task.id}
                                   className="bg-gray-900/80 rounded-lg p-2.5 flex items-center gap-2"
@@ -3582,7 +3609,7 @@ export function DigitalHumanPanel({
                             </div>
                           </div>
                         );
-                      })}
+                      })})()}
                     </div>
                   </div>
                 )}
