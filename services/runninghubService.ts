@@ -1241,6 +1241,8 @@ export const generateAudio = async (
 
 /** 自动重试次数（不含首次请求），共 1 + TTS_AUTO_RETRY_COUNT 次 */
 export const TTS_AUTO_RETRY_COUNT = 2;
+/** API 队列满时的最大重试次数 */
+export const TTS_QUEUE_LIMIT_RETRY_COUNT = 10;
 
 export type GenerateAudioRetryHooks = {
   onRetry?: (info: {
@@ -1255,20 +1257,30 @@ export type GenerateAudioRetryHooks = {
 /**
  * 与 {@link generateAudio} 相同，但在 success===false 时自动重试，缓解网络抖动与服务器显存/队列瞬时失败。
  * 轮询超时时额外尝试直接查询任务状态（后台可能已完成但轮询未能获取 URL）。
+ * API 队列满时（queue limit）会使用更长等待时间和更多重试次数。
  */
 export const generateAudioWithRetry = async (
   apiKey: string,
   options: RunningHubAudioOptions,
   hooks?: GenerateAudioRetryHooks
 ): Promise<RunningHubResult> => {
-  const maxAttempts = 1 + TTS_AUTO_RETRY_COUNT;
+  const isQueueLimitError = (error: string | undefined) =>
+    error?.includes('queue limit') || error?.includes('并发数已达上限');
+
+  const maxAttempts = isQueueLimitError(undefined)
+    ? 1 + TTS_QUEUE_LIMIT_RETRY_COUNT
+    : 1 + TTS_AUTO_RETRY_COUNT;
+
   let last: RunningHubResult = { success: false, error: 'TTS 未知错误' };
   for (let i = 0; i < maxAttempts; i++) {
     last = await generateAudio(apiKey, options);
     if (last.success) return last;
 
+    const errStr = last.error || '失败';
+    const queueLimit = isQueueLimitError(errStr);
+
     // 轮询超时时，尝试直接查询任务状态（后台可能已完成但轮询未获取到 URL）
-    if (last.error?.includes('轮询超时') || last.error?.includes('超时')) {
+    if (errStr.includes('轮询超时') || errStr.includes('超时')) {
       const taskId = last.taskId;
       if (taskId) {
         hooks?.onRetry?.({
@@ -1285,12 +1297,15 @@ export const generateAudioWithRetry = async (
     }
 
     if (i < maxAttempts - 1) {
-      const delayMs = 700 * (i + 1) * (i + 1);
-      const errStr = (last.error || '失败').slice(0, 160);
+      // API 队列满时使用指数退避，最长 30 秒
+      const delayMs = queueLimit
+        ? Math.min(30000, 3000 * Math.pow(2, i))
+        : 700 * (i + 1) * (i + 1);
+      const displayErrStr = errStr.slice(0, 160);
       hooks?.onRetry?.({
         attemptNumber: i + 2,
         maxAttempts,
-        error: errStr,
+        error: displayErrStr,
         delayMs,
       });
       await new Promise((r) => setTimeout(r, delayMs));

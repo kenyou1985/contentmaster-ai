@@ -2704,11 +2704,38 @@ export function DigitalHumanPanel({
                     <h3 className="text-sm font-medium text-gray-300 flex items-center gap-2">
                       <ExternalLink size={14} className="text-purple-400" />
                       独立任务 ({newTaskSessions.length})
+                      <span className="sr-only">{tick}</span>
                     </h3>
                   </div>
                   {newTaskSessions.map((session) => {
-                    const audioDone = session.segments.filter((s) => s.audioPhase === 'done').length;
-                    const dhDone = session.segments.filter((s) => s.dhPhase === 'done').length;
+                    // 合并 tasksRef 中的最新状态
+                    const getSegFromRef = (segId: string) => {
+                      const exact = tasksRef.current.find((t) => t.id === segId);
+                      if (exact) return exact;
+                      const parts = segId.split('_');
+                      const suffix = parts.slice(-2).join('_');
+                      const found = tasksRef.current.find((t) =>
+                        t.id.endsWith('_' + suffix) || t.id.includes(suffix)
+                      );
+                      if (found) return found;
+                      const timestampPart = parts.slice(1, -2).join('_');
+                      if (timestampPart) {
+                        return tasksRef.current.find((t) => t.id.includes(timestampPart));
+                      }
+                      return undefined;
+                    };
+                    const mergedSegments = session.segments.map((seg) => {
+                      const ref = getSegFromRef(seg.id);
+                      return {
+                        ...seg,
+                        audioPhase: ref?.audioPhase || seg.audioPhase,
+                        audioUrl: ref?.audioUrl || seg.audioUrl,
+                        dhPhase: ref?.dhPhase || seg.dhPhase,
+                        dhVideoUrl: ref?.dhVideoUrl || seg.dhVideoUrl,
+                      };
+                    });
+                    const audioDone = mergedSegments.filter((s) => s.audioPhase === 'done').length;
+                    const dhDone = mergedSegments.filter((s) => s.dhPhase === 'done').length;
                     const isSelected = selectedSessionIds.has(session.id);
                     return (
                       <div
@@ -2739,14 +2766,17 @@ export function DigitalHumanPanel({
                             <span className="text-xs font-bold text-purple-200 bg-purple-800/60 px-1.5 py-0.5 rounded">
                               {session.id.split('_')[1]}
                             </span>
-                            {/* 状态徽章 */}
-                            {session.ocState === 'audio' && (
+                            {/* 状态徽章 - 使用合并后的状态 */}
+                            {audioDone < mergedSegments.length && audioDone === 0 && dhDone === 0 && (
+                              <span className="text-[10px] font-medium text-gray-400 bg-gray-700/50 px-1.5 py-0.5 rounded">等待执行</span>
+                            )}
+                            {audioDone < mergedSegments.length && audioDone > 0 && (
                               <span className="text-[10px] font-medium text-blue-400 bg-blue-900/50 px-1.5 py-0.5 rounded animate-pulse">配音中</span>
                             )}
-                            {session.ocState === 'dh' && (
+                            {audioDone === mergedSegments.length && dhDone < mergedSegments.length && dhDone === 0 && (
                               <span className="text-[10px] font-medium text-amber-400 bg-amber-900/50 px-1.5 py-0.5 rounded animate-pulse">数字人中</span>
                             )}
-                            {session.ocState === 'done' && (
+                            {dhDone === mergedSegments.length && (
                               <span className="text-[10px] font-medium text-green-400 bg-green-900/50 px-1.5 py-0.5 rounded">已完成</span>
                             )}
                             <span className="text-xs text-gray-500">
@@ -2763,15 +2793,14 @@ export function DigitalHumanPanel({
                             </button>
                           </div>
                         </div>
-                        {session.segments.map((seg) => {
-                          const segFromTasks = tasksRef.current.find((t) => t.id === seg.id);
-                          const audioUrl = segFromTasks?.audioUrl || seg.audioUrl;
-                          const dhVideoUrl = segFromTasks?.dhVideoUrl || seg.dhVideoUrl;
+                        {mergedSegments.map((seg) => {
+                          const audioUrl = seg.audioUrl;
+                          const dhVideoUrl = seg.dhVideoUrl;
                           return (
                             <div key={seg.id} className="flex items-center gap-2 text-xs py-1.5 border-t border-gray-800/50">
                               <span className="text-gray-500 w-8 flex-shrink-0">段{seg.index}</span>
                               <span className="text-gray-600 flex-1 truncate">{seg.text.slice(0, 50)}{seg.text.length > 50 ? '…' : ''}</span>
-                              {/* 配音状态 */}
+                              {/* 配音状态 - 使用合并后的状态 */}
                               <span className={
                                 seg.audioPhase === 'done' ? 'text-green-400' :
                                 seg.audioPhase === 'error' ? 'text-red-400' :
@@ -2789,7 +2818,6 @@ export function DigitalHumanPanel({
                                       setPlayingId(null);
                                     } else {
                                       setPlayingId(seg.id);
-                                      // 直接播放音频
                                       const audio = new Audio(audioUrl);
                                       audio.onended = () => setPlayingId(null);
                                       audio.play().catch(console.error);
@@ -2801,7 +2829,7 @@ export function DigitalHumanPanel({
                                   {playingId === seg.id ? <Pause size={11} /> : <Play size={11} />}
                                 </button>
                               )}
-                              {/* 数字人状态 */}
+                              {/* 数字人状态 - 使用合并后的状态 */}
                               <span className={
                                 seg.dhPhase === 'done' ? 'text-green-400' :
                                 seg.dhPhase === 'error' ? 'text-red-400' :
