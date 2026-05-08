@@ -3307,18 +3307,40 @@ export function DigitalHumanPanel({
                 {/* 独立任务列表 */}
                 {newTaskSessions.length > 0 && (
                   <div className="mt-4 pt-4 border-t border-gray-700">
+                    {/* tick 用于触发实时刷新 */}
                     <h3 className="text-sm font-medium text-purple-300 mb-3 flex items-center gap-2">
                       <ExternalLink size={14} className="text-purple-400" />
                       独立任务列表 ({newTaskSessions.length})
+                      {/* 隐藏的 tick 引用，触发重新渲染以获取最新任务状态 */}
+                      <span className="sr-only">{tick}</span>
                     </h3>
                     <div className="space-y-3 max-h-[400px] overflow-y-auto">
                       {newTaskSessions.map((session) => {
-                        // 从 tasksRef 获取最新状态（使用后缀匹配，因为 ID 格式可能不同）
+                        // 从 tasksRef 获取最新状态（独立任务 segment.id 包含在 tasksRef 完整 id 中）
+                        // 例如: seg_1778225882938_0_wbwp (完整) 匹配 938_0_wbwp 或 seg_xxx_0_wbwp (部分)
                         const getSegFromRef = (segId: string) => {
-                          const shortId = segId.split('_').slice(-2).join('_'); // 取最后两段，如 933_0_soyo
-                          return tasksRef.current.find((t) =>
-                            t.id.endsWith(shortId) || t.id === segId
+                          // 尝试多种匹配方式：
+                          // 1. 直接匹配
+                          const exact = tasksRef.current.find((t) => t.id === segId);
+                          if (exact) return exact;
+                          
+                          // 2. 包含匹配（tasksRef 中的 id 包含 segId 的后缀部分）
+                          // segId 格式可能是: seg_timestamp_index_random 或 timestamp_index_random
+                          const parts = segId.split('_');
+                          // 提取时间戳后面的部分: index_random
+                          const suffix = parts.slice(-2).join('_'); // 例如: 0_wbwp
+                          const found = tasksRef.current.find((t) => 
+                            t.id.endsWith('_' + suffix) || t.id.includes(suffix)
                           );
+                          if (found) return found;
+                          
+                          // 3. 尝试用时间戳部分匹配
+                          const timestampPart = parts.slice(1, -2).join('_'); // 例如: 1778225882938
+                          if (timestampPart) {
+                            return tasksRef.current.find((t) => t.id.includes(timestampPart));
+                          }
+                          
+                          return undefined;
                         };
                         // 实时计算 session 的整体状态
                         const sessionSegTasks = session.segments.map((seg) => {

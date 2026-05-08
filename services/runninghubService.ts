@@ -272,18 +272,24 @@ export const fetchOpenApiV2Query = async (
   apiKey: string,
   taskId: string
 ): Promise<any | null> => {
-  const r = await fetch(`${OPENAPI_V2_BASE}/query`, {
-    method: 'POST',
-    headers: makeHeaders(apiKey),
-    body: JSON.stringify({ taskId }),
-  });
-  const raw = await r.text();
-  const data = tryParseJson(raw);
-  if (!r.ok) {
-    console.warn('[RunningHub] openapi/v2/query HTTP 非 2xx:', r.status, raw.slice(0, 200));
+  try {
+    const r = await fetch(`${OPENAPI_V2_BASE}/query`, {
+      method: 'POST',
+      headers: makeHeaders(apiKey),
+      body: JSON.stringify({ taskId }),
+    });
+    const raw = await r.text();
+    const data = tryParseJson(raw);
+    if (!r.ok) {
+      console.warn('[RunningHub] openapi/v2/query HTTP 非 2xx:', r.status, raw.slice(0, 200));
+      return null;
+    }
+    return data && typeof data === 'object' ? data : null;
+  } catch (err: any) {
+    // CORS 或网络错误时不抛出异常，而是返回 null，让调用方继续轮询
+    console.warn('[RunningHub] openapi/v2/query 网络错误（CORS 或连接问题）:', err.message);
     return null;
   }
-  return data && typeof data === 'object' ? data : null;
 };
 
 /** 轮询 OpenAPI v2 任务直到拿到媒体 URL 或失败/超时
@@ -1310,23 +1316,35 @@ export const checkTaskStatus = async (
   };
 
   const doOutputs = async () => {
-    const r = await fetch(`${BASE_URL}/task/openapi/get-outputs`, {
-      method: 'POST',
-      headers: makeHeaders(apiKey),
-      body: JSON.stringify({ apiKey, taskId }),
-    });
-    const raw = await r.text();
-    return { ok: r.ok, status: r.status, data: tryParse(raw), raw };
+    try {
+      const r = await fetch(`${BASE_URL}/task/openapi/get-outputs`, {
+        method: 'POST',
+        headers: makeHeaders(apiKey),
+        body: JSON.stringify({ apiKey, taskId }),
+      });
+      const raw = await r.text();
+      return { ok: r.ok, status: r.status, data: tryParse(raw), raw };
+    } catch (err: any) {
+      // CORS 或网络错误时返回失败状态，让调用方继续轮询
+      console.warn('[RunningHub] doOutputs 网络错误（CORS 或连接问题）:', err.message);
+      return { ok: false, status: 0, data: null, raw: '', networkError: true };
+    }
   };
 
   const doStatus = async () => {
-    const r = await fetch(`${BASE_URL}/task/openapi/get-status`, {
-      method: 'POST',
-      headers: makeHeaders(apiKey),
-      body: JSON.stringify({ apiKey, taskId }),
-    });
-    const raw = await r.text();
-    return { ok: r.ok, status: r.status, data: tryParse(raw), raw };
+    try {
+      const r = await fetch(`${BASE_URL}/task/openapi/get-status`, {
+        method: 'POST',
+        headers: makeHeaders(apiKey),
+        body: JSON.stringify({ apiKey, taskId }),
+      });
+      const raw = await r.text();
+      return { ok: r.ok, status: r.status, data: tryParse(raw), raw };
+    } catch (err: any) {
+      // CORS 或网络错误时返回失败状态，让调用方继续轮询
+      console.warn('[RunningHub] doStatus 网络错误（CORS 或连接问题）:', err.message);
+      return { ok: false, status: 0, data: null, raw: '', networkError: true };
+    }
   };
 
   const extractFromResults = (d: any): string | undefined => {
@@ -1607,6 +1625,15 @@ export const checkTaskStatus = async (
       taskId,
     };
   } catch (error: any) {
+    // CORS 或网络错误时，返回 RUNNING 状态让调用方继续轮询
+    const isNetworkError = error.message?.includes('Failed to fetch') ||
+                           error.message?.includes('CORS') ||
+                           error.message?.includes('NetworkError') ||
+                           error.message?.includes('net::ERR');
+    if (isNetworkError) {
+      console.warn('[RunningHub] 查询任务状态网络错误，返回 RUNNING 状态让调用方继续轮询:', error.message);
+      return { success: true, taskId, status: 'RUNNING', progress: 50, networkRetry: true };
+    }
     console.error('[RunningHub] 查询任务状态失败:', error);
     return { success: false, error: error.message || '查询任务状态失败' };
   }
