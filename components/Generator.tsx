@@ -72,6 +72,9 @@ function cleanStoryboardOutput(text: string): string {
   }
   // 英文标签
   out = out.replace(/(?:^|\n)\s*Video prompts?\s*[:：]\s*/gim, '视频提示词:');
+  // 小写 video 标签（AI 有时会输出小写）
+  out = out.replace(/(?:^|\n)\s*video prompts?\s*[:：]\s*/gim, '视频提示词:');
+  out = out.replace(/(?:^|\n)\s*video提示词\s*[:：]\s*/gim, '视频提示词:');
 
   // ── 阶段 2：通用正则兜底 ──────────────────────────────────────────────────────
   // 2a. 通用兜底：任何语言前缀 + 任意混合字符(含空格) + 提示词或 prompts + 冒号
@@ -341,24 +344,21 @@ function validateAndFixStoryboardFormat(text: string, niche: NicheType = NicheTy
 
     // 如果是最后一个真实镜头块：在块后追加角色/场景信息
     if (i === lastRealIndex) {
-      const hasRoleInfo = /角色信息/.test(out);
-      const hasSceneInfo = /场景信息/.test(out);
+      const hasRoleInfo = /角色信息/.test(out) || /Character Information/i.test(out);
+      const hasSceneInfo = /场景信息/.test(out) || /Scene Information/i.test(out);
 
       if (!hasRoleInfo || !hasSceneInfo) {
         const charInfo = getNicheCharacterInfo(niche);
         const sceneDesc = getNicheSceneDescription(niche);
 
+        // 强制使用中文标签（无论内容语言）
         if (!hasRoleInfo) {
-          const roleInfo = isChineseContent
-            ? `\n\n角色信息\n\n[名称] ${charInfo.name}\n[别名] ${charInfo.alias}\n[描述] ${charInfo.description}\n\n[名称] 讲述者\n[角色类型] 人物\n[别名] Narrator\n[描述] 第一人称叙述者，情绪细腻、疲惫但自我觉察强，语气温和克制。`
-            : `\n\nCharacter Information\n\n[Name] ${charInfo.name}\n[Alias] ${charInfo.alias}\n[Description] ${charInfo.description}\n\n[Name] Narrator\n[Type] Person\n[Description] First-person narrator, emotionally delicate, tired but self-aware, tone is gentle and restrained.`;
+          const roleInfo = `\n\n角色信息\n\n[名称] ${charInfo.name}\n[别名] ${charInfo.alias}\n[描述] ${charInfo.description}\n\n[名称] 讲述者\n[角色类型] 人物\n[别名] Narrator\n[描述] 第一人称叙述者，情绪细腻、疲惫但自我觉察强，语气温和克制。`;
           fixedBlock += roleInfo;
         }
 
         if (!hasSceneInfo) {
-          const sceneBlock = isChineseContent
-            ? `\n\n场景信息\n\n[名称] 场景-${charInfo.name}讲学空间\n[别名] Scene - ${charInfo.name} Teaching Space\n[描述] ${sceneDesc}`
-            : `\n\nScene Information\n\n[Name] Scene - ${charInfo.name} Teaching Space\n[Description] ${sceneDesc}`;
+          const sceneBlock = `\n\n场景信息\n\n[名称] 场景-${charInfo.name}讲学空间\n[别名] Scene - ${charInfo.name} Teaching Space\n[描述] ${sceneDesc}`;
           fixedBlock += sceneBlock;
         }
       }
@@ -381,6 +381,10 @@ function validateAndFixStoryboardFormat(text: string, niche: NicheType = NicheTy
  */
 function deepCleanStoryboard(text: string): string {
   let out = text;
+
+  // 小写 video 标签统一替换
+  out = out.replace(/(?:^|\n)\s*video prompts?\s*[:：]\s*/gim, '视频提示词:');
+  out = out.replace(/(?:^|\n)\s*video提示词\s*[:：]\s*/gim, '视频提示词:');
 
   // 深度扫描：任何行包含乱码标签字符但缺少正确标签 → 修复
   // 模式：行首有非ASCII/非CJK字符 + 含"提示"但不含"提示词"
@@ -1930,6 +1934,18 @@ ${isEnglishScript
   : '**【语言一致性】中文原文的镜头文案用完整中文，图片/视频提示词用中文。**'
 }
 **【标签一致性 - 关键】视频提示词标签必须严格使用"视频提示词"四个字，不得使用英文 Video prompts、不得使用其他语言的视频词汇（如 Video、ვიდიო、ვიდეო、ভিডিও、वीडियो 等），不得自创任何标签格式。图片提示词同理。**
+**【角色/场景信息标签 - 最高优先级】角色信息和场景信息的标题标签必须使用中文「角色信息」和「场景信息」，禁止使用英文 "Character Information"、"Scene Information" 等标签！格式示例：**
+\`\`\`
+角色信息
+[名称] xxx
+[别名] xxx
+[描述] xxx
+
+场景信息
+[名称] xxx
+[描述] xxx
+\`\`\`
+**【最后镜头完整性 - 最高优先级】最后一个镜头（镜头${estimatedShots}）的文案必须完整包含原文最后一段的全部内容，禁止截断！如果最后一个镜头的文案很长（如300-400字），直接完整输出，不要为了"均衡分配"而截断！**
 **【禁止】不要输出赛道分类描述。图片提示词只描述画面内容本身。**`;
 
       const appendChunk = (chunk: string) => {
