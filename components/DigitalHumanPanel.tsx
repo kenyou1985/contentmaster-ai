@@ -67,7 +67,7 @@ import {
   type VideoLibraryItem,
 } from '../services/videoLibraryService';
 import { VoiceLibrary } from './VoiceLibrary';
-import { getSelectedVoice } from '../services/voiceLibraryService';
+import { getSelectedVoice, setSelectedVoiceId } from '../services/voiceLibraryService';
 
 const MAX_CONCURRENT = 20;
 const MAX_LOG_LINES = 500;
@@ -627,6 +627,17 @@ export function DigitalHumanPanel({
   const [selectingVideoForSession, setSelectingVideoForSession] = useState<string | null>(null);
   /** 正在为哪个独立任务选择语音 */
   const [selectingVoiceForSession, setSelectingVoiceForSession] = useState<string | null>(null);
+  /** 使用 ref 保存当前选择状态，避免闭包问题 */
+  const selectingVoiceForSessionRef = useRef<string | null>(null);
+  const selectingVideoForSessionRef = useRef<string | null>(null);
+
+  // 同步 ref 和 state
+  useEffect(() => {
+    selectingVoiceForSessionRef.current = selectingVoiceForSession;
+  }, [selectingVoiceForSession]);
+  useEffect(() => {
+    selectingVideoForSessionRef.current = selectingVideoForSession;
+  }, [selectingVideoForSession]);
 
   /** 独立新建任务列表（不影响当前正在执行的任务） */
   const [newTaskSessions, setNewTaskSessions] = useState<Array<{
@@ -3018,6 +3029,7 @@ export function DigitalHumanPanel({
                                 <button
                                   onClick={() => {
                                     setSelectingVideoForSession(session.id);
+                                    selectingVideoForSessionRef.current = session.id; // 立即更新 ref
                                     setShowVideoLibrary(true);
                                   }}
                                   className="text-[10px] text-blue-400 hover:text-blue-300 flex-shrink-0"
@@ -3052,6 +3064,7 @@ export function DigitalHumanPanel({
                                 <button
                                   onClick={() => {
                                     setSelectingVoiceForSession(session.id);
+                                    selectingVoiceForSessionRef.current = session.id;
                                     setShowVoiceLibrary(true);
                                   }}
                                   className="text-[10px] text-blue-400 hover:text-blue-300 flex-shrink-0"
@@ -3979,12 +3992,12 @@ export function DigitalHumanPanel({
             setSelectingVideoForSession(null);
           }}
           onSelect={(item) => {
-            if (selectingVideoForSession) {
+            if (selectingVideoForSessionRef.current) {
               // 为独立任务选择视频
               setNewTaskConfigs((prev) => ({
                 ...prev,
-                [selectingVideoForSession]: {
-                  ...prev[selectingVideoForSession],
+                [selectingVideoForSessionRef.current!]: {
+                  ...prev[selectingVideoForSessionRef.current!],
                   refVideoRhPath: item.rhPath,
                   refVideoName: item.name,
                 },
@@ -4013,21 +4026,30 @@ export function DigitalHumanPanel({
       {showVoiceLibrary && (
         <VoiceLibrary
           onClose={() => {
+            console.log('[DH] VoiceLibrary onClose');
             setShowVoiceLibrary(false);
             setSelectingVoiceForSession(null);
           }}
           onVoicesChange={() => setVoiceEpoch((e) => e + 1)}
+          sessionId={selectingVoiceForSession}
+          currentVoiceId={selectingVoiceForSession ? newTaskConfigs[selectingVoiceForSession]?.selectedVoiceId : null}
           onVoiceSelect={(voice) => {
-            if (selectingVoiceForSession) {
+            const sessionId = selectingVoiceForSessionRef.current;
+            if (sessionId) {
               // 为独立任务选择语音
               setNewTaskConfigs((prev) => ({
                 ...prev,
-                [selectingVoiceForSession]: {
-                  ...prev[selectingVoiceForSession],
+                [sessionId]: {
+                  ...prev[sessionId],
                   selectedVoiceId: voice?.id,
                 },
               }));
               toast.success(voice ? `已选择语音: ${voice.name}` : '已切换为系统默认语音');
+            } else {
+              // 为主任务设置默认语音
+              setSelectedVoiceId(voice?.id || null);
+              setVoiceEpoch((e) => e + 1);
+              toast.success(voice ? `已设为默认语音: ${voice.name}` : '已切换为系统默认语音');
             }
             setShowVoiceLibrary(false);
             setSelectingVoiceForSession(null);

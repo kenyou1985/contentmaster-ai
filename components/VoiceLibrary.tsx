@@ -22,9 +22,19 @@ interface VoiceLibraryProps {
   onVoicesChange?: () => void;
   /** 可选：选中语音时触发回调（用于不设置默认语音的情况） */
   onVoiceSelect?: (voice: VoiceProfile | null) => void;
+  /** 可选：当前正在为其选择语音的 session ID（用于显示正确的选中状态） */
+  sessionId?: string | null;
+  /** 可选：当前 session 对应的语音 ID（用于初始化选中状态） */
+  currentVoiceId?: string | null;
 }
 
-export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({ onClose, onVoicesChange, onVoiceSelect }) => {
+export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({ 
+  onClose, 
+  onVoicesChange, 
+  onVoiceSelect,
+  sessionId,
+  currentVoiceId,
+}) => {
   const toast = useToast();
   const [voices, setVoices] = useState<VoiceProfile[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(getSelectedVoiceId());
@@ -33,21 +43,26 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({ onClose, onVoicesCha
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = () => {
-    setVoices(getAllVoices());
-    setSelectedId(getSelectedVoiceId());
+    const loadedVoices = getAllVoices();
+    console.log('[VoiceLibrary] load() called, voices:', loadedVoices.length, loadedVoices.map(v => v.id));
+    setVoices(loadedVoices);
+    // 如果有 currentVoiceId（当前 session 的语音），使用它；否则使用全局默认
+    setSelectedId(currentVoiceId ?? getSelectedVoiceId());
   };
 
   useEffect(() => {
     load();
-  }, []);
+  }, [currentVoiceId]);
 
   const pickSelected = (id: string | null) => {
+    console.log('[VoiceLibrary] pickSelected called, id:', id, 'current voices:', voices.length);
     // 先更新本地选中状态，确保 UI 显示正确
     setSelectedId(id);
 
     // 如果有 onVoiceSelect 回调，只通知父组件，不设置默认
     if (onVoiceSelect) {
       const voice = id ? voices.find(v => v.id === id) || null : null;
+      console.log('[VoiceLibrary] onVoiceSelect, found voice:', voice?.name);
       onVoiceSelect(voice);
     } else {
       // 原有的默认语音设置逻辑
