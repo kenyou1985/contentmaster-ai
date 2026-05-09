@@ -1308,8 +1308,15 @@ export function DigitalHumanPanel({
       pushLog(`[段${taskIndex} 数字人] 提交任务…`);
       console.log(`[数字人] 段${taskIndex} 开始, audioUrl: ${audioUrl?.slice(0, 80)}, refVideoPath: ${refVideoRhPath}`);
 
+      // 取消令牌
+      const cancelToken = dhConcurrency.registerTask(taskId);
+
       try {
-        const taskId_ = await dhConcurrency.run(async () => {
+        const taskId_ = await dhConcurrency.run(taskId, async () => {
+          // 检查是否已取消
+          if (cancelToken.cancelled) {
+            throw new Error('CANCELLED');
+          }
           // blob: URL 无法被 RunningHub 工作流访问，需要先上传到 RunningHub
           let audioPathForDh: string;
           if (audioUrl.startsWith('blob:')) {
@@ -1324,6 +1331,11 @@ export function DigitalHumanPanel({
             audioPathForDh = audioUrl.replace(/^https:\/\/www\.runninghub\.cn/, '').replace(/^\//, '');
           }
 
+          // 检查是否已取消（上传后再次检查）
+          if (cancelToken.cancelled) {
+            throw new Error('CANCELLED');
+          }
+
           const tid = await submitDigitalHumanTask(runningHubApiKey, {
             referenceVideoPath: refVideoRhPath,
             audioPath: audioPathForDh,
@@ -1332,6 +1344,10 @@ export function DigitalHumanPanel({
           pushLog(`[段${taskIndex} 数字人] taskId: ${tid?.slice(0, 16)}…`);
 
           const videoUrl = await pollDigitalHumanUntilDone(runningHubApiKey, tid, (stage, elapsed) => {
+            // 定期检查取消状态
+            if (cancelToken.cancelled) {
+              throw new Error('CANCELLED');
+            }
             if (elapsed % 30 === 0) {
               pushLog(`[段${taskIndex} 数字人] 轮询中 ${elapsed}s…`);
             }
@@ -1372,6 +1388,29 @@ export function DigitalHumanPanel({
         );
         pushLog(`[段${taskIndex} 数字人] ✅ 完成`);
       } catch (err: any) {
+        // 检查是否是取消
+        if (err.message === 'CANCELLED') {
+          pushLog(`[段${taskIndex} 数字人] 已取消`);
+          setTasks((prev) =>
+            prev.map((t) =>
+              t.id === taskId
+                ? { ...t, dhPhase: 'pending' as const, dhError: undefined }
+                : t
+            )
+          );
+          setNewTaskSessions((prev) =>
+            prev.map((session) => ({
+              ...session,
+              segments: session.segments.map((seg) =>
+                seg.id === taskId
+                  ? { ...seg, dhPhase: 'pending' as const, dhError: undefined }
+                  : seg
+              ),
+            }))
+          );
+          dhConcurrency.unregisterTask(taskId);
+          return;
+        }
         console.error(`[数字人] 段${taskIndex} 异常:`, err);
         setTasks((prev) =>
           prev.map((t) =>
@@ -1425,6 +1464,82 @@ export function DigitalHumanPanel({
       }
     },
     [runningHubApiKey, refVideoRhPath, toast, pushLog, dhSessionId]
+  );
+
+  // ============================================================
+  // 取消单个数字人任务
+  // ============================================================
+  const cancelSingleDh = useCallback(
+    (taskId: string) => {
+      // 取消任务
+      dhConcurrency.cancelTask(taskId);
+      dhConcurrency.unregisterTask(taskId);
+
+      // 重置任务状态为 pending
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === taskId
+            ? { ...t, dhPhase: 'pending' as const, dhError: undefined, dhStartMs: undefined }
+            : t
+        )
+      );
+      completedDhPhasesRef.current.delete(taskId);
+      completedDhVideoUrlsRef.current.delete(taskId);
+
+      // 同步更新独立任务的 segments 状态
+      setNewTaskSessions((prev) =>
+        prev.map((session) => ({
+          ...session,
+          segments: session.segments.map((seg) =>
+            seg.id === taskId
+              ? { ...seg, dhPhase: 'pending' as const, dhError: undefined }
+              : seg
+          ),
+        }))
+      );
+
+      const task = tasksRef.current.find((t) => t.id === taskId);
+      const taskIndex = task?.index ?? 0;
+      pushLog(`[段${taskIndex} 数字人] 已取消`);
+      toast.info(`段${taskIndex} 数字人已取消`);
+    },
+    [pushLog, toast]
+  );
+
+  // ============================================================
+  // 取消单个配音任务
+  // ============================================================
+  const cancelSingleAudio = useCallback(
+    (taskId: string) => {
+      // 重置任务状态为 pending
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === taskId
+            ? { ...t, audioPhase: 'pending' as const, audioError: undefined, audioStartMs: undefined }
+            : t
+        )
+      );
+      completedAudioPhasesRef.current.delete(taskId);
+      completedAudioUrlsRef.current.delete(taskId);
+
+      // 同步更新独立任务的 segments 状态
+      setNewTaskSessions((prev) =>
+        prev.map((session) => ({
+          ...session,
+          segments: session.segments.map((seg) =>
+            seg.id === taskId
+              ? { ...seg, audioPhase: 'pending' as const, audioError: undefined }
+              : seg
+          ),
+        }))
+      );
+
+      const task = tasksRef.current.find((t) => t.id === taskId);
+      const taskIndex = task?.index ?? 0;
+      pushLog(`[段${taskIndex} 配音] 已取消`);
+      toast.info(`段${taskIndex} 配音已取消`);
+    },
+    [pushLog, toast]
   );
 
   // refs 在函数定义后直接赋值（避免 TDZ 问题）
@@ -3347,6 +3462,26 @@ export function DigitalHumanPanel({
                                 {formatElapsed(Date.now() - task.dhStartMs)}
                               </span>
                             )}
+                            {/* 取消按钮：配音进行中 */}
+                            {task.audioPhase === 'running' && (
+                              <button
+                                onClick={() => cancelSingleAudio(task.id)}
+                                className="text-[10px] text-red-400 hover:text-red-300 ml-1 px-1 py-0.5 rounded bg-red-900/30 hover:bg-red-900/50"
+                                title="取消配音"
+                              >
+                                取消
+                              </button>
+                            )}
+                            {/* 取消按钮：数字人进行中 */}
+                            {task.dhPhase === 'running' && (
+                              <button
+                                onClick={() => cancelSingleDh(task.id)}
+                                className="text-[10px] text-red-400 hover:text-red-300 ml-1 px-1 py-0.5 rounded bg-red-900/30 hover:bg-red-900/50"
+                                title="取消数字人"
+                              >
+                                取消
+                              </button>
+                            )}
                           </div>
                         </div>
 
@@ -3454,13 +3589,35 @@ export function DigitalHumanPanel({
                                   {mergedSegments.length}段 · {session.text.length}字
                                 </span>
                               </div>
-                              <button
-                                onClick={() => setNewTaskSessions((prev) => prev.filter((s) => s.id !== session.id))}
-                                className="text-gray-500 hover:text-red-400 p-1"
-                                title="移除此任务"
-                              >
-                                <X size={14} />
-                              </button>
+                              <div className="flex items-center gap-2">
+                                {/* 取消全部进行中的任务按钮 */}
+                                {(hasRunningAudio || hasRunningDh) && (
+                                  <button
+                                    onClick={() => {
+                                      // 取消该会话下所有进行中的任务
+                                      mergedSegments.forEach((seg) => {
+                                        if (seg.audioPhase === 'running') {
+                                          cancelSingleAudio(seg.id);
+                                        }
+                                        if (seg.dhPhase === 'running') {
+                                          cancelSingleDh(seg.id);
+                                        }
+                                      });
+                                    }}
+                                    className="text-xs text-red-400 hover:text-red-300 px-2 py-1 rounded bg-red-900/30 hover:bg-red-900/50 transition-colors"
+                                    title="取消全部进行中的任务"
+                                  >
+                                    取消全部
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => setNewTaskSessions((prev) => prev.filter((s) => s.id !== session.id))}
+                                  className="text-gray-500 hover:text-red-400 p-1"
+                                  title="移除此任务"
+                                >
+                                  <X size={14} />
+                                </button>
+                              </div>
                             </div>
                             {/* 独立任务段列表 */}
                             <div className="space-y-2">
@@ -3554,25 +3711,45 @@ export function DigitalHumanPanel({
                                           {formatElapsed(Date.now() - task.dhStartMs)}
                                         </span>
                                       )}
-                                      {task.dhPhase === 'error' && (
-                                        <button
-                                          onClick={() => {
-                                            // 重试数字人
-                                            const audioUrl = task.audioUrl || completedAudioUrlsRef.current.get(task.id);
-                                            if (audioUrl) {
-                                              generateSingleDh(task.id, audioUrl);
-                                            }
-                                          }}
-                                          className="text-[10px] text-orange-400 hover:text-orange-300 ml-1"
-                                        >
-                                          重试
-                                        </button>
-                                      )}
-                                    </div>
+                                    {task.dhPhase === 'error' && (
+                                      <button
+                                        onClick={() => {
+                                          // 重试数字人
+                                          const audioUrl = task.audioUrl || completedAudioUrlsRef.current.get(task.id);
+                                          if (audioUrl) {
+                                            generateSingleDh(task.id, audioUrl);
+                                          }
+                                        }}
+                                        className="text-[10px] text-orange-400 hover:text-orange-300 ml-1"
+                                      >
+                                        重试
+                                      </button>
+                                    )}
+                                    {/* 取消按钮：配音进行中 */}
+                                    {task.audioPhase === 'running' && (
+                                      <button
+                                        onClick={() => cancelSingleAudio(task.id)}
+                                        className="text-[10px] text-red-400 hover:text-red-300 ml-1 px-1 py-0.5 rounded bg-red-900/30 hover:bg-red-900/50"
+                                        title="取消配音"
+                                      >
+                                        取消
+                                      </button>
+                                    )}
+                                    {/* 取消按钮：数字人进行中 */}
+                                    {task.dhPhase === 'running' && (
+                                      <button
+                                        onClick={() => cancelSingleDh(task.id)}
+                                        className="text-[10px] text-red-400 hover:text-red-300 ml-1 px-1 py-0.5 rounded bg-red-900/30 hover:bg-red-900/50"
+                                        title="取消数字人"
+                                      >
+                                        取消
+                                      </button>
+                                    )}
                                   </div>
+                                </div>
 
-                                  <div className="flex items-center gap-1 flex-shrink-0">
-                                    {/* 下载按钮 */}
+                                <div className="flex items-center gap-1 flex-shrink-0">
+                                  {/* 下载按钮 */}
                                     {task.dhPhase === 'done' && task.dhVideoUrl && (
                                       <button
                                         onClick={() => {

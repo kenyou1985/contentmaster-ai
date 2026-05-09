@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { flushSync } from 'react-dom';
 import { ApiProvider, ToolMode, NicheType } from '../types';
 import {
@@ -31,7 +31,7 @@ import {
 } from '../services/characterLibraryService';
 import { CharacterLibrary } from './CharacterLibrary';
 import { VoiceLibrary } from './VoiceLibrary';
-import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, Settings2, FolderOpen, Rocket, Copy, Check, CheckSquare, Square, Users, HardDrive, ListOrdered, ArrowUp, Terminal, Gauge, AlertCircle, Sparkles, Wand2 } from 'lucide-react';
+import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, Settings2, FolderOpen, Rocket, Copy, Check, CheckSquare, Square, Users, HardDrive, ListOrdered, ArrowUp, Terminal, Gauge, AlertCircle, Sparkles, Wand2, XCircle } from 'lucide-react';
 import JSZip from 'jszip';
 import { HistorySelector } from './HistorySelector';
 import { getRunningHubMaxConcurrent, setRunningHubMaxConcurrent, initRunningHubConcurrency, MAX_CONCURRENT } from '../services/runningHubConcurrency';
@@ -783,6 +783,21 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const queueGloballyPausedRef = useRef(false);
   const queueRunnerBusyRef = useRef(false);
   const activeQueueTaskIdRef = useRef<string | null>(null);
+  /** 取消令牌：用于取消一键成片执行 */
+  const oneClickCancelledRef = useRef(false);
+
+  /** 取消当前一键成片执行 */
+  const cancelOneClickPipeline = useCallback(() => {
+    oneClickCancelledRef.current = true;
+    appendTerminalLog('Pipeline', '⛔ 已发送取消信号，将在当前步骤完成后停止');
+  }, [appendTerminalLog]);
+
+  /** 取消队列执行 */
+  const cancelQueueProcessor = useCallback(() => {
+    queueGloballyPausedRef.current = true;
+    setQueueGloballyPaused(true);
+    appendTerminalLog('Queue', '⛔ 队列已暂停');
+  }, [appendTerminalLog]);
 
   const saveQueueStateAfterMutation = (tasks: OneClickQueueTask[]) => {
     oneClickQueueTasksRef.current = tasks;
@@ -1536,6 +1551,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       return;
     }
 
+    // 重置取消状态
+    oneClickCancelledRef.current = false;
+
     const taskId = newOneshotTaskId();
     const draftName = buildPipelineDraftName();
     setOneClickRunning(true);
@@ -1572,10 +1590,16 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       });
       await executeOneClickPipelineForTargets(selected.map(s => s.id), draftName, taskId, 'oneshot');
     } catch (err: any) {
-      appendTerminalLog('Pipeline', `执行异常: ${err.message}`);
-      toast.error(`执行异常: ${err.message}`);
+      if (oneClickCancelledRef.current) {
+        appendTerminalLog('Pipeline', '⛔ 一键成片已取消');
+        toast.info('一键成片已取消');
+      } else {
+        appendTerminalLog('Pipeline', `执行异常: ${err.message}`);
+        toast.error(`执行异常: ${err.message}`);
+      }
     } finally {
       setOneClickRunning(false);
+      setOneClickPipelineProgress('');
       // 一键成片结束后自动尝试处理挂机队列（无需再手动点「处理队列」）
       queueMicrotask(() => {
         if (!queueRunnerBusyRef.current) {
@@ -4689,6 +4713,17 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               {oneClickRunning ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />}
               {oneClickRunning ? '成片中...' : '一键成片'}
             </button>
+            {/* 取消一键成片按钮 */}
+            {oneClickRunning && (
+              <button
+                onClick={cancelOneClickPipeline}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-semibold rounded-lg shadow transition-all"
+                title="取消正在执行的一键成片"
+              >
+                <XCircle size={14} />
+                取消
+              </button>
+            )}
             <button
               onClick={handleEnqueueOneClickTask}
               disabled={queueProcessorRunning}
@@ -4705,6 +4740,17 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               {queueProcessorRunning ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />}
               {queueProcessorRunning ? '队列执行中...' : '处理队列'}
             </button>
+            {/* 取消队列执行按钮 */}
+            {queueProcessorRunning && (
+              <button
+                onClick={cancelQueueProcessor}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-semibold rounded-lg shadow transition-all"
+                title="暂停队列执行"
+              >
+                <XCircle size={14} />
+                暂停
+              </button>
+            )}
             <button
               onClick={handleExportToJianying}
               disabled={isExportingToJianying || tableShots.length === 0}

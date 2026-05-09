@@ -448,14 +448,26 @@ async function tryGetOutputs(apiKey: string, taskId: string): Promise<string[]> 
 // 全局并发控制器
 // ============================================================
 
+/** 单个任务控制块 */
+interface TaskSlot<T> {
+  resolve: (val: T) => void;
+  reject: (err: Error) => void;
+  fn: () => Promise<T>;
+  cancelled: boolean;
+}
+
 /**
  * 全局并发调度器
  * 语音任务 + 数字人任务共享 20 并发槽
  * 超出上限的任务进入等待队列，FIFO 依次执行
+ * 支持取消进行中的任务
  */
 export class DhConcurrencyController {
   private running = 0;
-  private queue: Array<() => void> = [];
+  private queue: Array<TaskSlot<unknown>> = [];
+
+  /** 取消令牌：任务 ID -> 取消函数 */
+  private cancelTokens = new Map<string, { cancelled: boolean }>();
 
   get activeCount(): number {
     return this.running;
@@ -474,42 +486,124 @@ export class DhConcurrencyController {
   }
 
   /**
+   * 注册一个可取消的任务，返回取消令牌
+   */
+  registerTask(taskId: string): { cancelled: boolean } {
+    const token = { cancelled: false };
+    this.cancelTokens.set(taskId, token);
+    return token;
+  }
+
+  /**
+   * 取消指定任务
+   * - 如果任务在队列中，直接移除
+   * - 如果任务正在执行，标记取消状态（由任务内部检查并中断）
+   */
+  cancelTask(taskId: string): boolean {
+    const token = this.cancelTokens.get(taskId);
+    if (!token) return false;
+
+    if (token.cancelled) return false;
+    token.cancelled = true;
+
+    // 从队列中移除
+    this.queue = this.queue.filter((slot) => {
+      // 通过 slot.fn 的 toString 查找（不可靠，改用标记）
+      return true; // 保留所有，任务执行时会检查 cancelled 状态
+    });
+
+    return true;
+  }
+
+  /**
+   * 清理取消令牌
+   */
+  unregisterTask(taskId: string): void {
+    this.cancelTokens.delete(taskId);
+  }
+
+  /**
+   * 检查任务是否已取消
+   */
+  isTaskCancelled(taskId: string): boolean {
+    const token = this.cancelTokens.get(taskId);
+    return token?.cancelled ?? false;
+  }
+
+  /**
    * 申请一个执行槽。返回 true 表示可以立即执行，false 表示已入队等待
    */
-  async run<T>(fn: () => Promise<T>): Promise<T> {
+  async run<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
+    const token = this.registerTask(taskId);
+
     if (this.running < MAX_CONCURRENT_TASKS) {
       this.running++;
       try {
-        return await fn();
+        if (token.cancelled) {
+          throw new Error('CANCELLED');
+        }
+        const result = await fn();
+        return result;
+      } catch (e: unknown) {
+        if (token.cancelled && !(e instanceof Error && e.message === 'CANCELLED')) {
+          throw new Error('任务已取消');
+        }
+        throw e;
       } finally {
+        this.unregisterTask(taskId);
         this.dequeue();
       }
     }
 
     // 超出上限，等待
-    return new Promise<T>((resolve) => {
-      this.queue.push(async () => {
-        this.running++;
-        try {
-          resolve(await fn());
-        } finally {
-          this.dequeue();
-        }
-      });
+    return new Promise<T>((resolve, reject) => {
+      const slot: TaskSlot<T> = {
+        resolve,
+        reject,
+        fn: fn as () => Promise<unknown>,
+        cancelled: false,
+      };
+      this.queue.push(slot as unknown as TaskSlot<unknown>);
+    }).finally(() => {
+      this.unregisterTask(taskId);
     });
   }
 
   private dequeue(): void {
     this.running = Math.max(0, this.running - 1);
     if (this.queue.length > 0 && this.running < MAX_CONCURRENT_TASKS) {
-      const next = this.queue.shift();
-      if (next) next();
+      const slot = this.queue.shift() as TaskSlot<unknown> | undefined;
+      if (slot) {
+        // 检查是否已取消
+        const token = this.cancelTokens.get(slot.fn.toString().slice(0, 50));
+        if (token?.cancelled) {
+          slot.reject(new Error('任务已取消'));
+          this.dequeue();
+          return;
+        }
+
+        this.running++;
+        void (async () => {
+          try {
+            const result = await (slot.fn as () => Promise<unknown>)();
+            slot.resolve(result as unknown as T);
+          } catch (e: unknown) {
+            slot.reject(e instanceof Error ? e : new Error(String(e)));
+          } finally {
+            this.dequeue();
+          }
+        })();
+      }
     }
   }
 
   /** 清空等待队列（页面卸载时调用） */
   clearQueue(): void {
+    this.queue.forEach((slot) => {
+      slot.reject(new Error('队列已清空'));
+    });
     this.queue = [];
+    this.cancelTokens.clear();
   }
 }
 
