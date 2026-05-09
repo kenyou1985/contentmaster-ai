@@ -20,9 +20,11 @@ interface VoiceLibraryProps {
   onClose: () => void;
   /** 列表或选中项变化时通知父组件刷新摘要文案 */
   onVoicesChange?: () => void;
+  /** 可选：选中语音时触发回调（用于不设置默认语音的情况） */
+  onVoiceSelect?: (voice: VoiceProfile | null) => void;
 }
 
-export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({ onClose, onVoicesChange }) => {
+export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({ onClose, onVoicesChange, onVoiceSelect }) => {
   const toast = useToast();
   const [voices, setVoices] = useState<VoiceProfile[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(getSelectedVoiceId());
@@ -40,10 +42,17 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({ onClose, onVoicesCha
   }, []);
 
   const pickSelected = (id: string | null) => {
-    setSelectedVoiceId(id);
-    setSelectedId(id);
-    onVoicesChange?.();
-    toast.success(id ? '已设为默认配音音色' : '已切换为系统默认音色', 2500);
+    // 如果有 onVoiceSelect 回调，只通知父组件，不设置默认
+    if (onVoiceSelect) {
+      const voice = id ? voices.find(v => v.id === id) || null : null;
+      onVoiceSelect(voice);
+    } else {
+      // 原有的默认语音设置逻辑
+      setSelectedVoiceId(id);
+      setSelectedId(id);
+      onVoicesChange?.();
+      toast.success(id ? '已设为默认配音音色' : '已切换为系统默认音色', 2500);
+    }
   };
 
   const handleFile = async (file: File) => {

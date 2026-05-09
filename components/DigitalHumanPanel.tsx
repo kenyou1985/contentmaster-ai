@@ -623,6 +623,11 @@ export function DigitalHumanPanel({
   }
   const [newTaskConfigs, setNewTaskConfigs] = useState<Record<string, NewTaskConfig>>({});
 
+  /** 正在为哪个独立任务选择仓库视频 */
+  const [selectingVideoForSession, setSelectingVideoForSession] = useState<string | null>(null);
+  /** 正在为哪个独立任务选择语音 */
+  const [selectingVoiceForSession, setSelectingVoiceForSession] = useState<string | null>(null);
+
   /** 独立新建任务列表（不影响当前正在执行的任务） */
   const [newTaskSessions, setNewTaskSessions] = useState<Array<{
     id: string;
@@ -2984,18 +2989,44 @@ export function DigitalHumanPanel({
                           <div className="mb-2 p-2 bg-gray-800/50 rounded-lg border border-gray-700/50">
                             <div className="flex items-center justify-between mb-1">
                               <span className="text-[10px] text-gray-500">任务配置（独立于主任务）</span>
+                              <button
+                                onClick={() => {
+                                  // 使用当前主任务的参考视频和语音设置
+                                  setNewTaskConfigs((prev) => ({
+                                    ...prev,
+                                    [session.id]: {
+                                      refVideoRhPath: refVideoRhPath,
+                                      refVideoName: refVideoName,
+                                      selectedVoiceId: selectedVoice?.id,
+                                    },
+                                  }));
+                                  toast.info('已同步主任务配置');
+                                }}
+                                className="text-[10px] text-blue-400 hover:text-blue-300"
+                              >
+                                同步主任务
+                              </button>
                             </div>
-                            <div className="flex items-center gap-3 text-xs">
+                            <div className="space-y-1.5">
                               {/* 参考视频 */}
-                              <div className="flex items-center gap-1">
-                                <Video size={11} className="text-gray-500" />
-                                <span className="text-gray-500">参考视频:</span>
-                                <span className={sessionConfig.refVideoRhPath ? 'text-green-400' : 'text-red-400'}>
+                              <div className="flex items-center gap-2">
+                                <Video size={11} className="text-gray-500 flex-shrink-0" />
+                                <span className="text-[10px] text-gray-500 w-8">视频:</span>
+                                <span className={`text-[10px] flex-1 truncate ${sessionConfig.refVideoRhPath ? 'text-green-400' : 'text-red-400'}`}>
                                   {sessionConfig.refVideoName || sessionConfig.refVideoRhPath || '未设置'}
                                 </span>
                                 <button
                                   onClick={() => {
-                                    // 使用当前主任务的参考视频设置
+                                    setSelectingVideoForSession(session.id);
+                                    setShowVideoLibrary(true);
+                                  }}
+                                  className="text-[10px] text-blue-400 hover:text-blue-300 flex-shrink-0"
+                                  title="从仓库选择"
+                                >
+                                  仓库
+                                </button>
+                                <button
+                                  onClick={() => {
                                     setNewTaskConfigs((prev) => ({
                                       ...prev,
                                       [session.id]: {
@@ -3004,21 +3035,45 @@ export function DigitalHumanPanel({
                                         refVideoName: refVideoName,
                                       },
                                     }));
-                                    toast.info('已使用当前参考视频');
                                   }}
-                                  className="text-[10px] text-blue-400 hover:text-blue-300 ml-1"
-                                  title="使用当前主任务的参考视频"
+                                  className="text-[10px] text-gray-500 hover:text-gray-400 flex-shrink-0"
+                                  title="使用当前主任务视频"
                                 >
-                                  同步
+                                  ←主
                                 </button>
                               </div>
                               {/* 语音 */}
-                              <div className="flex items-center gap-1">
-                                <Mic size={11} className="text-gray-500" />
-                                <span className="text-gray-500">语音:</span>
-                                <span className={sessionConfig.selectedVoiceId ? 'text-green-400' : 'text-yellow-400'}>
+                              <div className="flex items-center gap-2">
+                                <Mic size={11} className="text-gray-500 flex-shrink-0" />
+                                <span className="text-[10px] text-gray-500 w-8">语音:</span>
+                                <span className={`text-[10px] flex-1 truncate ${sessionConfig.selectedVoiceId ? 'text-green-400' : 'text-yellow-400'}`}>
                                   {sessionConfig.selectedVoiceId || '使用默认'}
                                 </span>
+                                <button
+                                  onClick={() => {
+                                    setSelectingVoiceForSession(session.id);
+                                    setShowVoiceLibrary(true);
+                                  }}
+                                  className="text-[10px] text-blue-400 hover:text-blue-300 flex-shrink-0"
+                                  title="从仓库选择"
+                                >
+                                  仓库
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setNewTaskConfigs((prev) => ({
+                                      ...prev,
+                                      [session.id]: {
+                                        ...prev[session.id],
+                                        selectedVoiceId: selectedVoice?.id,
+                                      },
+                                    }));
+                                  }}
+                                  className="text-[10px] text-gray-500 hover:text-gray-400 flex-shrink-0"
+                                  title="使用当前主任务语音"
+                                >
+                                  ←主
+                                </button>
                               </div>
                             </div>
                           </div>
@@ -3919,10 +3974,28 @@ export function DigitalHumanPanel({
       {/* 视频库 Modal */}
       {showVideoLibrary && (
         <VideoLibraryModal
-          onClose={() => setShowVideoLibrary(false)}
-          onSelect={(item) => {
-            handleSelectFromLibrary(item);
+          onClose={() => {
             setShowVideoLibrary(false);
+            setSelectingVideoForSession(null);
+          }}
+          onSelect={(item) => {
+            if (selectingVideoForSession) {
+              // 为独立任务选择视频
+              setNewTaskConfigs((prev) => ({
+                ...prev,
+                [selectingVideoForSession]: {
+                  ...prev[selectingVideoForSession],
+                  refVideoRhPath: item.rhPath,
+                  refVideoName: item.name,
+                },
+              }));
+              toast.success(`已选择视频: ${item.name}`);
+            } else {
+              // 为主任务选择视频
+              handleSelectFromLibrary(item);
+            }
+            setShowVideoLibrary(false);
+            setSelectingVideoForSession(null);
           }}
           onDelete={(id) => {
             if (libraryVideoId === id) {
@@ -3939,8 +4012,26 @@ export function DigitalHumanPanel({
       {/* 语音库 Modal */}
       {showVoiceLibrary && (
         <VoiceLibrary
-          onClose={() => setShowVoiceLibrary(false)}
+          onClose={() => {
+            setShowVoiceLibrary(false);
+            setSelectingVoiceForSession(null);
+          }}
           onVoicesChange={() => setVoiceEpoch((e) => e + 1)}
+          onVoiceSelect={(voice) => {
+            if (selectingVoiceForSession) {
+              // 为独立任务选择语音
+              setNewTaskConfigs((prev) => ({
+                ...prev,
+                [selectingVoiceForSession]: {
+                  ...prev[selectingVoiceForSession],
+                  selectedVoiceId: voice.id,
+                },
+              }));
+              toast.success(`已选择语音: ${voice.name}`);
+            }
+            setShowVoiceLibrary(false);
+            setSelectingVoiceForSession(null);
+          }}
         />
       )}
 
