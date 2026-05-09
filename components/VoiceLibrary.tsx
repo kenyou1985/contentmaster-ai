@@ -42,6 +42,9 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({ onClose, onVoicesCha
   }, []);
 
   const pickSelected = (id: string | null) => {
+    // 先更新本地选中状态，确保 UI 显示正确
+    setSelectedId(id);
+
     // 如果有 onVoiceSelect 回调，只通知父组件，不设置默认
     if (onVoiceSelect) {
       const voice = id ? voices.find(v => v.id === id) || null : null;
@@ -49,7 +52,6 @@ export const VoiceLibrary: React.FC<VoiceLibraryProps> = ({ onClose, onVoicesCha
     } else {
       // 原有的默认语音设置逻辑
       setSelectedVoiceId(id);
-      setSelectedId(id);
       onVoicesChange?.();
       toast.success(id ? '已设为默认配音音色' : '已切换为系统默认音色', 2500);
     }

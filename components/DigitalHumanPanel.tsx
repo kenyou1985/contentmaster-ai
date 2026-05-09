@@ -4024,10 +4024,10 @@ export function DigitalHumanPanel({
                 ...prev,
                 [selectingVoiceForSession]: {
                   ...prev[selectingVoiceForSession],
-                  selectedVoiceId: voice.id,
+                  selectedVoiceId: voice?.id,
                 },
               }));
-              toast.success(`已选择语音: ${voice.name}`);
+              toast.success(voice ? `已选择语音: ${voice.name}` : '已切换为系统默认语音');
             }
             setShowVoiceLibrary(false);
             setSelectingVoiceForSession(null);
