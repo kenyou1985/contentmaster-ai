@@ -615,6 +615,14 @@ export function DigitalHumanPanel({
   /** 挂起队列的完整任务快照（用于独立显示和执行） */
   const [queuedTasks, setQueuedTasks] = useState<typeof tasks | null>(null);
 
+  /** 独立任务配置：用于存储每个独立任务的独立配置（参考视频、语音等） */
+  interface NewTaskConfig {
+    refVideoRhPath?: string;
+    refVideoName?: string;
+    selectedVoiceId?: string;
+  }
+  const [newTaskConfigs, setNewTaskConfigs] = useState<Record<string, NewTaskConfig>>({});
+
   /** 独立新建任务列表（不影响当前正在执行的任务） */
   const [newTaskSessions, setNewTaskSessions] = useState<Array<{
     id: string;
@@ -1057,12 +1065,22 @@ export function DigitalHumanPanel({
       queueRef: null,
     };
 
+    // 保存独立任务的配置（复制当前参考视频和语音设置）
+    setNewTaskConfigs((prev) => ({
+      ...prev,
+      [sessionId]: {
+        refVideoRhPath: refVideoRhPath,
+        refVideoName: refVideoName,
+        selectedVoiceId: selectedVoice?.id,
+      },
+    }));
+
     setNewTaskSessions((prev) => [...prev, newSession]);
     toast.success(`已创建独立任务: ${displayName}（${newSegments.length} 段）`);
     pushLog(`[新建任务] ${displayName} · ${newSegments.length} 段 · 独立 ID: ${sessionId}`);
     setShowNewTaskModal(false);
     setNewTaskText('');
-  }, [newTaskText, runningHubApiKey, refVideoName, toast, pushLog]);
+  }, [newTaskText, runningHubApiKey, refVideoName, refVideoRhPath, selectedVoice, toast, pushLog]);
 
   // ============================================================
   // 单段配音
@@ -1250,7 +1268,7 @@ export function DigitalHumanPanel({
   // 单段数字人
   // ============================================================
   const generateSingleDh = useCallback(
-    async (taskId: string, forcedAudioUrl?: string) => {
+    async (taskId: string, forcedAudioUrl?: string, forcedSessionId?: string) => {
       // 优先使用 forcedAudioUrl（从队列任务传入，确保即使 ID 不匹配也能工作）
       // 如果没有 forcedAudioUrl，尝试从 tasksRef 和 completedAudioUrlsRef 获取
       let audioUrl = forcedAudioUrl;
@@ -1278,9 +1296,14 @@ export function DigitalHumanPanel({
         return;
       }
 
-      if (!refVideoRhPath) {
+      // 获取参考视频路径：优先使用独立任务的配置，否则使用主任务配置
+      const sessionConfig = forcedSessionId ? newTaskConfigs[forcedSessionId] : null;
+      const effectiveRefVideoPath = sessionConfig?.refVideoRhPath || refVideoRhPath;
+      const effectiveRefVideoName = sessionConfig?.refVideoName || refVideoName;
+
+      if (!effectiveRefVideoPath) {
         console.error(`[数字人] 无参考视频路径，无法生成数字人`);
-        toast.error('请先上传参考视频');
+        toast.error(sessionConfig ? '该任务未设置参考视频，请先配置' : '请先上传参考视频');
         return;
       }
 
@@ -1337,10 +1360,10 @@ export function DigitalHumanPanel({
           }
 
           const tid = await submitDigitalHumanTask(runningHubApiKey, {
-            referenceVideoPath: refVideoRhPath,
+            referenceVideoPath: effectiveRefVideoPath,
             audioPath: audioPathForDh,
           });
-          console.log(`[数字人] 段${taskIndex} 提交成功, taskId: ${tid?.slice(0, 16)}`);
+          console.log(`[数字人] 段${taskIndex} 提交成功, taskId: ${tid?.slice(0, 16)}, refVideo: ${effectiveRefVideoPath.slice(0, 40)}…`);
           pushLog(`[段${taskIndex} 数字人] taskId: ${tid?.slice(0, 16)}…`);
 
           const videoUrl = await pollDigitalHumanUntilDone(runningHubApiKey, tid, (stage, elapsed) => {
@@ -1463,7 +1486,7 @@ export function DigitalHumanPanel({
         }
       }
     },
-    [runningHubApiKey, refVideoRhPath, toast, pushLog, dhSessionId]
+    [runningHubApiKey, refVideoRhPath, refVideoName, newTaskConfigs, toast, pushLog, dhSessionId]
   );
 
   // ============================================================
@@ -2899,6 +2922,8 @@ export function DigitalHumanPanel({
                       const audioDone = mergedSegments.filter((s) => s.audioPhase === 'done').length;
                       const dhDone = mergedSegments.filter((s) => s.dhPhase === 'done').length;
                       const isSelected = selectedSessionIds.has(session.id);
+                      // 获取该任务的独立配置
+                      const sessionConfig = newTaskConfigs[session.id] || {};
                       return (
                         <div
                           key={session.id}
@@ -2953,6 +2978,48 @@ export function DigitalHumanPanel({
                               >
                                 <X size={14} />
                               </button>
+                            </div>
+                          </div>
+                          {/* 独立任务配置：参考视频和语音设置 */}
+                          <div className="mb-2 p-2 bg-gray-800/50 rounded-lg border border-gray-700/50">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-[10px] text-gray-500">任务配置（独立于主任务）</span>
+                            </div>
+                            <div className="flex items-center gap-3 text-xs">
+                              {/* 参考视频 */}
+                              <div className="flex items-center gap-1">
+                                <Video size={11} className="text-gray-500" />
+                                <span className="text-gray-500">参考视频:</span>
+                                <span className={sessionConfig.refVideoRhPath ? 'text-green-400' : 'text-red-400'}>
+                                  {sessionConfig.refVideoName || sessionConfig.refVideoRhPath || '未设置'}
+                                </span>
+                                <button
+                                  onClick={() => {
+                                    // 使用当前主任务的参考视频设置
+                                    setNewTaskConfigs((prev) => ({
+                                      ...prev,
+                                      [session.id]: {
+                                        ...prev[session.id],
+                                        refVideoRhPath: refVideoRhPath,
+                                        refVideoName: refVideoName,
+                                      },
+                                    }));
+                                    toast.info('已使用当前参考视频');
+                                  }}
+                                  className="text-[10px] text-blue-400 hover:text-blue-300 ml-1"
+                                  title="使用当前主任务的参考视频"
+                                >
+                                  同步
+                                </button>
+                              </div>
+                              {/* 语音 */}
+                              <div className="flex items-center gap-1">
+                                <Mic size={11} className="text-gray-500" />
+                                <span className="text-gray-500">语音:</span>
+                                <span className={sessionConfig.selectedVoiceId ? 'text-green-400' : 'text-yellow-400'}>
+                                  {sessionConfig.selectedVoiceId || '使用默认'}
+                                </span>
+                              </div>
                             </div>
                           </div>
                           {mergedSegments.map((seg) => {
