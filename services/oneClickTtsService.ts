@@ -18,7 +18,7 @@ import {
   resolveRunningHubOutputUrl,
 } from './runninghubService';
 import { polishTextForTtsSpeech, polishTextForTtsSpeechWithStyle } from './yunwuService';
-import { getSelectedVoice, updateVoice } from './voiceLibraryService';
+import { getVoiceById, getSelectedVoice, updateVoice } from './voiceLibraryService';
 
 // ============================================================
 // 音频后处理参数
@@ -194,6 +194,8 @@ export interface OneClickTtsOptions {
   speed?: number;
   emphasisStrength?: number;
   pitch?: number;
+  /** 指定音色 ID（优先），不填则使用语音库全局选中的音色 */
+  voiceId?: string;
   /** 口播优化开始 / 进入 TTS 合成前回调，便于 UI 展示阶段与耗时 */
   onProgress?: (stage: OneClickTtsProgressStage) => void;
   /** 全流程日志（终端 UI），并行任务请在外部加任务名前缀 */
@@ -259,12 +261,13 @@ export async function runOneClickTts(
   opts?.onProgress?.('tts');
   log('进入 TTS：准备参考音色与合成参数…');
 
-  const selected = getSelectedVoice();
+  const voiceToUse = opts?.voiceId ? getVoiceById(opts.voiceId) : getSelectedVoice();
+  const selected = voiceToUse;
   const usingDefaultRef = !selected?.runningHubAudioPath?.trim() && !selected?.audioDataUrl?.trim();
   const englishWarn = usingDefaultRef && isTextPrimarilyEnglish(speakText);
 
   if (selected?.name) {
-    log(`参考音色：${selected.name}`);
+    log(`参考音色：${selected.name}${opts?.voiceId ? '（任务独立配置）' : ''}`);
   } else {
     log('参考音色：未在语音库选择 · 将用系统默认参考音');
   }

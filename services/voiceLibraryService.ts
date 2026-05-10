@@ -42,10 +42,15 @@ export function setSelectedVoiceId(id: string | null): void {
   lsSetItem(SELECTED_ID_KEY, id);
 }
 
+export function getVoiceById(id: string): VoiceProfile | null {
+  const list = getAllVoices();
+  return list.find((v) => v.id === id) || null;
+}
+
 export function getSelectedVoice(): VoiceProfile | null {
   const id = getSelectedVoiceId();
   if (!id) return null;
-  return getAllVoices().find((v) => v.id === id) || null;
+  return getVoiceById(id);
 }
 
 export function addVoice(entry: Omit<VoiceProfile, 'id' | 'createdAt' | 'updatedAt'>): VoiceProfile {

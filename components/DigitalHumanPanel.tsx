@@ -67,7 +67,7 @@ import {
   type VideoLibraryItem,
 } from '../services/videoLibraryService';
 import { VoiceLibrary } from './VoiceLibrary';
-import { getSelectedVoice, setSelectedVoiceId } from '../services/voiceLibraryService';
+import { getSelectedVoice, getVoiceById, setSelectedVoiceId } from '../services/voiceLibraryService';
 
 const MAX_CONCURRENT = 20;
 const MAX_LOG_LINES = 500;
@@ -712,6 +712,10 @@ export function DigitalHumanPanel({
   const newTaskSessionsRef = useRef(newTaskSessions);
   newTaskSessionsRef.current = newTaskSessions;
 
+  // Always-fresh ref for newTaskConfigs (updated synchronously to avoid stale closure in callbacks)
+  const newTaskConfigsRef = useRef(newTaskConfigs);
+  newTaskConfigsRef.current = newTaskConfigs;
+
   useEffect(() => {
     oneClickRef.current = oneClickFilm;
   }, [oneClickFilm]);
@@ -1082,14 +1086,16 @@ export function DigitalHumanPanel({
     };
 
     // 保存独立任务的配置（复制当前参考视频和语音设置）
-    setNewTaskConfigs((prev) => ({
-      ...prev,
+    console.log(`[新建任务] 保存配置: sessionId=${sessionId}, refVideo=${refVideoName}, voiceId=${selectedVoice?.id}`);
+    newTaskConfigsRef.current = {
+      ...newTaskConfigsRef.current,
       [sessionId]: {
         refVideoRhPath: refVideoRhPath,
         refVideoName: refVideoName,
         selectedVoiceId: selectedVoice?.id,
       },
-    }));
+    };
+    setNewTaskConfigs(newTaskConfigsRef.current);
 
     setNewTaskSessions((prev) => [...prev, newSession]);
     toast.success(`已创建独立任务: ${displayName}（${newSegments.length} 段）`);
@@ -1168,7 +1174,7 @@ export function DigitalHumanPanel({
 
   /** 直接使用传入的任务对象进行配音（不通过 ID 查找，避免 ID 变化导致找不到任务） */
   const generateSingleAudioDirect = useCallback(
-    async (task: DhSegmentTask) => {
+    async (task: DhSegmentTask, sessionId?: string) => {
       const taskId = task.id;
 
       setTasks((prev) =>
@@ -1192,8 +1198,11 @@ export function DigitalHumanPanel({
 
       try {
         console.log(`[配音] 段${task.index} 直接调用 runOneClickTts, 文本长度: ${task.text.length}`);
+        const sessionConfig = sessionId ? newTaskConfigsRef.current[sessionId] : null;
+        console.log(`[配音] 配置调试: sessionId=${sessionId}, sessionConfig=${!!sessionConfig}, voiceId=${sessionConfig?.selectedVoiceId || 'null'}`);
         const result = await runOneClickTts(runningHubApiKey, task.text, {
           skipLlmPolish: true,
+          voiceId: sessionConfig?.selectedVoiceId,
           onLog: (msg) => pushLog(`[段${task.index} 配音] ${msg}`),
         });
         console.log(`[配音] 段${task.index} runOneClickTts 返回: audioUrl=${!!result?.audioUrl} url=${result?.audioUrl?.slice(0, 60)}`);
@@ -1277,7 +1286,7 @@ export function DigitalHumanPanel({
         toast.error(`段${task.index} 配音失败: ${err.message}`);
       }
     },
-    [runningHubApiKey, pushLog, toast, dhSessionId]
+    [runningHubApiKey, pushLog, toast, dhSessionId, newTaskConfigs]
   );
 
   // ============================================================
@@ -1313,7 +1322,8 @@ export function DigitalHumanPanel({
       }
 
       // 获取参考视频路径：优先使用独立任务的配置，否则使用主任务配置
-      const sessionConfig = forcedSessionId ? newTaskConfigs[forcedSessionId] : null;
+      const sessionConfig = forcedSessionId ? newTaskConfigsRef.current[forcedSessionId] : null;
+      console.log(`[数字人] 配置调试: forcedSessionId=${forcedSessionId}, sessionConfig=${!!sessionConfig}, refVideo=${sessionConfig?.refVideoRhPath || 'null'}, 主refVideo=${refVideoRhPath.slice(0,40)}`);
       const effectiveRefVideoPath = sessionConfig?.refVideoRhPath || refVideoRhPath;
       const effectiveRefVideoName = sessionConfig?.refVideoName || refVideoName;
 
@@ -1345,7 +1355,7 @@ export function DigitalHumanPanel({
       );
 
       pushLog(`[段${taskIndex} 数字人] 提交任务…`);
-      console.log(`[数字人] 段${taskIndex} 开始, audioUrl: ${audioUrl?.slice(0, 80)}, refVideoPath: ${refVideoRhPath}`);
+      console.log(`[数字人] 段${taskIndex} 开始, audioUrl: ${audioUrl?.slice(0, 80)}, refVideoPath: ${effectiveRefVideoPath}`);
 
       // 取消令牌
       const cancelToken = dhConcurrency.registerTask(taskId);
@@ -1830,6 +1840,8 @@ export function DigitalHumanPanel({
 
       try {
         console.log(`[队列任务] runQueueTask 开始 sessionId=${sessionId} segments=${segments.length}个 ids=${segments.map(s => s.id.slice(-10)).join(',')}`);
+        console.log(`[队列任务] newTaskConfigsRef.current 全部 keys: ${Object.keys(newTaskConfigsRef.current).join(',')}`);
+        console.log(`[队列任务] newTaskConfigsRef.current[${sessionId}]=`, newTaskConfigsRef.current[sessionId]);
         // 从 tasksRef.current 获取最新音频状态（避免使用 stale 的 segments 参数）
         const tasksSnapshot = tasksRef.current;
         console.log(`[队列任务] runQueueTask 开始 - sessionId=${sessionId}`);
@@ -1875,7 +1887,7 @@ export function DigitalHumanPanel({
                 console.log(`[队列任务] Phase1 worker 使用 id: ${task.id.slice(-10)}`);
                 completedAudioPhasesRef.current.set(task.id, 'running');
                 try {
-                  await generateSingleAudioDirect(task);
+                  await generateSingleAudioDirect(task, sessionId);
                   setOcProgress((p) => p ? { ...p, done: p.done + 1 } : null);
                 } catch (err: any) {
                   pushLog(`[队列任务] ⚠️ 段${task.index} 配音异常: ${err.message}`);
@@ -1928,8 +1940,9 @@ export function DigitalHumanPanel({
             while (dhQueue.length > 0) {
               if (oneClickRef.current === 'idle') return;
               const task = dhQueue.shift()!;
+              console.log(`[队列任务 Phase2] 调用 generateSingleDh, sessionId=${sessionId}, config=${!!newTaskConfigsRef.current[sessionId]}, refVideo=${newTaskConfigsRef.current[sessionId]?.refVideoRhPath || 'null'}`);
               try {
-                await generateSingleDh(task.id, task.audioUrl);
+                await generateSingleDh(task.id, task.audioUrl, sessionId);
                 setOcProgress((p) => p ? { ...p, done: p.done + 1 } : null);
               } catch (err: any) {
                 pushLog(`[队列任务] ⚠️ 段${task.index} 数字人异常: ${err.message}`);
@@ -2314,8 +2327,8 @@ export function DigitalHumanPanel({
           const task = dhQueue.shift()!;
           console.log(`[一键成片] dh worker 开始处理段${task.index} (${task.id}), audioUrl: ${task.audioUrl?.slice(0, 60)}`);
           try {
-            // 传递音频 URL 以便在 ID 不匹配时使用
-            await generateSingleDh(task.id, task.audioUrl);
+            // 传递音频 URL 和 sessionId 以便在 ID 不匹配时使用，并支持独立任务的参考视频
+            await generateSingleDh(task.id, task.audioUrl, currSessionId || undefined);
             console.log(`[一键成片] dh worker 段${task.index} 完成`);
             setOcProgress((p) => p ? { ...p, done: p.done + 1 } : null);
           } catch (err: any) {
@@ -3002,15 +3015,16 @@ export function DigitalHumanPanel({
                               <span className="text-[10px] text-gray-500">任务配置（独立于主任务）</span>
                               <button
                                 onClick={() => {
-                                  // 使用当前主任务的参考视频和语音设置
-                                  setNewTaskConfigs((prev) => ({
-                                    ...prev,
+                                  newTaskConfigsRef.current = {
+                                    ...newTaskConfigsRef.current,
                                     [session.id]: {
+                                      ...newTaskConfigsRef.current[session.id],
                                       refVideoRhPath: refVideoRhPath,
                                       refVideoName: refVideoName,
                                       selectedVoiceId: selectedVoice?.id,
                                     },
-                                  }));
+                                  };
+                                  setNewTaskConfigs(newTaskConfigsRef.current);
                                   toast.info('已同步主任务配置');
                                 }}
                                 className="text-[10px] text-blue-400 hover:text-blue-300"
@@ -3039,14 +3053,15 @@ export function DigitalHumanPanel({
                                 </button>
                                 <button
                                   onClick={() => {
-                                    setNewTaskConfigs((prev) => ({
-                                      ...prev,
+                                    newTaskConfigsRef.current = {
+                                      ...newTaskConfigsRef.current,
                                       [session.id]: {
-                                        ...prev[session.id],
+                                        ...newTaskConfigsRef.current[session.id],
                                         refVideoRhPath: refVideoRhPath,
                                         refVideoName: refVideoName,
                                       },
-                                    }));
+                                    };
+                                    setNewTaskConfigs(newTaskConfigsRef.current);
                                   }}
                                   className="text-[10px] text-gray-500 hover:text-gray-400 flex-shrink-0"
                                   title="使用当前主任务视频"
@@ -3059,7 +3074,7 @@ export function DigitalHumanPanel({
                                 <Mic size={11} className="text-gray-500 flex-shrink-0" />
                                 <span className="text-[10px] text-gray-500 w-8">语音:</span>
                                 <span className={`text-[10px] flex-1 truncate ${sessionConfig.selectedVoiceId ? 'text-green-400' : 'text-yellow-400'}`}>
-                                  {sessionConfig.selectedVoiceId || '使用默认'}
+                                  {sessionConfig.selectedVoiceId ? (getVoiceById(sessionConfig.selectedVoiceId)?.name ?? sessionConfig.selectedVoiceId) : '使用默认'}
                                 </span>
                                 <button
                                   onClick={() => {
@@ -3074,13 +3089,14 @@ export function DigitalHumanPanel({
                                 </button>
                                 <button
                                   onClick={() => {
-                                    setNewTaskConfigs((prev) => ({
-                                      ...prev,
+                                    newTaskConfigsRef.current = {
+                                      ...newTaskConfigsRef.current,
                                       [session.id]: {
-                                        ...prev[session.id],
+                                        ...newTaskConfigsRef.current[session.id],
                                         selectedVoiceId: selectedVoice?.id,
                                       },
-                                    }));
+                                    };
+                                    setNewTaskConfigs(newTaskConfigsRef.current);
                                   }}
                                   className="text-[10px] text-gray-500 hover:text-gray-400 flex-shrink-0"
                                   title="使用当前主任务语音"
@@ -3992,19 +4008,21 @@ export function DigitalHumanPanel({
             setSelectingVideoForSession(null);
           }}
           onSelect={(item) => {
-            if (selectingVideoForSessionRef.current) {
-              // 为独立任务选择视频
-              setNewTaskConfigs((prev) => ({
-                ...prev,
-                [selectingVideoForSessionRef.current!]: {
-                  ...prev[selectingVideoForSessionRef.current!],
+            console.log(`[VideoLibrary onSelect] selectingVideoForSession=${selectingVideoForSession} item=${item.name}`);
+            const sessionId = selectingVideoForSession ?? selectingVideoForSessionRef.current;
+            if (sessionId) {
+              // 同时更新 state 和 ref（ref 保证闭包读取到最新值，state 触发 UI 刷新）
+              newTaskConfigsRef.current = {
+                ...newTaskConfigsRef.current,
+                [sessionId]: {
+                  ...newTaskConfigsRef.current[sessionId],
                   refVideoRhPath: item.rhPath,
                   refVideoName: item.name,
                 },
-              }));
+              };
+              setNewTaskConfigs(newTaskConfigsRef.current);
               toast.success(`已选择视频: ${item.name}`);
             } else {
-              // 为主任务选择视频
               handleSelectFromLibrary(item);
             }
             setShowVideoLibrary(false);
@@ -4034,19 +4052,19 @@ export function DigitalHumanPanel({
           sessionId={selectingVoiceForSession}
           currentVoiceId={selectingVoiceForSession ? newTaskConfigs[selectingVoiceForSession]?.selectedVoiceId : null}
           onVoiceSelect={(voice) => {
-            const sessionId = selectingVoiceForSessionRef.current;
+            console.log(`[VoiceLibrary onVoiceSelect] selectingVoiceForSession=${selectingVoiceForSession} voice=${voice?.name}`);
+            const sessionId = selectingVoiceForSession ?? selectingVoiceForSessionRef.current;
             if (sessionId) {
-              // 为独立任务选择语音
-              setNewTaskConfigs((prev) => ({
-                ...prev,
+              newTaskConfigsRef.current = {
+                ...newTaskConfigsRef.current,
                 [sessionId]: {
-                  ...prev[sessionId],
+                  ...newTaskConfigsRef.current[sessionId],
                   selectedVoiceId: voice?.id,
                 },
-              }));
+              };
+              setNewTaskConfigs(newTaskConfigsRef.current);
               toast.success(voice ? `已选择语音: ${voice.name}` : '已切换为系统默认语音');
             } else {
-              // 为主任务设置默认语音
               setSelectedVoiceId(voice?.id || null);
               setVoiceEpoch((e) => e + 1);
               toast.success(voice ? `已设为默认语音: ${voice.name}` : '已切换为系统默认语音');
