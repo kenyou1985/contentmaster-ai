@@ -395,6 +395,8 @@ function evaluatePolishingEffectiveness(
 ): PolishingEvaluation {
   const reasons: string[] = [];
   const isGreatPowerGame = nicheType === 'great_power_game';
+  // 新闻赛道也需要宽容（内容会被严重删减）
+  const isNews = nicheType === 'news';
 
   // 1. 模板词替换
   const templateResult = calculateTemplateReplaceRatio(original, polished, lang);
@@ -404,7 +406,8 @@ function evaluatePolishingEffectiveness(
   const humanResult = calculateHumanWordAddition(original, polished, lang);
   const humanWordsAdded = humanResult.addedCount;
   // 大国博弈：Bo Yi 风格以权威陈述为主，不需要大量口语词，目标降低
-  const humanWordsTarget = isGreatPowerGame
+  // 新闻赛道：也需要宽容
+  const humanWordsTarget = isGreatPowerGame || isNews
     ? Math.ceil(originalLen / 1000) * 1  // 每1000字约1处（极低要求）
     : Math.ceil(originalLen / 1000) * 4; // 其他赛道：每1000字约4处
 
@@ -414,15 +417,15 @@ function evaluatePolishingEffectiveness(
 
   // 4. 内容保留检测
   const retention = calculateContentRetention(original, polished, lang);
-  // 大国博弈：宽容内容保留率阈值（允许更多变化）
-  const retentionThreshold = isGreatPowerGame ? 0.5 : 0.7;
-  // 大国博弈：hasDeletedContent 也用宽容阈值（原文已做宽容，这里二次宽容）
-  const effectiveHasDeleted = isGreatPowerGame ? (retention.retentionRatio < 0.5) : retention.hasDeletedContent;
+  // 大国博弈/新闻：宽容内容保留率阈值（允许更多变化）
+  const retentionThreshold = isGreatPowerGame || isNews ? 0.5 : 0.7;
+  // 大国博弈/新闻：hasDeletedContent 也用宽容阈值
+  const effectiveHasDeleted = (isGreatPowerGame || isNews) ? (retention.retentionRatio < 0.5) : retention.hasDeletedContent;
   const contentValid = !effectiveHasDeleted && retention.retentionRatio >= retentionThreshold;
 
   // 5. 长度变化
-  // 大国博弈：宽容长度变化阈值（允许更多发挥空间）
-  const lengthThreshold = isGreatPowerGame ? 0.40 : 0.15;
+  // 大国博弈/新闻：宽容长度变化阈值
+  const lengthThreshold = isGreatPowerGame || isNews ? 0.40 : 0.15;
   const lengthChangeRatio = originalLen > 0 ? Math.abs(polishedLen - originalLen) / originalLen : 0;
   const lengthValid = lengthChangeRatio <= lengthThreshold;
 
@@ -437,8 +440,8 @@ function evaluatePolishingEffectiveness(
     reasons.push(`✅ 无模板词需替换`);
   }
 
-  // 大国博弈：不下发口语词不足警告——Bo Yi 风格不以口语词见长
-  const humanThreshold = isGreatPowerGame
+  // 大国博弈/新闻：不下发口语词不足警告——Bo Yi/小美风格不以口语词见长
+  const humanThreshold = isGreatPowerGame || isNews
     ? Math.max(1, Math.floor(humanWordsTarget * 0.5))
     : Math.max(3, Math.floor(humanWordsTarget * 0.3));
   if (humanWordsAdded >= humanThreshold) {
@@ -446,17 +449,17 @@ function evaluatePolishingEffectiveness(
   } else if (humanWordsAdded > 0) {
     reasons.push(`口语词添加较少: ${humanWordsAdded}/${humanWordsTarget}`);
   } else {
-    if (!isGreatPowerGame) {
+    if (!isGreatPowerGame && !isNews) {
       reasons.push(`⚠️ 无新增口语词`);
     }
   }
 
-  // 大国博弈：宽容句式变化阈值（分析型内容不需要剧烈句式变化）
-  const sentenceThreshold = isGreatPowerGame ? 0.05 : 0.1;
+  // 大国博弈/新闻：宽容句式变化阈值
+  const sentenceThreshold = isGreatPowerGame || isNews ? 0.05 : 0.1;
   if (sentenceVariationRatio >= sentenceThreshold) {
     reasons.push(`✅ 句式有变化: ${(sentenceVariationRatio * 100).toFixed(1)}%`);
   } else {
-    if (!isGreatPowerGame) {
+    if (!isGreatPowerGame && !isNews) {
       reasons.push(`⚠️ 句式变化不足: ${(sentenceVariationRatio * 100).toFixed(1)}%`);
     }
   }
@@ -471,21 +474,21 @@ function evaluatePolishingEffectiveness(
     reasons.push(`⚠️ 长度变化过大: ${(lengthChangeRatio * 100).toFixed(1)}%（上限${(lengthThreshold * 100).toFixed(0)}%）`);
   }
 
-  // 大国博弈：极度宽容——内容保留且长度变化不超过25%即为有效
+  // 大国博弈/新闻：极度宽容——内容保留且长度变化不超过25%即为有效
   let isEffective = true;
 
   if (!contentValid) {
     reasons.push(`❌ 核心问题：AI 删除了原文内容！`);
     isEffective = false;
   } else if (!lengthValid) {
-    // 大国博弈：长度变化不作为有效性判定标准
-    if (!isGreatPowerGame) {
+    // 大国博弈/新闻：长度变化不作为有效性判定标准
+    if (!isGreatPowerGame && !isNews) {
       reasons.push(`⚠️ 长度变化超标，AI可能过度发挥`);
       isEffective = false;
     }
-  } else if (humanWordsAdded === 0 && sentenceVariationRatio < (isGreatPowerGame ? 0.05 : 0.1)) {
-    // 大国博弈不下发此警告
-    if (!isGreatPowerGame) {
+  } else if (humanWordsAdded === 0 && sentenceVariationRatio < (isGreatPowerGame || isNews ? 0.05 : 0.1)) {
+    // 大国博弈/新闻不下发此警告
+    if (!isGreatPowerGame && !isNews) {
       reasons.push(`⚠️ 原文有 ${humanResult.originalCount} 个口语词，改写后无新增且句式无变化`);
     }
     isEffective = false;
@@ -1000,14 +1003,15 @@ export async function polishTextForAntiAi(
       }
 
       // ===== 内容被删 = 拒绝结果，回退到原文 =====
-      // 大国博弈：宽容阈值（允许更大长度变化，因为 Bo Yi 内容本身较长）
+      // 大国博弈/新闻：宽容阈值
       const isGreatPowerGame = options.nicheType === 'great_power_game';
-      const deleteThreshold = isGreatPowerGame ? 0.5 : 0.3;
-      const deleteRatioThreshold = isGreatPowerGame ? 0.6 : 0.7;
+      const isNews = options.nicheType === 'news';
+      const deleteThreshold = isGreatPowerGame || isNews ? 0.5 : 0.3;
+      const deleteRatioThreshold = isGreatPowerGame || isNews ? 0.6 : 0.7;
       if (evaluation.lengthChangeRatio > deleteThreshold || (polishedLen < originalLen * deleteRatioThreshold)) {
         onLog?.(`[去AI味] ❌ 内容被删除（长度变化${(evaluation.lengthChangeRatio * 100).toFixed(1)}%），回退到原文`);
         if (attempt >= MAX_RETRY) {
-          // 大国博弈：回退到原文，保留原文（不要用缩短的结果）
+          // 大国博弈/新闻：回退到原文，保留原文（不要用缩短的结果）
           onLog?.(`[去AI味] ⚠️ 多次改写均删内容，保留原文，跳过去味清洗`);
           return {
             success: true,
@@ -1020,10 +1024,24 @@ export async function polishTextForAntiAi(
         continue;
       }
 
-      // 保存最佳结果（优先保留更完整的结果）
-      if (!bestResult || evaluation.isEffective || (isGreatPowerGame && evaluation.lengthChangeRatio < (bestEvaluation?.lengthChangeRatio ?? 1))) {
+      // 保存最佳结果（优先保留更完整的内容）
+      // 规则：isEffective > 内容保留最多（polishedLen 越大越好）
+      const shouldSaveAsBest = (() => {
+        // 首次保存
+        if (!bestResult) return true;
+        // isEffective 的结果优先
+        if (evaluation.isEffective && !bestEvaluation?.isEffective) return true;
+        if (!evaluation.isEffective && bestEvaluation?.isEffective) return false;
+        // 都无效时，优先保留内容最多的（polishedLen 越大越好，内容删减越少）
+        // 注意：lengthChangeRatio 大意味着删减多，是坏事
+        const currentKeptRatio = 1 - evaluation.lengthChangeRatio; // 保留比例，越大越好
+        const bestKeptRatio = bestEvaluation ? (1 - bestEvaluation.lengthChangeRatio) : 0;
+        return currentKeptRatio > bestKeptRatio;
+      })();
+      if (shouldSaveAsBest) {
         bestResult = result;
         bestEvaluation = evaluation;
+        onLog?.(`[去AI味] 保存为候选结果: ${result.replace(/\s+/g, '').length} 字 (保留率 ${((1 - evaluation.lengthChangeRatio) * 100).toFixed(1)}%)`);
       }
 
       // 如果效果达标，接受结果
@@ -1040,8 +1058,9 @@ export async function polishTextForAntiAi(
 
       // 如果是最后一次，接受最佳结果
       if (attempt >= MAX_RETRY) {
+        onLog?.(`[去AI味] 已达最大重试次数，当前最佳结果: ${bestResult ? bestResult.replace(/\s+/g, '').length + '字' : '无'}`);
         if (bestResult) {
-          onLog?.(`[去AI味] 已达最大重试次数，使用最佳结果`);
+          onLog?.(`[去AI味] 使用最佳结果`);
           return {
             success: true,
             polishedText: petNameConstraint ? enforcePetNameConstraint(bestResult, petNameConstraint) : bestResult,
@@ -1057,18 +1076,28 @@ export async function polishTextForAntiAi(
       onLog?.(`[去AI味] 第${attempt}次失败: ${error.message || error}`);
 
       // 如果 API 报错但已有部分内容（503/网络错误时流式响应被截断），
-      // 检查内容是否足够完整（大国博弈宽容至60%），否则视为失败
+      // 检查内容是否足够完整（大国博弈/新闻宽容至60%）
+      const isGreatPowerGameError = options.nicheType === 'great_power_game';
+      const isNewsError = options.nicheType === 'news';
       if (polished.trim()) {
         const partialLen = polished.replace(/\s+/g, '').length;
         const partialRatio = partialLen / originalLen;
-        const partialThreshold = options.nicheType === 'great_power_game' ? 0.6 : 0.7;
+        const partialThreshold = isGreatPowerGameError || isNewsError ? 0.6 : 0.7;
         onLog?.(`[去AI味] 第${attempt}次部分返回 ${partialLen}/${originalLen} 字 (${(partialRatio * 100).toFixed(1)}%)`);
-        // 大国博弈宽容：内容≥60%完整即可保留为候选结果
+        // 大国博弈/新闻宽容：内容≥60%完整即可保留为候选结果
+        // 但不能覆盖已有的更好结果
         if (partialRatio >= partialThreshold) {
           const eval_ = evaluatePolishingEffectiveness(text, polished, originalLen, partialLen, lang, options.nicheType);
-          if (!bestResult || eval_.isEffective) {
+          // 只有当当前内容比已有结果更好时才覆盖
+          const currentKeptRatio = 1 - eval_.lengthChangeRatio;
+          const bestKeptRatio = bestEvaluation ? (1 - bestEvaluation.lengthChangeRatio) : 0;
+          const currentBetterThanBest = !bestResult || 
+            (eval_.isEffective && !bestEvaluation?.isEffective) ||
+            (!eval_.isEffective && !bestEvaluation?.isEffective && currentKeptRatio > bestKeptRatio);
+          if (currentBetterThanBest) {
             bestResult = polished.trim();
             bestEvaluation = eval_;
+            onLog?.(`[去AI味] 第${attempt}次部分内容质量更优，保存为候选 (保留率 ${(currentKeptRatio * 100).toFixed(1)}%)`);
           }
         }
       }

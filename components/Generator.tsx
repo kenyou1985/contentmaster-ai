@@ -4048,6 +4048,17 @@ ${segmentSourceText}
             mergedPreview: merged.slice(0, 300),
           });
           let finalText = normalizeYiJingBody(merged);
+
+          // 安全兜底：合并结果过短时（可能是 API 错误导致截断），使用原文
+          const mergedLen = (merged || '').replace(/\s+/g, '').length;
+          const combinedLen = (combined || '').replace(/\s+/g, '').length;
+          // 如果合并结果少于原文的 30%，很可能是 API 错误导致内容被截断
+          if (mergedLen > 0 && combinedLen > 0 && mergedLen < combinedLen * 0.3) {
+            pushYiJingLog(`[合并] ⚠️ 合并结果过短 (${mergedLen} 字)，可能是 API 错误，内容可能被截断`);
+            pushYiJingLog(`[合并] ⚠️ 使用分段原文合并 (${combinedLen} 字) 作为后备`);
+            finalText = combined; // 使用分段原文作为后备
+          }
+
           if (mindfulLong) {
             finalText = truncateMindfulScript(finalText, MINDFUL_EN_SCRIPT_CHARS_MAX);
           }
