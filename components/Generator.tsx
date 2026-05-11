@@ -2757,9 +2757,9 @@ ${segmentSourceText}
         ? (greatPowerLanguage === 'zh'
             ? { min: MIN_GREAT_POWER_ZH_CHARS, max: MAX_GREAT_POWER_ZH_CHARS }
             : { min: MIN_GREAT_POWER_EN_CHARS, max: MAX_GREAT_POWER_EN_CHARS })
-        : niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG'
-        ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
         : niche === NicheType.TCM_METAPHYSICS
+        ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
+        : niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG'
         ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
         : undefined;
       const mergeUser = isGreatPowerGame
@@ -4121,7 +4121,7 @@ ${segmentSourceText}
           });
       const merged = await collectStreamText(
         mergeUser,
-        niche === NicheType.TCM_METAPHYSICS ? TCM_MERGE_SYSTEM : bundle.mergeSystem,
+        TCM_MERGE_SYSTEM,
         98304
       );
           console.log('[runPipelineForTopic] 合并后检查:', {
