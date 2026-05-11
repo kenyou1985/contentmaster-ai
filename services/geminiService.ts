@@ -395,7 +395,6 @@ export const generateTopics = async (
         .trim()
       )
       .filter(line => line.length > 8);
-  };
 
     // 去重并保留顺序（当次内去重）
     const unique: string[] = [];
@@ -407,6 +406,7 @@ export const generateTopics = async (
       }
     }
     return unique;
+  };
 
   /**
    * 易经命理跨次去重：提取关键词，移除与历史选题过于相似的标题。
