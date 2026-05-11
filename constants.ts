@@ -2799,9 +2799,9 @@ export const NICHES: Record<NicheType, NicheConfig> = {
     name: '格局博弈 (Bo Yi)',
     icon: '⚔️',
     description: '格局視界+查理智慧讲堂融合：反主流叙事、地缘政治内幕、资本博弈逻辑。冰冷锐利，像掌握内部文件的前情报官员在说："主流告诉你的，和文件里写的，是两个故事。"',
-    systemInstruction: NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT,
+    systemInstruction: NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH,
     topicPromptTemplate: BO_YI_TOPIC_PROMPT_GEO_FLASH,
-    scriptPromptTemplate: NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT
+    scriptPromptTemplate: NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH
   },[NicheType.PSYCHOLOGY]: {
     id: NicheType.PSYCHOLOGY,
     name: '心理学 (Awake Mentor)',

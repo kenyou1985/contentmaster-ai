@@ -1163,6 +1163,10 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       const target = greatPowerLanguage === 'zh' ? MIN_GREAT_POWER_ZH_CHARS : MIN_GREAT_POWER_EN_CHARS;
       setYiJingTotalTargetChars(target);
     }
+    // 格局博弈长视频：自动设置为 8000 字（约 30 分钟口播），短视频维持默认值 3500
+    if (niche === NicheType.FINANCE_CRYPTO && scriptLengthMode === 'LONG') {
+      setYiJingTotalTargetChars(8000);
+    }
     // 易经命理长视频：自动设置为 6500 字（曾氏长视频标准目标），短视频维持默认值 3500
     if (niche === NicheType.YI_JING_METAPHYSICS && scriptLengthMode === 'LONG') {
       setYiJingTotalTargetChars(6500);
