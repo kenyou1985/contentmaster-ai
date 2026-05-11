@@ -658,7 +658,7 @@ import {
   TCMChapterPlan,
   TCMOutlinePayload,
   computeTCMSegmentCount,
-  rescaleChapterWordCounts,
+  rescaleChapterWordCounts as rescaleTCMChapterWordCounts,
 } from '../services/tcmParallelLongForm';
 import JSZip from 'jszip';
 import {
@@ -3333,7 +3333,7 @@ ${segmentSourceText}
     try {
       parsed = parseTCMOutline(rawOutline);
       if (parsed) {
-        parsed = rescaleChapterWordCounts(parsed, parallelTotalTargetChars);
+        parsed = rescaleTCMChapterWordCounts(parsed, parallelTotalTargetChars);
         pushTcmLog(`大纲解析完成：${parsed.chapters.length} 章`);
       } else {
         pushTcmLog(`大纲 JSON 解析失败，使用默认 ${segN} 段结构`);
