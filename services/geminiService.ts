@@ -395,6 +395,7 @@ export const generateTopics = async (
         .trim()
       )
       .filter(line => line.length > 8);
+  };
 
     // 去重并保留顺序（当次内去重）
     const unique: string[] = [];
