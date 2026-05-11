@@ -1067,8 +1067,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   /** 金融·宏观预警：最近一次「一键生成选题」拉取的国际 RSS 摘要，供长文引子对齐 */
   const financeMacroNewsDigestRef = useRef<string>('');
   const newsMacroNewsDigestRef = useRef<string>('');
-  /** 易经命理：追踪最近使用过的选题方向，用于选题去重（避免跨次重复） */
-  const recentYijingTopicsRef = useRef<string[]>([]);
+  /** 全赛道选题历史追踪（避免跨次重复）：key=赛道类型，value=最近30条选题 */
+  const recentTopicHistoryRef = useRef<Record<string, string[]>>({});
 
   // 历史记录相关状态
   const [showHistorySelector, setShowHistorySelector] = useState(false);
@@ -1692,17 +1692,25 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
     prompt = applyTopicCountToPrompt(prompt, resolvedPlanTopicCount);
 
+    // ========== 全赛道选题去重注入（所有赛道通用，赛道特定铁律追加在其后）==========
+    const nicheKey = niche
+      + (niche === NicheType.TCM_METAPHYSICS ? `:${tcmSubMode}` : '')
+      + (niche === NicheType.FINANCE_CRYPTO ? `:${financeSubMode}` : '')
+      + (niche === NicheType.STORY_REVENGE ? `:${revengeSubMode}` : '')
+      + (niche === NicheType.GENERAL_VIRAL ? `:${newsSubMode}` : '');
+    const pastTopics = (recentTopicHistoryRef.current[nicheKey] ?? []);
+
+    if (pastTopics.length > 0) {
+      const pastStr = pastTopics.slice(-30).map(t => `  - "${t.replace(/"/g, '\"')}"`).join('\n');
+      prompt += `\n\n【选题去重铁律·最高优先级】以下为近期已出现的选题，禁止重复或近似模仿，须从全新角度切入：\n${pastStr}\n本次必须完全避开上述方向，每条标题须与上述任一条都截然不同。`;
+    }
+    // =====================================================================
+
     if (niche === NicheType.YI_JING_METAPHYSICS) {
       const n = resolvedPlanTopicCount;
       const womenMin = n >= 2 ? 2 : 1;
       prompt += `\n\n【女性向选题铁律·最高优先级】本次须恰好输出 ${n} 条标题，其中至少 ${womenMin} 条必须为「女性向爆款」（标题须显式出现：女人/女性/妻子/母亲/宝妈/儿媳妇 等之一，或语义上明确写女性之财富、家运、心态、改运、面相印记等；可参考爆款向：女人想暴富、命好女人不炫耀、命苦女人特征、女性改运）。若不足 ${womenMin} 条满足，整组作废重写。`;
-
-      // 易经选题去重：注入历史选题方向，避免跨次重复
-      const recent = recentYijingTopicsRef.current;
-      if (recent.length > 0) {
-        const recentStr = recent.slice(-30).map(t => `  - "${t}"`).join('\n');
-        prompt += `\n\n【选题去重铁律·最高优先级】以下为近期已出现的选题方向，禁止重复或近似模仿，须从全新角度切入：\n${recentStr}\n本次必须完全避开上述方向，输出与每一条都截然不同的全新选题。`;
-      }
+      // 注：选题去重已在全局统一处理（见上方【选题去重铁律】）
     }
 
     if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
@@ -1817,7 +1825,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     try {
       const rawTopics = await generateTopics(prompt, config.systemInstruction, {
         topicCount: resolvedPlanTopicCount,
-        avoidTopics: niche === NicheType.YI_JING_METAPHYSICS ? recentYijingTopicsRef.current : [],
+        avoidTopics: pastTopics,
       });
       
       const newTopics: Topic[] = rawTopics.map((t, i) => ({
@@ -1828,10 +1836,12 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       }));
       setTopics(newTopics);
 
-      // 易经选题去重：更新历史记录（保留最近30条）
-      if (niche === NicheType.YI_JING_METAPHYSICS) {
-        recentYijingTopicsRef.current = [...recentYijingTopicsRef.current.slice(-30), ...rawTopics];
-      }
+      // 全赛道选题去重：更新历史记录（保留最近30条）
+      const key = niche + (niche === NicheType.TCM_METAPHYSICS ? `:${tcmSubMode}` : niche === NicheType.FINANCE_CRYPTO ? `:${financeSubMode}` : niche === NicheType.STORY_REVENGE ? `:${revengeSubMode}` : niche === NicheType.GENERAL_VIRAL ? `:${newsSubMode}` : '');
+      recentTopicHistoryRef.current = {
+        ...recentTopicHistoryRef.current,
+        [key]: [...(recentTopicHistoryRef.current[key] ?? []).slice(-30), ...rawTopics]
+      };
       setStatus(GenerationStatus.IDLE);
     } catch (err: any) {
       console.error(err);
