@@ -654,6 +654,11 @@ import {
 import {
   PARALLEL_LOGIC_TCM,
   TCM_MERGE_SYSTEM,
+  parseTCMOutline,
+  TCMChapterPlan,
+  TCMOutlinePayload,
+  computeTCMSegmentCount,
+  rescaleChapterWordCounts,
 } from '../services/tcmParallelLongForm';
 import JSZip from 'jszip';
 import {
@@ -3273,7 +3278,7 @@ ${segmentSourceText}
   // TCM 并行 Pipeline 函数（对齐易经赛道架构）
   // ============================================================
 
-  /** TCM 并行生成分段（5段，Promise.all 并行） */
+  /** TCM 并行生成分段（动态段落数，基于 parallelTotalTargetChars） */
   const handleTcmRunSegments = useCallback(async () => {
     const sel = topics.filter((t) => t.selected);
     if (!sel[0]) {
@@ -3298,23 +3303,66 @@ ${segmentSourceText}
       parallelTotalTargetChars
     );
     const topicTitle = sel[0].title;
-    // 倪海厦风格5大模块
-    const chapters: YiJingChapterPlan[] = [
-      { title: '第一部分：直击痛点，反常识破局', min_chars: 800, max_chars: 1600, core_brief: '亲切开场+抛出错误做法+打破常识', opening_echo: '', closing_snippet_hint: '引出下一个规律', bridge_to_next: '讲完了第一部分，现在来看第二部分' },
-      { title: '第二部分：引入中医天道规律与阴阳转换', min_chars: 800, max_chars: 1600, core_brief: '引入阴阳/五行/时辰，讲解天道轮回、不可逆转的规律感', opening_echo: '刚才讲完了第一部分，现在来看第二部分', closing_snippet_hint: '故事推导出人性弱点', bridge_to_next: '讲完了第二部分，现在来看第三部分' },
-      { title: '第三部分：海量正反面故事对冲', min_chars: 800, max_chars: 1600, core_brief: '通过故事推导出人性弱点', opening_echo: '刚才讲完了第二部分，现在来看第三部分', closing_snippet_hint: '给出最落地的实操心法', bridge_to_next: '讲完了第三部分，现在来看第四部分' },
-      { title: '第四部分：给出最落地的实操心法', min_chars: 800, max_chars: 1600, core_brief: '列出3-5条极接地气建议，结合吃饭、说话、睡觉、交友细节', opening_echo: '刚才讲完了第三部分，现在来看第四部分', closing_snippet_hint: '升华境界，通透结语', bridge_to_next: '讲完了第四部分，现在来看第五部分' },
-      { title: '第五部分：升华境界，通透结语', min_chars: 800, max_chars: 1600, core_brief: '总结+倪海厦霸气金句收尾', opening_echo: '刚才讲完了第四部分，现在来看第五部分', closing_snippet_hint: '霸气收尾', bridge_to_next: '' },
-    ];
-    const n = 5;
-    setTcmPipelineBusy(true);
+
+    // 动态段落数：对齐易经赛道（走 computeParallelSegmentCount 体系）
+    const segN = computeTCMSegmentCount(parallelTotalTargetChars);
+    pushTcmLog(`生成大纲（约 ${segN} 章，全文目标约 ${parallelTotalTargetChars} 字）…`);
+    setBatchProgress({ current: 0, total: segN, hint: `生成大纲（${segN} 章）…` });
+
+    // Step 1: 生成大纲 JSON
+    const outlinePrompt = `【选题】${topicTitle}
+
+【任务】为以上选题生成倪海厦中医玄学风格口播大纲，共 ${segN} 章，全片合并后目标约 ${parallelTotalTargetChars} 字。
+
+倪海厦风格内容结构参考（任选其一或自由组合）：
+1. 引子破局 → 干支能量解读 → 禁忌色详解 → 生肖分组 → 急救实操 → 功德收尾
+2. 直击痛点 → 中医规律导入 → 正反案例 → 落地实操 → 霸气收尾
+
+【硬性要求】
+1. 共 **${segN}** 章；每章 **min_chars / max_chars** 须合理分摊，单章约 ${Math.round(parallelTotalTargetChars / segN * 0.9)}–${Math.round(parallelTotalTargetChars / segN * 1.1)} 字
+2. 每章包含：title（自然短句标题，禁止"第X章"）、min_chars、max_chars、core_brief、opening_echo、closing_snippet_hint、bridge_to_next
+3. 只输出一个 JSON 对象，键名：core_theme, logic_line, chapters
+`;
+    let rawOutline = '';
+    await streamContentGeneration(outlinePrompt, bundle.outlineSystem, (c) => {
+      rawOutline += c;
+    }, undefined, { maxTokens: 8192, fallbackModelOnStall: 'gemini-3-flash-preview' });
+
+    // Step 2: 解析大纲
+    let parsed: TCMOutlinePayload | null = null;
+    try {
+      parsed = parseTCMOutline(rawOutline);
+      if (parsed) {
+        parsed = rescaleChapterWordCounts(parsed, parallelTotalTargetChars);
+        pushTcmLog(`大纲解析完成：${parsed.chapters.length} 章`);
+      } else {
+        pushTcmLog(`大纲 JSON 解析失败，使用默认 ${segN} 段结构`);
+      }
+    } catch (e) {
+      pushTcmLog(`大纲解析异常，使用默认 ${segN} 段结构`);
+    }
+
+    // Step 3: 确定章节列表（使用解析结果或生成默认）
+    const chapters: TCMChapterPlan[] = parsed?.chapters ?? Array.from({ length: segN }, (_, i) => ({
+      title: `第${i + 1}部分`,
+      min_chars: Math.round(parallelTotalTargetChars / segN * 0.85),
+      max_chars: Math.round(parallelTotalTargetChars / segN * 1.15),
+      core_brief: '倪海厦风格内容，请自由发挥',
+      opening_echo: '',
+      closing_snippet_hint: '',
+      bridge_to_next: i < segN - 1 ? `讲完了第${i + 1}部分，现在来看第${i + 2}部分` : '',
+    }));
+    const n = chapters.length;
+
     setTcmSegDrafts(Array(n).fill(''));
     setTcmSegStatus(Array(n).fill('idle'));
-    pushTcmLog(`并行生成 ${n} 段（倪海厦风格）…`);
+    setTcmPipelineBusy(true);
+    pushTcmLog(`并行生成 ${n} 段（倪海厦风格，目标约 ${parallelTotalTargetChars} 字）…`);
     const segDone = new Set<number>();
     setBatchProgress({ current: 0, total: n, hint: `并行生成 0/${n} 段` });
 
     try {
+      // Step 4: 并行生成分段
       const results = await Promise.all(
         chapters.map(async (ch, idx) => {
           setTcmSegStatus((prev) => {
@@ -3328,8 +3376,8 @@ ${segmentSourceText}
               {
                 topic: topicTitle,
                 coreTheme: '中医玄学·倪海厦风格·直击痛点·故事对冲·落地实操',
-                logicLine: ch.description,
-                chapter: ch,
+                logicLine: ch.core_brief,
+                chapter: ch as unknown as YiJingChapterPlan,
                 chapterIndex: idx,
                 totalChapters: n,
               },
@@ -3383,7 +3431,7 @@ ${segmentSourceText}
     }
   }, [
     apiKey, provider, niche, scriptLengthMode, storyLanguage, storyDuration,
-    topics, pushTcmLog, toast,
+    topics, pushTcmLog, toast, parallelTotalTargetChars,
   ]);
 
   /** TCM 合并终稿 */
