@@ -93,46 +93,81 @@ function replaceEnglishPetNamesWithPlaceholders(text: string, theme: 'cat' | 'do
  * 翻译后处理（最终安全网）
  * 把 [DOG_NAME] → 糯米、[CAT_NAME] → 小满
  * 并彻底清理所有已知中文宠物名
+ *
+ * 注意：pet content 检测用于区分"治愈心理学宠物故事"和"其他内容（如大国博弈）"。
+ * 只有当文本看起来是宠物故事时，才进行宠物名标准化。
  */
+function isLikelyPetContent(text: string): boolean {
+  const lower = text.toLowerCase();
+  const petIndicators = [
+    'pet', 'cat', 'cats', 'dog', 'dogs', 'kitten', 'kittens',
+    'puppy', 'puppies', 'purr', 'purring', 'meow', 'woof',
+    '呼噜', '打呼噜', '跳上床', '趴在', '爪子', '毛茸茸',
+    '我的猫', '我的狗', '它就', '它把', '它又',
+  ];
+  const politicalIndicators = [
+    '白宫', '国会', '伊朗', '制裁', '核谈', '以色列',
+    '特朗普', '总统', '谈判', '外交', '盟友', '选举',
+    '方案', '否决', '博弈', '筹码', '地区', '安全',
+    '美国', '国务院', '鹰派', '强硬', '压力',
+  ];
+
+  const petScore = petIndicators.filter(w => lower.includes(w.toLowerCase()) || text.includes(w)).length;
+  const politicalScore = politicalIndicators.filter(w => text.includes(w)).length;
+
+  // 宠物指标多且政治指标少 → 宠物内容
+  if (petScore >= 2 && politicalScore === 0) return true;
+  // 政治指标明显更多 → 非宠物内容
+  if (politicalScore >= 3) return false;
+  // 宠物指标弱、政治指标中等 → 非宠物内容
+  if (politicalScore >= 2 && petScore <= 1) return false;
+  // 单纯依赖宠物指标
+  return petScore >= 2;
+}
+
 function postProcessChinese(text: string, theme: 'cat' | 'dog'): string {
   const fixedCN = theme === 'cat' ? '小满' : '糯米';
+  const isPetContent = isLikelyPetContent(text);
 
   let result = text;
 
-  // 步骤1：占位符替换
-  if (theme === 'cat') {
-    result = result.split('[CAT_NAME]').join('小满');
-    result = result.split('[DOG_NAME]').join('小满');
-  } else {
-    result = result.split('[DOG_NAME]').join('糯米');
-    result = result.split('[CAT_NAME]').join('糯米');
+  // 只有宠物内容才进行占位符替换和安全网清理
+  if (isPetContent) {
+    // 步骤1：占位符替换
+    if (theme === 'cat') {
+      result = result.split('[CAT_NAME]').join('小满');
+      result = result.split('[DOG_NAME]').join('小满');
+    } else {
+      result = result.split('[DOG_NAME]').join('糯米');
+      result = result.split('[CAT_NAME]').join('糯米');
+    }
+
+    // 步骤1b：无条件替换"煤球"（边界检查会漏掉"煤球就"、"煤球在"等情况）
+    result = result.split('煤球').join(fixedCN);
+
+    // 步骤2：清理所有已知中文宠物名（无条件替换，不依赖边界检查）
+    for (const name of KNOWN_CHINESE_PET_NAMES) {
+      if (name === fixedCN) continue;
+      result = result.split(name).join(fixedCN);
+    }
+
+    // 步骤2b：最终全面清理——把所有非目标宠物名统一替换为固定名
+    // 狗主题：把所有中文宠物名（含猫名）替换为糯米
+    // 猫主题：把所有中文宠物名（含狗名）替换为小满
+    const allPetNames = [
+      '小满', '年糕', '团子', '咪咪', '煤球', '肉包', '橘子', '阿橘',
+      '布丁', '果冻', '奶糖', '花花', '小白', '小灰', '小黑', '黑豆',
+      '豆豆', '阿黄', '来福', '旺财', '球球', '阿福', '大黄', '笨笨', '毛毛', '乐乐', '欢欢',
+      '糯米', '像是', '梁子',
+    ];
+    for (const name of allPetNames) {
+      if (name === fixedCN) continue;
+      result = result.split(name).join(fixedCN);
+    }
+
+    // 步骤3：处理"像是"开头的宠物名（无条件，不依赖边界检查）
+    result = result.split('像是').join(fixedCN);
   }
-
-  // 步骤1b：无条件替换"煤球"（边界检查会漏掉"煤球就"、"煤球在"等情况）
-  result = result.split('煤球').join(fixedCN);
-
-  // 步骤2：清理所有已知中文宠物名（无条件替换，不依赖边界检查）
-  for (const name of KNOWN_CHINESE_PET_NAMES) {
-    if (name === fixedCN) continue;
-    result = result.split(name).join(fixedCN);
-  }
-
-  // 步骤2b：最终全面清理——把所有非目标宠物名统一替换为固定名
-  // 狗主题：把所有中文宠物名（含猫名）替换为糯米
-  // 猫主题：把所有中文宠物名（含狗名）替换为小满
-  const allPetNames = [
-    '小满', '年糕', '团子', '咪咪', '煤球', '肉包', '橘子', '阿橘',
-    '布丁', '果冻', '奶糖', '花花', '小白', '小灰', '小黑', '黑豆',
-    '豆豆', '阿黄', '来福', '旺财', '球球', '阿福', '大黄', '笨笨', '毛毛', '乐乐', '欢欢',
-    '糯米', '像是', '梁子',
-  ];
-  for (const name of allPetNames) {
-    if (name === fixedCN) continue;
-    result = result.split(name).join(fixedCN);
-  }
-
-  // 步骤3：处理"像是"开头的宠物名（无条件，不依赖边界检查）
-  result = result.split('像是').join(fixedCN);
 
   // 步骤4：清理残留英文宠物类别词
   const petWordReplacements: [RegExp, string][] = [
