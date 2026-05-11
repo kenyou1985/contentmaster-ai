@@ -32,13 +32,14 @@ export enum TcmSubModeId {
   DIET_HEALTH = 'DIET_HEALTH'
 }
 
-// Finance (Munger) Sub-categories
+// Bo Yi / 格局博弈 子分类（替代旧的 Munger 体系）
+// eslint-disable-next-line @typescript-eslint/no-redeclare
 export enum FinanceSubModeId {
-  MACRO_WARNING = 'MACRO_WARNING',
-  COGNITIVE_BIAS = 'COGNITIVE_BIAS',
-  INVERSE_THINKING = 'INVERSE_THINKING',
-  MOAT_VALUE = 'MOAT_VALUE',
-  LIFE_WISDOM = 'LIFE_WISDOM'
+  GEOPOLITICAL_FLASH = 'GEOPOLITICAL_FLASH',  // 局势炸裂：地缘冲突·军事博弈
+  CAPITAL_MARKETS = 'CAPITAL_MARKETS',        // 资本风暴：金融市场·经济暗战
+  INVERSE_ANALYSIS = 'INVERSE_ANALYSIS',      // 逆向拆解：反主流·认知陷阱
+  POWER_INSIDE = 'POWER_INSIDE',              // 权力内幕：政治权谋·决策博弈
+  SURVIVAL_WISDOM = 'SURVIVAL_WISDOM'         // 破局智慧：普通人在博弈中自保
 }
 
 // Revenge Story Sub-categories

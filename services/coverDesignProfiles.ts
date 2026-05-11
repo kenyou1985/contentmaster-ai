@@ -49,11 +49,11 @@ const PROFILES: Record<NicheType, CoverNicheProfile> = {
   },
   [NicheType.FINANCE_CRYPTO]: {
     styleDna:
-      '金融投资 / **查理·芒格**向：深蓝或炭黑底、细网格或K线虚化背景、少量高亮绿/红；**融入年迈智者戴细框眼镜、手握书本的形象**，专业冷静、数据感，避免花哨插画。',
-    schemeAHint: '书房场景：芒格式智者坐于书架前，手握书本，窗外K线若隐若现。',
-    schemeBHint: '纯色底 + 巨大数字/百分比符号 + 智者剪影侧脸特写。',
-    schemeCHint: '特写眼睛或握拳手势叠在波动曲线上，强侧光，警示感。',
-    refUploadHint: '可上传品牌Logo色板；提示词强调财经媒体级排版。',
+      '格局博弈 / **博弈内幕 (Bo Yi)** 向：深色底（深海蓝/炭黑）+ 精密地图网格/地缘关系虚化背景 + 高亮警示橙红；**融入冷静的前军方/情报官员形象**，冰冷、权威、数据驱动，避免花哨插画。',
+    schemeAHint: '战术室场景：博弈内幕者立于全息地缘图前，冷侧光，精密数据悬浮。',
+    schemeBHint: '纯黑底 + 地缘博弈关系网络图 + 侧脸剪影特写，冰感。',
+    schemeCHint: '巨大地球/棋盘构图叠在侧脸剪影上，警示色标注关键节点。',
+    refUploadHint: '可上传品牌形象参考；提示词强调军事情报风格、冰冷理性。',
   },
   [NicheType.PSYCHOLOGY]: {
     styleDna:

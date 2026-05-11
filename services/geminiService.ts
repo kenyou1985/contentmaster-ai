@@ -433,8 +433,7 @@ export const generateTopics = async (
       if (ratio > 0.45) return true;
     }
     return false;
-  };
-  };
+  }
 
   const isQuotaError = (err: any): boolean => {
     const msg = (err?.message || String(err)).toLowerCase();

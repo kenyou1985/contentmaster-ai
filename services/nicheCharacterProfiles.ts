@@ -33,12 +33,12 @@ export const NICHE_CHARACTER_PROFILES: Record<NicheType, NicheCharacterProfile> 
   },
 
   [NicheType.FINANCE_CRYPTO]: {
-    nicheName: '金融投资',
-    characterName: '查理·芒格',
-    characterDescription: '年迈智者，银色短发戴细框眼镜，西装革履或休闲针织衫，表情沉稳内敛，常手握书本或咖啡杯沉思',
-    roleDescription: '以巴菲特搭档查理·芒格为原型，象征价值投资与跨学科思维',
-    visualStyle: '深蓝炭黑底、K线网格背景、专业冷静的财经媒体感',
-    frequencySuggestion: '每4-6个分镜出现1次，在讲解投资原则或引用智慧时出现'
+    nicheName: '格局博弈',
+    characterName: '博弈内幕者 (Bo Yi)',
+    characterDescription: '冷静的前军方/情报官员中年男性，黑色或深蓝西装，表情冰冷锐利，常在地缘博弈图前沉思，手握内部简报文件',
+    roleDescription: '以前军方/情报官员为原型，象征掌握内部数据的地缘博弈分析者，说出主流不知道的真相',
+    visualStyle: '深海蓝/炭黑底、地缘博弈图网格、军事情报风格、冰冷权威',
+    frequencySuggestion: '每4-6个分镜出现1次，在分析地缘博弈或揭露内幕时出现'
   },
 
   [NicheType.PSYCHOLOGY]: {

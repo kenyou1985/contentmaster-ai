@@ -1034,7 +1034,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   
   // Sub-mode states
   const [tcmSubMode, setTcmSubMode] = useState<TcmSubModeId>(TcmSubModeId.TIME_TABOO);
-  const [financeSubMode, setFinanceSubMode] = useState<FinanceSubModeId>(FinanceSubModeId.MACRO_WARNING);
+  const [financeSubMode, setFinanceSubMode] = useState<FinanceSubModeId>(FinanceSubModeId.GEOPOLITICAL_FLASH);
   const [revengeSubMode, setRevengeSubMode] = useState<RevengeSubModeId>(RevengeSubModeId.CULTURAL_ORIGINAL);
   const [newsSubMode, setNewsSubMode] = useState<NewsSubModeId>(NewsSubModeId.GEO_POLITICS);
   
@@ -1294,7 +1294,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     }
     if (
       niche === NicheType.FINANCE_CRYPTO &&
-      financeSubMode === FinanceSubModeId.MACRO_WARNING &&
+      financeSubMode === FinanceSubModeId.GEOPOLITICAL_FLASH &&
       scriptLengthMode === 'LONG'
     ) {
       const m = financeMacroNewsDigestRef.current?.trim();
@@ -1776,7 +1776,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
     // RSS 要闻抓取（金融宏观预警 + 新闻热点 + 大国博弈赛道）
     const isRssNiche =
-      (niche === NicheType.FINANCE_CRYPTO && financeSubMode === FinanceSubModeId.MACRO_WARNING) ||
+      (niche === NicheType.FINANCE_CRYPTO && financeSubMode === FinanceSubModeId.GEOPOLITICAL_FLASH) ||
       niche === NicheType.GENERAL_VIRAL ||
       niche === NicheType.GREAT_POWER_GAME;
 
@@ -1813,7 +1813,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
         if (niche === NicheType.GENERAL_VIRAL) {
           const extraRules = '\n\n【选题对齐铁律】每条标题须与上方「国际要闻投喂」中至少一条新闻在主题上可对应（小美辣评风格改写）；禁止10条标题只围绕同一条新闻换皮，须尽量覆盖不同地缘/市场线索。\n【标题党铁律】每条须含强钩子：悬念/反问/震撼词/第二人称刺痛至少其二；禁止写成通讯社导语或「……说明……」式说明体；单条建议22–48字，可用冒号或破折号断句，追求「一眼想点进去」。';
           prompt = `${digest}\n\n---\n\n` + prompt + extraRules;
-        } else if (niche === NicheType.FINANCE_CRYPTO && financeSubMode === FinanceSubModeId.MACRO_WARNING) {
+        } else if (niche === NicheType.FINANCE_CRYPTO && financeSubMode === FinanceSubModeId.GEOPOLITICAL_FLASH) {
           const extraRules = '\n\n【选题对齐铁律】每条标题须与上方「国际要闻投喂」中至少一条新闻在主题上可对应（可芒格式改写）；禁止10条标题只围绕同一条新闻换皮，须尽量覆盖不同地缘/市场线索。\n【标题党铁律】每条须含强钩子：悬念/反问/震撼词/读者切身利益至少其二；禁止写成通讯社导语或「……说明……」式说明体；单条建议22–48字，可用冒号或破折号断句，追求「一眼想点进去」。';
           prompt = `${digest}\n\n---\n\n` + prompt + extraRules;
         }
@@ -5481,7 +5481,7 @@ ${segmentSourceText}
           currentNiche === NicheType.GENERAL_VIRAL
             ? newsMacroNewsDigestRef.current
             : (currentNiche === NicheType.FINANCE_CRYPTO &&
-               currentSubModeId === FinanceSubModeId.MACRO_WARNING &&
+               currentSubModeId === FinanceSubModeId.GEOPOLITICAL_FLASH &&
                scriptLengthMode === 'LONG'
               ? financeMacroNewsDigestRef.current
               : '');
