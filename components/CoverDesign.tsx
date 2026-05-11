@@ -2,7 +2,7 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { NicheType, ApiProvider } from '../types';
 import { NICHES } from '../constants';
 import { streamContentGeneration } from '../services/geminiService';
-import { generateImage, COVER_GEMINI_IMAGE_MODEL } from '../services/yunwuService';
+import { generateImage } from '../services/yunwuService';
 import {
   COVER_NICHE_ORDER,
   getCoverNicheProfile,
@@ -13,6 +13,30 @@ import { useToast } from './Toast';
 import { Copy, Check, Loader2, Upload, Sparkles, Image as ImageIcon, X, Download } from 'lucide-react';
 
 const MAX_REFERENCE_IMAGES = 12;
+
+/** 封面绘图模型配置 */
+type CoverImageModelId = 'gemini-flash' | 'gpt-image-2-all' | 'grok-imagine';
+const COVER_IMAGE_MODELS: {
+  id: CoverImageModelId;
+  name: string;
+  desc: string;
+}[] = [
+  {
+    id: 'gemini-flash',
+    name: 'Gemini Flash（默认）',
+    desc: 'gemini-3.1-flash-image-preview，备用 gemini-2.5-flash-image-preview',
+  },
+  {
+    id: 'gpt-image-2-all',
+    name: 'GPT Image 2（OpenAI）',
+    desc: '主用 gpt-image-2-all，备用 dall-e-3',
+  },
+  {
+    id: 'grok-imagine',
+    name: 'Grok Imagine',
+    desc: 'grok-imagine-image-pro',
+  },
+];
 
 type CoverAspectId = '16:9' | '9:16' | '1:1' | '4:3' | '3:4';
 
@@ -186,6 +210,7 @@ export const CoverDesign: React.FC<CoverDesignProps> = ({
   /** 出图时采用一句话或多句极限靶点 */
   const [coverHookSource, setCoverHookSource] = useState<'one' | 'multi'>('one');
   const [coverStyleId, setCoverStyleId] = useState<string>('minimal_flat');
+  const [coverImageModel, setCoverImageModel] = useState<CoverImageModelId>('gemini-flash');
 
   /** 与 refPreviews 同步，避免在 setState updater 里启动异步（Strict Mode 会双次调用 updater 导致重复追加） */
   const refPreviewsRef = useRef<RefImageItem[]>([]);
@@ -447,8 +472,13 @@ ${langRule}
 
     setSchemeLoading((m) => ({ ...m, [key]: true }));
     try {
+      const modelMap: Record<CoverImageModelId, string> = {
+        'gemini-flash': 'cover-gemini-flash',
+        'gpt-image-2-all': 'gpt-image-2-all',
+        'grok-imagine': 'grok-imagine',
+      };
       const res = await generateImage(apiKey, {
-        model: COVER_GEMINI_IMAGE_MODEL,
+        model: modelMap[coverImageModel],
         prompt: `${prompt}\n\nYouTube thumbnail, ${aspectOpt.id} aspect ratio, bold readable main title, high CTR composition.${styleEnforcement}${hookEnforcement}${imageTextEnforcement}`,
         size: aspectOpt.size,
         quality: 'high',
@@ -777,6 +807,23 @@ ${langRule}
                 当前 Key 非 Yunwu（sk-），无法直接出图；可复制 VAR 提示词到「一键成片」或其它工具。
               </p>
             )}
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-500 shrink-0">绘图模型：</span>
+                <select
+                  value={coverImageModel}
+                  onChange={(e) => setCoverImageModel(e.target.value as CoverImageModelId)}
+                  className="bg-slate-900 border border-slate-700 rounded-md px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 min-w-[160px]"
+                >
+                  {COVER_IMAGE_MODELS.map((m) => (
+                    <option key={m.id} value={m.id}>{m.name}</option>
+                  ))}
+                </select>
+                <span className="text-[10px] text-slate-600">
+                  {COVER_IMAGE_MODELS.find((m) => m.id === coverImageModel)?.desc}
+                </span>
+              </div>
+            </div>
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs text-slate-500 shrink-0">封面比例：</span>
               {COVER_ASPECT_OPTIONS.map((opt) => (

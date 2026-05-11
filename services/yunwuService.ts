@@ -595,7 +595,7 @@ export const generateImage = async (
     });
 
     if (
-      (opts.model === 'grok-3-image' || opts.model === 'grok-4-image') &&
+      (opts.model === 'grok-3-image' || opts.model === 'grok-4-image' || opts.model === 'grok-imagine') &&
       opts.referenceDataUrls?.length
     ) {
       opts.referenceDataUrls = await downscaleReferenceDataUrlsForVision(opts.referenceDataUrls, 1024);
@@ -766,9 +766,9 @@ export const generateImage = async (
       return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, modelName, opts);
     }
 
-    // grok-3-image / grok-4-image：均走 chat/completions + vision 多段 content（云雾 images/generations 无参考图参数）
-    if (opts.model === 'grok-3-image' || opts.model === 'grok-4-image') {
-      const modelName = opts.model;
+    // grok-3-image / grok-4-image / grok-imagine：均走 chat/completions + vision 多段 content（云雾 images/generations 无参考图参数）
+    if (opts.model === 'grok-3-image' || opts.model === 'grok-4-image' || opts.model === 'grok-imagine') {
+      const modelName = opts.model === 'grok-imagine' ? 'grok-imagine-image-pro' : opts.model;
       let finalPrompt = opts.prompt;
       if (opts.size) {
         const [w, h] = opts.size.split('x').map(Number);
@@ -832,6 +832,64 @@ export const generateImage = async (
       console.error(`[YunwuService] ${opts.model} 多次尝试后仍失败`, lastGrokErr);
       throw lastGrokErr || new Error('Grok 生图失败');
     }
+
+    // gpt-image-2-all：走 images/generations 端点，主模型失败则切换备用
+    if (opts.model === 'gpt-image-2-all') {
+      const gptImagePrimary = 'gpt-image-2-all';
+      const gptImageFallback = 'dall-e-3';
+      try {
+        return await yunwuOpenAiImageOnce(apiKey, baseUrl, gptImagePrimary, opts);
+      } catch (primaryErr: any) {
+        console.warn(
+          '[YunwuService] gpt-image-2-all 主模型失败，切换备用:',
+          gptImagePrimary,
+          primaryErr?.message
+        );
+        return await yunwuOpenAiImageOnce(apiKey, baseUrl, gptImageFallback, opts);
+      }
+    }
+
+async function yunwuOpenAiImageOnce(
+  apiKey: string,
+  baseUrl: string,
+  modelId: string,
+  options: ImageGenerationOptions
+): Promise<GenerationResult> {
+  const endpoint = '/v1/images/generations';
+  const body: Record<string, unknown> = {
+    model: modelId,
+    prompt: options.prompt,
+  };
+  if (options.size) body.size = options.size;
+  if (options.quality) body.quality = options.quality;
+  if (options.n) body.n = options.n;
+
+  const response = await fetch(`${baseUrl}${endpoint}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
+    const errorMessage = errorData.error?.message || `HTTP ${response.status}: ${response.statusText}`;
+    throw new Error(errorMessage);
+  }
+
+  const data = await response.json();
+  const first = data.data?.[0];
+  const normalizedUrl =
+    openAiImageDataItemToUrl(first) || (typeof data.url === 'string' ? data.url.trim() : undefined);
+
+  return {
+    success: true,
+    data,
+    url: normalizedUrl,
+  };
+}
 
     // 其他模型使用 images/generations 端点（含 z-image-turbo 等 OpenAI 兼容图模）
     let endpoint = '/v1/images/generations';
