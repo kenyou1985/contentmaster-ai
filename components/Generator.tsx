@@ -653,7 +653,6 @@ import {
 } from '../services/yiJingParallelLongForm';
 import {
   PARALLEL_LOGIC_TCM,
-  TCM_MERGE_SYSTEM,
   parseTCMOutline,
   TCMChapterPlan,
   TCMOutlinePayload,
@@ -4125,7 +4124,7 @@ ${segmentSourceText}
           });
       const merged = await collectStreamText(
         mergeUser,
-        TCM_MERGE_SYSTEM,
+        bundle.mergeSystem,
         98304
       );
           console.log('[runPipelineForTopic] 合并后检查:', {
