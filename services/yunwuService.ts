@@ -745,17 +745,18 @@ export const generateImage = async (
       throw new Error('无法从响应中提取图片URL，请检查响应格式');
     }
 
-    // 封面设计：Gemini Flash 图模，主模型失败则兜底备用模型
+    // 封面设计：Gemini Flash 图模，三级备用链：gemini-3.1-flash → gpt-image-2-all → grok-imagine-image-pro
     if (opts.model === COVER_GEMINI_IMAGE_MODEL) {
       try {
         return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, COVER_GEMINI_PRIMARY, opts);
       } catch (primaryErr: any) {
-        console.warn(
-          '[YunwuService] 封面生图主模型失败，切换备用:',
-          COVER_GEMINI_PRIMARY,
-          primaryErr?.message
-        );
-        return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, COVER_GEMINI_FALLBACK, opts);
+        console.warn('[YunwuService] 封面生图 Gemini 主模型失败，切换 gpt-image-2-all:', primaryErr?.message);
+        try {
+          return await yunwuOpenAiImageOnce(apiKey, baseUrl, 'gpt-image-2-all', opts);
+        } catch (gptErr: any) {
+          console.warn('[YunwuService] 封面生图 gpt-image-2-all 失败，切换 grok-imagine-image-pro:', gptErr?.message);
+          return await yunwuGrokImageOnce(apiKey, baseUrl, 'grok-imagine-image-pro', opts);
+        }
       }
     }
 
@@ -889,6 +890,76 @@ async function yunwuOpenAiImageOnce(
     data,
     url: normalizedUrl,
   };
+}
+
+async function yunwuGrokImageOnce(
+  apiKey: string,
+  baseUrl: string,
+  modelId: string,
+  options: ImageGenerationOptions
+): Promise<GenerationResult> {
+  let finalPrompt = options.prompt;
+  if (options.size) {
+    const [w, h] = options.size.split('x').map(Number);
+    if (w && h) {
+      const g = (a: number, b: number) => (b === 0 ? a : g(b, a % b));
+      const d = g(w, h);
+      finalPrompt = `${finalPrompt}【${w / d}:${h / d}】`;
+    }
+  }
+  const endpoint = '/v1/chat/completions';
+  const body = {
+    model: modelId,
+    messages: [
+      {
+        role: 'user',
+        content: buildOpenAiVisionUserContent(finalPrompt, options.referenceDataUrls, options.characterName),
+      },
+    ],
+    temperature: 0.7,
+    max_tokens: 4096,
+  };
+  const grokAttempts = 3;
+  const grokRetryDelayMs = 2800;
+  let lastGrokErr: Error | null = null;
+  for (let attempt = 0; attempt < grokAttempts; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, grokRetryDelayMs));
+    }
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 120_000);
+      const response = await fetch(`${baseUrl}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: { message: response.statusText } }));
+        throw new Error(err.error?.message || err.message || `HTTP ${response.status}`);
+      }
+      const data = await response.json();
+      console.log(`[YunwuService] ${modelId} 响应:`, JSON.stringify(data).slice(0, 2000));
+      const clean = parseGrokChatImageResults(data);
+      if (clean.length > 0) {
+        const first = clean[0];
+        return {
+          success: true,
+          data: clean.map((url) => ({ url })),
+          url: first.startsWith('data:') ? first : first,
+        };
+      }
+      lastGrokErr = new Error('无法从响应中提取图片URL');
+      console.warn(`[YunwuService] ${modelId} 第 ${attempt + 1} 次未解析到图片`);
+    } catch (e: any) {
+      lastGrokErr = e instanceof Error ? e : new Error(String(e?.message || e));
+      console.warn(`[YunwuService] ${modelId} 第 ${attempt + 1} 次请求失败:`, lastGrokErr.message);
+    }
+  }
+  console.error(`[YunwuService] ${modelId} 多次尝试后仍失败`, lastGrokErr);
+  throw lastGrokErr || new Error(`${modelId} 生图失败`);
 }
 
     // 其他模型使用 images/generations 端点（含 z-image-turbo 等 OpenAI 兼容图模）
