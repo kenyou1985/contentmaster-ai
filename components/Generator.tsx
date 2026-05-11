@@ -2784,30 +2784,21 @@ ${segmentSourceText}
         bundle.mergeSystem,
         niche === NicheType.GREAT_POWER_GAME ? 98304 : 65536
       );
-      let norm = normalizeYiJingBody(merged);
-      if (mindfulLong) {
-        norm = truncateMindfulScript(norm, MINDFUL_EN_SCRIPT_CHARS_MAX);
-      }
-
       // 大国博弈/Bo Yi：检查并确保收尾语存在
-      // 仅在 AI 原文未包含收尾语时才追加（如果 AI 已自行生成，不重复追加）
+      // 必须检查 merged（原始API输出），而非 norm（normalizeDenseChineseParagraphs 可能清除末尾收尾语）
+      let mergedWithClosing = merged;
       if (niche === NicheType.GREAT_POWER_GAME) {
         const closingPhrase = greatPowerLanguage === 'zh' ? '博弈从未停止。' : 'The game continues.';
         const closingRegex = greatPowerLanguage === 'zh'
           ? /这场博弈还在继续\。|博弈从未停止\。$/
           : /The game (?:never stops|continues)\.?\s*$/i;
-        const aiHasClosing = closingRegex.test(norm.trim());
-        // 追加前的 AI 原文片段（取最后一段用于对比）
-        const lastAiSeg = results[results.length - 1] || '';
-        const originalHasClosing = closingRegex.test(lastAiSeg.trim());
-        if (!aiHasClosing && !originalHasClosing) {
-          pushYiJingLog('[合并] ⚠️ 收尾语缺失，正在追加…');
-          norm = norm.trimEnd() + '\n\n' + closingPhrase;
-        } else if (!aiHasClosing && originalHasClosing) {
-          // AI 原文有收尾但 merge 时丢失了，恢复追加
-          pushYiJingLog('[合并] ⚠️ 收尾语在合并中被截断，恢复追加…');
-          norm = norm.trimEnd() + '\n\n' + closingPhrase;
+        if (!closingRegex.test(mergedWithClosing.trim())) {
+          mergedWithClosing = mergedWithClosing.trimEnd() + '\n\n' + closingPhrase;
         }
+      }
+      let norm = normalizeYiJingBody(mergedWithClosing);
+      if (mindfulLong) {
+        norm = truncateMindfulScript(norm, MINDFUL_EN_SCRIPT_CHARS_MAX);
       }
 
       // 易经命理/中医玄学：安全兜底——删除大国博弈式结尾（如果 AI 误生成）
