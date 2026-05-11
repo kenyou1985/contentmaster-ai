@@ -180,17 +180,29 @@ async function downloadCoverImage(src: string, filename: string): Promise<void> 
     a.remove();
     return;
   }
-  const url = await fetchImageAsBlob(src);
   try {
+    const url = await fetchImageAsBlob(src);
+    try {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  } catch {
+    // 代理 fetch 失败（生产环境无 /__image_proxy），降级：直接用 <a download> 指向原始 URL
+    // 图片已在页面上渲染并缓存，浏览器可直接从缓存下载，绕过 fetch CORS
     const a = document.createElement('a');
-    a.href = url;
+    a.href = src;
     a.download = filename;
     a.rel = 'noopener';
     document.body.appendChild(a);
     a.click();
     a.remove();
-  } finally {
-    URL.revokeObjectURL(url);
   }
 }
 
