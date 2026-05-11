@@ -2754,6 +2754,8 @@ ${segmentSourceText}
             : { min: MIN_GREAT_POWER_EN_CHARS, max: MAX_GREAT_POWER_EN_CHARS })
         : niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG'
         ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
+        : niche === NicheType.TCM_METAPHYSICS
+        ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
         : undefined;
       const mergeUser = isGreatPowerGame
         ? buildBoYiParallelMergeUserPrompt(sel[0].title, combined, parallelTotalTargetChars, {
@@ -3426,6 +3428,8 @@ ${segmentSourceText}
             : { min: MIN_GREAT_POWER_EN_CHARS, max: MAX_GREAT_POWER_EN_CHARS })
         : niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG'
         ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
+        : niche === NicheType.TCM_METAPHYSICS
+        ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
         : undefined;
       const mergeUser = isGreatPowerGameHere
         ? buildBoYiParallelMergeUserPrompt(sel[0].title, combined, parallelTotalTargetChars, {
@@ -3706,6 +3710,8 @@ ${segmentSourceText}
               ? { min: MIN_GREAT_POWER_ZH_CHARS, max: MAX_GREAT_POWER_ZH_CHARS }
               : { min: MIN_GREAT_POWER_EN_CHARS, max: MAX_GREAT_POWER_EN_CHARS })
           : niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG'
+          ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
+          : niche === NicheType.TCM_METAPHYSICS
           ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
           : undefined;
         const mergeUser = buildBoYiParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
@@ -4049,6 +4055,8 @@ ${segmentSourceText}
                 ? { min: MIN_GREAT_POWER_ZH_CHARS, max: MAX_GREAT_POWER_ZH_CHARS }
                 : { min: MIN_GREAT_POWER_EN_CHARS, max: MAX_GREAT_POWER_EN_CHARS })
             : niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG'
+            ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
+            : niche === NicheType.TCM_METAPHYSICS
             ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
             : undefined;
           const mergeUser = buildBoYiParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {

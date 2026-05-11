@@ -95,19 +95,19 @@ export function outlinePayloadToJsonPretty(parsed: TCMOutlinePayload): string {
 export const TCM_CHARS_PER_SEGMENT_SOFT_CAP = 3000;
 
 /** 三段式分章常量（长文） */
-export const TCM_BAND1_MAX = 10000;
+export const TCM_BAND1_MAX = 8000;
 export const TCM_BAND2_MAX = 25000;
 
 /**
  * 长文自动章数：
- * - T ≤ 10000          → 固定 5 章
- * - 10000 < T ≤ 25000 → ceil(T / 3000)，限制 5–10 章
+ * - T ≤ 8000           → ceil(T / 900)（约 5–9 章，每段约 900-1600 字）
+ * - 8000 < T ≤ 25000   → ceil(T / 3000)，限制 5–10 章
  * - T > 25000          → ceil(T / 3000)，限制 6–40 章
  */
 export function computeTCMSegmentCount(totalTargetChars: number): number {
   const T = Math.min(PARALLEL_TOTAL_MAX, Math.max(PARALLEL_TOTAL_MIN, Math.round(totalTargetChars)));
   if (T <= TCM_BAND1_MAX) {
-    return 5;
+    return Math.max(5, Math.ceil(T / 900));
   }
   const raw = Math.ceil(T / TCM_CHARS_PER_SEGMENT_SOFT_CAP);
   if (T <= TCM_BAND2_MAX) {
