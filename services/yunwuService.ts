@@ -281,6 +281,7 @@ export async function polishTextForTtsSpeechWithStyle(
 }
 
 export async function normalizeReferenceDataUrls(urls: string[]): Promise<string[]> {
+  const proxyUrl = (typeof process !== 'undefined' && process.env?.IMAGE_PROXY_URL) || '';
   const out: string[] = [];
   for (const u of urls) {
     const raw = u?.trim();
@@ -290,7 +291,11 @@ export async function normalizeReferenceDataUrls(urls: string[]): Promise<string
       continue;
     }
     try {
-      const res = await fetch(raw);
+      // 生产环境：优先使用配置的代理 URL（绕过 CORS）；开发环境使用 /__image_proxy
+      const fetchUrl = proxyUrl
+        ? `${proxyUrl.replace(/\/$/, '')}?url=${encodeURIComponent(raw)}`
+        : `/__image_proxy?url=${encodeURIComponent(raw)}`;
+      const res = await fetch(fetchUrl);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
       out.push(await blobToDataUrl(blob));

@@ -6,7 +6,7 @@ import { buildMetubeCookiesMultipart } from './api/metube/_multipartCookies';
 
 /**
  * 开发环境：绕过外链图片 CORS（如 Cloudflare R2），供 RunningHub 上传前拉取图片字节
- * 生产静态部署无此中间件，需自行配置反向代理或 CDN CORS
+ * 生产静态部署无此中间件，需自行配置反向代理或 CDN CORS，或设置 IMAGE_PROXY_URL 使用外部代理服务
  */
 function imageProxyDevPlugin(): Plugin {
   return {
@@ -364,7 +364,8 @@ export default defineConfig(({ mode }) => {
       },
       define: {
         'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
+        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+        'process.env.IMAGE_PROXY_URL': JSON.stringify(env.VITE_IMAGE_PROXY_URL || ''),
       },
       resolve: {
         alias: {

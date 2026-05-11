@@ -151,6 +151,24 @@ function formatSeoTagsForDisplay(raw: string): string {
     .join(' ');
 }
 
+/** Converts any image URL to a blob URL, using the image proxy when needed for CORS */
+async function fetchImageAsBlob(src: string): Promise<string> {
+  if (src.startsWith('data:')) {
+    const res = await fetch(src);
+    if (!res.ok) throw new Error('fetch failed');
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
+  }
+  const proxyUrl = (typeof process !== 'undefined' && process.env?.IMAGE_PROXY_URL) || '';
+  const fetchUrl = proxyUrl
+    ? `${proxyUrl.replace(/\/$/, '')}?url=${encodeURIComponent(src)}`
+    : `/__image_proxy?url=${encodeURIComponent(src)}`;
+  const res = await fetch(fetchUrl);
+  if (!res.ok) throw new Error('fetch failed');
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
 async function downloadCoverImage(src: string, filename: string): Promise<void> {
   if (src.startsWith('data:')) {
     const a = document.createElement('a');
@@ -162,10 +180,7 @@ async function downloadCoverImage(src: string, filename: string): Promise<void> 
     a.remove();
     return;
   }
-  const res = await fetch(src);
-  if (!res.ok) throw new Error('fetch failed');
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
+  const url = await fetchImageAsBlob(src);
   try {
     const a = document.createElement('a');
     a.href = url;
