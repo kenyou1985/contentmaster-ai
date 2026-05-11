@@ -3865,10 +3865,10 @@ export function DigitalHumanPanel({
                                     {task.dhPhase === 'error' && (
                                       <button
                                         onClick={() => {
-                                          // 重试数字人
+                                          // 重试数字人：传入 session.id 确保使用该任务的独立参考视频配置
                                           const audioUrl = task.audioUrl || completedAudioUrlsRef.current.get(task.id);
                                           if (audioUrl) {
-                                            generateSingleDh(task.id, audioUrl);
+                                            generateSingleDh(task.id, audioUrl, session.id);
                                           }
                                         }}
                                         className="text-[10px] text-orange-400 hover:text-orange-300 ml-1"
