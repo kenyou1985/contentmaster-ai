@@ -368,6 +368,8 @@ export type GenerateTopicsOptions = {
   modelName?: string;
   /** 选题条数，默认 5，范围 1–50 */
   topicCount?: number;
+  /** 易经命理：近期已出选题，用于跨次去重（避免重复生成相似标题） */
+  avoidTopics?: string[];
 };
 
 export const generateTopics = async (
@@ -394,7 +396,7 @@ export const generateTopics = async (
       )
       .filter(line => line.length > 8);
 
-    // 去重并保留顺序
+    // 去重并保留顺序（当次内去重）
     const unique: string[] = [];
     const seen = new Set<string>();
     for (const t of lines) {
@@ -404,6 +406,34 @@ export const generateTopics = async (
       }
     }
     return unique;
+
+  /**
+   * 易经命理跨次去重：提取关键词，移除与历史选题过于相似的标题。
+   * 相似判定：标题 A 和 B 共享超过 50% 的核心关键词（长度 1-2 的词），
+   * 且两者主题词（女人/男人/名人/部位/行为）相同。
+   */
+  const isSimilarToHistory = (topic: string, history: string[]): boolean => {
+    if (!history || history.length === 0) return false;
+    const extractCoreWords = (s: string): string[] => {
+      return s
+        .replace(/曾仕强|曾师/g, '')
+        .replace(/[^\u4e00-\u9fffA-Za-z0-9]/g, ' ')
+        .split(/\s+/)
+        .filter(w => w.length >= 2)
+        .map(w => w.toLowerCase());
+    };
+    const words = new Set(extractCoreWords(topic));
+    if (words.size < 3) return false; // 太短的标题不比较
+    for (const h of history) {
+      const hw = extractCoreWords(h);
+      if (hw.length === 0) continue;
+      // 共享关键词超过阈值
+      const shared = hw.filter(w => words.has(w.toLowerCase()));
+      const ratio = shared.length / Math.max(hw.length, words.size);
+      if (ratio > 0.45) return true;
+    }
+    return false;
+  };
   };
 
   const isQuotaError = (err: any): boolean => {
@@ -501,6 +531,15 @@ export const generateTopics = async (
       console.log(`[Gemini Service] Fill round ${fillRounds}: got ${extraTopics.length} new topics`);
       if (extraTopics.length === 0) break;
       topics = [...topics, ...extraTopics];
+    }
+
+    // 易经命理跨次去重：过滤与历史选题过于相似的标题
+    const avoidTopics = options?.avoidTopics ?? [];
+    if (avoidTopics.length > 0) {
+      const before = topics.length;
+      topics = topics.filter(t => !isSimilarToHistory(t, avoidTopics));
+      const removed = before - topics.length;
+      console.log(`[generateTopics] Dedup removed ${removed} similar topics, ${topics.length} remaining`);
     }
 
     topics = topics.slice(0, topicCount);
