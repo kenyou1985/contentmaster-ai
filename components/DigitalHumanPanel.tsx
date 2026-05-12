@@ -1245,6 +1245,9 @@ export function DigitalHumanPanel({
         const audioMs = task.audioStartMs ? Date.now() - task.audioStartMs : undefined;
         if (dhSessionId) {
           updateDhSegmentAudio(dhSessionId, task.index, result.audioUrl, audioMs);
+        } else if (sessionId) {
+          // 独立任务：直接更新该 session 的 history 记录
+          updateDhSegmentAudio(sessionId, task.index, result.audioUrl, audioMs);
         }
         // 同步更新独立任务的 segments 状态（用于独立任务列表的实时显示）
         setNewTaskSessions((prev) =>
@@ -1281,6 +1284,9 @@ export function DigitalHumanPanel({
         }
         if (dhSessionId) {
           updateDhSegmentAudio(dhSessionId, task.index, '', undefined, err.message);
+        } else if (sessionId) {
+          // 独立任务：更新 history 错误状态
+          updateDhSegmentAudio(sessionId, task.index, '', undefined, err.message);
         }
         pushLog(`[段${task.index} 配音] ❌ 失败: ${err.message}`);
         toast.error(`段${task.index} 配音失败: ${err.message}`);
@@ -3857,6 +3863,39 @@ export function DigitalHumanPanel({
                                             : '○'}
                                         </span>
                                       </span>
+                                      {/* 重试配音 */}
+                                      {task.audioPhase === 'error' && (
+                                        <button
+                                          onClick={() => {
+                                            // 重试配音：重置状态后调用 generateSingleAudioDirect
+                                            const segTask: DhSegmentTask = {
+                                              id: task.id,
+                                              index: task.index,
+                                              text: task.text,
+                                              textLength: task.textLength ?? task.text.length,
+                                            };
+                                            // 重置 session 中的 segment 状态
+                                            setNewTaskSessions((prev) =>
+                                              prev.map((s) =>
+                                                s.id === session.id
+                                                  ? {
+                                                      ...s,
+                                                      segments: s.segments.map((seg) =>
+                                                        seg.id === task.id
+                                                          ? { ...seg, audioPhase: 'pending' as const, audioError: undefined }
+                                                          : seg
+                                                      ),
+                                                    }
+                                                  : s
+                                              )
+                                            );
+                                            void generateSingleAudioDirect(segTask, session.id);
+                                          }}
+                                          className="text-[10px] text-orange-400 hover:text-orange-300 ml-1"
+                                        >
+                                          重试
+                                        </button>
+                                      )}
                                       {task.dhPhase === 'running' && task.dhStartMs && (
                                         <span className="text-[10px] text-blue-400 animate-pulse">
                                           {formatElapsed(Date.now() - task.dhStartMs)}
@@ -3865,10 +3904,12 @@ export function DigitalHumanPanel({
                                     {task.dhPhase === 'error' && (
                                       <button
                                         onClick={() => {
-                                          // 重试数字人：传入 session.id 确保使用该任务的独立参考视频配置
+                                          // 重试数字人：优先使用当前 task 的 audioUrl，兜底用 completedAudioUrlsRef
                                           const audioUrl = task.audioUrl || completedAudioUrlsRef.current.get(task.id);
                                           if (audioUrl) {
                                             generateSingleDh(task.id, audioUrl, session.id);
+                                          } else {
+                                            toast.error('请先完成配音后再重试数字人');
                                           }
                                         }}
                                         className="text-[10px] text-orange-400 hover:text-orange-300 ml-1"
