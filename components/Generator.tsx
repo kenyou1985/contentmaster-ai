@@ -730,6 +730,41 @@ function removeDuplicateEndings(text: string): string {
   return text;
 }
 
+/**
+ * 大国博弈英文版专用：确保文本以完整收尾语结束
+ * 处理续写截断导致的句子不完整和缺少收尾语问题
+ */
+function ensureGreatPowerClosing(text: string): string {
+  const trimmed = text.trimEnd();
+
+  // 1. 检测末尾是否已有收尾语
+  const hasClosing = /(\bThe game (?:never stops|continues)\.?\s*)$/i.test(trimmed);
+  if (hasClosing) {
+    const cleaned = trimmed.replace(/\s+$/, '');
+    const endsWithClosing = /(\bThe game (?:never stops|continues)\.)\s*$/i.test(cleaned);
+    if (endsWithClosing) return cleaned;
+    return cleaned.replace(/\s*The game (?:never stops|continues)[.,]?\s*$/i, '. The game continues.');
+  }
+
+  // 2. 检测末尾是否是不完整句子（无句号结尾）
+  const lastChar = trimmed.slice(-1);
+  const hasTrailingPunct = /[.!?]/.test(lastChar);
+  if (!hasTrailingPunct) {
+    const lastSentenceEnd = Math.max(
+      trimmed.lastIndexOf('.'),
+      trimmed.lastIndexOf('!'),
+      trimmed.lastIndexOf('?')
+    );
+    if (lastSentenceEnd > trimmed.length - 200) {
+      const prefix = trimmed.slice(0, lastSentenceEnd + 1).trimEnd();
+      return `${prefix} The game continues.`;
+    }
+  }
+
+  // 3. 末尾是完整句子但没有收尾语，追加收尾语
+  return `${trimmed} The game continues.`;
+}
+
 /** 治愈心理学选题：去掉 * / **，竖线改「：」，英文与中文之间的半角冒号改全角「：」，保留【分类标签】 */
 function sanitizeMindfulPsychologyTopicLine(raw: string): string {
   // 提取分类标签
@@ -3067,7 +3102,8 @@ ${segmentSourceText}
             `CRITICAL RULES:`,
             `- Do NOT repeat or rephrase any content from the existing script`,
             `- Do NOT add any titles, headings, chapter markers, or meta text`,
-            `- Do NOT add a closing statement — just add more body content`,
+            `- Do NOT add any closing statement — only add more body paragraphs`,
+            `- Output MUST end with a complete, grammatically finished sentence that ends with a period (.) — never end mid-sentence`,
             `- Pure English prose only, no Chinese characters`,
             `- Maintain Bo Yi's ice-cold insider whistleblower voice`,
             ``,
@@ -3081,10 +3117,18 @@ ${segmentSourceText}
               NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT,
               (chunk) => { expanded = chunk; },
               undefined,
-              { maxTokens: 8192 }
+              { maxTokens: 16000 }
             );
             if (expanded.trim()) {
-              norm = norm.trimEnd() + '\n\n' + expanded.trim();
+              // 检测并移除末尾不完整句子（防止 token 限制截断）
+              const lastPeriod = expanded.trimEnd().lastIndexOf('.');
+              const lastQMark = expanded.trimEnd().lastIndexOf('?');
+              const lastExclaim = expanded.trimEnd().lastIndexOf('!');
+              const lastEnd = Math.max(lastPeriod, lastQMark, lastExclaim);
+              if (lastEnd > expanded.trimEnd().length - 200) {
+                expanded = expanded.trimEnd().slice(0, lastEnd + 1);
+              }
+              norm = norm.trimEnd() + '\n\n' + expanded;
               setYiJingMergedOutput(norm);
               setGeneratedContents((prev) => {
                 const next = [...prev];
@@ -3109,6 +3153,32 @@ ${segmentSourceText}
           norm = lastPeriod > MAX_GREAT_POWER_EN_CHARS - 500
             ? truncated.slice(0, lastPeriod + 1)
             : truncated;
+          setYiJingMergedOutput(norm);
+          setGeneratedContents((prev) => {
+            const next = [...prev];
+            const hit = next.findIndex((x) => x.topic === sel[0].title);
+            if (hit >= 0) { next[hit] = { ...next[hit], content: norm }; }
+            return next;
+          });
+          // 检测并强制写入收尾语（在所有续写完成后执行，确保内容完整）
+          norm = ensureGreatPowerClosing(norm);
+          setYiJingMergedOutput(norm);
+          setGeneratedContents((prev) => {
+            const next = [...prev];
+            const hit = next.findIndex((x) => x.topic === sel[0].title);
+            if (hit >= 0) { next[hit] = { ...next[hit], content: norm }; }
+            return next;
+          });
+        }
+        // 硬上限截断保护
+        if (norm.length > MAX_GREAT_POWER_EN_CHARS) {
+          const truncated = norm.slice(0, MAX_GREAT_POWER_EN_CHARS);
+          const lastPeriod = truncated.lastIndexOf('.');
+          norm = lastPeriod > MAX_GREAT_POWER_EN_CHARS - 500
+            ? truncated.slice(0, lastPeriod + 1)
+            : truncated;
+          // 截断后再次确保收尾语完整
+          norm = ensureGreatPowerClosing(norm);
           setYiJingMergedOutput(norm);
           setGeneratedContents((prev) => {
             const next = [...prev];
@@ -4618,7 +4688,8 @@ ${segmentSourceText}
                 `CRITICAL RULES:`,
                 `- Do NOT repeat or rephrase any content from the existing script`,
                 `- Do NOT add any titles, headings, chapter markers, or meta text`,
-                `- Do NOT add a closing statement — just add more body content`,
+                `- Do NOT add any closing statement — only add more body paragraphs`,
+                `- Output MUST end with a complete, grammatically finished sentence that ends with a period (.) — never end mid-sentence`,
                 `- Pure English prose only, no Chinese characters`,
                 `- Maintain Bo Yi's ice-cold insider whistleblower voice`,
                 ``,
@@ -4632,12 +4703,19 @@ ${segmentSourceText}
                   NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT,
                   (chunk) => { expanded = chunk; },
                   undefined,
-                  { maxTokens: 8192 }
+                  { maxTokens: 16000 }
                 );
                 if (expanded.trim()) {
+                  // 检测并移除末尾不完整句子（防止 token 限制截断）
+                  const lastPeriod = expanded.trimEnd().lastIndexOf('.');
+                  const lastQMark = expanded.trimEnd().lastIndexOf('?');
+                  const lastExclaim = expanded.trimEnd().lastIndexOf('!');
+                  const lastEnd = Math.max(lastPeriod, lastQMark, lastExclaim);
+                  if (lastEnd > expanded.trimEnd().length - 200) {
+                    expanded = expanded.trimEnd().slice(0, lastEnd + 1);
+                  }
                   // 追加新内容，但避免重复句子
-                  const appended = expanded.trim();
-                  finalText = finalText.trimEnd() + '\n\n' + appended;
+                  finalText = finalText.trimEnd() + '\n\n' + expanded;
                   pushYiJingLog(`[大国博弈] 续写完成，追加后共 ${finalText.length} 字`);
                 } else {
                   pushYiJingLog(`[大国博弈] 续写返回为空，停止续写`);
@@ -4658,6 +4736,8 @@ ${segmentSourceText}
                 : truncated;
               pushYiJingLog(`[大国博弈] 硬上限截断至 ${finalText.length} 字`);
             }
+            // 检测并强制写入收尾语
+            finalText = ensureGreatPowerClosing(finalText);
           }
           // ===== 大国博弈英文字数续写保护结束 =====
 
