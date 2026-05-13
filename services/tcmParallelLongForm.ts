@@ -195,6 +195,79 @@ export function buildParallelOutlineUserPrompt(
 chapters 数组长度必须恰好为 ${segmentCount}。`;
 }
 
+const TIME_TABOO_LESSON_CORE_BRIEFS = [
+  // 0: 引子
+  '先描述当天干支能量特征，制造紧迫感。包含：国历日期（农历XX月XX）、干支日、天干地支能量描述、当天整体磁场特征（用大白话，不用术语）、直接警告当天最大风险点（颜色穿错=火上浇油/破财伤身）、直接公布结论（大吉推荐色/全体禁忌色）。格式参考："这一天，很多人会感到莫名焦虑、睡眠极差。这是天地的火毒在焚烧你的气血！"',
+  // 1: 第一节课
+  '点出特定节气/日子的危险性，痛骂观众的致命错误，制造生存危机；语气自然延续引子。讲清楚为什么这一天特别危险，重点在制造紧迫感和危机意识。',
+  // 2: 第二节课
+  '展开引子中的干支分析：天干地支各自含义（用大白话讲透，不要堆术语）、为什么这一天能量特殊（与前一天/后一天对比）、三天连看模式下分别讲每天的能量特点、点出"哪一天最适合签合同/冲业绩/见客户"。',
+  // 3: 第三节课
+  '全体禁忌色全章核心：直接告诉观众当天所有人都不能穿的某几种颜色，讲清楚为什么穿这个颜色=火上浇油/破财/伤身，口语化描述后果（轻则破财，重则伤病）。参考句式："今天你穿这个颜色，就是在自己身上点火！"',
+  // 4: 第四节课
+  '大凶警戒组：3个生肖+严禁什么颜色+穿了的后果。讲清哪几个生肖严禁什么颜色。参考："属龙属鼠属猪，今天严禁红色！水被火压，穿红=火上浇油！"',
+  // 5: 第五节课
+  '平稳过渡组：3个生肖+安抚情绪+防守颜色。讲清哪些生肖为什么穿这个颜色+穿对后效果。参考："属虎属马属狗属蛇，今天必穿白色——这是老天爷给你的开运色！"',
+  // 6: 第六节课
+  '生肖分组·小幸运儿与逆天改命：分两组——小幸运儿组（当天合相加持生肖，穿某色=加分/意外好运，如"属兔卯戌相合，穿绿色最加分"）+ 逆天改命组（3个生肖+吸金行动+吸金颜色）。',
+  // 7: 第七节课
+  '民俗大忌：祭祀/出行致命错误，打死不能丢或不能做的事，辅以真实案例，用大白话讲清楚禁忌的原因和后果。',
+  // 8: 第八节课
+  '千金难买接气法：3个极低成本实操动作，每个动作讲清楚具体做法（要可执行，如"买一双蓝袜子""阴阳水泡脚"）、为什么有效（用大白话解释）、什么时间做效果最好。参考："你今天花十块钱买一双蓝袜子穿上，比你烧一百块香还管用！"',
+];
+
+export function buildTCMTimeTabooOutlineUserPrompt(
+  topic: string,
+  segmentCount: number,
+  totalTargetChars: number,
+  opts: ParallelOutlinePromptOpts,
+  leadContext?: string
+): string {
+  const T = Math.min(PARALLEL_TOTAL_MAX, Math.max(PARALLEL_TOTAL_MIN, Math.round(totalTargetChars)));
+  const perBase = Math.floor(T / segmentCount);
+  const perLo = Math.max(200, perBase - Math.min(200, Math.round(perBase * 0.12)));
+  const perHi = perBase + Math.min(200, Math.round(perBase * 0.12));
+  const head = leadContext?.trim()
+    ? `${leadContext.trim()}\n\n---\n\n`
+    : '';
+
+  const lessonCoreBriefs = TIME_TABOO_LESSON_CORE_BRIEFS.map((brief, i) => {
+    const titles = ['引子', '第一节课：紧急通报与警示', '第二节课：干支能量深度解读', '第三节课：全体禁忌色·全章核心', '第四节课：大凶警戒组', '第五节课：平稳过渡组', '第六节课：生肖分组·小幸运儿与逆天改命', '第七节课：民俗大忌', '第八节课：千金难买接气法'];
+    return `    {\n      "title": "${titles[i]}",\n      "min_chars": ${perLo},\n      "max_chars": ${perHi},\n      "core_brief": "${brief}",\n      "opening_echo": "${i === 0 ? '' : '自然承接上文情绪与语义，继续往下讲'}",\n      "closing_snippet_hint": "收束本章核心，自然引出下一节内容${i < 8 ? '，为下一节埋下伏笔' : '，总结升华本集主题'}",\n      "bridge_to_next": "${i < 8 ? '用口语化转折句衔接下一节（如"我还没讲完"、"还有一点你们必须知道"），禁止用"好了"开头' : '全文总结升华，以终局判断收束'}"\n    }`;
+  }).join(',\n');
+
+  return `${head}【选题】${topic}
+
+【任务】为以上选题生成倪海厦中医玄学风格**时辰禁忌长视频口播大纲**，用于后续分段并发生成（每段单独请求，最后合并）。
+【计量说明】全文总目标与各章 min_chars / max_chars 均为**中文字符**（含标点），**不是**英文单词数。
+
+【硬性要求】
+1. 共 **${segmentCount}** 章（强制9章）；全片合并后目标约 **${T} 字**（允许合理偏差），每章 min_chars / max_chars 需合理分摊，单章约 ${perLo}–${perHi}（在 JSON 里逐章给出，max_chars - min_chars ≤ 600）。
+2. ${opts.logicBlueprint}
+3. **强制9节课内容框架**：每章必须对应以下框架，不得缺节、不得乱序：
+${TIME_TABOO_LESSON_CORE_BRIEFS.map((b, i) => `   第${i + 1}章（${['引子', '第一节课', '第二节课', '第三节课', '第四节课', '第五节课', '第六节课', '第七节课', '第八节课'][i]}）：${b.split('：')[1] || b.slice(0, 80)}`).join('\n')}
+4. 每章必须包含：
+   - title：章标题（禁止使用「第X章」「第一章」等章节编号，只能是自然的短句标题；**禁止**使用引号包裹）
+   - min_chars / max_chars：整数
+   - core_brief：本章要讲透的论点与素材方向（50–120 字，必须覆盖对应节课的核心内容）
+   - opening_echo：**从上一章收束语义自然承接**的开头提示（第1章填空字符串 ""）；约 40–80 字
+   - closing_snippet_hint：本章结尾希望出现的收束语义摘要（40–80 字）
+   - bridge_to_next：本章末 1–2 句过渡到下一章的自然过渡提示（最后一章写总结升华）
+
+5. **章节编号禁止**：严格禁止输出任何「第1章」「第二章」「第一部分」「Section 1」等带编号的章节标记。
+
+6. 只输出 **一个 JSON 对象**，不要 Markdown、不要注释。键名必须完全一致：
+{
+  "core_theme": "string",
+  "logic_line": "string",
+  "chapters": [
+${lessonCoreBriefs}
+  ]
+}
+
+chapters 数组长度必须恰好为 ${segmentCount}。`;
+}
+
 export type ParallelMergePromptOpts = {
   toneInstruction: string;
   outputLanguage: string;

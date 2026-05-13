@@ -657,6 +657,7 @@ import {
   TCMChapterPlan,
   TCMOutlinePayload,
   computeTCMSegmentCount,
+  buildTCMTimeTabooOutlineUserPrompt,
   rescaleChapterWordCounts as rescaleTCMChapterWordCounts,
 } from '../services/tcmParallelLongForm';
 import JSZip from 'jszip';
@@ -3689,6 +3690,8 @@ ${segmentSourceText}
     const plannedSeg =
       niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'zh'
         ? 10
+        : niche === NicheType.TCM_METAPHYSICS && scriptLengthMode !== 'SHORT'
+        ? 9
         : computeParallelSegmentCount(
             parallelTotalTargetChars,
             scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
@@ -3752,20 +3755,34 @@ ${segmentSourceText}
       appendRunLog(topic.id, '开始：生成大纲');
 
       try {
+        const isTcmTimeTaboo =
+          niche === NicheType.TCM_METAPHYSICS && tcmSubMode === TcmSubModeId.TIME_TABOO;
         const raw = await collectStreamText(
-          buildParallelOutlineUserPrompt(
-            topicTitle,
-            plannedSeg,
-            parallelTotalTargetChars,
-            bundle.outline,
-            outlineLead || undefined
-          ),
+          isTcmTimeTaboo
+            ? buildTCMTimeTabooOutlineUserPrompt(
+                topicTitle,
+                plannedSeg,
+                parallelTotalTargetChars,
+                bundle.outline,
+                outlineLead || undefined
+              )
+            : buildParallelOutlineUserPrompt(
+                topicTitle,
+                plannedSeg,
+                parallelTotalTargetChars,
+                bundle.outline,
+                outlineLead || undefined
+              ),
           bundle.outlineSystem,
           6144
         );
-        const parsedRaw = parseYiJingOutline(raw);
+        const parsedRaw = isTcmTimeTaboo
+          ? parseTCMOutline(raw)
+          : parseYiJingOutline(raw);
         if (!parsedRaw) throw new Error('大纲 JSON 解析失败');
-        const parsed = rescaleChapterWordCounts(parsedRaw, parallelTotalTargetChars);
+        const parsed = isTcmTimeTaboo
+          ? rescaleTCMChapterWordCounts(parsedRaw as TCMOutlinePayload, parallelTotalTargetChars)
+          : rescaleChapterWordCounts(parsedRaw, parallelTotalTargetChars);
         const n = parsed.chapters.length;
 
         patchRun(topic.id, { stage: 'segments', progress: 18 });
@@ -3781,17 +3798,33 @@ ${segmentSourceText}
             ? (bundle as any).segmentSystem
             : NICHES[niche].systemInstruction;
         const segDone = new Set<number>();
+        const isTcm = niche === NicheType.TCM_METAPHYSICS;
+        const tcmLessonInstructions = isTcm && tcmSubMode === TcmSubModeId.TIME_TABOO ? [
+          '', // 0: 引子 - no special instruction, handled by core_brief
+          '第一节课：紧急通报与警示——点出节气/日子的危险性，痛骂致命错误，制造生存危机；语气自然延续引子。',
+          '第二节课：干支能量深度解读——展开干支分析，用大白话讲透天干地支含义，对比相邻日期能量，点出最适合的日子。',
+          '第三节课：全体禁忌色·全章核心——全体禁忌色是全章核心，必须讲透为什么穿禁忌色=火上浇油/破财/伤身。',
+          '第四节课：大凶警戒组——3个生肖+严禁颜色+穿了的后果。参考："属龙属鼠属猪，今天严禁红色！"',
+          '第五节课：平稳过渡组——3个生肖+防守颜色+穿对效果。参考："属虎属马属狗，今天必穿白色，这是老天爷给你的开运色！"',
+          '第六节课：生肖分组·小幸运儿与逆天改命——分两组：小幸运儿组（合相加持+加分颜色）+逆天改命组（3生肖+吸金颜色）。',
+          '第七节课：民俗大忌——祭祀/出行致命错误，打死不能做的事，辅以真实案例。',
+          '第八节课：千金难买接气法——3个极低成本实操动作，讲清做法+为什么有效+最佳时间。',
+        ] : [];
         const results = await Promise.all(
           parsed.chapters.map(async (ch, idx) => {
             let local = '';
             // 易经命理用 buildParallelSegmentUserPrompt（曾仕强风格）
             // 大国博弈用 buildBoYiParallelSegmentUserPrompt（Bo Yi风格）
-            const user = isYiJing
+            // 中医玄学用 buildParallelSegmentUserPrompt（倪海厦风格），注入课时指令
+            const tcmEnhancedLogicLine = tcmLessonInstructions[idx]
+              ? `${parsed.logic_line}\n\n【本节课专项要求】${tcmLessonInstructions[idx]}`
+              : parsed.logic_line;
+            const user = isYiJing || isTcm
               ? buildParallelSegmentUserPrompt(
                   {
                     topic: topicTitle,
                     coreTheme: parsed.core_theme,
-                    logicLine: parsed.logic_line,
+                    logicLine: tcmEnhancedLogicLine,
                     chapter: ch,
                     chapterIndex: idx,
                     totalChapters: n,
@@ -4084,24 +4117,40 @@ ${segmentSourceText}
           const plannedSeg =
             niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'zh'
               ? 10
+              : niche === NicheType.TCM_METAPHYSICS && scriptLengthMode !== 'SHORT'
+              ? 9
               : computeParallelSegmentCount(
                   parallelTotalTargetChars,
                   scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
                 );
+          const isTcmTimeTabooOutline =
+            niche === NicheType.TCM_METAPHYSICS && tcmSubMode === TcmSubModeId.TIME_TABOO;
           const raw = await collectStreamText(
-            buildParallelOutlineUserPrompt(
-              topicTitle,
-              plannedSeg,
-              parallelTotalTargetChars,
-              bundle.outline,
-              outlineLead || undefined
-            ),
+            isTcmTimeTabooOutline
+              ? buildTCMTimeTabooOutlineUserPrompt(
+                  topicTitle,
+                  plannedSeg,
+                  parallelTotalTargetChars,
+                  bundle.outline,
+                  outlineLead || undefined
+                )
+              : buildParallelOutlineUserPrompt(
+                  topicTitle,
+                  plannedSeg,
+                  parallelTotalTargetChars,
+                  bundle.outline,
+                  outlineLead || undefined
+                ),
             bundle.outlineSystem,
             6144
           );
-          const parsedRaw = parseYiJingOutline(raw);
+          const parsedRaw = isTcmTimeTabooOutline
+            ? parseTCMOutline(raw)
+            : parseYiJingOutline(raw);
           if (!parsedRaw) throw new Error('大纲解析失败');
-          const parsed = rescaleChapterWordCounts(parsedRaw, parallelTotalTargetChars);
+          const parsed = isTcmTimeTabooOutline
+            ? rescaleTCMChapterWordCounts(parsedRaw as TCMOutlinePayload, parallelTotalTargetChars)
+            : rescaleChapterWordCounts(parsedRaw, parallelTotalTargetChars);
           setParallelTopicOutlineMap((prev) => ({
             ...prev,
             [topic.id]: outlinePayloadToJsonPretty(parsed),
@@ -4120,20 +4169,46 @@ ${segmentSourceText}
             niche === NicheType.GREAT_POWER_GAME && (bundle as any).segmentSystem
               ? (bundle as any).segmentSystem
               : config.systemInstruction;
+          const isTcmSegment = niche === NicheType.TCM_METAPHYSICS;
+          const tcmLessonInstructions = isTcmSegment && tcmSubMode === TcmSubModeId.TIME_TABOO ? [
+            '',
+            '第一节课：紧急通报与警示——点出节气/日子的危险性，痛骂致命错误，制造生存危机；语气自然延续引子。',
+            '第二节课：干支能量深度解读——展开干支分析，用大白话讲透天干地支含义，对比相邻日期能量，点出最适合的日子。',
+            '第三节课：全体禁忌色·全章核心——全体禁忌色是全章核心，必须讲透为什么穿禁忌色=火上浇油/破财/伤身。',
+            '第四节课：大凶警戒组——3个生肖+严禁颜色+穿了的后果。参考："属龙属鼠属猪，今天严禁红色！"',
+            '第五节课：平稳过渡组——3个生肖+防守颜色+穿对效果。参考："属虎属马属狗，今天必穿白色，这是老天爷给你的开运色！"',
+            '第六节课：生肖分组·小幸运儿与逆天改命——分两组：小幸运儿组（合相加持+加分颜色）+逆天改命组（3生肖+吸金颜色）。',
+            '第七节课：民俗大忌——祭祀/出行致命错误，打死不能做的事，辅以真实案例。',
+            '第八节课：千金难买接气法——3个极低成本实操动作，讲清做法+为什么有效+最佳时间。',
+          ] : [];
           const segResults = await Promise.all(
             parsed.chapters.map(async (ch, chIdx) => {
-              // 统一走 buildBoYiParallelSegmentUserPrompt（内部已根据 outputLanguage 输出中/英文）
-              const user = buildBoYiParallelSegmentUserPrompt(
-                {
-                  topic: topicTitle,
-                  coreTheme: parsed.core_theme,
-                  logicLine: parsed.logic_line,
-                  chapter: ch,
-                  chapterIndex: chIdx,
-                  totalChapters: parsed.chapters.length,
-                },
-                bundle.segment
-              );
+              const tcmEnhancedLogic = tcmLessonInstructions[chIdx]
+                ? `${parsed.logic_line}\n\n【本节课专项要求】${tcmLessonInstructions[chIdx]}`
+                : parsed.logic_line;
+              const user = isTcmSegment
+                ? buildParallelSegmentUserPrompt(
+                    {
+                      topic: topicTitle,
+                      coreTheme: parsed.core_theme,
+                      logicLine: tcmEnhancedLogic,
+                      chapter: ch,
+                      chapterIndex: chIdx,
+                      totalChapters: parsed.chapters.length,
+                    },
+                    bundle.segment
+                  )
+                : buildBoYiParallelSegmentUserPrompt(
+                    {
+                      topic: topicTitle,
+                      coreTheme: parsed.core_theme,
+                      logicLine: parsed.logic_line,
+                      chapter: ch,
+                      chapterIndex: chIdx,
+                      totalChapters: parsed.chapters.length,
+                    },
+                    bundle.segment
+                  );
               let local = '';
               setParallelTopicSegStatusMap((prev) => {
                 const arr = [...(prev[topic.id] || [])];
