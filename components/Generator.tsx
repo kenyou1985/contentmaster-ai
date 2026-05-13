@@ -3373,19 +3373,37 @@ ${segmentSourceText}
     pushTcmLog(`生成大纲（约 ${segN} 章，全文目标约 ${parallelTotalTargetChars} 字）…`);
     setBatchProgress({ current: 0, total: segN, hint: `生成大纲（${segN} 章）…` });
 
-    // Step 1: 生成大纲 JSON
-    const outlinePrompt = `【选题】${topicTitle}
+    // Step 1: 生成大纲 JSON（时辰禁忌强制9章，其他TCM子模式按 segN）
+    const isTimeTaboo = tcmSubMode === TcmSubModeId.TIME_TABOO;
+    const actualSegN = isTimeTaboo ? 9 : segN;
+    const fixedChapterTitles = isTimeTaboo ? [
+      '引子：破日警报——铁齿的代价',
+      '第一节课：紧急通报与警示',
+      '第二节课：干支能量深度解读',
+      '第三节课：全体禁忌色·全章核心',
+      '第四节课：大凶警戒组',
+      '第五节课：平稳过渡组',
+      '第六节课：小幸运儿与逆天改命',
+      '第七节课：民俗大忌',
+      '第八节课：千金难买接气法',
+      '第九节课：功德升华与留言共振',
+    ] : null;
+    const chapterTitlesBlock = isTimeTaboo
+      ? `\n【强制章节标题（共9章，禁止自行命名）】\n以下标题为固定章节目录，你的 JSON 中 chapters[0]~chapters[8] 的 title 必须与下列标题一一对应，不得修改、不得省略、不得打乱顺序：\n${fixedChapterTitles!.map((t, i) => `  ${i === 0 ? '（引子）' : `第${i}章`}：${t}`).join('\n')}`
+      : '';
+    const outlinePrompt = `【选题】${topicTitle}${chapterTitlesBlock}
 
-【任务】为以上选题生成倪海厦中医玄学风格口播大纲，共 ${segN} 章，全片合并后目标约 ${parallelTotalTargetChars} 字。
+【任务】为以上选题生成倪海厦中医玄学风格口播大纲，共 **${actualSegN}** 章，全片合并后目标约 ${parallelTotalTargetChars} 字。
 
 倪海厦风格内容结构参考（任选其一或自由组合）：
 1. 引子破局 → 干支能量解读 → 禁忌色详解 → 生肖分组 → 急救实操 → 功德收尾
 2. 直击痛点 → 中医规律导入 → 正反案例 → 落地实操 → 霸气收尾
 
 【硬性要求】
-1. 共 **${segN}** 章；每章 **min_chars / max_chars** 须合理分摊，单章约 ${Math.round(parallelTotalTargetChars / segN * 0.9)}–${Math.round(parallelTotalTargetChars / segN * 1.1)} 字
-2. 每章包含：title（自然短句标题，禁止"第X章"）、min_chars、max_chars、core_brief、opening_echo、closing_snippet_hint、bridge_to_next
-3. 只输出一个 JSON 对象，键名：core_theme, logic_line, chapters
+1. 共 **${actualSegN}** 章；每章 **min_chars / max_chars** 须合理分摊，单章约 ${Math.round(parallelTotalTargetChars / actualSegN * 0.9)}–${Math.round(parallelTotalTargetChars / actualSegN * 1.1)} 字
+2. 每章包含：title（时辰禁忌必须使用上述固定标题；其他模式用自然短句标题，禁止"第X章"）、min_chars、max_chars、core_brief、opening_echo、closing_snippet_hint、bridge_to_next
+3. **chapters 数组长度必须恰好为 ${actualSegN}，不得多一个也不得少一个**
+4. 只输出一个 JSON 对象，键名：core_theme, logic_line, chapters
 `;
     let rawOutline = '';
     await streamContentGeneration(outlinePrompt, bundle.outlineSystem, (c) => {
@@ -3400,21 +3418,21 @@ ${segmentSourceText}
         parsed = rescaleTCMChapterWordCounts(parsed, parallelTotalTargetChars);
         pushTcmLog(`大纲解析完成：${parsed.chapters.length} 章`);
       } else {
-        pushTcmLog(`大纲 JSON 解析失败，使用默认 ${segN} 段结构`);
+        pushTcmLog(`大纲 JSON 解析失败，使用默认 ${actualSegN} 段结构`);
       }
     } catch (e) {
-      pushTcmLog(`大纲解析异常，使用默认 ${segN} 段结构`);
+      pushTcmLog(`大纲解析异常，使用默认 ${actualSegN} 段结构`);
     }
 
     // Step 3: 确定章节列表（使用解析结果或生成默认）
-    const chapters: TCMChapterPlan[] = parsed?.chapters ?? Array.from({ length: segN }, (_, i) => ({
-      title: `第${i + 1}部分`,
-      min_chars: Math.round(parallelTotalTargetChars / segN * 0.85),
-      max_chars: Math.round(parallelTotalTargetChars / segN * 1.15),
+    const chapters: TCMChapterPlan[] = parsed?.chapters ?? Array.from({ length: actualSegN }, (_, i) => ({
+      title: isTimeTaboo && fixedChapterTitles ? fixedChapterTitles[i] : `第${i + 1}部分`,
+      min_chars: Math.round(parallelTotalTargetChars / actualSegN * 0.85),
+      max_chars: Math.round(parallelTotalTargetChars / actualSegN * 1.15),
       core_brief: '倪海厦风格内容，请自由发挥',
       opening_echo: '',
       closing_snippet_hint: '',
-      bridge_to_next: i < segN - 1 ? `讲完了第${i + 1}部分，现在来看第${i + 2}部分` : '',
+      bridge_to_next: i < actualSegN - 1 ? `讲完了第${i + 1}部分，现在来看第${i + 2}部分` : '',
     }));
     const n = chapters.length;
 
@@ -3606,7 +3624,7 @@ ${segmentSourceText}
           const tcmTailPolish = polished.length <= 2000 ? polished : polished.slice(-2000);
           const hasEndingPolish = /(?:咱们?|我们|咱們?|我)下期再见|下期再见|下期节目再见|(?:咱们?|我们|咱們?|我)下期见|(?:咱们?|我们|咱們?|我)下期节目见|下课[!！]/.test(tcmTailPolish);
           const hasCommentPolish = /(?:评论区|留言|留言区).*(?:安康|顺遂|平安|吉祥|福寿|如意|康宁|无恙)|打上.*(?:安康|顺遂|平安|吉祥|福寿|如意|康宁|无恙).*(?:咱们?下期|下期再见)/.test(tcmTailPolish);
-          let finalPolish = polished;
+          finalPolish = polished;
           if (!hasEndingPolish) {
             pushTcmLog('[去AI味] ⚠️ CTA 收尾语被清洗丢失，追加倪师式收尾');
             finalPolish = finalPolish.trimEnd() + '\n\n' + TCM_CLOSING;
