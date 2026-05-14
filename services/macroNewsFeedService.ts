@@ -59,6 +59,20 @@ const FALLBACK_HEADLINES: MacroNewsHeadline[] = [
   { title: '美国国债收益率曲线倒挂，经济衰退风险上升', source: 'Fallback', pubDate: new Date().toISOString() },
 ];
 
+// 中文模式备选新闻（当 RSS 全部失败时使用，优先台湾/两岸/印太内容）
+const ZH_FALLBACK_HEADLINES: MacroNewsHeadline[] = [
+  { title: '台海局势持续受关注，美方批准新一轮对台军售', source: 'Fallback', pubDate: new Date().toISOString() },
+  { title: '赖清德发表言论，两岸关系再引热议', source: 'Fallback', pubDate: new Date().toISOString() },
+  { title: '解放军台海演习常态化，军事震慑意图明显', source: 'Fallback', pubDate: new Date().toISOString() },
+  { title: '中美在台海议题上持续博弈，外交交锋频繁', source: 'Fallback', pubDate: new Date().toISOString() },
+  { title: '郑丽文等政治人物就两岸政策展开激辩', source: 'Fallback', pubDate: new Date().toISOString() },
+  { title: '印太战略持续推进，台海成为大国博弈焦点', source: 'Fallback', pubDate: new Date().toISOString() },
+  { title: '台湾半导体产业受全球关注，地缘经济风险上升', source: 'Fallback', pubDate: new Date().toISOString() },
+  { title: '解放军舰机频繁巡航台海，区域安全形势趋紧', source: 'Fallback', pubDate: new Date().toISOString() },
+  { title: '美日韩军事合作深化，印太联盟体系持续巩固', source: 'Fallback', pubDate: new Date().toISOString() },
+  { title: '两岸经贸数据波动，供应链重构加速推进', source: 'Fallback', pubDate: new Date().toISOString() },
+];
+
 // 内存缓存
 let cachedDigest: { lang: string; content: string; timestamp: number } | null = null;
 
@@ -265,18 +279,18 @@ export async function fetchMacroNewsDigestForPrompt(maxLines = 32, lang: 'en' | 
 
   // 如果没有获取到任何新闻，使用备选
   if (merged.length === 0) {
-    merged = FALLBACK_HEADLINES.slice(0, maxLines);
+    merged = (lang === 'zh' ? ZH_FALLBACK_HEADLINES : FALLBACK_HEADLINES).slice(0, maxLines);
   }
 
   const iso = new Date().toISOString();
-  const successInfo = successCount > 0 ? `（成功抓取 ${successCount}/${feedsToFetch.length} 个 RSS 源）` : '（RSS 全部失败，使用内置备选）';
+  const successInfo = successCount > 0
+    ? `（成功抓取 ${successCount}/${feedsToFetch.length} 个 RSS 源）`
+    : lang === 'zh' ? '（RSS 全部失败，使用内置中文备选）' : '（RSS 全部失败，使用内置备选）';
 
   const header =
-    `# 【国际要闻投喂】系统自动抓取\n` +
-    `- 来源：BBC World、DW、Al Jazeera、France 24、Sky News、CNBC、Reuters、Guardian 等${successInfo}\n` +
-    `- 抓取时间（ISO）：${iso}\n` +
-    `- 时效：优先保留近 7 日内条目\n` +
-    `- 用途：你必须据此写选题标题，禁止整组输出与新闻无关的套话\n\n`;
+    lang === 'zh'
+      ? `# 【国际要闻投喂】系统自动抓取\n- 来源：CNA、BBC中文网、DW中文网、CNA等${successInfo}\n- 抓取时间（ISO）：${iso}\n- 时效：优先保留近 7 日内条目\n- 用途：你必须据此写选题标题，禁止整组输出与新闻无关的套话\n\n`
+      : `# 【International Intelligence Feed】Auto-fetched\n- Sources: BBC World, DW, Al Jazeera, France 24, Sky News, CNBC, Reuters, Guardian等${successInfo}\n- Fetch time (ISO): ${iso}\n- You MUST anchor every topic title to at least one item in the feed above. Do NOT generate generic topics disconnected from this intelligence.\n\n`;
 
   const body = merged.map((h, i) => `${i + 1}. [${h.source}] ${h.title}`).join('\n');
   const digest = header + body;
