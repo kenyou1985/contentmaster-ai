@@ -1688,6 +1688,10 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
                 prompt += `\n\n# 中医玄学选题标题人称规则（最高优先级）\n- 所有选题标题必须使用第三方人称“倪海厦”或“倪师”。\n- 禁止第一人称（我/我们/俺）出现在标题中。\n- 若任一标题违反，整组结果作废并重写。`;
 
             }
+            // 新闻热点赛道：关键词必须出现在标题中
+            if (niche === NicheType.GENERAL_VIRAL && inputVal.trim()) {
+                prompt += "\n\n# 关键词强制\n用户输入：「" + inputVal.trim() + "」";
+            }
         } else {
             prompt = prompt.replace(/.*\{input\}.*\n?/g, '').replace('{input}', '');
         }
