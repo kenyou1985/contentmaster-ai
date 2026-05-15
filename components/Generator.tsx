@@ -2801,7 +2801,7 @@ ${segmentSourceText}
             ? { min: MIN_GREAT_POWER_ZH_CHARS, max: MAX_GREAT_POWER_ZH_CHARS }
             : { min: MIN_GREAT_POWER_EN_CHARS, max: MAX_GREAT_POWER_EN_CHARS })
         : niche === NicheType.TCM_METAPHYSICS
-        ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
+        ? { min: 7600, max: 8400 }
         : niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG'
         ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
         : undefined;
@@ -3405,10 +3405,11 @@ ${segmentSourceText}
 2. 直击痛点 → 中医规律导入 → 正反案例 → 落地实操 → 霸气收尾
 
 【硬性要求】
-1. 共 **${actualSegN}** 章；每章 **min_chars / max_chars** 须合理分摊，单章约 ${Math.round(parallelTotalTargetChars / actualSegN * 0.9)}–${Math.round(parallelTotalTargetChars / actualSegN * 1.1)} 字
+1. 共 **${actualSegN}** 章；每章 **min_chars / max_chars** 须合理分摊，单章约 ${Math.round(parallelTotalTargetChars / actualSegN * 0.93)}–${Math.round(parallelTotalTargetChars / actualSegN * 1.07)} 字
 2. 每章包含：title（时辰禁忌必须使用上述固定标题；其他模式用自然短句标题，禁止"第X章"）、min_chars、max_chars、core_brief、opening_echo、closing_snippet_hint、bridge_to_next
 3. **chapters 数组长度必须恰好为 ${actualSegN}，不得多一个也不得少一个**
 4. 只输出一个 JSON 对象，键名：core_theme, logic_line, chapters
+5. **全文合并后目标约 ${parallelTotalTargetChars} 字，各章字数请严格控制在此范围内**
 `;
     let rawOutline = '';
     await streamContentGeneration(outlinePrompt, bundle.outlineSystem, (c) => {
@@ -3557,14 +3558,8 @@ ${segmentSourceText}
       // 大国博弈赛道使用专用 merge prompt，避免中文结构标签干扰
       // 中英文各自独立字数控制；新闻热点长视频也强制字数目标
       const isGreatPowerGameHere = niche === NicheType.GREAT_POWER_GAME;
-      const mergeCharRangeHere = isGreatPowerGameHere
-        ? (greatPowerLanguage === 'zh'
-            ? { min: MIN_GREAT_POWER_ZH_CHARS, max: MAX_GREAT_POWER_ZH_CHARS }
-            : { min: MIN_GREAT_POWER_EN_CHARS, max: MAX_GREAT_POWER_EN_CHARS })
-        : niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG'
-        ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
-        : niche === NicheType.TCM_METAPHYSICS
-        ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
+      const mergeCharRangeHere = niche === NicheType.TCM_METAPHYSICS
+        ? { min: 7600, max: 8400 }
         : undefined;
       const mergeUser = isGreatPowerGameHere
         ? buildBoYiParallelMergeUserPrompt(sel[0].title, combined, parallelTotalTargetChars, {
@@ -3872,14 +3867,8 @@ ${segmentSourceText}
           niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
         // 统一走 buildBoYiParallelMergeUserPrompt（内部已根据 outputLanguage 输出中/英文）
         // 大国博弈中英文各自独立字数控制；新闻热点长视频也强制字数目标
-        const mergeCharRangeAp = niche === NicheType.GREAT_POWER_GAME
-          ? (greatPowerLanguage === 'zh'
-              ? { min: MIN_GREAT_POWER_ZH_CHARS, max: MAX_GREAT_POWER_ZH_CHARS }
-              : { min: MIN_GREAT_POWER_EN_CHARS, max: MAX_GREAT_POWER_EN_CHARS })
-          : niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG'
-          ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
-          : niche === NicheType.TCM_METAPHYSICS
-          ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
+        const mergeCharRangeAp = niche === NicheType.TCM_METAPHYSICS
+          ? { min: 7600, max: 8400 }
           : undefined;
         const mergeUser = buildBoYiParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
           ...bundle.merge,
@@ -4266,7 +4255,7 @@ ${segmentSourceText}
             : niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG'
             ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
             : niche === NicheType.TCM_METAPHYSICS
-            ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
+            ? { min: 7600, max: 8400 }
             : undefined;
           const mergeUser = buildBoYiParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
             ...bundle.merge,

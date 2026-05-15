@@ -75,7 +75,7 @@ export function rescaleChapterWordCounts(
     rem -= share;
   }
   const avg = clampedTotal / n;
-  const band = Math.min(350, Math.max(50, Math.round(avg * 0.08)));
+  const band = Math.min(200, Math.max(40, Math.round(avg * 0.05)));
   return {
     ...parsed,
     chapters: parsed.chapters.map((ch, i) => {
@@ -92,7 +92,7 @@ export function outlinePayloadToJsonPretty(parsed: TCMOutlinePayload): string {
 }
 
 /** 单次分段流式生成下，单章口播汉字的保守上限 */
-export const TCM_CHARS_PER_SEGMENT_SOFT_CAP = 3000;
+export const TCM_CHARS_PER_SEGMENT_SOFT_CAP = 1500;
 
 /** 三段式分章常量（长文） */
 export const TCM_BAND1_MAX = 8000;
@@ -152,8 +152,8 @@ export function buildParallelOutlineUserPrompt(
   const low = Math.round(T * 0.95);
   const high = Math.round(T * 1.05);
   const perBase = Math.floor(T / segmentCount);
-  const perLo = Math.max(200, perBase - Math.min(200, Math.round(perBase * 0.12)));
-  const perHi = perBase + Math.min(200, Math.round(perBase * 0.12));
+  const perLo = Math.max(200, perBase - Math.min(120, Math.round(perBase * 0.10)));
+  const perHi = perBase + Math.min(120, Math.round(perBase * 0.10));
   const head = leadContext?.trim()
     ? `${leadContext.trim()}\n\n---\n\n`
     : '';
@@ -163,7 +163,7 @@ export function buildParallelOutlineUserPrompt(
 【计量说明】全文总目标与各章 min_chars / max_chars 均为**中文字符**（含标点），**不是**英文单词数。
 
 【硬性要求】
-1. 共 **${segmentCount}** 章；全片合并后目标约 **${T} 字**（允许合理偏差），每章 min_chars / max_chars 需合理分摊，单章约 ${perLo}–${perHi}（在 JSON 里逐章给出，max_chars - min_chars ≤ 600）。
+1. 共 **${segmentCount}** 章；全片合并后目标约 **${T} 字**（允许合理偏差），每章 min_chars / max_chars 需合理分摊，单章约 ${perLo}–${perHi}（在 JSON 里逐章给出，max_chars - min_chars ≤ 400）。
 2. ${opts.logicBlueprint}
 3. 每章必须包含：
    - title：章标题（4–12 字，**禁止**使用「第X章」「第一章」「第三章」等章节编号，只能是自然的短句标题）
@@ -225,8 +225,8 @@ export function buildTCMTimeTabooOutlineUserPrompt(
 ): string {
   const T = Math.min(PARALLEL_TOTAL_MAX, Math.max(PARALLEL_TOTAL_MIN, Math.round(totalTargetChars)));
   const perBase = Math.floor(T / segmentCount);
-  const perLo = Math.max(200, perBase - Math.min(200, Math.round(perBase * 0.12)));
-  const perHi = perBase + Math.min(200, Math.round(perBase * 0.12));
+  const perLo = Math.max(200, perBase - Math.min(120, Math.round(perBase * 0.10)));
+  const perHi = perBase + Math.min(120, Math.round(perBase * 0.10));
   const head = leadContext?.trim()
     ? `${leadContext.trim()}\n\n---\n\n`
     : '';
@@ -242,7 +242,7 @@ export function buildTCMTimeTabooOutlineUserPrompt(
 【计量说明】全文总目标与各章 min_chars / max_chars 均为**中文字符**（含标点），**不是**英文单词数。
 
 【硬性要求】
-1. 共 **${segmentCount}** 章（强制9章）；全片合并后目标约 **${T} 字**（允许合理偏差），每章 min_chars / max_chars 需合理分摊，单章约 ${perLo}–${perHi}（在 JSON 里逐章给出，max_chars - min_chars ≤ 600）。
+1. 共 **${segmentCount}** 章（强制9章）；全片合并后目标约 **${T} 字**（允许合理偏差），每章 min_chars / max_chars 需合理分摊，单章约 ${perLo}–${perHi}（在 JSON 里逐章给出，max_chars - min_chars ≤ 400）。
 2. ${opts.logicBlueprint}
 3. **强制9节课内容框架**：每章必须对应以下框架，不得缺节、不得乱序：
 ${TIME_TABOO_LESSON_CORE_BRIEFS.map((b, i) => `   第${i + 1}章（${['引子', '第一节课', '第二节课', '第三节课', '第四节课', '第五节课', '第六节课', '第七节课', '第八节课'][i]}）：${b.split('：')[1] || b.slice(0, 80)}`).join('\n')}
