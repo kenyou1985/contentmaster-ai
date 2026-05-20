@@ -854,8 +854,8 @@ function getParallelPipelineBundle(
     contentKindOutline = '口播大纲';
     contentKindMerge = '口播';
     directorLine = '你是倪海厦教授风格的中医玄学长视频总编导。';
-    mergeEditorLine = '你是资深口播编辑，熟悉倪海厦讲学风格，必须删除各段重复的开场白、套话和案例。';
-    mergeTone = '全文语气统一为倪海厦式骂醒风格：犀利、直接、口语化。全文禁止重复套话，以下句式只允许出现1次：爬山故事、"你们不要笑……说不下去了"叹息句、"我跟你讲……算了不说这个了"省略句。语气词"我跟你讲""说真的""我这话难听"各不超过2次。各段衔接自然，禁止出现两段内容高度相似的重复段落。结尾段必须包含互动引导（请观众在评论区输入正向祈福词语：安康、顺遂、平安、吉祥、福寿、如意、康宁、无恙之一），并以"咱们下期再见"、"下期再见"或"咱们下期见"自然收尾。禁止使用大国博弈式结尾（"博弈还在继续"等）。';
+    mergeEditorLine = '你是资深口播编辑，熟悉倪海厦讲学风格，必须删除各段重复的开场白、套话和案例。全文必须控制在约7400–8000字范围内，不得超过8000字。';
+    mergeTone = '全文语气统一为倪海厦式骂醒风格：犀利、直接、口语化。全文禁止重复套话，以下句式只允许出现1次：爬山故事、"你们不要笑……说不下去了"叹息句、"我跟你讲……算了不说这个了"省略句。语气词"我跟你讲""说真的""我这话难听"各不超过2次。各段衔接自然，禁止出现两段内容高度相似的重复段落。【结尾CTA（强制）】全文结尾只能输出以下唯一一句，不得多写任何其他引导词：「身体是本钱，评论区打上"安康"两字，咱们下期再见。」禁止使用大国博弈式结尾（"博弈还在继续"等）。';
   }
 
   if (niche === NicheType.STORY_REVENGE) {
@@ -1038,13 +1038,13 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   /** 中医玄学长文：达到此字数后才允许节目收尾语；与续写停止条件一致 */
-  const MIN_TCM_SCRIPT_CHARS = 8000;
-  const MAX_TCM_SCRIPT_CHARS = 8500;
+  const MIN_TCM_SCRIPT_CHARS = 7800;
+  const MAX_TCM_SCRIPT_CHARS = 8200;
   const MIN_YI_JING_SCRIPT_CHARS = 8000;
   const MAX_YI_JING_SCRIPT_CHARS = 12000;
   const MAX_YI_JING_SCRIPT_CONTINUATIONS = 20;
   /** 清洗后字数未满此时，禁止出现最后一节（第9节/第5节等）标题与收束 */
-  const TCM_MIN_CHARS_BEFORE_FINAL_LESSON = 7200;
+  const TCM_MIN_CHARS_BEFORE_FINAL_LESSON = 7000;
   /** 清洗后字数未满此时，剥离提前出现的收尾语 */
   const TCM_MIN_CHARS_BEFORE_CLOSING_PHRASES = 8000;
   const MIN_FIN_SCRIPT_CHARS = 7000; // 28 min * 250 chars/min
@@ -2801,7 +2801,7 @@ ${segmentSourceText}
             ? { min: MIN_GREAT_POWER_ZH_CHARS, max: MAX_GREAT_POWER_ZH_CHARS }
             : { min: MIN_GREAT_POWER_EN_CHARS, max: MAX_GREAT_POWER_EN_CHARS })
         : niche === NicheType.TCM_METAPHYSICS
-        ? { min: 7600, max: 8400 }
+        ? { min: 7400, max: 8000 }
         : niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG'
         ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
         : undefined;
@@ -3559,7 +3559,7 @@ ${segmentSourceText}
       // 中英文各自独立字数控制；新闻热点长视频也强制字数目标
       const isGreatPowerGameHere = niche === NicheType.GREAT_POWER_GAME;
       const mergeCharRangeHere = niche === NicheType.TCM_METAPHYSICS
-        ? { min: 7600, max: 8400 }
+        ? { min: 7400, max: 8000 }
         : undefined;
       const mergeUser = isGreatPowerGameHere
         ? buildBoYiParallelMergeUserPrompt(sel[0].title, combined, parallelTotalTargetChars, {
@@ -3599,6 +3599,17 @@ ${segmentSourceText}
           norm = norm.slice(0, posInNorm);
         }
         norm = norm.trimEnd() + '\n\n' + TCM_CLOSING;
+      } else {
+        // 有完整 CTA 时：截断"咱们下期再见"之后的所有多余引导词段落
+        const ctaEndMatch = norm.match(/咱们?下期再见[。！？]*/);
+        if (ctaEndMatch) {
+          const ctaEndPos = norm.lastIndexOf(ctaEndMatch[0]) + ctaEndMatch[0].length;
+          const afterCta = norm.slice(ctaEndPos).trim();
+          const remainingSentences = afterCta.split(/[。！？]/).filter(s => s.trim().length > 0);
+          if (remainingSentences.length > 1 || (remainingSentences.length === 1 && remainingSentences[0].trim().length > 10)) {
+            norm = norm.slice(0, ctaEndPos);
+          }
+        }
       }
 
       let finalPolish = norm;
@@ -3868,7 +3879,7 @@ ${segmentSourceText}
         // 统一走 buildBoYiParallelMergeUserPrompt（内部已根据 outputLanguage 输出中/英文）
         // 大国博弈中英文各自独立字数控制；新闻热点长视频也强制字数目标
         const mergeCharRangeAp = niche === NicheType.TCM_METAPHYSICS
-          ? { min: 7600, max: 8400 }
+          ? { min: 7400, max: 8000 }
           : undefined;
         const mergeUser = buildBoYiParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
           ...bundle.merge,
@@ -4255,7 +4266,7 @@ ${segmentSourceText}
             : niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG'
             ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
             : niche === NicheType.TCM_METAPHYSICS
-            ? { min: 7600, max: 8400 }
+            ? { min: 7400, max: 8000 }
             : undefined;
           const mergeUser = buildBoYiParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
             ...bundle.merge,
@@ -6255,7 +6266,7 @@ ${segmentSourceText}
                         }
                     }
 
-                    const capped = truncateToMax(cleaned, Math.round(MAX_TCM_SCRIPT_CHARS * 1.1));
+                    const capped = truncateToMax(cleaned, MAX_TCM_SCRIPT_CHARS);
                     cleaned = sanitizeTtsScript(capped);
                     localContent = stripBeyondLesson9(cleaned);
                     if (isShortScript) {

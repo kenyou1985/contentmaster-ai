@@ -419,12 +419,15 @@ export function buildBoYiParallelMergeUserPrompt(
   // 原因：6段并行分段约20000字符，强制字数目标会让模型删减内容来凑字数
   // Bo Yi 赛道：去掉 enLengthRule/zhLengthRule 中的字数上限提示
   const clamp = opts.englishMergedCharClamp;
+  const explicit = opts.mergeCharRange;
   // 英文：改为「不得少于原文」，不提上限
   const enLengthRule = clamp
     ? `Length requirement: The merged script must be AT LEAST as long as the combined draft (approximately ${clamp.min}+ characters). Do NOT shorten, truncate, or delete any content to meet a word count target. If the draft is longer than ${clamp.max} characters, that is acceptable — content completeness is non-negotiable.`
     : `Length requirement: The merged script must be AT LEAST as long as the combined draft. Do NOT shorten or delete any content to meet a word count target. If the merged result exceeds ${high} characters, that is acceptable — content completeness is non-negotiable.`;
-  // 中文：改为「不得少于原文」，不提上限
-  const zhLengthRule = `字数要求：合并后全文不得少于原文长度（至少约 ${low} 个中文字符）。不得因字数限制而删减任何内容。如合并后超出 ${high} 字，完全可以接受——内容完整性高于字数控制。`;
+  // 中文：当有显式 mergeCharRange 时严格控制；否则默认宽松
+  const zhLengthRule = explicit
+    ? `字数要求（最高优先级）：合并后全文必须严格控制在约 **${explicit.min}–${explicit.max}** 字范围内，不得超过 **${explicit.max}** 字。如超出上限可小幅压缩冗余句式，但**严禁删除正文内容**；如不足下限可补充过渡句，但全文不得超过上限。`
+    : `字数要求：合并后全文不得少于原文长度（至少约 ${low} 个中文字符）。不得因字数限制而删减任何内容。如合并后超出 ${high} 字，完全可以接受——内容完整性高于字数控制。`;
 
   if (isZhOutput) {
     // 中文合并 prompt
@@ -524,6 +527,8 @@ export type ParallelMergePromptOpts = {
   englishMergedCharClamp?: { min: number; max: number };
   /** 多语言输出时的语言，用于生成正确的结尾 CTA */
   mindfulLanguage?: string;
+  /** 显式指定合并后字数区间（优先级高于 auto 计算的 T*0.92/T*1.08） */
+  mergeCharRange?: { min: number; max: number };
 };
 
 export function buildParallelMergeUserPrompt(
@@ -535,8 +540,9 @@ export function buildParallelMergeUserPrompt(
   const T = totalTargetChars
     ? Math.min(PARALLEL_TOTAL_MAX, Math.max(PARALLEL_TOTAL_MIN, Math.round(totalTargetChars)))
     : 10000;
-  const low = Math.round(T * 0.92);
-  const high = Math.round(T * 1.08);
+  const { low, high } = opts.mergeCharRange
+    ? { low: opts.mergeCharRange.min, high: opts.mergeCharRange.max }
+    : { low: Math.round(T * 0.92), high: Math.round(T * 1.08) };
   const kind = opts.contentKind || '正文';
   const isEnglish = opts.outputLanguage === 'en';
 
@@ -545,8 +551,11 @@ export function buildParallelMergeUserPrompt(
     : '【语言强制】合并后全文必须使用**简体中文**。将所有英文片段翻译为中文语义对等表达。禁止保留任何英文正文字符。';
 
   const clamp = opts.englishMergedCharClamp;
+  const explicit = opts.mergeCharRange;
   const lengthRule = clamp
     ? `7. 全文字符数尽量接近 **${clamp.min}–${clamp.max}** 范围；如超出上限仅允许小幅删减，如不足下限仅允许小幅补过渡；但**内容完整性优先**，不得因字数要求而截断任何段落。`
+    : explicit
+    ? `7. 【字数控制（最高优先级）】合并后全文必须严格控制在约 **${explicit.min}–${explicit.max}** 字范围内，不得超过 **${explicit.max}** 字。如超出上限可小幅压缩冗余句式，但**严禁删除任何正文内容**；如不足下限可补充过渡句，但全文不得超过上限。`
     : `7. 保留原文完整内容，不得因字数要求而截断任何段落。如字数略有偏差可接受。`;
 
   return `【任务】以下是由「${topic}」分段生成的${opts.channelTag}${kind}初稿拼接而成。请执行「合并初稿 + 统一全文语气」。
