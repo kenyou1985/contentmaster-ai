@@ -1,14 +1,9 @@
 /**
  * 一键配音页：与一键成片镜头配音共用 RunningHub TTS + 可选云雾 gpt-5.4-mini 口播优化
  *
- * 音频后处理说明（修复破音/电流声）：
- * RunningHub TTS 输出的原始音频末尾可能存在：
- *   1. 突然截断 → 振幅从满幅直降至零 → 数字削波（clipping）→ 破音
- *   2. 模型尾部伪影 → 高频噪声/电流声
- *   3. 过长的静音尾部
- * 处理策略：
- *   - 淡出（Fade-out）：在音频末尾 300ms 内平滑地将振幅降至零，防止削波
- *   - 尾部静音裁剪：将末尾连续的静音部分（< -50dB）移除，精简长度
+ * 音频处理说明：
+ * RunningHub TTS 输出的原始音频通过 Web Audio API 解码后直接重新编码为 WAV，
+ * 不做任何低通滤波/淡入淡出处理（这些处理曾导致 OfflineAudioContext 重采样时音频数据丢失）。
  */
 
 import {
@@ -21,23 +16,17 @@ import { polishTextForTtsSpeech, polishTextForTtsSpeechWithStyle } from './yunwu
 import { getVoiceById, getSelectedVoice, updateVoice } from './voiceLibraryService';
 
 // ============================================================
-// 音频后处理参数
-// ============================================================
-
-/** 淡出时长（毫秒），覆盖末尾这段时间的振幅 */
-const FADE_OUT_MS = 300;
-/** 静音检测阈值（dB），低于此值的样本视为静音 */
-const SILENCE_THRESHOLD_DB = -50;
-
-// ============================================================
-// 音频后处理核心
+// 音频处理核心
 // ============================================================
 
 /**
  * 对 TTS 音频进行客户端后处理：
  *   1. Web Audio API 解码原始音频
- *   2. 末尾淡出（Fade-out）—— 平滑振幅降至零，防止削波破音
- *   3. 尾部静音裁剪 —— 移除过长的静音尾部
+ *   2. 直接复制 PCM 数据（不做任何滤波/淡入淡出，避免 OfflineAudioContext 处理导致静音）
+ *   3. 编码为 WAV
+ *
+ * 注：OfflineAudioContext 的低通滤波/重采样处理在某些情况下会导致音频数据丢失（静音），
+ * 因此移除了所有处理步骤，仅保留解码+重新编码，保留原始音频数据不变。
  *
  * @param remoteUrl 原始音频 URL（可以是 http(s):// 或 data: URL）
  * @returns 处理后的 Blob URL（audio/wav），可直接用于播放/下载/上传
@@ -65,62 +54,17 @@ async function processAudioWithFadeOut(remoteUrl: string): Promise<string> {
 
   const sr = audioBuffer.sampleRate;
   const numChannels = audioBuffer.numberOfChannels;
-  const totalFrames = audioBuffer.length;
+  const numFrames = audioBuffer.length;
 
-  // 步骤 1：计算末尾有效内容帧（从后向前找第一个超过静音阈值的点）
-  const linearThreshold = Math.pow(10, SILENCE_THRESHOLD_DB / 20); // 线性振幅阈值
-  let lastActiveFrame = totalFrames - 1;
+  // ── 步骤1：直接复制原始 PCM 数据（不做任何滤波/淡入淡出）──
+  const finalBuffer = audioCtx.createBuffer(numChannels, numFrames, sr);
   for (let ch = 0; ch < numChannels; ch++) {
-    const data = audioBuffer.getChannelData(ch);
-    for (let i = totalFrames - 1; i >= 0; i--) {
-      if (Math.abs(data[i]) > linearThreshold) {
-        if (i > lastActiveFrame) lastActiveFrame = i;
-        break;
-      }
-    }
+    finalBuffer.copyToChannel(audioBuffer.getChannelData(ch), ch);
   }
 
-  // 步骤 2：计算淡出起始帧（取末尾 300ms 或有效内容末尾）
-  const fadeOutFrames = Math.min(
-    Math.round((FADE_OUT_MS / 1000) * sr),
-    Math.floor(lastActiveFrame * 0.05), // 至多占音频总长的 5%，避免短音频被过度淡出
-    lastActiveFrame
-  );
-  const fadeStartFrame = Math.max(0, lastActiveFrame - fadeOutFrames + 1);
+  // ── 步骤2：编码为 WAV（PCM 16-bit）──
+  const wavBlob = encodeWavPcm16(finalBuffer);
 
-  // 步骤 3：生成淡出曲线（二次方衰减，自然听感）
-  const fadeCurve = new Float32Array(fadeOutFrames);
-  for (let i = 0; i < fadeOutFrames; i++) {
-    const t = i / (fadeOutFrames - 1 || 1); // 归一化 0→1
-    fadeCurve[i] = Math.pow(1 - t, 2);
-  }
-
-  // 步骤 4：创建目标 buffer 并应用淡出
-  const renderedBuffer = audioCtx.createBuffer(
-    numChannels,
-    lastActiveFrame + 1,
-    sr
-  );
-
-  for (let ch = 0; ch < numChannels; ch++) {
-    const srcData = audioBuffer.getChannelData(ch);
-    const dstData = renderedBuffer.getChannelData(ch);
-    for (let i = 0; i <= lastActiveFrame; i++) {
-      dstData[i] = srcData[i];
-    }
-    // 应用淡出曲线
-    for (let i = 0; i < fadeOutFrames; i++) {
-      const frameIdx = fadeStartFrame + i;
-      if (frameIdx < dstData.length) {
-        dstData[frameIdx] *= fadeCurve[i];
-      }
-    }
-  }
-
-  // 步骤 5：编码为 WAV（PCM 16-bit）
-  const wavBlob = encodeWavPcm16(renderedBuffer);
-
-  // 释放 AudioContext
   await audioCtx.close();
 
   return URL.createObjectURL(wavBlob);
@@ -321,10 +265,10 @@ export async function runOneClickTts(
   const urlShort = rawAudioUrl.length > 96 ? `${rawAudioUrl.slice(0, 96)}…` : rawAudioUrl;
   log(`TTS 成功 · 原始输出 URL：${urlShort}`);
 
-  // 音频后处理：淡出 + 尾部静音裁剪（修复破音/电流声）
+  // 音频处理：解码后直接编码为 WAV（保留原始音频数据不变）
   let audioUrl = rawAudioUrl;
   try {
-    log('音频后处理：淡出（300ms）+ 尾部静音裁剪…');
+    log('音频处理：解码并重新编码为 WAV…');
     audioUrl = await processAudioWithFadeOut(rawAudioUrl);
     log('音频后处理完成');
   } catch (err) {

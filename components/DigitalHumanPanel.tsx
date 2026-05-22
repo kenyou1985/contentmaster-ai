@@ -33,6 +33,9 @@ import {
   Volume2,
   Plus,
   ExternalLink,
+  Edit3,
+  Check,
+  Music,
 } from 'lucide-react';
 import { useToast } from './Toast';
 import {
@@ -51,6 +54,7 @@ import {
   updateDhSegmentVideo,
   packVideosToZip,
   packVideosToBatches,
+  packAudiosToZip,
   BATCH_ZIP_SIZE,
   type DownloadProgressCallback,
   dhConcurrency,
@@ -603,6 +607,14 @@ export function DigitalHumanPanel({
 
   /** 独立任务多选状态 */
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
+
+  /** 独立任务段落编辑状态 */
+  const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
+  const [editingSegmentText, setEditingSegmentText] = useState('');
+
+  /** 主任务段落编辑状态 */
+  const [mainEditingSegId, setMainEditingSegId] = useState<string | null>(null);
+  const [mainEditingText, setMainEditingText] = useState('');
 
   /** 挂起队列状态（支持多个独立任务） */
   const [oneClickQueue, setOneClickQueue] = useState<{
@@ -1702,6 +1714,21 @@ export function DigitalHumanPanel({
       .filter((t) => !!t.dhVideoUrl)
       .map((t) => ({ url: t.dhVideoUrl!, filename: `段${t.index}.mp4` }));
 
+  /** 构造音频下载项列表（用于独立任务） */
+  const makeAudioItems = (segments: Array<{ index: number; audioUrl?: string }>) =>
+    segments
+      .filter((s) => !!s.audioUrl)
+      .map((s) => ({ url: s.audioUrl!, filename: `配音_段${s.index}.wav` }));
+
+  /** 下载单个音频（用于独立任务） */
+  const downloadSingleAudio = (url: string, filename: string) => {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.target = '_blank';
+    a.click();
+  };
+
   const handleDownloadSingle = useCallback((task: DhSegmentTask) => {
     if (!task.dhVideoUrl) return;
     const a = document.createElement('a');
@@ -1712,124 +1739,290 @@ export function DigitalHumanPanel({
   }, []);
 
   const handleDownloadSelected = useCallback(async () => {
-    const selected = tasks.filter((t) => selectedIds.has(t.id) && t.dhVideoUrl);
-    if (selected.length === 0) {
-      toast.warning('请先选择已完成数字人的段落');
-      return;
-    }
+    const selectedWithDh = tasks.filter((t) => selectedIds.has(t.id) && t.dhVideoUrl);
+    const selectedWithAudio = tasks.filter((t) => selectedIds.has(t.id) && t.audioUrl);
 
-    if (selected.length === 1) {
-      handleDownloadSingle(selected[0]);
-      return;
-    }
-
-    const items = makeVideoItems(selected);
-    const totalBatches = Math.ceil(items.length / BATCH_ZIP_SIZE);
-    pushLog(`[打包下载] 分 ${totalBatches} 批打包 ${items.length} 个视频…`);
-    setDownloadProgress({ totalFiles: items.length, currentIndex: 0, phase: 'downloading', overallPercent: 0, currentFilename: '', downloadedBytes: 0, totalBytes: undefined });
-
-    try {
-      const onProgress: DownloadProgressCallback = (info) => {
-        setDownloadProgress((p) =>
-          p ? {
-            ...p,
-            overallPercent: info.overallPercent >= 0 ? info.overallPercent : (p?.overallPercent ?? 0),
-            currentIndex: info.currentIndex,
-            currentFilename: info.filename,
-            phase: info.phase,
-            downloadedBytes: info.downloadedBytes,
-            totalBytes: info.totalBytes,
-          } : null
-        );
-      };
-
-      if (totalBatches > 1) {
-        // 分多批下载，每批单独触发浏览器下载
-        let downloadedBatches = 0;
-        await packVideosToBatches(
-          items,
-          (batchIndex, total, batchPct, filename) => {
-            setDownloadProgress((p) =>
-              p ? { ...p, batchIndex, totalBatches: total, overallPercent: batchPct, currentFilename: filename, phase: 'downloading' } : null
-            );
-          },
-          (batchIndex, total, batch) => {
-            triggerZipDownload(batch.zipBlob, `数字人对口型_${batch.partLabel}`);
-            downloadedBatches++;
-            pushLog(`[打包下载] ✅ ${batch.partLabel}（含 ${batch.filenames.length} 个视频）已下载`);
-            setDownloadProgress((p) =>
-              p ? { ...p, batchIndex, totalBatches: total, overallPercent: Math.round((downloadedBatches / total) * 100) } : null
-            );
-          }
-        );
-        toast.success(`${items.length} 个视频分 ${totalBatches} 批打包完成`);
-      } else {
-        // 单批，直接打包下载
-        const blob = await packVideosToZip(items, '数字人对口型视频.zip', onProgress);
-        triggerZipDownload(blob, '数字人对口型视频');
-        toast.success(`打包下载成功: ${items.length} 个视频`);
+    // 优先下载视频（已完成数字人）
+    if (selectedWithDh.length > 0) {
+      const selected = selectedWithDh;
+      if (selected.length === 1) {
+        handleDownloadSingle(selected[0]);
+        return;
       }
-    } catch (err: any) {
-      toast.error(`打包失败: ${err.message}`);
-    } finally {
-      setDownloadProgress(null);
+
+      const items = makeVideoItems(selected);
+      const totalBatches = Math.ceil(items.length / BATCH_ZIP_SIZE);
+      pushLog(`[打包下载] 分 ${totalBatches} 批打包 ${items.length} 个视频…`);
+      setDownloadProgress({ totalFiles: items.length, currentIndex: 0, phase: 'downloading', overallPercent: 0, currentFilename: '', downloadedBytes: 0, totalBytes: undefined });
+
+      try {
+        const onProgress: DownloadProgressCallback = (info) => {
+          setDownloadProgress((p) =>
+            p ? {
+              ...p,
+              overallPercent: info.overallPercent >= 0 ? info.overallPercent : (p?.overallPercent ?? 0),
+              currentIndex: info.currentIndex,
+              currentFilename: info.filename,
+              phase: info.phase,
+              downloadedBytes: info.downloadedBytes,
+              totalBytes: info.totalBytes,
+            } : null
+          );
+        };
+
+        if (totalBatches > 1) {
+          let downloadedBatches = 0;
+          await packVideosToBatches(
+            items,
+            (batchIndex, total, batchPct, filename) => {
+              setDownloadProgress((p) =>
+                p ? { ...p, batchIndex, totalBatches: total, overallPercent: batchPct, currentFilename: filename, phase: 'downloading' } : null
+              );
+            },
+            (batchIndex, total, batch) => {
+              triggerZipDownload(batch.zipBlob, `数字人对口型_${batch.partLabel}`);
+              downloadedBatches++;
+              pushLog(`[打包下载] ✅ ${batch.partLabel}（含 ${batch.filenames.length} 个视频）已下载`);
+              setDownloadProgress((p) =>
+                p ? { ...p, batchIndex, totalBatches: total, overallPercent: Math.round((downloadedBatches / total) * 100) } : null
+              );
+            }
+          );
+          toast.success(`${items.length} 个视频分 ${totalBatches} 批打包完成`);
+        } else {
+          const blob = await packVideosToZip(items, '数字人对口型视频.zip', onProgress);
+          triggerZipDownload(blob, '数字人对口型视频');
+          toast.success(`打包下载成功: ${items.length} 个视频`);
+        }
+      } catch (err: any) {
+        toast.error(`打包失败: ${err.message}`);
+      } finally {
+        setDownloadProgress(null);
+      }
+      return;
     }
-  }, [tasks, selectedIds, handleDownloadSingle, toast, pushLog, setDownloadProgress, makeVideoItems, packVideosToBatches, packVideosToZip]);
+
+    // 无数字人视频，但有音频 → 批量下载音频
+    if (selectedWithAudio.length > 0) {
+      const audioItems = selectedWithAudio.map((t) => ({
+        url: t.audioUrl!,
+        filename: `配音_段${t.index}.wav`,
+      }));
+      if (audioItems.length === 1) {
+        const a = document.createElement('a');
+        a.href = audioItems[0].url;
+        a.download = audioItems[0].filename;
+        a.target = '_blank';
+        a.click();
+        toast.success('音频下载开始');
+        return;
+      }
+
+      setDownloadProgress({ totalFiles: audioItems.length, currentIndex: 0, phase: 'downloading', overallPercent: 0, currentFilename: '', downloadedBytes: 0, totalBytes: undefined });
+      pushLog(`[打包下载] 批量下载 ${audioItems.length} 个音频…`);
+      try {
+        const onProgress: DownloadProgressCallback = (info) => {
+          setDownloadProgress((p) =>
+            p ? {
+              ...p,
+              overallPercent: info.overallPercent >= 0 ? info.overallPercent : (p?.overallPercent ?? 0),
+              currentIndex: info.currentIndex,
+              currentFilename: info.filename,
+              phase: info.phase,
+              downloadedBytes: info.downloadedBytes,
+              totalBytes: info.totalBytes,
+            } : null
+          );
+        };
+        const blob = await packAudiosToZip(audioItems, '配音音频.zip', onProgress);
+        triggerZipDownload(blob, '配音音频');
+        toast.success(`批量下载成功: ${audioItems.length} 个音频`);
+      } catch (err: any) {
+        toast.error(`音频下载失败: ${err.message}`);
+      } finally {
+        setDownloadProgress(null);
+      }
+      return;
+    }
+
+    toast.warning('请先选择已完成配音或数字人的段落');
+  }, [tasks, selectedIds, handleDownloadSingle, toast, pushLog, setDownloadProgress, makeVideoItems, packVideosToBatches, packVideosToZip, packAudiosToZip, triggerZipDownload]);
 
   const handleDownloadAll = useCallback(async () => {
     const done = tasks.filter((t) => t.dhPhase === 'done' && t.dhVideoUrl);
-    if (done.length === 0) {
-      toast.warning('没有可下载的数字人视频');
+    const audioDone = tasks.filter((t) => t.audioPhase === 'done' && t.audioUrl);
+
+    // 优先下载视频（已完成数字人）
+    if (done.length > 0) {
+      if (done.length === 1) {
+        handleDownloadSingle(done[0]);
+        return;
+      }
+
+      const items = makeVideoItems(done);
+      const totalBatches = Math.ceil(items.length / BATCH_ZIP_SIZE);
+      pushLog(`[打包下载] 分 ${totalBatches} 批打包 ${items.length} 个视频…`);
+      setDownloadProgress({ totalFiles: items.length, currentIndex: 0, phase: 'downloading', overallPercent: 0, currentFilename: '' });
+
+      try {
+        if (totalBatches > 1) {
+          let downloadedBatches = 0;
+          await packVideosToBatches(
+            items,
+            (batchIndex, total, batchPct, filename) => {
+              setDownloadProgress((p) =>
+                p ? { ...p, batchIndex, totalBatches: total, overallPercent: batchPct, currentFilename: filename, phase: 'downloading' } : null
+              );
+            },
+            (batchIndex, total, batch) => {
+              triggerZipDownload(batch.zipBlob, `数字人对口型_${batch.partLabel}`);
+              downloadedBatches++;
+              pushLog(`[打包下载] ✅ ${batch.partLabel}（含 ${batch.filenames.length} 个视频）已下载`);
+              setDownloadProgress((p) =>
+                p ? { ...p, batchIndex, totalBatches: total, overallPercent: Math.round((downloadedBatches / total) * 100) } : null
+              );
+            }
+          );
+          toast.success(`${items.length} 个视频分 ${totalBatches} 批打包完成`);
+        } else {
+          const onProgress: DownloadProgressCallback = (info) => {
+            setDownloadProgress((p) =>
+              p ? { ...p, overallPercent: info.overallPercent >= 0 ? info.overallPercent : (p?.overallPercent ?? 0), currentIndex: info.currentIndex, currentFilename: info.filename, phase: info.phase } : null
+            );
+          };
+          const blob = await packVideosToZip(items, '数字人对口型视频.zip', onProgress);
+          triggerZipDownload(blob, '数字人对口型视频');
+          toast.success(`打包下载成功: ${items.length} 个视频`);
+        }
+      } catch (err: any) {
+        toast.error(`打包失败: ${err.message}`);
+      } finally {
+        setDownloadProgress(null);
+      }
       return;
     }
 
-    if (done.length === 1) {
-      handleDownloadSingle(done[0]);
-      return;
-    }
+    // 无数字人视频，但有音频 → 批量下载音频
+    if (audioDone.length > 0) {
+      const audioItems = audioDone.map((t) => ({
+        url: t.audioUrl!,
+        filename: `配音_段${t.index}.wav`,
+      }));
+      if (audioItems.length === 1) {
+        const a = document.createElement('a');
+        a.href = audioItems[0].url;
+        a.download = audioItems[0].filename;
+        a.target = '_blank';
+        a.click();
+        toast.success('音频下载开始');
+        return;
+      }
 
-    const items = makeVideoItems(done);
-    const totalBatches = Math.ceil(items.length / BATCH_ZIP_SIZE);
-    pushLog(`[打包下载] 分 ${totalBatches} 批打包 ${items.length} 个视频…`);
-    setDownloadProgress({ totalFiles: items.length, currentIndex: 0, phase: 'downloading', overallPercent: 0, currentFilename: '' });
-
-    try {
-      if (totalBatches > 1) {
-        pushLog(`[打包下载] 分 ${totalBatches} 批打包 ${items.length} 个视频…`);
-        let downloadedBatches = 0;
-        await packVideosToBatches(
-          items,
-          (batchIndex, total, batchPct, filename) => {
-            setDownloadProgress((p) =>
-              p ? { ...p, batchIndex, totalBatches: total, overallPercent: batchPct, currentFilename: filename, phase: 'downloading' } : null
-            );
-          },
-          (batchIndex, total, batch) => {
-            triggerZipDownload(batch.zipBlob, `数字人对口型_${batch.partLabel}`);
-            downloadedBatches++;
-            pushLog(`[打包下载] ✅ ${batch.partLabel}（含 ${batch.filenames.length} 个视频）已下载`);
-            setDownloadProgress((p) =>
-              p ? { ...p, batchIndex, totalBatches: total, overallPercent: Math.round((downloadedBatches / total) * 100) } : null
-            );
-          }
-        );
-        toast.success(`${items.length} 个视频分 ${totalBatches} 批打包完成`);
-      } else {
+      setDownloadProgress({ totalFiles: audioItems.length, currentIndex: 0, phase: 'downloading', overallPercent: 0, currentFilename: '', downloadedBytes: 0, totalBytes: undefined });
+      pushLog(`[打包下载] 批量下载 ${audioItems.length} 个音频…`);
+      try {
         const onProgress: DownloadProgressCallback = (info) => {
           setDownloadProgress((p) =>
-            p ? { ...p, overallPercent: info.overallPercent >= 0 ? info.overallPercent : (p?.overallPercent ?? 0), currentIndex: info.currentIndex, currentFilename: info.filename, phase: info.phase } : null
+            p ? {
+              ...p,
+              overallPercent: info.overallPercent >= 0 ? info.overallPercent : (p?.overallPercent ?? 0),
+              currentIndex: info.currentIndex,
+              currentFilename: info.filename,
+              phase: info.phase,
+              downloadedBytes: info.downloadedBytes,
+              totalBytes: info.totalBytes,
+            } : null
           );
         };
-        const blob = await packVideosToZip(items, '数字人对口型视频.zip', onProgress);
-        triggerZipDownload(blob, '数字人对口型视频');
-        toast.success(`打包下载成功: ${items.length} 个视频`);
+        const blob = await packAudiosToZip(audioItems, '配音音频.zip', onProgress);
+        triggerZipDownload(blob, '配音音频');
+        toast.success(`批量下载成功: ${audioItems.length} 个音频`);
+      } catch (err: any) {
+        toast.error(`音频下载失败: ${err.message}`);
+      } finally {
+        setDownloadProgress(null);
       }
-    } catch (err: any) {
-      toast.error(`打包失败: ${err.message}`);
-    } finally {
-      setDownloadProgress(null);
+      return;
     }
-  }, [tasks, handleDownloadSingle, toast, pushLog, setDownloadProgress, makeVideoItems, packVideosToBatches, packVideosToZip, triggerZipDownload]);
+
+    toast.warning('没有可下载的数字人视频或配音音频');
+  }, [tasks, handleDownloadSingle, toast, pushLog, setDownloadProgress, makeVideoItems, packVideosToBatches, packVideosToZip, packAudiosToZip, triggerZipDownload]);
+
+  /** 独立任务：批量下载已完成的音频（不依赖数字人） */
+  const handleBatchDownloadAudio = useCallback(async (sessionId: string, segments: Array<{ index: number; audioUrl?: string }>) => {
+    const items = makeAudioItems(segments);
+    if (items.length === 0) {
+      toast.warning('该任务暂无已完成的音频');
+      return;
+    }
+    toast.success(`开始依次下载 ${items.length} 个音频文件…`);
+    for (let i = 0; i < items.length; i++) {
+      downloadSingleAudio(items[i].url, items[i].filename);
+      if (i < items.length - 1) {
+        await new Promise((r) => setTimeout(r, 400));
+      }
+    }
+  }, [toast, makeAudioItems, downloadSingleAudio]);
+
+  /** 保存编辑后的段落文案 */
+  const handleSaveSegmentText = useCallback((sessionId: string, segId: string) => {
+    if (!editingSegmentText.trim()) {
+      toast.warning('段落文案不能为空');
+      return;
+    }
+    setNewTaskSessions((prev) =>
+      prev.map((session) => {
+        if (session.id !== sessionId) return session;
+        return {
+          ...session,
+          text: session.text.replace(
+            session.segments.find((s) => s.id === segId)?.text ?? '',
+            editingSegmentText
+          ),
+          segments: session.segments.map((seg) =>
+            seg.id === segId
+              ? { ...seg, text: editingSegmentText, textLength: editingSegmentText.length }
+              : seg
+          ),
+        };
+      })
+    );
+    setEditingSegmentId(null);
+    setEditingSegmentText('');
+    pushLog(`[编辑] 段${segId.split('_').pop()} 文案已更新`);
+  }, [editingSegmentText, toast, pushLog]);
+
+  /** 保存主任务编辑后的段落文案 */
+  const handleSaveMainSegmentText = useCallback((segId: string, text: string) => {
+    if (!text.trim()) {
+      toast.warning('段落文案不能为空');
+      return;
+    }
+    const updated = text;
+    setSegments((prev) =>
+      prev.map((seg) =>
+        seg.id === segId
+          ? { ...seg, text: updated, textLength: updated.length }
+          : seg
+      )
+    );
+    setTasks((prev) => {
+      const next = prev.map((t) =>
+        t.id === segId
+          ? { ...t, text: updated, textLength: updated.length }
+          : t
+      );
+      return next;
+    });
+    tasksRef.current = tasksRef.current.map((t) =>
+      t.id === segId
+        ? { ...t, text: updated, textLength: updated.length }
+        : t
+    );
+    setMainEditingSegId(null);
+    setMainEditingText('');
+    pushLog(`[编辑] 段${segId.split('_').pop()} 文案已更新`);
+  }, [toast, pushLog]);
 
   // ============================================================
   // 队列任务执行：直接执行独立任务的配音→数字人→下载流程
@@ -3004,6 +3197,17 @@ export function DigitalHumanPanel({
                               <span className="text-xs text-gray-500">
                                 {mergedSegments.length}段 · {session.text.length}字
                               </span>
+                              {/* 批量下载音频按钮（配音完成后即可下载，不依赖数字人） */}
+                              {audioDone > 0 && (
+                                <button
+                                  onClick={() => handleBatchDownloadAudio(session.id, mergedSegments)}
+                                  className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-emerald-400 hover:text-emerald-300 border border-emerald-500/40 rounded hover:bg-emerald-950/40 transition-colors"
+                                  title="批量下载已完成配音"
+                                >
+                                  <Download size={9} />
+                                  音频({audioDone})
+                                </button>
+                              )}
                             </div>
                             <div className="flex items-center gap-2">
                               <button
@@ -3115,10 +3319,65 @@ export function DigitalHumanPanel({
                           {mergedSegments.map((seg) => {
                             const audioUrl = seg.audioUrl;
                             const dhVideoUrl = seg.dhVideoUrl;
+                            const isEditingThis = editingSegmentId === seg.id;
                             return (
                               <div key={seg.id} className="flex items-center gap-2 text-xs py-1.5 border-t border-gray-800/50">
                                 <span className="text-gray-500 w-8 flex-shrink-0">段{seg.index}</span>
-                                <span className="text-gray-600 flex-1 truncate">{seg.text.slice(0, 50)}{seg.text.length > 50 ? '…' : ''}</span>
+                                {isEditingThis ? (
+                                  <>
+                                    <textarea
+                                      value={editingSegmentText}
+                                      onChange={(e) => setEditingSegmentText(e.target.value)}
+                                      className="flex-1 bg-gray-800 border border-blue-500 rounded px-2 py-1 text-xs text-white resize-none focus:outline-none"
+                                      rows={3}
+                                      autoFocus
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Escape') {
+                                          setEditingSegmentId(null);
+                                          setEditingSegmentText('');
+                                        }
+                                        if (e.key === 'Enter' && e.ctrlKey) {
+                                          handleSaveSegmentText(session.id, seg.id);
+                                        }
+                                      }}
+                                    />
+                                    <button
+                                      onClick={() => handleSaveSegmentText(session.id, seg.id)}
+                                      className="text-green-400 hover:text-green-300 p-0.5 flex-shrink-0"
+                                      title="保存（Ctrl+Enter）"
+                                    >
+                                      <Check size={11} />
+                                    </button>
+                                    <button
+                                      onClick={() => { setEditingSegmentId(null); setEditingSegmentText(''); }}
+                                      className="text-gray-500 hover:text-white p-0.5 flex-shrink-0"
+                                      title="取消"
+                                    >
+                                      <X size={11} />
+                                    </button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <span
+                                      className="text-gray-600 flex-1 truncate cursor-pointer hover:text-gray-400"
+                                      title="点击编辑文案"
+                                      onClick={() => {
+                                        setEditingSegmentId(seg.id);
+                                        setEditingSegmentText(seg.text);
+                                      }}
+                                    >{seg.text.slice(0, 50)}{seg.text.length > 50 ? '…' : ''}</span>
+                                    <button
+                                      onClick={() => {
+                                        setEditingSegmentId(seg.id);
+                                        setEditingSegmentText(seg.text);
+                                      }}
+                                      className="text-gray-600 hover:text-gray-400 p-0.5 flex-shrink-0"
+                                      title="编辑文案"
+                                    >
+                                      <Edit3 size={9} />
+                                    </button>
+                                  </>
+                                )}
                                 {/* 配音状态 - 使用合并后的状态 */}
                                 <span className={
                                   seg.audioPhase === 'done' ? 'text-green-400' :
@@ -3146,6 +3405,22 @@ export function DigitalHumanPanel({
                                     title="试听音频"
                                   >
                                     {playingId === seg.id ? <Pause size={11} /> : <Play size={11} />}
+                                  </button>
+                                )}
+                                {/* 音频下载按钮（配音完成后即可下载，无需数字人） */}
+                                {audioUrl && (
+                                  <button
+                                    onClick={() => {
+                                      const a = document.createElement('a');
+                                      a.href = audioUrl;
+                                      a.download = `配音_段${seg.index}.wav`;
+                                      a.target = '_blank';
+                                      a.click();
+                                    }}
+                                    className="text-gray-500 hover:text-white p-0.5"
+                                    title="下载音频"
+                                  >
+                                    <Download size={11} />
                                   </button>
                                 )}
                                 {/* 数字人状态 - 使用合并后的状态 */}
@@ -3208,6 +3483,7 @@ export function DigitalHumanPanel({
                   <div className="space-y-2 max-h-[300px] overflow-y-auto">
                     {segments.map((seg) => {
                       const running = tasks.find((t) => t.id === seg.id);
+                      const isEditingThis = mainEditingSegId === seg.id;
                       return (
                         <div
                           key={seg.id}
@@ -3276,10 +3552,64 @@ export function DigitalHumanPanel({
                               </button>
                             </div>
                           </div>
-                          <p className="text-xs text-gray-500 line-clamp-2 pl-[22px]">
-                            {seg.text.slice(0, 120)}
-                            {seg.text.length > 120 && '…'}
-                          </p>
+                          {isEditingThis ? (
+                            <textarea
+                              value={mainEditingText}
+                              onChange={(e) => setMainEditingText(e.target.value)}
+                              className="w-full bg-gray-700 border border-blue-500 rounded px-2 py-1 text-xs text-white resize-none focus:outline-none mt-1"
+                              rows={3}
+                              autoFocus
+                              onKeyDown={(e) => {
+                                if (e.key === 'Escape') {
+                                  setMainEditingSegId(null);
+                                  setMainEditingText('');
+                                }
+                                if (e.key === 'Enter' && e.ctrlKey) {
+                                  handleSaveMainSegmentText(seg.id, mainEditingText);
+                                }
+                              }}
+                            />
+                          ) : (
+                            <div className="flex items-start gap-1">
+                              <p
+                                className="text-xs text-gray-500 line-clamp-2 flex-1 pl-[22px] cursor-pointer hover:text-gray-400"
+                                title="点击编辑文案"
+                                onClick={() => {
+                                  setMainEditingSegId(seg.id);
+                                  setMainEditingText(seg.text);
+                                }}
+                              >
+                                {seg.text.slice(0, 120)}
+                                {seg.text.length > 120 && '…'}
+                              </p>
+                              <button
+                                onClick={() => {
+                                  setMainEditingSegId(seg.id);
+                                  setMainEditingText(seg.text);
+                                }}
+                                className="text-gray-600 hover:text-gray-400 p-0.5 flex-shrink-0"
+                                title="编辑文案"
+                              >
+                                <Edit3 size={10} />
+                              </button>
+                            </div>
+                          )}
+                          {isEditingThis && (
+                            <div className="flex gap-2 mt-1 pl-[22px]">
+                              <button
+                                onClick={() => handleSaveMainSegmentText(seg.id, mainEditingText)}
+                                className="text-xs px-2 py-0.5 rounded bg-green-600/30 text-green-400 hover:bg-green-600/50"
+                              >
+                                保存（Ctrl+Enter）
+                              </button>
+                              <button
+                                onClick={() => { setMainEditingSegId(null); setMainEditingText(''); }}
+                                className="text-xs px-2 py-0.5 rounded bg-gray-700 text-gray-400 hover:bg-gray-600"
+                              >
+                                取消
+                              </button>
+                            </div>
+                          )}
                         </div>
                       );
                     })}
@@ -3643,6 +3973,21 @@ export function DigitalHumanPanel({
                         </div>
 
                         <div className="flex items-center gap-1 flex-shrink-0">
+                          {task.audioPhase === 'done' && task.audioUrl && (
+                            <button
+                              onClick={() => {
+                                const a = document.createElement('a');
+                                a.href = task.audioUrl!;
+                                a.download = `配音_段${task.index}.wav`;
+                                a.target = '_blank';
+                                a.click();
+                              }}
+                              className="text-gray-500 hover:text-emerald-400 p-1"
+                              title="下载音频"
+                            >
+                              <Music size={13} />
+                            </button>
+                          )}
                           {task.dhPhase === 'done' && (
                             <button
                               onClick={() => handleDownloadSingle(task)}

@@ -838,6 +838,97 @@ export async function packVideosToZip(
 }
 
 /**
+ * 将多个音频 URL 打包为单个 ZIP（用于批量下载配音音频）
+ */
+export async function packAudiosToZip(
+  items: Array<{ url: string; filename: string }>,
+  zipFilename = '配音音频.zip',
+  onProgress?: DownloadProgressCallback
+): Promise<Blob> {
+  const { default: JSZip } = await import('jszip');
+
+  const zip = new JSZip();
+  const folder = zip.folder('配音音频');
+
+  let downloadedBytes = 0;
+  let totalBytes: number | undefined;
+
+  const results = await Promise.allSettled(
+    items.map(async ({ url, filename }, idx) => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status} for ${filename}`);
+      const blob = await res.blob();
+      folder?.file(filename, blob);
+      downloadedBytes += blob.size;
+      totalBytes = downloadedBytes;
+      onProgress?.({
+        filename,
+        loaded: blob.size,
+        total: blob.size,
+        overallPercent: Math.round(((idx + 1) / items.length) * 100),
+        currentIndex: idx + 1,
+        totalFiles: items.length,
+        phase: 'downloading',
+        downloadedBytes,
+        totalBytes,
+      });
+      return filename;
+    })
+  );
+
+  const failed = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
+  if (failed.length > 0) {
+    console.warn(`[packAudiosToZip] ${failed.length}/${items.length} 个音频下载失败，将打包剩余音频`);
+  }
+
+  const successful = results.filter((r) => r.status === 'fulfilled').length;
+  onProgress?.({
+    filename: '',
+    loaded: successful,
+    total: items.length,
+    overallPercent: 99,
+    currentIndex: successful,
+    totalFiles: items.length,
+    phase: 'zipping',
+    downloadedBytes,
+    totalBytes,
+  });
+
+  const blob = await zip.generateAsync(
+    { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 1 } },
+    (metadata) => {
+      if (metadata.percent > 0) {
+        onProgress?.({
+          filename: metadata.currentFile || '',
+          loaded: 0,
+          total: 0,
+          overallPercent: Math.round(metadata.percent),
+          currentIndex: successful,
+          totalFiles: items.length,
+          phase: 'zipping',
+          downloadedBytes,
+          totalBytes,
+        });
+      }
+    }
+  );
+
+  onProgress?.({
+    filename: '',
+    loaded: successful,
+    total: items.length,
+    overallPercent: 100,
+    currentIndex: successful,
+    totalFiles: items.length,
+    phase: 'done',
+    downloadedBytes,
+    totalBytes,
+  });
+
+  return blob;
+}
+
+/**
  * 将视频分批打包为多个 ZIP，每个 ZIP 最多 BATCH_ZIP_SIZE 个文件。
  * 每个批次完成后立即通过 onBatchDone 回调返回（触发下载），
  * 避免等待全部完成才一次性下载导致部分浏览器下载被忽略。
