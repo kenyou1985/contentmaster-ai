@@ -14,6 +14,10 @@ export const STREAM_FALLBACK_MODEL_OPENAI = "gpt-5.4-mini";
 
 const STREAM_FIRST_CHUNK_STALL = "STREAM_FIRST_CHUNK_STALL";
 const GOOGLE_GENERATION_STALL = "GOOGLE_GENERATION_STALL";
+/** 分段生成超时时的重试次数上限 */
+export const SEGMENT_RETRY_MAX = 2;
+/** 分段生成超时后重试前的等待时间（毫秒） */
+export const SEGMENT_RETRY_DELAY_MS = 2000;
 /** 流式输出在收到首包之后，若超过此时间未再收到任何 token，则中止（避免服务端挂起导致界面永远转圈） */
 export const STREAM_IDLE_TIMEOUT = "STREAM_IDLE_TIMEOUT";
 /** 分块间默认最长静默时间（毫秒），用于长分镜等长流式输出 */

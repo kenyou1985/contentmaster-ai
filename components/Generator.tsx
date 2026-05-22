@@ -620,7 +620,7 @@ import {
 } from '../types';
 import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT, YI_JING_SHORT_SCRIPT_PROMPT, MINDFUL_PSYCHOLOGY_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT, applyTopicCountToPrompt } from '../constants';
 import { NicheSelector } from './NicheSelector';
-import { generateTopics, streamContentGeneration, initializeGemini } from '../services/geminiService';
+import { generateTopics, streamContentGeneration, initializeGemini, SEGMENT_RETRY_MAX, SEGMENT_RETRY_DELAY_MS } from '../services/geminiService';
 import { fetchMacroNewsDigestForPrompt } from '../services/macroNewsFeedService';
 import { fetchPsychologyDigestForPrompt } from '../services/psychologyFeedService';
 import { needsParagraphNormalization, normalizeDenseChineseParagraphs } from '../services/textFormat';
@@ -3852,21 +3852,37 @@ ${segmentSourceText}
                   },
                   bundle.segment
                 );
-            try {
-              await streamContentGeneration(user, sys, (c) => {
-                local += c;
-              }, undefined, { maxTokens: 12288 });
-              segDone.add(idx);
-              const p = 18 + Math.round((segDone.size / n) * 58);
-              patchRun(topic.id, { progress: p });
-              bumpGlobalProgress(`分段 ${segDone.size}/${n}：${topicTitle}`);
-              return local;
-            } catch (err: any) {
-              segDone.add(idx);
-              bumpGlobalProgress(`分段异常（已跳过）：${topicTitle}`);
-              appendRunLog(topic.id, `第 ${idx + 1} 段失败：${err?.message || err}`);
-              return `[本段生成失败：${err?.message || err}]`;
+            let local = '';
+            let lastErr: Error | null = null;
+            for (let attempt = 1; attempt <= SEGMENT_RETRY_MAX; attempt++) {
+              try {
+                await streamContentGeneration(user, sys, (c) => {
+                  local += c;
+                }, undefined, { maxTokens: 12288 });
+                lastErr = null;
+                break; // success
+              } catch (err: any) {
+                lastErr = err instanceof Error ? err : new Error(String(err));
+                const msg = lastErr.message.toLowerCase();
+                const isTimeout = msg.includes('未返回首段文本') || msg.includes('设定时间内') || msg.includes('超时');
+                if (isTimeout && attempt < SEGMENT_RETRY_MAX) {
+                  appendRunLog(topic.id, `第 ${idx + 1} 段超时（第 ${attempt}/${SEGMENT_RETRY_MAX} 次尝试），${SEGMENT_RETRY_DELAY_MS / 1000}秒后自动重试…`);
+                  await new Promise((r) => setTimeout(r, SEGMENT_RETRY_DELAY_MS));
+                } else if (attempt === SEGMENT_RETRY_MAX) {
+                  appendRunLog(topic.id, `第 ${idx + 1} 段重试耗尽（${SEGMENT_RETRY_MAX}次），最终失败：${lastErr.message}`);
+                }
+              }
             }
+            segDone.add(idx);
+            const p = 18 + Math.round((segDone.size / n) * 58);
+            patchRun(topic.id, { progress: p });
+            bumpGlobalProgress(`分段 ${segDone.size}/${n}：${topicTitle}`);
+            if (lastErr) {
+              bumpGlobalProgress(`分段异常（已跳过）：${topicTitle}`);
+              appendRunLog(topic.id, `第 ${idx + 1} 段失败：${lastErr.message}`);
+              return `[本段生成失败：${lastErr.message}]`;
+            }
+            return local;
           })
         );
 
@@ -4220,23 +4236,51 @@ ${segmentSourceText}
                 arr[chIdx] = 'running';
                 return { ...prev, [topic.id]: arr };
               });
-              await streamContentGeneration(user, sys, (c) => {
-                local += c;
-                setParallelTopicSegDraftsMap((prev) => {
+              let lastErr: Error | null = null;
+              for (let attempt = 1; attempt <= SEGMENT_RETRY_MAX; attempt++) {
+                try {
+                  await streamContentGeneration(user, sys, (c) => {
+                    local += c;
+                    setParallelTopicSegDraftsMap((prev) => {
+                      const arr = [...(prev[topic.id] || [])];
+                      arr[chIdx] = local;
+                      return { ...prev, [topic.id]: arr };
+                    });
+                    setGeneratedContents((prev) => {
+                      const next = [...prev];
+                      const partial = next[idx]?.content || '';
+                      next[idx] = {
+                        ...next[idx],
+                        content: `${partial.slice(0, 1200)}\n\n[正在并行生成各分段…已完成第 ${chIdx + 1}/${parsed.chapters.length} 段]`,
+                      };
+                      return next;
+                    });
+                  }, undefined, { maxTokens: 12288 });
+                  lastErr = null;
+                  break; // success
+                } catch (err: any) {
+                  lastErr = err instanceof Error ? err : new Error(String(err));
+                  const msg = lastErr.message.toLowerCase();
+                  const isTimeout = msg.includes('未返回首段文本') || msg.includes('设定时间内') || msg.includes('超时');
+                  if (isTimeout && attempt < SEGMENT_RETRY_MAX) {
+                    appendRunLog(topic.id, `第 ${chIdx + 1} 段超时（第 ${attempt}/${SEGMENT_RETRY_MAX} 次尝试），${SEGMENT_RETRY_DELAY_MS / 1000}秒后自动重试…`);
+                    await new Promise((r) => setTimeout(r, SEGMENT_RETRY_DELAY_MS));
+                    // 重试时清空已积累的草稿，重新开始
+                    local = '';
+                  } else if (attempt === SEGMENT_RETRY_MAX) {
+                    appendRunLog(topic.id, `第 ${chIdx + 1} 段重试耗尽（${SEGMENT_RETRY_MAX}次），最终失败：${lastErr.message}`);
+                  }
+                }
+              }
+              if (lastErr) {
+                // 重试全部失败，标记为失败状态，返回错误信息
+                setParallelTopicSegStatusMap((prev) => {
                   const arr = [...(prev[topic.id] || [])];
-                  arr[chIdx] = local;
+                  arr[chIdx] = 'failed';
                   return { ...prev, [topic.id]: arr };
                 });
-                setGeneratedContents((prev) => {
-                  const next = [...prev];
-                  const partial = next[idx]?.content || '';
-                  next[idx] = {
-                    ...next[idx],
-                    content: `${partial.slice(0, 1200)}\n\n[正在并行生成各分段…已完成第 ${chIdx + 1}/${parsed.chapters.length} 段]`,
-                  };
-                  return next;
-                });
-              }, undefined, { maxTokens: 12288 });
+                return `[本段生成失败：${lastErr.message}]`;
+              }
               setParallelTopicSegStatusMap((prev) => {
                 const arr = [...(prev[topic.id] || [])];
                 arr[chIdx] = 'done';
