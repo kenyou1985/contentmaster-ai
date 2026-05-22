@@ -608,6 +608,9 @@ export function DigitalHumanPanel({
   /** 独立任务多选状态 */
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
 
+  /** 独立任务段落多选状态 */
+  const [selectedIndSegIds, setSelectedIndSegIds] = useState<Set<string>>(new Set());
+
   /** 独立任务段落编辑状态 */
   const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
   const [editingSegmentText, setEditingSegmentText] = useState('');
@@ -2852,6 +2855,57 @@ export function DigitalHumanPanel({
     setSelectedIds(new Set());
   }, []);
 
+  const toggleIndSegSelect = useCallback((id: string) => {
+    setSelectedIndSegIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const selectAllIndSegs = useCallback((segmentIds: string[]) => {
+    setSelectedIndSegIds((prev) => {
+      const next = new Set(prev);
+      segmentIds.forEach((id) => next.add(id));
+      return next;
+    });
+  }, []);
+
+  const deselectAllIndSegs = useCallback((segmentIds?: string[]) => {
+    setSelectedIndSegIds((prev) => {
+      const next = new Set(prev);
+      if (segmentIds) {
+        segmentIds.forEach((id) => next.delete(id));
+      } else {
+        next.clear();
+      }
+      return next;
+    });
+  }, []);
+
+  const selectAllIndSegsInSession = useCallback((sessionId: string) => {
+    const session = newTaskSessions.find((s) => s.id === sessionId);
+    if (session) {
+      setSelectedIndSegIds((prev) => {
+        const next = new Set(prev);
+        session.segments.forEach((seg) => next.add(seg.id));
+        return next;
+      });
+    }
+  }, [newTaskSessions]);
+
+  const deselectAllIndSegsInSession = useCallback((sessionId: string) => {
+    const session = newTaskSessions.find((s) => s.id === sessionId);
+    if (session) {
+      setSelectedIndSegIds((prev) => {
+        const next = new Set(prev);
+        session.segments.forEach((seg) => next.delete(seg.id));
+        return next;
+      });
+    }
+  }, [newTaskSessions]);
+
   // ============================================================
   // 音频播放
   // ============================================================
@@ -3197,8 +3251,64 @@ export function DigitalHumanPanel({
                               <span className="text-xs text-gray-500">
                                 {mergedSegments.length}段 · {session.text.length}字
                               </span>
-                              {/* 批量下载音频按钮（配音完成后即可下载，不依赖数字人） */}
-                              {audioDone > 0 && (
+                              {/* 批量选择按钮 */}
+                              <button
+                                onClick={() => {
+                                  const allSelected = mergedSegments.every((s) => selectedIndSegIds.has(s.id));
+                                  if (allSelected) {
+                                    deselectAllIndSegsInSession(session.id);
+                                  } else {
+                                    selectAllIndSegsInSession(session.id);
+                                  }
+                                }}
+                                className="text-[10px] text-blue-400 hover:text-blue-300 px-1.5 py-0.5 rounded border border-blue-500/40 hover:bg-blue-950/40 transition-colors"
+                              >
+                                {mergedSegments.every((s) => selectedIndSegIds.has(s.id)) ? '取消全选' : '全选'}
+                                {mergedSegments.some((s) => selectedIndSegIds.has(s.id)) && (
+                                  <span className="ml-0.5 text-gray-400">({mergedSegments.filter((s) => selectedIndSegIds.has(s.id)).length})</span>
+                                )}
+                              </button>
+                              {/* 批量下载视频按钮（基于选中段落） */}
+                              {(() => {
+                                const selectedSegs = mergedSegments.filter((s) => selectedIndSegIds.has(s.id) && s.dhVideoUrl);
+                                if (selectedSegs.length === 0) return null;
+                                return (
+                                  <button
+                                    onClick={() => {
+                                      selectedSegs.forEach((s) => {
+                                        const a = document.createElement('a');
+                                        a.href = s.dhVideoUrl!;
+                                        a.download = `数字人_段${s.index}.mp4`;
+                                        a.target = '_blank';
+                                        a.click();
+                                      });
+                                      toast.success(`批量下载成功: ${selectedSegs.length} 个视频`);
+                                    }}
+                                    className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-emerald-400 hover:text-emerald-300 border border-emerald-500/40 rounded hover:bg-emerald-950/40 transition-colors"
+                                    title="批量下载选中段落数字人视频"
+                                  >
+                                    <Download size={9} />
+                                    视频({selectedSegs.length})
+                                  </button>
+                                );
+                              })()}
+                              {/* 批量下载音频按钮（基于选中段落） */}
+                              {(() => {
+                                const selectedSegs = mergedSegments.filter((s) => selectedIndSegIds.has(s.id) && s.audioUrl);
+                                if (selectedSegs.length === 0) return null;
+                                return (
+                                  <button
+                                    onClick={() => handleBatchDownloadAudio(session.id, selectedSegs)}
+                                    className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-cyan-400 hover:text-cyan-300 border border-cyan-500/40 rounded hover:bg-cyan-950/40 transition-colors"
+                                    title="批量下载选中段落音频"
+                                  >
+                                    <Download size={9} />
+                                    音频({selectedSegs.length})
+                                  </button>
+                                );
+                              })()}
+                              {/* 全量批量下载音频按钮（配音完成后即可下载，不依赖数字人） */}
+                              {audioDone > 0 && !mergedSegments.some((s) => selectedIndSegIds.has(s.id)) && (
                                 <button
                                   onClick={() => handleBatchDownloadAudio(session.id, mergedSegments)}
                                   className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-emerald-400 hover:text-emerald-300 border border-emerald-500/40 rounded hover:bg-emerald-950/40 transition-colors"
@@ -3321,7 +3431,17 @@ export function DigitalHumanPanel({
                             const dhVideoUrl = seg.dhVideoUrl;
                             const isEditingThis = editingSegmentId === seg.id;
                             return (
-                              <div key={seg.id} className="flex items-center gap-2 text-xs py-1.5 border-t border-gray-800/50">
+                              <div key={seg.id} className={`flex items-center gap-2 text-xs py-1.5 border-t border-gray-800/50 ${selectedIndSegIds.has(seg.id) ? 'bg-blue-950/30' : ''}`}>
+                                <button
+                                  onClick={() => toggleIndSegSelect(seg.id)}
+                                  className="text-gray-500 hover:text-white flex-shrink-0"
+                                >
+                                  {selectedIndSegIds.has(seg.id) ? (
+                                    <CheckSquare size={14} className="text-blue-400" />
+                                  ) : (
+                                    <Square size={14} />
+                                  )}
+                                </button>
                                 <span className="text-gray-500 w-8 flex-shrink-0">段{seg.index}</span>
                                 {isEditingThis ? (
                                   <>
@@ -4090,6 +4210,71 @@ export function DigitalHumanPanel({
                                 <span className="text-xs text-gray-500">
                                   {mergedSegments.length}段 · {session.text.length}字
                                 </span>
+                                {/* 批量选择按钮 */}
+                                <button
+                                  onClick={() => {
+                                    const allSelected = mergedSegments.every((s) => selectedIndSegIds.has(s.id));
+                                    if (allSelected) {
+                                      deselectAllIndSegsInSession(session.id);
+                                    } else {
+                                      selectAllIndSegsInSession(session.id);
+                                    }
+                                  }}
+                                  className="text-[10px] text-blue-400 hover:text-blue-300 px-1.5 py-0.5 rounded border border-blue-500/40 hover:bg-blue-950/40 transition-colors"
+                                >
+                                  {mergedSegments.every((s) => selectedIndSegIds.has(s.id)) ? '取消全选' : '全选'}
+                                  {selectedIndSegIds.has(mergedSegments[0]?.id) || mergedSegments.some((s) => selectedIndSegIds.has(s.id)) ? (
+                                    <span className="ml-0.5 text-gray-400">({mergedSegments.filter((s) => selectedIndSegIds.has(s.id)).length})</span>
+                                  ) : null}
+                                </button>
+                                {/* 批量下载视频按钮（基于选中段落） */}
+                                {(() => {
+                                  const selectedSegs = mergedSegments.filter((s) => selectedIndSegIds.has(s.id) && s.dhVideoUrl);
+                                  if (selectedSegs.length === 0) return null;
+                                  return (
+                                    <button
+                                      onClick={() => {
+                                        const segs = selectedSegs;
+                                        const audioSegs = mergedSegments.filter((s) => selectedIndSegIds.has(s.id) && s.audioUrl && !s.dhVideoUrl);
+                                        if (audioSegs.length > 0) {
+                                          // 有音频无视频 → 先下载音频
+                                          handleBatchDownloadAudio(session.id, audioSegs);
+                                        }
+                                        // 下载已完成的视频
+                                        if (segs.length > 0) {
+                                          segs.forEach((s) => {
+                                            const a = document.createElement('a');
+                                            a.href = s.dhVideoUrl!;
+                                            a.download = `数字人_段${s.index}.mp4`;
+                                            a.target = '_blank';
+                                            a.click();
+                                          });
+                                          toast.success(`批量下载成功: ${segs.length} 个视频`);
+                                        }
+                                      }}
+                                      className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-emerald-400 hover:text-emerald-300 border border-emerald-500/40 rounded hover:bg-emerald-950/40 transition-colors"
+                                      title="批量下载选中段落数字人视频"
+                                    >
+                                      <Download size={9} />
+                                      视频({selectedSegs.length})
+                                    </button>
+                                  );
+                                })()}
+                                {/* 批量下载音频按钮（基于选中段落） */}
+                                {(() => {
+                                  const selectedSegs = mergedSegments.filter((s) => selectedIndSegIds.has(s.id) && s.audioUrl);
+                                  if (selectedSegs.length === 0) return null;
+                                  return (
+                                    <button
+                                      onClick={() => handleBatchDownloadAudio(session.id, selectedSegs)}
+                                      className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-cyan-400 hover:text-cyan-300 border border-cyan-500/40 rounded hover:bg-cyan-950/40 transition-colors"
+                                      title="批量下载选中段落音频"
+                                    >
+                                      <Download size={9} />
+                                      音频({selectedSegs.length})
+                                    </button>
+                                  );
+                                })()}
                               </div>
                               <div className="flex items-center gap-2">
                                 {/* 取消全部进行中的任务按钮 */}
@@ -4126,8 +4311,20 @@ export function DigitalHumanPanel({
                               {mergedSegments.map((task) => (
                                 <div
                                   key={task.id}
-                                  className="bg-gray-900/80 rounded-lg p-2.5 flex items-center gap-2"
+                                  className={`bg-gray-900/80 rounded-lg p-2.5 flex items-center gap-2 border ${
+                                    selectedIndSegIds.has(task.id) ? 'border-blue-500' : 'border-transparent'
+                                  }`}
                                 >
+                                  <button
+                                    onClick={() => toggleIndSegSelect(task.id)}
+                                    className="text-gray-500 hover:text-white flex-shrink-0"
+                                  >
+                                    {selectedIndSegIds.has(task.id) ? (
+                                      <CheckSquare size={14} className="text-blue-400" />
+                                    ) : (
+                                      <Square size={14} />
+                                    )}
+                                  </button>
                                   <div className="flex-1 min-w-0">
                                     <div className="flex items-center gap-1.5 text-xs">
                                       <span className="text-gray-400 font-medium">段{task.index}</span>
