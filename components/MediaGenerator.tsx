@@ -1886,12 +1886,17 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             currentField = 'caption';
             const match = trimmedLine.match(/^镜头文案[：:]\s*(.+)/);
             if (match && match[1]) {
-              const captionMatch = match[1].match(/[""「"]([\s\S]*?)[""」"]/);
-              if (captionMatch) {
-                fieldContent.push(captionMatch[1]);
-              } else {
-                fieldContent.push(match[1]);
+              let raw = match[1].trim();
+              // 尝试去除首尾引号对（支持 "" 「」 "" 三种包围符号）
+              // 核心逻辑：取首尾字符，如果相同且为引号字符则去掉
+              const quotePairs: Array<[string, string]> = [['"', '"'], ['"', '"'], ['「', '」']];
+              for (const [open, close] of quotePairs) {
+                if (raw.length >= 2 && raw[0] === open && raw[raw.length - 1] === close) {
+                  raw = raw.slice(1, -1);
+                  break;
+                }
               }
+              fieldContent.push(raw);
             }
           } else if (/^(?:图片提示词|圖片提示詞|Image prompts)[：:]/.test(trimmedLine)) {
             if (currentField && fieldContent.length > 0) {
