@@ -3852,7 +3852,6 @@ ${segmentSourceText}
                   },
                   bundle.segment
                 );
-            let local = '';
             let lastErr: Error | null = null;
             for (let attempt = 1; attempt <= SEGMENT_RETRY_MAX; attempt++) {
               try {
