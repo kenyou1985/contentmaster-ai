@@ -2169,7 +2169,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
     try {
       const generatorStoryboardKeys = [
-        `${NicheType.MINDFUL_PSYCHOLOGY}_mindful_mode2`,
+        `${NicheType.HISTORICAL_FIGURE}_mindful_mode2`,
         'mindful_mode2',
       ];
       generatorStoryboardKeys.forEach((key) => {
@@ -2338,7 +2338,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       NicheType.PHILOSOPHY_WISDOM,
       NicheType.EMOTION_TABOO,
       NicheType.GREAT_POWER_GAME,
-      NicheType.MINDFUL_PSYCHOLOGY,
+      NicheType.HISTORICAL_FIGURE,
     ];
     niches.forEach((niche) => historyKeys.add(`${ToolMode.SCRIPT}_${niche}`));
     historyKeys.forEach((key) => clearHistory('tools', key));

@@ -1,6 +1,6 @@
 /**
- * 治愈心理学选题：聚合热门社区 RSS + 心理健康内容源，
- * 供「治愈心理学」赛道「一键生成爆款选题」注入提示词，
+ * 历史人物选题：聚合热门社区 RSS + 历史人物内容源，
+ * 供「睡前历史人物」赛道「一键生成爆款选题」注入提示词，
  * 避免模型反复输出同一批静态选题。
  *
  * 特性：
@@ -243,7 +243,7 @@ export async function fetchPsychologyDigestForPrompt(maxLines = 30): Promise<str
   const mentalTopics = merged.filter(t => t.category === 'mental_health');
 
   const header =
-    `# 【治愈心理学·热门内容参考】内置备选\n` +
+    `# 【睡前历史人物·热门内容参考】内置备选\n` +
     `- 抓取时间（ISO）：${iso}\n` +
     `- 用途：参考以下主题方向生成爆款选题\n\n`;
 

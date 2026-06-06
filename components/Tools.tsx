@@ -17,14 +17,14 @@ import { HistorySelector } from './HistorySelector';
 import { useToast } from './Toast';
 import { ProgressBar } from './ProgressBar';
 
-/** Mindful Paws 赛道 system 中的欢迎语偶发被模型贴在摘要结果前 */
-function stripMindfulPawsSummarizePreamble(text: string): string {
+/** 睡前历史人物赛道 system 中的欢迎语偶发被模型贴在摘要结果前 */
+function stripHistoricalSummarizePreamble(text: string): string {
   if (!text) return text;
   const ack = '已接收您的';
   const i = text.indexOf(ack);
   if (i > 0) return text.slice(i).trim();
   // 未带「已接收您的」时：去掉欢迎语至首个 --- 之后
-  if (/欢迎使用\s*Mindful\s*Paws|治愈系频道内容生产系统/.test(text)) {
+  if (/睡前听本书|睡前历史人物|历史人物赛道/.test(text)) {
     const sep = text.search(/\n-{3,}\s*\n/);
     if (sep !== -1) {
       const after = text.slice(sep).replace(/^\n-{3,}\s*\n/, '').trim();
@@ -181,9 +181,9 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
       let restored = record.content;
       if (
         pendingModeChange.mode === ToolMode.SUMMARIZE &&
-        pendingModeChange.niche === NicheType.MINDFUL_PSYCHOLOGY
+        pendingModeChange.niche === NicheType.HISTORICAL_FIGURE
       ) {
-        restored = stripMindfulPawsSummarizePreamble(restored);
+        restored = stripHistoricalSummarizePreamble(restored);
       }
       updateActiveTask({
         mode: pendingModeChange.mode,
@@ -231,7 +231,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     const cnEmotionTabooPatterns = /情感|恋爱|分手|暧昧|禁忌|婚姻|爱情|约会|相亲|出轨|小三|劈腿|备胎|绿茶|渣男|渣女|表白|告白|暗恋|追求|复合|挽回|离婚|再婚|闪婚|异地恋|姐弟恋|PUA|冷暴力|热暴力|家暴|原生家庭/i;
 
     const rules: Array<{ niche: NicheType; words: string[]; reason: string }> = [
-      { niche: NicheType.MINDFUL_PSYCHOLOGY, words: ['dog', 'puppy', 'pet parent', 'canine', 'bark', 'anxiety', 'reactive dog', 'psychology', 'therapist', 'mental health', 'behavior', 'training', 'breed', 'shelter', 'adopt', 'rescue dog', 'feline', 'animal assisted', 'therapy dog', 'service dog', 'emotional support', 'companion', 'bond', 'healing', 'mindful', 'awareness', 'presence', 'calm', 'stress relief', 'comfort', 'attachment', 'trauma recovery', 'animal therapy', 'pet therapy', 'cat', 'kitten', 'meow', 'pet', 'pets', 'animal', 'veterinary', 'cat behavior', 'dog behavior', '养猫', '养狗', '宠物训练', '猫心理', '狗心理', '动物心理', '猫行为', '狗行为'], reason: '检测到治愈心理学（宠物心理）特征词' },
+      { niche: NicheType.HISTORICAL_FIGURE, words: ['dog', 'puppy', 'pet parent', 'canine', 'bark', 'anxiety', 'reactive dog', 'psychology', 'therapist', 'mental health', 'behavior', 'training', 'breed', 'shelter', 'adopt', 'rescue dog', 'feline', 'animal assisted', 'therapy dog', 'service dog', 'emotional support', 'companion', 'bond', 'healing', 'mindful', 'awareness', 'presence', 'calm', 'stress relief', 'comfort', 'attachment', 'trauma recovery', 'animal therapy', 'pet therapy', 'cat', 'kitten', 'meow', 'pet', 'pets', 'animal', 'veterinary', 'cat behavior', 'dog behavior', '养猫', '养狗', '宠物训练', '猫心理', '狗心理', '动物心理', '猫行为', '狗行为'], reason: '检测到睡前历史人物特征词' },
       { niche: NicheType.PSYCHOLOGY, words: ['心理', '创伤', '焦虑', '抑郁', '人格', '认知', '情绪管理', '心理咨询', '心理治疗', '心理疏导', '心理问题', '心理疾病', '心理障碍', '心理健康', '精神分析', '认知行为', '情绪调节', '自我认知', '心理脆弱', '心理压力', '情感障碍', '人格分裂', '焦虑症', '抑郁症', '心理咨询师', '心理防御'], reason: '检测到心理学高频词' },
       { niche: NicheType.FINANCE_CRYPTO, words: ['股票', '基金', '投资', '资产', '估值', '巴菲特', '芒格', '比特币', 'crypto', '财富', '理财', '收益', '回报', '通货膨胀', '美联储', '加息', '降息', '牛市', '熊市', 'K线', '市值', '期权', '期货', '杠杆', '做空', '做多', '止损', '盈利', '亏损', '分红', '股息', '复利', '本金', '收益率', '年化', '赛道股', '蓝筹', '白马', '价值投资', '成长股'], reason: '检测到投资财经相关词' },
       { niche: NicheType.GENERAL_VIRAL, words: ['新闻', '热点', '国际', '地缘', '关税', '贸易战', '突发', '头条', '热搜', '爆款', '刷屏', '病毒式传播', '舆论', '时事', '政治', '经济', '社会', '科技', '娱乐', '体育', '军事', '外交', '制裁', '协议', '峰会', '选举', '公投', '冲突', '战争', '和平', '抗议', '示威'], reason: '检测到新闻热点相关词' },
@@ -267,7 +267,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     // ===== 主题关键词优先检测 =====
     // 中文宠物/动物心理学特征词
     if (cnAnimalPsychologyPatterns.test(t)) {
-      return { niche: NicheType.MINDFUL_PSYCHOLOGY, score: 5, reason: '检测到中文宠物/动物心理学特征词' };
+      return { niche: NicheType.HISTORICAL_FIGURE, score: 5, reason: '检测到中文宠物/动物心理学特征词' };
     }
 
     // 中文大国博弈
@@ -295,7 +295,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
     if (!best) {
       const enPsychologyPatterns = /dog|pet|puppy|canine|psychology|psychologist|therapist|mental health|behavior|behaviour|training|breed|shelter|adopt|rescue|therapy dog|healing|companion|feline|human.animal|bond|wellbeing|well-being|caregiver|cat|kitten|meow/i;
       if (enPsychologyPatterns.test(t)) {
-        return { niche: NicheType.MINDFUL_PSYCHOLOGY, score: 3, reason: '检测到英文心理学/宠物心理语料' };
+        return { niche: NicheType.HISTORICAL_FIGURE, score: 3, reason: '检测到英文心理学/宠物心理语料' };
       }
     }
 
@@ -1072,8 +1072,8 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   const normalizeSummarizeOutput = (text: string, summarizeNiche?: NicheType): string => {
     if (!text) return text;
     let body =
-      summarizeNiche === NicheType.MINDFUL_PSYCHOLOGY
-        ? stripMindfulPawsSummarizePreamble(text)
+      summarizeNiche === NicheType.HISTORICAL_FIGURE
+        ? stripHistoricalSummarizePreamble(text)
         : text;
     const lines = body.split('\n');
 
@@ -4522,8 +4522,8 @@ ${next ? next.slice(0, 220) : '（无）'}`;
       // 非扩写模式：检查5段总字数是否达标，若不达标则调用补强扩写
       if (mode !== ToolMode.EXPAND && !needsStrengthen) {
         polished = cleanedMerged;
-        // 治愈心理学赛道：确保结尾有CTA引导
-        if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+        // 历史人物赛道：确保结尾有CTA引导
+        if (niche === NicheType.HISTORICAL_FIGURE) {
           const hasCTA = /subscribe|订阅|follow|评论|comment/i.test(polished);
           if (!hasCTA) {
             polished = polished.trim() + '\n\nFeel free to share your thoughts in the comments—I read every one!\n\nDon\'t forget to subscribe for more insights on mindful dog parenting.';

@@ -95,10 +95,10 @@ export const COVER_STYLE_PRESETS: CoverStylePreset[] = [
       'Minimalist flat illustration, clean simple design, tidy composition, generous negative space, low detail, soft low-saturation palette, Morandi tones, unified color scheme, black outlines, simplified geometric shapes, smooth lines, refined premium look, modern internet-style illustration,',
   },
   {
-    id: 'mindful_paws',
-    label: '治愈心理学(MindfulPaws)',
+    id: 'historical_figure',
+    label: '睡前历史人物(Historical)',
     promptEn:
-      'Minimalist flat illustration, clean simple design, tidy composition, generous negative space, low detail, soft low-saturation palette, Morandi tones, unified color scheme, black outlines, simplified geometric shapes, smooth lines, refined premium look, modern internet-style illustration.',
+      'Historical narrative illustration, storybook aesthetic, warm muted tones, atmospheric lighting, emotional depth, classical meets contemporary style, cinematic composition, soft gradients, gentle palette, elegant and contemplative mood.',
   },
   {
     id: 'surreal',

@@ -1,5 +1,5 @@
 /**
- * 翻译服务（中文治愈心理学专用）
+ * 翻译服务（睡前历史人物专用）
  *
  * 策略：不让 AI 处理宠物名，防止 AI 幻觉出新的宠物名。
  * 步骤：
@@ -94,7 +94,7 @@ function replaceEnglishPetNamesWithPlaceholders(text: string, theme: 'cat' | 'do
  * 把 [DOG_NAME] → 糯米、[CAT_NAME] → 小满
  * 并彻底清理所有已知中文宠物名
  *
- * 注意：pet content 检测用于区分"治愈心理学宠物故事"和"其他内容（如大国博弈）"。
+ * 注意：pet content 检测用于区分"睡前历史人物宠物故事"和"其他内容（如大国博弈）"。
  * 只有当文本看起来是宠物故事时，才进行宠物名标准化。
  */
 function isLikelyPetContent(text: string): boolean {
@@ -278,7 +278,7 @@ export async function translateToDisplayLanguage(
 
   const label = langLabels[targetLang] || targetLang;
 
-  // 中文翻译（中文治愈心理学专用策略）
+  // 中文翻译（睡前历史人物专用策略）
   if (targetLang === 'zh') {
     onLog?.(`[翻译] 正在翻译为简体中文...`);
 

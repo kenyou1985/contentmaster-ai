@@ -239,14 +239,12 @@ export type ParallelSegmentPromptOpts = {
   /** 来自赛道 systemInstruction 压缩后的写作铁律 */
   voiceRules: string;
   outputLanguage: 'zh' | 'en';
-  /**
-   * 治愈心理学英文口播：本章按「字符」计（含空格标点），严守 min/max，禁止「宁多勿少」式膨胀
-   */
+  /** 本章按「字符」计（含空格标点），严守 min/max */
   englishChapterCharStrict?: boolean;
   /** 多语言输出时的语言，用于生成正确的结尾 CTA */
-  mindfulLanguage?: string;
-  /** 结语风格：yijin=曾仕强口吻，mindful=治愈心理学自然随意风（默认 mindful） */
-  closingStyle?: 'yijin' | 'mindful';
+  historicalLanguage?: string;
+  /** 结语风格：yijin=曾仕强口吻，historical=睡前历史人物自然叙事风 */
+  closingStyle?: 'yijin' | 'historical';
 };
 
 export function buildParallelSegmentUserPrompt(
@@ -273,7 +271,7 @@ export function buildParallelSegmentUserPrompt(
     ? `【本章字数】英文正文有效字符（含空格与标点）尽量控制在 ${chapter.min_chars}–${chapter.max_chars} 之间；如字数略有偏差可以接受，**内容完整性优先**。`
     : `【本章字数】有效字符尽量在 ${chapter.min_chars}–${chapter.max_chars} 字范围内；字数略有偏差可接受，**内容完整性优先**。`;
 
-  const closingStyle = opts.closingStyle ?? 'mindful';
+  const closingStyle = opts.closingStyle ?? 'historical';
 
   const lastChapterInstruction = isLast
     ? (isEnglishOutput
@@ -325,8 +323,8 @@ export function buildBoYiParallelSegmentUserPrompt(
     voiceRules: string;
     outputLanguage?: string;
     englishChapterCharStrict?: boolean;
-    mindfulLanguage?: string;
-    closingStyle?: 'yijin' | 'mindful';
+    historicalLanguage?: string;
+    closingStyle?: 'yijin' | 'historical';
   }
 ): string {
   const { topic, coreTheme, logicLine, chapter, chapterIndex, totalChapters } = params;
@@ -342,7 +340,7 @@ export function buildBoYiParallelSegmentUserPrompt(
     : `Opening: Begin with 1-3 sentences that naturally承接 the previous chapter ("${chapter.opening_echo}"). Then immediately dive into the core argument.`;
 
   const enClosing = isLast
-    ? (closingStyle === 'mindful'
+    ? (closingStyle === 'historical'
       ? `ENDING: Summarize the core reflection. Then end naturally — like a friend saying goodnight. **ABSOLUTELY FORBIDDEN**: "Please like and subscribe", "Good night, my friends", "The game continues.", "The game never stops.", "Take care, everyone", or any broadcast-style closing. Casual, first-person only. Stop immediately after the closing line.`
       : `CLOSING: Summarize the core revelation. Then close with one of: "The game continues." or "The game never stops." — then stop immediately. No text after.`)
     : `Closing: Provide a natural closing thought and a 1-2 sentence bridge to the next chapter ("${chapter.bridge_to_next}").`;
@@ -353,7 +351,7 @@ export function buildBoYiParallelSegmentUserPrompt(
     ? `开篇：直接切入最反直觉、最震撼的内幕爆料点。不要任何开场白。不要"在本视频中"或"今天我想讲讲"。`
     : `开篇：用 1–3 句话自然承接上一章（「${chapter.opening_echo}」），然后立即深入核心论点。`;
   const zhClosing = isLast
-    ? (closingStyle === 'mindful'
+    ? (closingStyle === 'historical'
       ? `结语：自然收束，用随意、自嘲或开放式的结尾。**禁止**使用旁观式话术（「好了，我今天就讲到这里」「各位朋友」「保重」等），**禁止**使用大国博弈式结尾（「博弈还在继续」等）。`
       : `结语：总结核心内幕爆料，然后以"这场博弈还在继续。"或"博弈从未停止。"结尾——立即停止，不要任何后续文字。`)
     : `结语：提供自然的收束语句，以及 1–2 句衔接下一章的过渡（「${chapter.bridge_to_next}」）。`;
@@ -398,7 +396,7 @@ export function buildBoYiParallelMergeUserPrompt(
   opts: {
     toneInstruction: string;
     outputLanguage?: string;
-    mindfulLanguage?: string;
+    historicalLanguage?: string;
     englishMergedCharClamp?: { min: number; max: number };
     /** 显式指定合并后字数区间（优先级高于 auto 计算的 T*0.92/T*1.08） */
     mergeCharRange?: { min: number; max: number };
@@ -514,6 +512,7 @@ export function buildSegmentUserPrompt(params: {
     outputLanguage: 'zh',
     voiceRules: `1. 曾仕强口吻：自然穿插，**有节制**——"各位朋友"≤2次、"我常常讲/我告诉你"≤2次、"你仔细去看"≤1次；多用"你看""你说""你不要小看""这就是智慧""大错特错"等变化句式替代重复。
 2. 纯净口播：禁止【】、[] 舞台提示、禁止「模块一/第一节」等章节标、禁止 Markdown、禁止列表骨架腔。`,
+    closingStyle: 'yijin',
   });
 }
 
@@ -523,12 +522,14 @@ export type ParallelMergePromptOpts = {
   outputLanguage: 'zh' | 'en';
   /** 口播/解说/脚本 */
   contentKind?: string;
-  /** 治愈心理学英文：合并后全文字符（含空格）必须落在此闭区间内 */
+  /** 睡前历史人物英文：合并后全文字符（含空格）必须落在此闭区间内 */
   englishMergedCharClamp?: { min: number; max: number };
   /** 多语言输出时的语言，用于生成正确的结尾 CTA */
-  mindfulLanguage?: string;
+  historicalLanguage?: string;
   /** 显式指定合并后字数区间（优先级高于 auto 计算的 T*0.92/T*1.08） */
   mergeCharRange?: { min: number; max: number };
+  /** 结语风格：yijin=曾仕强口吻，historical=睡前历史人物自然叙事风 */
+  closingStyle?: 'yijin' | 'historical';
 };
 
 export function buildParallelMergeUserPrompt(

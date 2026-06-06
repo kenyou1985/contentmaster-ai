@@ -361,13 +361,13 @@ export const CoverDesign: React.FC<CoverDesignProps> = ({
     const aspectRule = `【画幅】界面当前选定的缩略图比例为 **${aspectOpt.label}（${aspectOpt.id}）**。三条 var_* 英文提示词须按该比例描述构图与留白；开头请使用 "YouTube thumbnail, ${aspectOpt.id} aspect ratio"（或等价英文），禁止默认写 16:9，除非当前选择就是 16:9。`;
 
     const crossNicheBan =
-      niche === NicheType.MINDFUL_PSYCHOLOGY
+      niche === NicheType.HISTORICAL_FIGURE
         ? ''
-        : '【跨赛道禁令】当前非「治愈心理学」赛道：var_* 中禁止无故加入狗、宠物犬、hound、puppy、canine 等与核心议题及风格 DNA 无关的犬类或「治愈宠物」符号，除非用户「核心议题」原文明确提到宠物/狗且与视频内容一致。画面元素须严格服务于该赛道风格 DNA。';
+        : '【跨赛道禁令】当前非「睡前历史人物」赛道：var_* 中禁止无故加入狗、宠物犬、hound、puppy、canine 等与核心议题及风格 DNA 无关的犬类或「睡前宠物」符号，除非用户「核心议题」原文明确提到宠物/狗且与视频内容一致。画面元素须严格服务于该赛道风格 DNA。';
 
     const refSystemNote =
       refLocked && refPreviews.length > 0
-        ? niche === NicheType.MINDFUL_PSYCHOLOGY
+        ? niche === NicheType.HISTORICAL_FIGURE
           ? `\n\n⚠️ 参考图已锁定（${refPreviews.length} 张）：var_*_prompt_en 须描述参考图中人物外形（发型、服饰）、若图中有宠物则写清品种与毛色花纹耳朵等、以及画风特征，不得写通用模糊描述。`
           : `\n\n⚠️ 参考图已锁定（${refPreviews.length} 张）：var_*_prompt_en 须忠实描述参考图中实际出现的人物、服饰、道具、场景与画风；禁止编造图中不存在的动物（尤其禁止无故加入狗/宠物），禁止混入其它赛道的代表元素。`
         : '';

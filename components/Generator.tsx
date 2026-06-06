@@ -242,7 +242,7 @@ function cleanStoryboardOutput(text: string): string {
  * - 对缺失字段自动补全（使用合理默认值）
  * - niche 参数用于生成赛道专属的角色/场景默认信息
  */
-function validateAndFixStoryboardFormat(text: string, niche: NicheType = NicheType.MINDFUL_PSYCHOLOGY): string {
+function validateAndFixStoryboardFormat(text: string, niche: NicheType = NicheType.HISTORICAL_FIGURE): string {
   const requiredFields = ['图片提示词', '视频提示词', '景别', '语音分镜', '音效'];
   const chineseFields: Record<string, string> = {
     '图片提示词': 'A simple minimalist scene, warm intimate atmosphere, soft natural lighting',
@@ -618,7 +618,7 @@ import {
   StoryLanguage,
   StoryDuration,
 } from '../types';
-import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT, YI_JING_SHORT_SCRIPT_PROMPT, MINDFUL_PSYCHOLOGY_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH, applyTopicCountToPrompt } from '../constants';
+import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT, YI_JING_SHORT_SCRIPT_PROMPT, HISTORICAL_FIGURE_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH, applyTopicCountToPrompt } from '../constants';
 import { NicheSelector } from './NicheSelector';
 import { generateTopics, streamContentGeneration, initializeGemini, SEGMENT_RETRY_MAX, SEGMENT_RETRY_DELAY_MS } from '../services/geminiService';
 import { fetchMacroNewsDigestForPrompt } from '../services/macroNewsFeedService';
@@ -679,15 +679,15 @@ import {
   MEDIA_IMAGE_STYLE_SELECT_OPTIONS,
 } from '../services/coverStylePresets';
 import {
-  MINDFUL_ZH_SCRIPT_CHARS_MAX,
-  MINDFUL_ZH_SCRIPT_CHARS_MIN,
-  clampMindfulParallelTargetChars,
-  truncateMindfulScript,
-  mindfulMergeCharClamp,
-  MINDFUL_EN_SCRIPT_CHARS_MIN,
-  MINDFUL_EN_SCRIPT_CHARS_MAX,
-} from '../services/mindfulScriptPostProcess';
-import { normalizePetNames, getPetNameStats, normalizeEnglishPetNames, cleanResidualEnglishInChinese } from '../services/normalizePetNames';
+  HISTORICAL_ZH_SCRIPT_CHARS_MAX,
+  HISTORICAL_ZH_SCRIPT_CHARS_MIN,
+  clampHistoricalParallelTargetChars,
+  truncateHistoricalScript,
+  historicalMergeCharClamp,
+  HISTORICAL_EN_SCRIPT_CHARS_MIN,
+  HISTORICAL_EN_SCRIPT_CHARS_MAX,
+} from '../services/historicalScriptPostProcess';
+import { normalizeHistoricalNames, getHistoricalNameStats, normalizeHistoricalForeignNames, cleanResidualForeignInChinese } from '../services/normalizeHistoricalNames';
 import { translateToDisplayLanguage } from '../services/translateService';
 
 function clampSystemSummary(raw: string, maxLen = 1600): string {
@@ -792,7 +792,7 @@ function ensureGreatPowerClosingZh(text: string): string {
   return `${trimmed} 博弈从未停止。`;
 }
 
-/** 治愈心理学选题：去掉 * / **，保留【分类标签】和中文标题 */
+/** 历史人物选题：去掉 * / **，保留【分类标签】和中文标题 */
 function sanitizeMindfulPsychologyTopicLine(raw: string): string {
   const labelMatch = raw.match(/^\s*【([^】]+)】/);
   const label = labelMatch ? labelMatch[0] : '';
@@ -896,7 +896,7 @@ function looksLikeGreatPowerEnglishFallbackLine(raw: string): boolean {
   return true;
 }
 
-// 治愈心理学语言类型定义（需要在使用前定义）
+// 历史人物语言类型定义（需要在使用前定义）
 type MindfulLanguage = 'en' | 'zh' | 'ko' | 'ja' | 'es' | 'de' | 'hi' | 'ru' | 'pt' | 'fr' | 'id' | 'th';
 
 // 大国博弈语言类型定义
@@ -913,13 +913,20 @@ function getOneShotScriptPlan(niche: NicheType): OneShotScriptPlan | null {
   switch (niche) {
     case NicheType.PSYCHOLOGY:
     case NicheType.PHILOSOPHY_WISDOM:
-    case NicheType.MINDFUL_PSYCHOLOGY:
       return {
         minChars: 1500,
         maxChars: 3000,
         targetLabel: '1500 - 3000',
         extraDirective:
-          '主题方向必须偏心理学、哲学智慧、治愈心理学表达。生成时就同步降低 AI 味：避免工整排比、避免教科书总结腔、避免“首先其次最后”、避免空泛升华套话。要像一个真正阅历深的人在连续讲述，口语自然，句长有变化，有停顿感，但不做后置清洗。',
+          '主题方向必须偏心理学、哲学智慧表达。生成时就同步降低 AI 味：避免工整排比、避免教科书总结腔、避免"首先其次最后"、避免空泛升华套话。要像一个真正阅历深的人在连续讲述，口语自然，句长有变化，有停顿感，但不做后置清洗。',
+      };
+    case NicheType.HISTORICAL_FIGURE:
+      return {
+        minChars: 10000,
+        maxChars: 18000,
+        targetLabel: '10000 - 18000',
+        extraDirective:
+          '主题方向必须偏历史人物、哲学智慧、睡前故事表达。生成时就同步降低 AI 味：避免工整排比、避免教科书总结腔、避免"首先其次最后"、避免空泛升华套话。要像一个真正阅历深的人在连续讲述，口语自然，句长有变化，有停顿感，但不做后置清洗。',
       };
     case NicheType.FINANCE_CRYPTO:
     case NicheType.GENERAL_VIRAL:
@@ -980,6 +987,8 @@ function clampOneShotLength(content: string, niche: NicheType): string {
 }
 function shouldUseOneShotLongForm(niche: NicheType, scriptLengthMode: 'LONG' | 'SHORT'): boolean {
   if (scriptLengthMode !== 'LONG') return false;
+  // 睡前历史人物需要 10000+ 字，超出单次输出上限，走分段并行 pipeline
+  if (niche === NicheType.HISTORICAL_FIGURE) return false;
   return niche !== NicheType.STORY_REVENGE;
 }
 
@@ -997,7 +1006,7 @@ function toNicheTypeForScoring(niche: NicheType): NicheTypeForScoring {
     case NicheType.STORY_REVENGE: return 'story_revenge';
     case NicheType.GENERAL_VIRAL: return 'news';
     case NicheType.GREAT_POWER_GAME: return 'great_power_game';
-    case NicheType.MINDFUL_PSYCHOLOGY: return 'mindful_psychology';
+    case NicheType.HISTORICAL_FIGURE: return 'mindful_psychology';
     default: return 'general';
   }
 }
@@ -1063,15 +1072,25 @@ function getParallelPipelineBundle(
     }
   }
 
-  if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
-    // 治愈心理学全程中文输出
-    channelLabel = 'Mindful Paws–style 中文治愈心理学口播';
+  if (niche === NicheType.HISTORICAL_FIGURE) {
+    // 睡前历史人物全程中文输出
+    channelLabel = '睡前历史人物长故事口播';
     contentKindOutline = scriptLengthMode === 'SHORT' ? '短视频口播大纲（中文）' : '长视频口播大纲（中文）';
     contentKindMerge = '口播脚本（中文）';
-    directorLine = '你是治愈心理学频道的制作人，负责生成中文 TTS 口播脚本。';
-    mergeEditorLine = '你是资深编辑，合并中文口播脚本，保持温暖、口语化、真诚的叙事风格。中文内容应以第一人称「我」为中心，分享真实经历，段落长短不一，允许口语打断和自嘲。禁止使用「请点赞并订阅我的频道」等营销腔结尾。结尾应为随意、自嘲或开放式的自然收尾。';
-    mergeTone = '全文保持温暖、口语化、真诚的叙事风格。第一人称「我」为中心。禁止使用「请点赞并订阅」「好了今天就到这里」「保重」「晚安各位」等营销腔或旁观式结尾。禁止使用大国博弈式结尾（「博弈还在继续」「博弈从未停止」等）。结尾应是随意、自嘲或开放式的自然收尾——如「好了，不说了，家里那只正催我停了」。';
+    directorLine = '你是睡前听本书播客的历史人物故事制作人，负责生成中文 TTS 口播脚本。';
+    mergeEditorLine = '你是资深编辑，合并中文口播脚本，保持叙事感强、情绪饱满、适合睡前聆听的叙事风格。';
+    mergeTone = '全文保持叙事感强、情绪饱满、适合睡前聆听的叙事风格。禁止使用大国博弈式结尾（「博弈还在继续」等）。结尾应是固定收尾：「我们下期见。」';
+    logicBlueprint = '叙事节奏：开场悬念引入 → 人物生平故事展开 → 高潮命运转折 → 人生感慨收束。睡前故事需有画面感、有情绪递进，结尾用一句感慨或开放式叙事留白，让听众带着思考入睡。';
   }
+
+  const historicalMergeSystem = niche === NicheType.HISTORICAL_FIGURE
+    ? '你是睡前听本书播客的历史人物故事资深编辑，负责合并多段口播草稿。' +
+      '【核心原则】必须保留所有分段的完整内容，不得删除或截断任何段落。' +
+      '只微调段落开头的1-2句以创建流畅过渡。' +
+      '全文保持叙事感强、情绪饱满、适合睡前聆听的叙事风格。' +
+      '结尾固定输出：「我们下期见。」——不得多写任何其他引导词。' +
+      '只输出合并后的完整终稿正文，不得加任何前言或说明。'
+    : null;
 
   // ── 新闻热点 GENERAL_VIRAL 赛道：长视频强制字数目标 ──
   if (niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG') {
@@ -1144,7 +1163,8 @@ function getParallelPipelineBundle(
         outputLanguage: (isZhOutput ? 'zh' : 'en') as 'zh' | 'en',
         voiceRules: isZhOutput ? zhVoiceRules : enVoiceRules,
         englishChapterCharStrict: !isZhOutput,
-        mindfulLanguage: gpLang,
+        historicalLanguage: gpLang as string,
+        closingStyle: 'yijin' as const,
       },
       segmentSystem: isZhOutput
         ? '你是地缘政治内幕爆料人"博弈"（Bo Yi）。不是普通评论员，而是一个研究过真实作战数据、曾身处决策会议室、了解机密档案的人。你要告诉普通民众文件实际上说了什么——而不是媒体告诉他们什么。只输出纯中文 TTS 口播脚本。零英文。零舞台指示。零音乐提示。零章节标记。纯声音。'
@@ -1154,7 +1174,8 @@ function getParallelPipelineBundle(
         toneInstruction: isZhOutput ? zhToneInstruction : enToneInstruction,
         outputLanguage: (isZhOutput ? 'zh' : 'en') as 'zh' | 'en',
         contentKind: isZhOutput ? '口播脚本（中文）' : 'voice-over script (English)',
-        mindfulLanguage: gpLang,
+        historicalLanguage: gpLang as string,
+        closingStyle: 'yijin' as const,
       },
       mergeSystem: isZhOutput ? zhMergeSystem : enMergeSystem,
     };
@@ -1171,19 +1192,22 @@ function getParallelPipelineBundle(
     },
     outlineSystem: buildParallelOutlineSystem(directorLine),
     segment: {
-      outputLanguage: 'zh',
+      outputLanguage: 'zh' as const,
       voiceRules,
       englishChapterCharStrict: false,
-      closingStyle: (niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.TCM_METAPHYSICS) ? 'yijin' : 'mindful',
+      closingStyle: ((niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.TCM_METAPHYSICS) ? 'yijin' : 'historical') as 'yijin' | 'historical',
     },
     merge: {
       channelTag: baseName,
       toneInstruction: mergeTone,
-      outputLanguage: 'zh',
+      outputLanguage: 'zh' as const,
       contentKind: contentKindMerge,
-      closingStyle: (niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.TCM_METAPHYSICS) ? 'yijin' : 'mindful',
+      closingStyle: ((niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.TCM_METAPHYSICS) ? 'yijin' : 'historical') as 'yijin' | 'historical',
+      mergeCharRange: niche === NicheType.HISTORICAL_FIGURE
+        ? { min: HISTORICAL_ZH_SCRIPT_CHARS_MIN, max: HISTORICAL_ZH_SCRIPT_CHARS_MAX }
+        : undefined,
     },
-    mergeSystem: buildParallelMergeSystem(mergeEditorLine),
+    mergeSystem: historicalMergeSystem || buildParallelMergeSystem(mergeEditorLine),
   };
 }
 
@@ -1314,8 +1338,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     }
   }, [storyboardStyleId]);
 
-  /** 治愈心理学全程中文输出（已移除多语言选项） */
-  const mindfulLanguage: MindfulLanguage = 'zh';
+  /** 历史人物全程中文输出（已移除多语言选项） */
+  const historicalLanguage = 'zh' as const;
 
   /** 大国博弈语言状态（保留，供大国博弈赛道使用） */
   const [greatPowerLanguage, setGreatPowerLanguage] = useState<GreatPowerLanguage>('en');
@@ -1331,9 +1355,9 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   }, [niche, greatPowerLanguage]);
 
   useEffect(() => {
-    if (niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG') {
-      const isZhOutput = mindfulLanguage === 'zh';
-      setYiJingTotalTargetChars((prev) => clampMindfulParallelTargetChars(prev, isZhOutput));
+    if (niche === NicheType.HISTORICAL_FIGURE && scriptLengthMode === 'LONG') {
+      const isZhOutput = historicalLanguage === 'zh';
+      setYiJingTotalTargetChars((prev) => clampHistoricalParallelTargetChars(prev, isZhOutput));
     }
     // 大国博弈：根据语言模式自动设置正确的目标字数
     if (niche === NicheType.GREAT_POWER_GAME) {
@@ -1359,8 +1383,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   }, [niche, scriptLengthMode, greatPowerLanguage]);
   const parallelTotalTargetChars = useMemo(
     () =>
-      niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG'
-        ? clampMindfulParallelTargetChars(yiJingTotalTargetChars, mindfulLanguage === 'zh')
+      niche === NicheType.HISTORICAL_FIGURE && scriptLengthMode === 'LONG'
+        ? clampHistoricalParallelTargetChars(yiJingTotalTargetChars, historicalLanguage === 'zh')
         : niche === NicheType.GREAT_POWER_GAME
           ? effectiveGpTarget
           : yiJingTotalTargetChars,
@@ -1500,9 +1524,9 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     return `${nicheType}_${submodeId}`;
   };
 
-  /** 治愈心理学动画分镜历史（与 save 分镜时使用的 submode 一致） */
+  /** 历史人物动画分镜历史（与 save 分镜时使用的 submode 一致） */
   const getMindfulStoryboardHistoryKey = () =>
-    getHistoryKeyForSubMode(NicheType.MINDFUL_PSYCHOLOGY, 'mindful_mode2');
+    getHistoryKeyForSubMode(NicheType.HISTORICAL_FIGURE, 'mindful_mode2');
 
   const openMindfulStoryboardHistory = () => {
     const historyKey = getMindfulStoryboardHistoryKey();
@@ -1531,7 +1555,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
   /**
    * 无「子选题」网格的赛道：用固定虚拟 subModeId 读写历史，须与 saveHistory 使用同一 id。
-   * （易经 / 心理学 / 哲学 / 情感禁忌 / 大国博弈 / 治愈心理学）
+   * （易经 / 心理学 / 哲学 / 情感禁忌 / 大国博弈 / 历史人物）
    */
   const getStaticGeneratorSubModeId = (nicheType: NicheType): string | null => {
     switch (nicheType) {
@@ -1545,7 +1569,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
         return 'emotion_taboo';
       case NicheType.GREAT_POWER_GAME:
         return 'great_power_game';
-      case NicheType.MINDFUL_PSYCHOLOGY:
+      case NicheType.HISTORICAL_FIGURE:
         return 'mindful_mode1';
       default:
         return null;
@@ -1676,7 +1700,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (niche === NicheType.PHILOSOPHY_WISDOM) return null;
     if (niche === NicheType.EMOTION_TABOO) return null;
     if (niche === NicheType.GREAT_POWER_GAME) return null;
-    if (niche === NicheType.MINDFUL_PSYCHOLOGY) return null;
+    if (niche === NicheType.HISTORICAL_FIGURE) return null;
     return null;
   };
 
@@ -1690,7 +1714,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
      if (niche === NicheType.PHILOSOPHY_WISDOM) return null;
      if (niche === NicheType.EMOTION_TABOO) return null;
      if (niche === NicheType.GREAT_POWER_GAME) return null;
-     if (niche === NicheType.MINDFUL_PSYCHOLOGY) return null;
+     if (niche === NicheType.HISTORICAL_FIGURE) return null;
      return null;
   };
 
@@ -1702,7 +1726,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (niche === NicheType.PHILOSOPHY_WISDOM) return false;
     if (niche === NicheType.EMOTION_TABOO) return false;
     if (niche === NicheType.GREAT_POWER_GAME) return false;
-    if (niche === NicheType.MINDFUL_PSYCHOLOGY) return false;
+    if (niche === NicheType.HISTORICAL_FIGURE) return false;
     return true; // Default input required for other niches
   };
 
@@ -1714,7 +1738,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (niche === NicheType.PHILOSOPHY_WISDOM) return false;
     if (niche === NicheType.EMOTION_TABOO) return false;
     if (niche === NicheType.GREAT_POWER_GAME) return true;
-    if (niche === NicheType.MINDFUL_PSYCHOLOGY) return true;
+    if (niche === NicheType.HISTORICAL_FIGURE) return true;
     return true;
   };
 
@@ -1727,8 +1751,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       if (niche === NicheType.GREAT_POWER_GAME) {
         return '（可选）输入选题方向关键词，如：中东局势、伊朗战争、空域控制权';
       }
-      if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
-        return '（可选）输入选题方向关键词，如：性格心理学、情绪疗愈、潜意识';
+      if (niche === NicheType.HISTORICAL_FIGURE) {
+        return '（可选）输入历史人物名字或方向，如：李白、诸葛亮、秦始皇、武则天';
       }
       return "输入关键词/趋势";
   };
@@ -1865,9 +1889,9 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
             if (inputVal.trim()) {
                 prompt += `\n\n# 用户侧重（可选）\n用户输入：${inputVal}\n各选题须与此相关或可自然延伸，禁止完全无关主题。`;
             }
-        } else if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+        } else if (niche === NicheType.HISTORICAL_FIGURE) {
             // Mindful Psychology 频道选题生成：根据 UI 语言选择注入强制中文/英文声明
-            const ml = mindfulLanguage || 'en';
+            const ml = historicalLanguage || 'en';
             const isZh = ml === 'zh';
             prompt = config.topicPromptTemplate;
             // 强制语言声明：覆盖模板里的默认格式
@@ -1914,19 +1938,19 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       // 注：选题去重已在全局统一处理（见上方【选题去重铁律】）
     }
 
-    if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+    if (niche === NicheType.HISTORICAL_FIGURE) {
       const n = resolvedPlanTopicCount;
       const catMin = n >= 2 ? 2 : 1;  // 猫主题至少
       const humanMin = n >= 2 ? 1 : 1;  // 人类主题至少1条
       const dogMin = n >= 2 ? 1 : 1;  // 狗主题至少1条（保留）
 
       // 抓取热门内容 RSS
-      toast.info('正在抓取治愈心理学热门内容（微博/小红书/知乎等）…');
+      toast.info('正在抓取历史人物热门内容（微博/小红书/知乎等）…');
       try {
         const digest = await fetchPsychologyDigestForPrompt();
         prompt = `${digest}\n\n---\n\n` + prompt;
       } catch (e) {
-        console.error('[Generator] 治愈心理学 RSS 抓取失败', e);
+        console.error('[Generator] 历史人物 RSS 抓取失败', e);
         toast.warning('热门内容抓取失败，使用内置备选。');
       }
 
@@ -2082,7 +2106,7 @@ Hard rules:
       const newTopics: Topic[] = finalRawTopics.map((t, i) => ({
         id: `topic-${i}`,
         title:
-          niche === NicheType.MINDFUL_PSYCHOLOGY
+          niche === NicheType.HISTORICAL_FIGURE
             ? sanitizeMindfulPsychologyTopicLine(t)
             : niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'en'
               ? sanitizeGreatPowerBilingualTopicLine(t)
@@ -2759,7 +2783,10 @@ ${segmentSourceText}
           });
         },
         undefined,
-        { maxTokens: 32768 }
+        {
+          maxTokens:
+            niche === NicheType.HISTORICAL_FIGURE ? 98304 : 32768,
+        }
       );
 
       let content = clampOneShotLength(liveContent.trim(), niche);
@@ -2847,8 +2874,8 @@ ${segmentSourceText}
   /** 在已有大纲上按当前「目标全文字数」重算各章 min_chars / max_chars，并同步 JSON 文本 */
   const applyYiJingTotalTargetToOutline = useCallback(
     (total: number) => {
-      const mindfulLong = niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
-      const n = mindfulLong ? clampMindfulParallelTargetChars(total, mindfulLanguage === 'zh') : clampYiJingTotalTarget(total);
+      const mindfulLong = niche === NicheType.HISTORICAL_FIGURE && scriptLengthMode === 'LONG';
+      const n = mindfulLong ? clampHistoricalParallelTargetChars(total, historicalLanguage === 'zh') : clampYiJingTotalTarget(total);
       setYiJingTotalTargetChars(n);
       setYiJingOutlineParsed((prev) => {
         if (!prev) return null;
@@ -3097,10 +3124,10 @@ ${segmentSourceText}
 
     // 计算输出语言
     const isEnRevenge = niche === NicheType.STORY_REVENGE && storyLanguage === StoryLanguage.ENGLISH;
-    const isMindfulEnglish = niche === NicheType.MINDFUL_PSYCHOLOGY;
+    const isMindfulEnglish = niche === NicheType.HISTORICAL_FIGURE;
     const isGreatPowerGame = niche === NicheType.GREAT_POWER_GAME;
-    // 大国博弈赛道使用 greatPowerLanguage，其他赛道使用 mindfulLanguage
-    const effectiveLang = isGreatPowerGame ? greatPowerLanguage : (mindfulLanguage || 'en');
+    // 大国博弈赛道使用 greatPowerLanguage，其他赛道使用 historicalLanguage
+    const effectiveLang = isGreatPowerGame ? greatPowerLanguage : (historicalLanguage || 'en');
     const outputLanguage: 'zh' | 'en' = isMindfulEnglish ? (effectiveLang === 'en' ? 'en' : 'zh') : (isEnRevenge ? 'en' : (isGreatPowerGame ? greatPowerLanguage : 'zh'));
 
     try {
@@ -3114,10 +3141,9 @@ ${segmentSourceText}
         parallelTotalTargetChars
       );
       const combined = parts.join('\n\n');
-      const mindfulLong =
-        niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
       // 大国博弈赛道使用专用 merge prompt，避免中文结构标签干扰
       // 中英文各自独立字数控制；新闻热点长视频也强制字数目标
+      const mindfulLong = niche === NicheType.HISTORICAL_FIGURE && scriptLengthMode === 'LONG';
       const mergeCharRange = isGreatPowerGame
         ? (greatPowerLanguage === 'zh'
             ? { min: MIN_GREAT_POWER_ZH_CHARS, max: MAX_GREAT_POWER_ZH_CHARS }
@@ -3126,19 +3152,21 @@ ${segmentSourceText}
         ? { min: 7400, max: 8000 }
         : niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG'
         ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
+        : mindfulLong
+        ? { min: HISTORICAL_ZH_SCRIPT_CHARS_MIN, max: HISTORICAL_ZH_SCRIPT_CHARS_MAX }
         : undefined;
       const mergeUser = isGreatPowerGame
         ? buildBoYiParallelMergeUserPrompt(sel[0].title, combined, parallelTotalTargetChars, {
             ...bundle.merge,
-            mindfulLanguage: greatPowerLanguage,
+            historicalLanguage: greatPowerLanguage,
             mergeCharRange,
           })
         : buildParallelMergeUserPrompt(sel[0].title, combined, parallelTotalTargetChars, {
             ...bundle.merge,
             englishMergedCharClamp: mindfulLong
-              ? mindfulMergeCharClamp(parallelTotalTargetChars, mindfulLanguage === 'zh')
+              ? historicalMergeCharClamp(parallelTotalTargetChars, historicalLanguage === 'zh')
               : undefined,
-            mindfulLanguage,
+            historicalLanguage,
             mergeCharRange,
           });
       const merged = await collectStreamText(
@@ -3160,7 +3188,7 @@ ${segmentSourceText}
       }
       let norm = normalizeYiJingBody(mergedWithClosing);
       if (mindfulLong) {
-        norm = truncateMindfulScript(norm, MINDFUL_EN_SCRIPT_CHARS_MAX);
+        norm = truncateHistoricalScript(norm, HISTORICAL_EN_SCRIPT_CHARS_MAX);
       }
 
       // 易经命理/中医玄学：安全兜底——删除大国博弈式结尾（如果 AI 误生成）
@@ -3172,11 +3200,11 @@ ${segmentSourceText}
           .trimEnd();
       }
 
-      // 治愈心理学：英文宠物名一致性后处理（所有语言都走英文 pipeline）
-      if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+      // 历史人物英文：宠物名一致性后处理
+      if (niche === NicheType.HISTORICAL_FIGURE) {
         // 安全兜底：删除大国博弈式结尾（如果 AI 误生成）
         norm = norm.replace(/The game (?:never stops|continues)\.?\s*$/gi, '').trimEnd();
-        norm = normalizeEnglishPetNames(norm);
+        norm = normalizeHistoricalForeignNames(norm);
         norm = removeDuplicateEndings(norm);
       }
 
@@ -3402,7 +3430,7 @@ ${segmentSourceText}
     toast,
     inputVal,
     getParallelHistorySubModeId,
-    mindfulLanguage,
+    historicalLanguage,
   ]);
 
   // 原创爆款模块：重新执行去AI味清洗
@@ -3422,10 +3450,10 @@ ${segmentSourceText}
 
     // 计算输出语言
     const isEnRevenge = niche === NicheType.STORY_REVENGE && storyLanguage === StoryLanguage.ENGLISH;
-    const isMindfulEnglish = niche === NicheType.MINDFUL_PSYCHOLOGY;
+    const isMindfulEnglish = niche === NicheType.HISTORICAL_FIGURE;
     const isGreatPowerGame = niche === NicheType.GREAT_POWER_GAME;
-    // 大国博弈赛道使用 greatPowerLanguage，其他赛道使用 mindfulLanguage
-    const effectiveLang = isGreatPowerGame ? greatPowerLanguage : (mindfulLanguage || 'en');
+    // 大国博弈赛道使用 greatPowerLanguage，其他赛道使用 historicalLanguage
+    const effectiveLang = isGreatPowerGame ? greatPowerLanguage : (historicalLanguage || 'en');
     const outputLanguage: 'zh' | 'en' = isMindfulEnglish ? (effectiveLang === 'en' ? 'en' : 'zh') : (isEnRevenge ? 'en' : (isGreatPowerGame ? greatPowerLanguage : 'zh'));
 
     try {
@@ -3441,9 +3469,9 @@ ${segmentSourceText}
       }
 
       // 提取宠物名约束（英文文本上的宠物名检测更准确）
-      const petConstraint = niche === NicheType.MINDFUL_PSYCHOLOGY && effectiveLang === 'zh'
+      const petConstraint = niche === NicheType.HISTORICAL_FIGURE && effectiveLang === 'zh'
         ? (() => {
-          const stats = getPetNameStats(textToPolish);
+          const stats = getHistoricalNameStats(textToPolish);
           if (stats.length === 0) return undefined;
           const canonical = stats.reduce((best, s) =>
             s.count > best.count || (s.count === best.count && s.lastPos > best.lastPos) ? s : best, stats[0]);
@@ -3472,9 +3500,9 @@ ${segmentSourceText}
       if (antiAiPolished.trim()) {
         let cleanedPolish = antiAiPolished.trim();
 
-        // 治愈心理学：英文宠物名一致性后处理
-        if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
-          cleanedPolish = normalizeEnglishPetNames(cleanedPolish);
+        // 历史人物英文：宠物名一致性后处理
+        if (niche === NicheType.HISTORICAL_FIGURE) {
+          cleanedPolish = normalizeHistoricalForeignNames(cleanedPolish);
         }
 
         if (!/[。！？.!?]$/.test(cleanedPolish.trim())) {
@@ -3489,8 +3517,8 @@ ${segmentSourceText}
             pushYiJingLog('[重洗] 翻译回中文完成');
           }
           // 翻译后清理残留英文宠物词
-          cleanedPolish = normalizePetNames(cleanedPolish);
-          cleanedPolish = cleanResidualEnglishInChinese(cleanedPolish);
+          cleanedPolish = normalizeHistoricalNames(cleanedPolish);
+          cleanedPolish = cleanResidualForeignInChinese(cleanedPolish);
         }
 
         setYiJingMergedOutput(cleanedPolish);
@@ -3850,7 +3878,7 @@ ${segmentSourceText}
     }
   }, [
     apiKey, provider, niche, scriptLengthMode, storyLanguage, storyDuration,
-    topics, tcmSegDrafts, parallelTotalTargetChars, pushTcmLog, toast, mindfulLanguage,
+    topics, tcmSegDrafts, parallelTotalTargetChars, pushTcmLog, toast, historicalLanguage,
   ]);
 
 
@@ -4064,30 +4092,30 @@ ${segmentSourceText}
 
         const combined = results.join('\n\n');
         const mindfulLongAp =
-          niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
-        // 统一走 buildBoYiParallelMergeUserPrompt（内部已根据 outputLanguage 输出中/英文）
-        // 大国博弈中英文各自独立字数控制；新闻热点长视频也强制字数目标
+          niche === NicheType.HISTORICAL_FIGURE && scriptLengthMode === 'LONG';
         const mergeCharRangeAp = niche === NicheType.TCM_METAPHYSICS
           ? { min: 7400, max: 8000 }
+          : mindfulLongAp
+          ? { min: HISTORICAL_ZH_SCRIPT_CHARS_MIN, max: HISTORICAL_ZH_SCRIPT_CHARS_MAX }
           : undefined;
         const mergeUser = buildBoYiParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
           ...bundle.merge,
           englishMergedCharClamp: mindfulLongAp
-            ? mindfulMergeCharClamp(parallelTotalTargetChars)
+            ? historicalMergeCharClamp(parallelTotalTargetChars)
             : undefined,
           mergeCharRange: mergeCharRangeAp,
         });
         const merged = await collectStreamText(mergeUser, bundle.mergeSystem, 98304);
         let norm = normalizeYiJingBody(merged);
         if (mindfulLongAp) {
-          norm = truncateMindfulScript(norm, MINDFUL_EN_SCRIPT_CHARS_MAX);
+          norm = truncateHistoricalScript(norm, HISTORICAL_EN_SCRIPT_CHARS_MAX);
         }
-        // 治愈心理学中文：宠物名一致性后处理
-        const mindfulApLang = niche === NicheType.MINDFUL_PSYCHOLOGY
-          ? (mindfulLanguage || 'en')
+        // 历史人物英文：宠物名一致性后处理
+        const mindfulApLang = niche === NicheType.HISTORICAL_FIGURE
+          ? (historicalLanguage || 'en')
           : null;
         if (mindfulApLang === 'zh') {
-          norm = normalizePetNames(norm);
+          norm = normalizeHistoricalNames(norm);
         }
 
         // 大国博弈/Bo Yi：检查并确保收尾语存在
@@ -4192,7 +4220,7 @@ ${segmentSourceText}
     getParallelOutlineLeadContext,
     getParallelHistorySubModeId,
     generatedContents,
-    mindfulLanguage,
+    historicalLanguage,
     greatPowerLanguage,
   ]);
 
@@ -4478,12 +4506,9 @@ ${segmentSourceText}
           pushYiJingLog(`【${topicTitle.slice(0, 18)}】分段完成，开始合并`);
           bumpProgress(`「${topicTitle.slice(0, 16)}${topicTitle.length > 16 ? '…' : ''}」分段完成`);
 
-          // 3) 合并（倪海厦赛道使用专用merge系统）
+          // 3) 合并：大国博弈用 buildBoYiParallelMergeUserPrompt，其他赛道（包括睡前历史人物）用 buildParallelMergeUserPrompt
           const combined = segResults.join('\n\n');
-          const mindfulLong =
-            niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
-          // 大国博弈用专用英文 merge prompt，中英文各自独立字数控制
-          // 新闻热点长视频也需要强制字数目标
+          const mindfulLongYi = niche === NicheType.HISTORICAL_FIGURE && scriptLengthMode === 'LONG';
           const mergeCharRangeYi = niche === NicheType.GREAT_POWER_GAME
             ? (greatPowerLanguage === 'zh'
                 ? { min: MIN_GREAT_POWER_ZH_CHARS, max: MAX_GREAT_POWER_ZH_CHARS }
@@ -4492,11 +4517,21 @@ ${segmentSourceText}
             ? { min: Math.round(parallelTotalTargetChars * 0.90), max: Math.round(parallelTotalTargetChars * 1.10) }
             : niche === NicheType.TCM_METAPHYSICS
             ? { min: 7400, max: 8000 }
+            : mindfulLongYi
+            ? { min: HISTORICAL_ZH_SCRIPT_CHARS_MIN, max: HISTORICAL_ZH_SCRIPT_CHARS_MAX }
             : undefined;
-          const mergeUser = buildBoYiParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
-            ...bundle.merge,
-            mergeCharRange: mergeCharRangeYi,
-          });
+          const mergeUser = niche === NicheType.GREAT_POWER_GAME
+            ? buildBoYiParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
+                ...bundle.merge,
+                mergeCharRange: mergeCharRangeYi,
+              })
+            : buildParallelMergeUserPrompt(topicTitle, combined, parallelTotalTargetChars, {
+                ...bundle.merge,
+                englishMergedCharClamp: mindfulLongYi
+                  ? historicalMergeCharClamp(parallelTotalTargetChars)
+                  : undefined,
+                mergeCharRange: mergeCharRangeYi,
+              });
           console.log('[runPipelineForTopic] 合并前检查:', {
             niche,
             bundleMergeOutputLang: (bundle.merge as any).outputLanguage,
@@ -4526,8 +4561,8 @@ ${segmentSourceText}
             finalText = combined; // 使用分段原文作为后备
           }
 
-          if (mindfulLong) {
-            finalText = truncateMindfulScript(finalText, MINDFUL_EN_SCRIPT_CHARS_MAX);
+          if (mindfulLongYi) {
+            finalText = truncateHistoricalScript(finalText, HISTORICAL_EN_SCRIPT_CHARS_MAX);
           }
           // 大国博弈/Bo Yi：检查并确保收尾语存在
           // 如果 AI 原文已有收尾，不重复追加；如果 merge 后丢失则恢复
@@ -4559,11 +4594,11 @@ ${segmentSourceText}
               .trimEnd();
           }
 
-          // 治愈心理学中文：宠物名一致性后处理
-          if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
-            const batchLang = mindfulLanguage || 'en';
+          // 历史人物中文：宠物名一致性后处理
+          if (niche === NicheType.HISTORICAL_FIGURE) {
+            const batchLang = historicalLanguage || 'en';
             if (batchLang === 'zh') {
-              finalText = normalizePetNames(finalText);
+              finalText = normalizeHistoricalNames(finalText);
             }
           }
 
@@ -4861,9 +4896,9 @@ ${segmentSourceText}
 
           // 第二阶段重构：取消自动生成后的去 AI 味清洗与人类感检测，直接以首轮成稿作为终稿
           const isEnRevengeBatch = niche === NicheType.STORY_REVENGE && storyLanguage === StoryLanguage.ENGLISH;
-          const isMindfulEnglishBatch = niche === NicheType.MINDFUL_PSYCHOLOGY;
+          const isMindfulEnglishBatch = niche === NicheType.HISTORICAL_FIGURE;
           const isGreatPowerGameBatch = niche === NicheType.GREAT_POWER_GAME;
-          const effectiveLangBatch = isGreatPowerGameBatch ? greatPowerLanguage : (mindfulLanguage || 'en');
+          const effectiveLangBatch = isGreatPowerGameBatch ? greatPowerLanguage : (historicalLanguage || 'en');
           const outputLanguageBatch: 'zh' | 'en' = isMindfulEnglishBatch ? (effectiveLangBatch === 'en' ? 'en' : 'zh') : (isEnRevengeBatch ? 'en' : (isGreatPowerGameBatch ? greatPowerLanguage : 'zh'));
 
           // ===== 大国博弈英文：字数下限续写保护 =====
@@ -5643,13 +5678,13 @@ ${segmentSourceText}
                 niche === NicheType.EMOTION_TABOO ||
                 niche === NicheType.YI_JING_METAPHYSICS ||
                 niche === NicheType.GENERAL_VIRAL ||
-                niche === NicheType.MINDFUL_PSYCHOLOGY;
+                niche === NicheType.HISTORICAL_FIGURE;
             const isRevengeShort =
                 niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.SHORT;
             const isRevengeLong =
                 niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.LONG;
             const isShortScript =
-                (niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.MINDFUL_PSYCHOLOGY) &&
+                (niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.HISTORICAL_FIGURE) &&
                 scriptLengthMode === 'SHORT';
             
             if (shouldEnforceLength) {
@@ -5659,18 +5694,18 @@ ${segmentSourceText}
                         niche === NicheType.PHILOSOPHY_WISDOM ||
                         niche === NicheType.EMOTION_TABOO ||
                         niche === NicheType.YI_JING_METAPHYSICS ||
-                        niche === NicheType.MINDFUL_PSYCHOLOGY
+                        niche === NicheType.HISTORICAL_FIGURE
                             ? 450
                             : 500;
                 } else {
-                    const isMindfulZh = niche === NicheType.MINDFUL_PSYCHOLOGY && mindfulLanguage === 'zh';
+                    const isMindfulZh = niche === NicheType.HISTORICAL_FIGURE && historicalLanguage === 'zh';
                     const minChars =
                         niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO
                             ? 3000
-                            : niche === NicheType.MINDFUL_PSYCHOLOGY
+                            : niche === NicheType.HISTORICAL_FIGURE
                                 ? Math.round(
-                                    (isMindfulZh ? (MINDFUL_ZH_SCRIPT_CHARS_MIN + MINDFUL_ZH_SCRIPT_CHARS_MAX) / 2
-                                      : (MINDFUL_EN_SCRIPT_CHARS_MIN + MINDFUL_EN_SCRIPT_CHARS_MAX) / 2)
+                                    (isMindfulZh ? (HISTORICAL_ZH_SCRIPT_CHARS_MIN + HISTORICAL_ZH_SCRIPT_CHARS_MAX) / 2
+                                      : (HISTORICAL_EN_SCRIPT_CHARS_MIN + HISTORICAL_EN_SCRIPT_CHARS_MAX) / 2)
                                   )
                                 : niche === NicheType.YI_JING_METAPHYSICS
                                     ? MIN_YI_JING_SCRIPT_CHARS
@@ -5707,7 +5742,7 @@ ${segmentSourceText}
                 niche === NicheType.PHILOSOPHY_WISDOM ||
                 niche === NicheType.EMOTION_TABOO ||
                 niche === NicheType.YI_JING_METAPHYSICS ||
-                niche === NicheType.MINDFUL_PSYCHOLOGY) &&
+                niche === NicheType.HISTORICAL_FIGURE) &&
             scriptLengthMode === 'SHORT';
         const tcmRequiredLessons = getRequiredLessonCount(
             niche,
@@ -5736,9 +5771,9 @@ ${segmentSourceText}
         } else if (niche === NicheType.YI_JING_METAPHYSICS) {
             scriptTemplate =
                 scriptLengthMode === 'SHORT' ? YI_JING_SHORT_SCRIPT_PROMPT : config.scriptPromptTemplate;
-        } else if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+        } else if (niche === NicheType.HISTORICAL_FIGURE) {
             // Mindful Psychology 使用自己的脚本模板
-            scriptTemplate = MINDFUL_PSYCHOLOGY_SCRIPT_PROMPT;
+            scriptTemplate = HISTORICAL_FIGURE_SCRIPT_PROMPT;
         }
 
         // 清理选题标题：去掉【猫】【狗】【人】分类标签
@@ -5746,9 +5781,9 @@ ${segmentSourceText}
         // Use the selected script prompt
         let prompt = scriptTemplate.replace('{topic}', cleanTopicTitle);
 
-        // 治愈心理学：强制语言注入（覆盖模板默认英文设置）
-        if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
-            const ml = mindfulLanguage || 'en';
+        // 历史人物：强制语言注入（覆盖模板默认英文设置）
+        if (niche === NicheType.HISTORICAL_FIGURE) {
+            const ml = historicalLanguage || 'en';
             const isZh = ml === 'zh';
             const langOverride = isZh
                 ? '【语言强制声明】本次脚本输出语言为简体中文。所有正文、结尾、互动引导均须使用简体中文。禁止输出任何英文句子。'
@@ -5831,19 +5866,7 @@ ${segmentSourceText}
         
         // Determine system instruction based on mode
         let systemInstruction = config.systemInstruction;
-        // 治愈心理学：强制中文系统指令（覆盖模板默认英文）
-        if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
-          systemInstruction = `【系统指令·中文治愈心理学频道】
-
-你是 Mindful Paws 治愈心理学频道的制作人，专注中文市场。
-
-【语言强制】所有输出必须为简体中文。禁止任何英文句子、英文词汇、英文标点混用。
-
-【人设】温暖、口语化、真诚的第一人称叙事。分享真实经历，不说"you feel""you might"。段落长短不一，允许自我纠正和口语打断。
-
-【结尾规则】禁止"请点赞并订阅我的频道"、"好了今天就到这里"、"保重"、"晚安各位"。结尾随意、自嘲或开放式——如"好了，不说了，家里那只正催我停了"。`;
-
-        } else if (niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION) {
+        if (niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION) {
             // ShadowWriter system prompt with language injection
             systemInstruction = `**Role:** You are **ShadowWriter (暗影写手)**, an elite story architect who excels in human psychology, creative writing, and traffic algorithms. You specialize in transforming plain, fragmented, or reused source material into high-completion-rate, high-emotional-value "revenge thrillers" that pass originality checks.
 
@@ -5873,7 +5896,7 @@ ${segmentSourceText}
                 niche === NicheType.PHILOSOPHY_WISDOM ||
                 niche === NicheType.EMOTION_TABOO ||
                 niche === NicheType.YI_JING_METAPHYSICS ||
-                niche === NicheType.MINDFUL_PSYCHOLOGY;
+                niche === NicheType.HISTORICAL_FIGURE;
 
             const maybeNormalizeLayout = (content: string): string => {
                 if (mapIsShortScript) return content;
@@ -5969,7 +5992,7 @@ ${segmentSourceText}
                         niche === NicheType.TCM_METAPHYSICS ||
                         (niche === NicheType.YI_JING_METAPHYSICS && !mapIsShortScript) ||
                         niche === NicheType.GENERAL_VIRAL ||
-                        niche === NicheType.MINDFUL_PSYCHOLOGY
+                        niche === NicheType.HISTORICAL_FIGURE
                             ? 24576
                             : 8192,
                 }
@@ -5984,13 +6007,13 @@ ${segmentSourceText}
                 niche === NicheType.EMOTION_TABOO ||
                 niche === NicheType.YI_JING_METAPHYSICS ||
                 niche === NicheType.GENERAL_VIRAL ||
-                niche === NicheType.MINDFUL_PSYCHOLOGY;
+                niche === NicheType.HISTORICAL_FIGURE;
             const isRevengeShort =
                 niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.SHORT;
             const isRevengeLong =
                 niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.LONG;
             const isShortScript =
-                (niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.MINDFUL_PSYCHOLOGY) &&
+                (niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.HISTORICAL_FIGURE) &&
                 scriptLengthMode === 'SHORT';
 
             if (shouldEnforceLength) {
@@ -6005,8 +6028,8 @@ ${segmentSourceText}
                                 ? MIN_TCM_SCRIPT_CHARS
                                 : niche === NicheType.FINANCE_CRYPTO
                                     ? MIN_FIN_SCRIPT_CHARS
-                                    : niche === NicheType.MINDFUL_PSYCHOLOGY
-                                        ? (mindfulLanguage === 'zh' ? MINDFUL_ZH_SCRIPT_CHARS_MIN : MINDFUL_EN_SCRIPT_CHARS_MIN)
+                                    : niche === NicheType.HISTORICAL_FIGURE
+                                        ? (historicalLanguage === 'zh' ? HISTORICAL_ZH_SCRIPT_CHARS_MIN : HISTORICAL_EN_SCRIPT_CHARS_MIN)
                                         : MIN_NEWS_SCRIPT_CHARS;
                 const maxChars = isShortScript
                     ? 500
@@ -6018,8 +6041,8 @@ ${segmentSourceText}
                                 ? MAX_TCM_SCRIPT_CHARS
                                 : niche === NicheType.FINANCE_CRYPTO
                                     ? MAX_FIN_SCRIPT_CHARS
-                                    : niche === NicheType.MINDFUL_PSYCHOLOGY
-                                        ? (mindfulLanguage === 'zh' ? MINDFUL_ZH_SCRIPT_CHARS_MAX : MINDFUL_EN_SCRIPT_CHARS_MAX)
+                                    : niche === NicheType.HISTORICAL_FIGURE
+                                        ? (historicalLanguage === 'zh' ? HISTORICAL_ZH_SCRIPT_CHARS_MAX : HISTORICAL_EN_SCRIPT_CHARS_MAX)
                                         : MAX_NEWS_SCRIPT_CHARS;
                 
                 // GENERAL_VIRAL（小美）：严格字数控制，禁止强制续写
@@ -6113,16 +6136,16 @@ ${segmentSourceText}
                         localContent = truncateToMax(localContent, maxC);
                         console.log(`[Generator] News truncated to ${localContent.length} chars (semantic boundary)`);
                     }
-                } else if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
-                    // 治愈心理学赛道：AI 已在各段末尾自行输出 CTA（根据语言），此处不做强制添加
+                } else if (niche === NicheType.HISTORICAL_FIGURE) {
+                    // 历史人物赛道：AI 已在各段末尾自行输出 CTA，此处不做强制添加
                     // 仅做字数截断保护
                     if (localContent.length > maxChars) {
-                        if (mindfulLanguage === 'zh') {
+                        if (historicalLanguage === 'zh') {
                             localContent = truncateToMax(localContent, maxChars);
                         } else {
-                            localContent = truncateMindfulScript(localContent, maxChars);
+                            localContent = truncateHistoricalScript(localContent, maxChars);
                         }
-                        console.log(`[Generator] Mindful Psychology (${mindfulLanguage}) truncated to ${localContent.length} chars`);
+                        console.log(`[Generator] Mindful Psychology (${historicalLanguage}) truncated to ${localContent.length} chars`);
                     }
                 } else if (niche === NicheType.GREAT_POWER_GAME) {
                     // 大国博弈赛道：合并后截断保护 + 收尾语兜底
@@ -6553,7 +6576,7 @@ ${segmentSourceText}
                         }
                         return newArr;
                     });
-                } else if (niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.MINDFUL_PSYCHOLOGY) {
+                } else if (niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.HISTORICAL_FIGURE) {
                     localContent = cleaned;
                     if (niche === NicheType.YI_JING_METAPHYSICS && !isShortScript) {
                         localContent = stripPrematureZengThanksClosing(
@@ -6931,19 +6954,7 @@ ${segmentSourceText}
           const config = NICHES[niche];
           // Determine system instruction based on mode
           let systemInstruction = config.systemInstruction;
-          // 治愈心理学：强制中文系统指令（覆盖模板默认英文）
-          if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
-            systemInstruction = `【系统指令·中文治愈心理学频道】
-
-你是 Mindful Paws 治愈心理学频道的制作人，专注中文市场。
-
-【语言强制】所有输出必须为简体中文。禁止任何英文句子、英文词汇、英文标点混用。
-
-【人设】温暖、口语化、真诚的第一人称叙事。分享真实经历，不说"你感觉""你可能"。段落长短不一，允许自我纠正和口语打断。
-
-【结尾规则】禁止"请点赞并订阅我的频道"、"好了今天就到这里"、"保重"、"晚安各位"。结尾随意、自嘲或开放式——如"好了，不说了，家里那只正催我停了"。`;
-
-          } else if (niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION) {
+          if (niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION) {
               systemInstruction = `**Role:** You are **ShadowWriter (暗影写手)**, an elite story architect who excels in human psychology, creative writing, and traffic algorithms. You specialize in transforming plain, fragmented, or reused source material into high-completion-rate, high-emotional-value "revenge thrillers" that pass originality checks.
 
 **Core Objective:** Deeply "rewrite" and adapt input source material (Raw Text) to make it logically tighter, emotionally more extreme, and original enough to pass plagiarism checks, while preserving core satisfaction points.
@@ -7305,7 +7316,7 @@ ${segmentSourceText}
         )}
 
         {/* Script length selector for TCM/Finance */}
-        {(niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.MINDFUL_PSYCHOLOGY) && (
+        {(niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.HISTORICAL_FIGURE) && (
           <div className="mb-6 animate-in fade-in duration-300 bg-slate-800/30 p-4 rounded-xl border border-slate-700/50">
             <label className="text-xs font-bold text-emerald-400 flex items-center gap-1 mb-2">
               <Clock size={14} /> 脚本时长
@@ -7341,7 +7352,7 @@ ${segmentSourceText}
                     ? '短视频：400-500字，悬念开场+感官铺垫+心理拉扯+高光瞬间+反思引导。'
                     : niche === NicheType.YI_JING_METAPHYSICS
                       ? '长视频：一次性生成完整终稿，严格控制在 3000 - 6000。短视频：≤500字快讲。'
-                      : niche === NicheType.MINDFUL_PSYCHOLOGY
+                      : niche === NicheType.HISTORICAL_FIGURE
                         ? '长视频：一次性生成完整终稿，严格控制在 1500 - 3000。短视频：≤500 字。'
                         : niche === NicheType.FINANCE_CRYPTO || niche === NicheType.GENERAL_VIRAL || niche === NicheType.GREAT_POWER_GAME
                           ? '长视频：一次性生成完整终稿，严格控制在 3000 - 6000。短视频：≤500 字。'
@@ -7474,7 +7485,7 @@ ${segmentSourceText}
                 {status === GenerationStatus.PLANNING ? <Loader2 className="animate-spin" /> : <Sparkles />}
                 {isInputRequired()
                   ? '预测选题'
-                  : niche === NicheType.YI_JING_METAPHYSICS
+                  : niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.HISTORICAL_FIGURE
                     ? '一键生成爆款选题'
                     : '一键生成爆款Hooks'}
             </button>
@@ -7731,13 +7742,13 @@ ${segmentSourceText}
                       <input
                         type="number"
                         min={
-                          niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG'
-                            ? (mindfulLanguage === 'zh' ? MINDFUL_ZH_SCRIPT_CHARS_MIN : MINDFUL_EN_SCRIPT_CHARS_MIN)
+                          niche === NicheType.HISTORICAL_FIGURE && scriptLengthMode === 'LONG'
+                            ? (historicalLanguage === 'zh' ? HISTORICAL_ZH_SCRIPT_CHARS_MIN : HISTORICAL_EN_SCRIPT_CHARS_MIN)
                             : 1000
                         }
                         max={
-                          niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG'
-                            ? (mindfulLanguage === 'zh' ? MINDFUL_ZH_SCRIPT_CHARS_MAX : MINDFUL_EN_SCRIPT_CHARS_MAX)
+                          niche === NicheType.HISTORICAL_FIGURE && scriptLengthMode === 'LONG'
+                            ? (historicalLanguage === 'zh' ? HISTORICAL_ZH_SCRIPT_CHARS_MAX : HISTORICAL_EN_SCRIPT_CHARS_MAX)
                             : 70000
                         }
                         step={100}
@@ -7751,10 +7762,10 @@ ${segmentSourceText}
                         className="w-[7.5rem] bg-slate-900 border border-slate-600 rounded-lg px-2 py-1.5 text-sm text-slate-200 focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
                       />
                       <span className="text-[10px] text-slate-500">
-                        {niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG'
-                          ? (mindfulLanguage === 'zh'
-                            ? `治愈心理学长视频（中文）：正文目标总字符数，${MINDFUL_ZH_SCRIPT_CHARS_MIN}–${MINDFUL_ZH_SCRIPT_CHARS_MAX}；失焦后均摊各章 min/max。`
-                            : `治愈心理学长视频（英文）：正文目标总字符数（含空格），${MINDFUL_EN_SCRIPT_CHARS_MIN}–${MINDFUL_EN_SCRIPT_CHARS_MAX}；失焦后均摊各章 min/max。`)
+                        {niche === NicheType.HISTORICAL_FIGURE && scriptLengthMode === 'LONG'
+                          ? (historicalLanguage === 'zh'
+                            ? `睡前历史人物长视频（中文）：正文目标总字符数，${HISTORICAL_ZH_SCRIPT_CHARS_MIN}–${HISTORICAL_ZH_SCRIPT_CHARS_MAX}；失焦后均摊各章 min/max。`
+                            : `睡前历史人物长视频（英文）：正文目标总字符数（含空格），${HISTORICAL_EN_SCRIPT_CHARS_MIN}–${HISTORICAL_EN_SCRIPT_CHARS_MAX}；失焦后均摊各章 min/max。`)
                           : niche === NicheType.YI_JING_METAPHYSICS && scriptLengthMode === 'LONG'
                           ? `易经命理长视频：默认值 6500 字（曾氏长视频标准），允许 1000–70000 调整。失焦后均摊各章字数区间。`
                           : niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG'
@@ -8457,8 +8468,8 @@ ${segmentSourceText}
         {/* 全赛道·一键动画分镜区域 */}
           <div className="mt-8 p-4 bg-slate-800/50 border border-slate-700 rounded-xl">
             <div className="flex items-center gap-2 mb-4">
-              <span className="text-lg">{niche === NicheType.MINDFUL_PSYCHOLOGY ? '🐾' : niche === NicheType.PSYCHOLOGY ? '🧠' : niche === NicheType.PHILOSOPHY_WISDOM ? '🪷' : niche === NicheType.EMOTION_TABOO ? '🕯️' : niche === NicheType.STORY_REVENGE ? '⚔️' : niche === NicheType.GENERAL_VIRAL ? '🔥' : niche === NicheType.YI_JING_METAPHYSICS ? '📿' : niche === NicheType.GREAT_POWER_GAME ? '🎯' : niche === NicheType.TCM_METAPHYSICS ? '☯️' : niche === NicheType.FINANCE_CRYPTO ? '💰' : '🎬'}</span>
-              <span className="text-slate-200 font-medium">{niche === NicheType.MINDFUL_PSYCHOLOGY ? '治愈心理学频道' : niche === NicheType.PSYCHOLOGY ? '心理学' : niche === NicheType.PHILOSOPHY_WISDOM ? '哲学智慧' : niche === NicheType.EMOTION_TABOO ? '情感禁忌' : niche === NicheType.STORY_REVENGE ? '复仇故事' : niche === NicheType.GENERAL_VIRAL ? '新闻热点' : niche === NicheType.YI_JING_METAPHYSICS ? '易经命理' : niche === NicheType.GREAT_POWER_GAME ? '大国博弈' : niche === NicheType.TCM_METAPHYSICS ? '中医玄学' : niche === NicheType.FINANCE_CRYPTO ? '金融投资' : '一键动画分镜'}：动画分镜</span>
+              <span className="text-lg">{niche === NicheType.HISTORICAL_FIGURE ? '🐾' : niche === NicheType.PSYCHOLOGY ? '🧠' : niche === NicheType.PHILOSOPHY_WISDOM ? '🪷' : niche === NicheType.EMOTION_TABOO ? '🕯️' : niche === NicheType.STORY_REVENGE ? '⚔️' : niche === NicheType.GENERAL_VIRAL ? '🔥' : niche === NicheType.YI_JING_METAPHYSICS ? '📿' : niche === NicheType.GREAT_POWER_GAME ? '🎯' : niche === NicheType.TCM_METAPHYSICS ? '☯️' : niche === NicheType.FINANCE_CRYPTO ? '💰' : '🎬'}</span>
+              <span className="text-slate-200 font-medium">{niche === NicheType.HISTORICAL_FIGURE ? '睡前历史人物频道' : niche === NicheType.PSYCHOLOGY ? '心理学' : niche === NicheType.PHILOSOPHY_WISDOM ? '哲学智慧' : niche === NicheType.EMOTION_TABOO ? '情感禁忌' : niche === NicheType.STORY_REVENGE ? '复仇故事' : niche === NicheType.GENERAL_VIRAL ? '新闻热点' : niche === NicheType.YI_JING_METAPHYSICS ? '易经命理' : niche === NicheType.GREAT_POWER_GAME ? '大国博弈' : niche === NicheType.TCM_METAPHYSICS ? '中医玄学' : niche === NicheType.FINANCE_CRYPTO ? '金融投资' : '一键动画分镜'}：动画分镜</span>
             </div>
             <div ref={storyboardAnchorRef}>
               <button
@@ -8686,7 +8697,7 @@ ${segmentSourceText}
                                             )}
                                         </button>
                                     )}
-                                    {niche === NicheType.MINDFUL_PSYCHOLOGY && (
+                                    {niche === NicheType.HISTORICAL_FIGURE && (
                                         <button
                                             type="button"
                                             onClick={openStoryboardFromEditor}
@@ -8697,8 +8708,8 @@ ${segmentSourceText}
                                             一键动画分镜
                                         </button>
                                     )}
-                                    {/* 所有赛道通用：一键动画分镜按钮（显示在右上角，治愈心理学赛道不重复显示） */}
-                                    {niche !== NicheType.MINDFUL_PSYCHOLOGY && (
+                                    {/* 所有赛道通用：一键动画分镜按钮（显示在右上角，历史人物赛道不重复显示） */}
+                                    {niche !== NicheType.HISTORICAL_FIGURE && (
                                         <button
                                             type="button"
                                             onClick={openStoryboardFromEditor}

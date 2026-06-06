@@ -1,9 +1,8 @@
 /**
- * 治愈心理学脚本：宠物名一致性后处理
+ * 睡前历史人物脚本：历史人物名字一致性后处理
  *
- * AI 在生成分段内容时，容易在不同段落中使用不同的宠物名字
- *（如前半段"豆豆"，中段"阿福"，结尾"阿黄"）。
- * 此函数在合并后扫描全文，找出所有出现的宠物名，
+ * AI 在生成分段内容时，可能在不同段落中使用不同的历史人物名字。
+ * 此函数在合并后扫描全文，找出所有出现的名字，
  * 保留出现次数最多的那个，将其他名字统一替换为它。
  *
  * 核心策略：
@@ -136,7 +135,7 @@ function findChinesePetNames(text: string): NameStats[] {
 /**
  * 合并后统一宠物名：找出所有名字，保留最常见的，替换其余
  */
-export function normalizePetNames(text: string): string {
+export function normalizeHistoricalNames(text: string): string {
   const hasChinese = /[\u4e00-\u9fff]/.test(text);
   if (!hasChinese) return text;
 
@@ -189,12 +188,12 @@ export function normalizePetNames(text: string): string {
 /**
  * 返回检测到的宠物名统计（供外部记录日志用）
  */
-export function getPetNameStats(text: string): NameStats[] {
+export function getHistoricalNameStats(text: string): NameStats[] {
   return findChinesePetNames(text);
 }
 
 // ============================================================
-// 英文宠物名一致性后处理
+// 英文历史人物名字一致性后处理
 // ============================================================
 
 /** 英文宠物名列表 */
@@ -212,7 +211,7 @@ const ENGLISH_PET_NAMES = new Set([
  * 3. 把所有其他宠物名替换为规范名
  * 4. 保留大小写（规范名首次出现时用原大小写）
  */
-export function normalizeEnglishPetNames(text: string): string {
+export function normalizeHistoricalForeignNames(text: string): string {
   // 1. 收集所有出现的宠物名及位置
   const foundNames: { name: string; index: number }[] = [];
   const nameRegex = new RegExp('\\b(' + [...ENGLISH_PET_NAMES].join('|') + ')\\b', 'gi');
@@ -253,15 +252,15 @@ export function normalizeEnglishPetNames(text: string): string {
 }
 
 // ============================================================
-// 翻译后残留英文清理（用于中文治愈心理学 pipeline）
-// 翻译可能不完美，残留英文宠物词需要被替换
+// 翻译后残留英文清理（用于睡前历史人物 pipeline）
+// 翻译可能不完美，残留英文词需要被替换
 // ============================================================
 
 /**
- * 清理中文文本中残留的英文宠物相关词
- * 翻译可能不彻底，如 "my cat is snoring" 译成中文后可能还有 "cat" 等词
+ * 清理中文文本中残留的英文历史人物相关词
+ * 翻译可能不彻底，如英文名字译成中文后可能还有残留词
  */
-export function cleanResidualEnglishInChinese(text: string): string {
+export function cleanResidualForeignInChinese(text: string): string {
   const hasChinese = /[\u4e00-\u9fff]/.test(text);
   if (!hasChinese) return text;
 

@@ -104,13 +104,13 @@ export const NICHE_CHARACTER_PROFILES: Record<NicheType, NicheCharacterProfile> 
     frequencySuggestion: '每3-5个分镜出现1次，在揭露内幕、分析博弈逻辑、揭示被掩盖真相时出现'
   },
 
-  [NicheType.MINDFUL_PSYCHOLOGY]: {
-    nicheName: '治愈心理学',
-    characterName: '讲述者与小狗',
-    characterDescription: '温暖的人类与治愈系小狗（无具体品种要求）同框，画面温馨和谐',
-    roleDescription: '保持现有治愈风格不变，小狗作为情感寄托',
-    visualStyle: '极简2D扁平矢量插画、手绘卡通感、暖米色/奶油色背景',
-    frequencySuggestion: '每3-5个分镜出现1次，保持治愈温馨感'
+  [NicheType.HISTORICAL_FIGURE]: {
+    nicheName: '睡前历史人物',
+    characterName: '历史人物',
+    characterDescription: '睡前历史人物故事风格：单人叙事或双人场景，画面有历史感和戏剧张力',
+    roleDescription: '睡前听本书播客风格：叙事感强、情绪饱满、适合睡前聆听',
+    visualStyle: '历史故事插画风、温暖色调、叙事感构图、古典与现代融合',
+    frequencySuggestion: '每2-3个分镜出现1次，保持历史叙事感'
   }
 };
 

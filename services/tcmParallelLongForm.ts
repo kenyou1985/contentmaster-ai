@@ -272,7 +272,7 @@ export type ParallelMergePromptOpts = {
   toneInstruction: string;
   outputLanguage: string;
   contentKind: string;
-  mindfulLanguage?: string;
+  historicalLanguage?: string;
 };
 
 export function buildParallelMergeUserPrompt(

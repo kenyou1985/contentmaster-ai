@@ -11,7 +11,7 @@ export const COVER_NICHE_ORDER: NicheType[] = [
   NicheType.GENERAL_VIRAL,
   NicheType.YI_JING_METAPHYSICS,
   NicheType.GREAT_POWER_GAME,
-  NicheType.MINDFUL_PSYCHOLOGY,
+  NicheType.HISTORICAL_FIGURE,
 ];
 
 export interface CoverNicheProfile {
@@ -28,16 +28,16 @@ export interface CoverNicheProfile {
 }
 
 const PROFILES: Record<NicheType, CoverNicheProfile> = {
-  [NicheType.MINDFUL_PSYCHOLOGY]: {
-    styleDna: `治愈心理学 / Mindful Paws 向：极简 2D 扁平矢量插画风，无脸或弱五官的治愈系角色，人类与「治愈小狗」常同框；粗黑描边、手绘卡通感、暖米色/奶油色或柔和粉绿背景；情绪从疲惫→被安抚；适合 YouTube 封面的大字号 Hook、可选粗红箭头/高亮框强调一句英文 Hook；整体干净、温暖、非写实照片。`,
+  [NicheType.HISTORICAL_FIGURE]: {
+    styleDna: `睡前历史人物 / Historical Figure 向：历史故事插画风，叙事感强、情绪饱满、适合睡前聆听；温暖色调、叙事感构图、古典与现代融合；适合 YouTube 封面的大字号 Hook、可选粗红箭头/高亮框强调人物命运感；整体有历史感、戏剧张力、非写实插画风。`,
     schemeAHint:
-      '客厅或沙发场景：人物与狗安静同框，全景/中景，留白放巨大 Hook 字，可加红色箭头指向情绪焦点。',
+      '历史场景沉浸：人物命运故事场景，全景/中景，留白放巨大 Hook 字，可加红色箭头指向命运转折点。',
     schemeBHint:
-      '白或浅灰纯色底：手轻抚狗头或狗脸特写轮廓，极简扁平图标感，粗体无衬线大字 + 锐利红色高亮条。',
+      '白或浅灰纯色底：人物特写或历史文物轮廓，古典插画图标感，粗体无衬线大字 + 锐利红色高亮条。',
     schemeCHint:
-      '高反差特写：人物盘坐地面或狗眼情绪特写，亮黄色/荧光色文字牌承载 Hook，强对比光影，漫画式强调线。',
+      '高反差特写：人物命运转折瞬间特写，亮黄色/荧光色文字牌承载 Hook，强对比光影，漫画式强调线。',
     refUploadHint:
-      '可上传 1 张或多张人物/宠物/风格参考图；锁定后文案与「点击生成」缩略图均会融合多张参考的造型与配色（扁平插画风一致）。',
+      '可上传 1 张或多张历史人物/场景/风格参考图；锁定后文案与「点击生成」缩略图均会融合多张参考的造型与配色（历史插画风一致）。',
   },
   [NicheType.TCM_METAPHYSICS]: {
     styleDna:
@@ -119,9 +119,9 @@ export function getCoverNicheProfile(niche: NicheType): CoverNicheProfile {
 
 /** 封面 JSON 流式请求里，参考图前的英文锚定说明（避免非治愈赛道被「人+狗」模板污染） */
 export function getCoverReferenceMultimodalPreamble(niche: NicheType): string {
-  if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+  if (niche === NicheType.HISTORICAL_FIGURE) {
     return (
-      'The following reference images are in order: Image 1, Image 2, ... Study exact identity — human (hair, face shape, clothing colors/cut), dog or pet if visible (breed silhouette, fur pattern, markings, ear shape), and flat-art style. ' +
+      'The following reference images are in order: Image 1, Image 2, ... Study exact identity — historical figure (hair, face shape, clothing colors/cut, era-specific attire), historical artifacts or props if visible, and historical illustration style. ' +
       'You MUST reflect these in the JSON var_*_prompt_en fields with concrete visual detail. Do not invent generic substitutes.'
     );
   }

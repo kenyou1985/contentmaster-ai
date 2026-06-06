@@ -21,7 +21,7 @@
  *
  * 赛道权重调整：
  *   新闻热点/小美赛道：D5权重降至5%，D6权重降至8%，D7权重降至5%，D2权重提至18%
- *   治愈心理学赛道：D10权重提至10%（宠物名一致性更重要）
+ *   历史人物赛道：D10权重提至10%（宠物名一致性更重要）
  *   大国博弈/Bo Yi赛道：D5权重3%，D6权重5%，D7权重8%，D9权重35%；D1/D3/D4默认50分，D6/D7/D9/D10默认80分
  *   金融投资/芒格赛道：D2/D9/D10默认80分（分析型内容宽容处理）；D1/D3/D4默认50分
  *
@@ -45,7 +45,7 @@ export type NicheTypeForScoring =
   | 'news'               // 新闻热点/小美
   | 'yi_jing'            // 易经命理/曾仕强
   | 'rich_mindset'       // 富人思维/马云
-  | 'mindful_psychology'  // 治愈心理学/Mindful Paws
+  | 'mindful_psychology'  // 睡前历史人物/Mindful Paws
   | 'great_power_game'    // 大国博弈/Bo Yi
   | 'general'            // 通用赛道（默认）
 
@@ -510,7 +510,7 @@ export function detectNicheType(text: string): NicheTypeForScoring {
     '各位朋友', '深夜', '我告诉你',
   ];
   
-  // 治愈心理学/Mindful Paws赛道特征
+  // 睡前历史人物/Mindful Paws赛道特征
   const mindfulPsychologyKeywords = [
     ' Bean', 'Mochi', 'Junie', ' Muffin', ' Charlie',
     '治愈', '疗愈', '减压', '抗焦虑', '宠物', '猫', '狗',
@@ -660,7 +660,7 @@ function getNicheWeights(nicheType: NicheTypeForScoring): number[] {
       return [0.08, 0.15, 0.12, 0.08, 0.12, 0.10, 0.10, 0.10, 0.10, 0.05];
     
     case 'mindful_psychology':
-      // 治愈心理学：强调口语密度（D2）、结尾治愈（D8）、宠物名一致（D10）
+      // 睡前历史人物：强调口语密度（D2）、结尾治愈（D8）、宠物名一致（D10）
       // 治愈风格：温暖口语、自然疗愈、宠物共鸣
       return [0.10, 0.15, 0.10, 0.08, 0.08, 0.10, 0.10, 0.10, 0.09, 0.10];
 

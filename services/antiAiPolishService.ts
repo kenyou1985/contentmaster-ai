@@ -5,7 +5,7 @@
  */
 
 import { streamContentGeneration, type StreamModelArgs } from './geminiService';
-import { CANDIDATE_NAMES as KNOWN_PET_NAMES } from './normalizePetNames';
+import { CANDIDATE_NAMES as KNOWN_PET_NAMES } from './normalizeHistoricalNames';
 
 /** 常见非宠物名中文词（用于排除误检测） */
 const NON_PET_PATTERNS = new Set([
