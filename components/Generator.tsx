@@ -5831,8 +5831,19 @@ ${segmentSourceText}
         
         // Determine system instruction based on mode
         let systemInstruction = config.systemInstruction;
-        // For Adaptation mode, use ShadowWriter system prompt
-        if (niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION) {
+        // 治愈心理学：强制中文系统指令（覆盖模板默认英文）
+        if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+          systemInstruction = `【系统指令·中文治愈心理学频道】
+
+你是 Mindful Paws 治愈心理学频道的制作人，专注中文市场。
+
+【语言强制】所有输出必须为简体中文。禁止任何英文句子、英文词汇、英文标点混用。
+
+【人设】温暖、口语化、真诚的第一人称叙事。分享真实经历，不说"you feel""you might"。段落长短不一，允许自我纠正和口语打断。
+
+【结尾规则】禁止"请点赞并订阅我的频道"、"好了今天就到这里"、"保重"、"晚安各位"。结尾随意、自嘲或开放式——如"好了，不说了，家里那只正催我停了"。`;
+
+        } else if (niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION) {
             // ShadowWriter system prompt with language injection
             systemInstruction = `**Role:** You are **ShadowWriter (暗影写手)**, an elite story architect who excels in human psychology, creative writing, and traffic algorithms. You specialize in transforming plain, fragmented, or reused source material into high-completion-rate, high-emotional-value "revenge thrillers" that pass originality checks.
 
@@ -6920,8 +6931,19 @@ ${segmentSourceText}
           const config = NICHES[niche];
           // Determine system instruction based on mode
           let systemInstruction = config.systemInstruction;
-          // For Adaptation mode, use ShadowWriter system prompt
-          if (niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION) {
+          // 治愈心理学：强制中文系统指令（覆盖模板默认英文）
+          if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+            systemInstruction = `【系统指令·中文治愈心理学频道】
+
+你是 Mindful Paws 治愈心理学频道的制作人，专注中文市场。
+
+【语言强制】所有输出必须为简体中文。禁止任何英文句子、英文词汇、英文标点混用。
+
+【人设】温暖、口语化、真诚的第一人称叙事。分享真实经历，不说"你感觉""你可能"。段落长短不一，允许自我纠正和口语打断。
+
+【结尾规则】禁止"请点赞并订阅我的频道"、"好了今天就到这里"、"保重"、"晚安各位"。结尾随意、自嘲或开放式——如"好了，不说了，家里那只正催我停了"。`;
+
+          } else if (niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION) {
               systemInstruction = `**Role:** You are **ShadowWriter (暗影写手)**, an elite story architect who excels in human psychology, creative writing, and traffic algorithms. You specialize in transforming plain, fragmented, or reused source material into high-completion-rate, high-emotional-value "revenge thrillers" that pass originality checks.
 
 **Core Objective:** Deeply "rewrite" and adapt input source material (Raw Text) to make it logically tighter, emotionally more extreme, and original enough to pass plagiarism checks, while preserving core satisfaction points.
