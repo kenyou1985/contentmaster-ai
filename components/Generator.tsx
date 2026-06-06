@@ -792,17 +792,13 @@ function ensureGreatPowerClosingZh(text: string): string {
   return `${trimmed} 博弈从未停止。`;
 }
 
-/** 治愈心理学选题：去掉 * / **，竖线改「：」，英文与中文之间的半角冒号改全角「：」，保留【分类标签】 */
+/** 治愈心理学选题：去掉 * / **，保留【分类标签】和中文标题 */
 function sanitizeMindfulPsychologyTopicLine(raw: string): string {
-  // 提取分类标签
   const labelMatch = raw.match(/^\s*【([^】]+)】/);
   const label = labelMatch ? labelMatch[0] : '';
   let t = raw.replace(/^\s*【[^】]*】\s*/, '').trim();
   t = t.replace(/\*+/g, '');
-  t = t.replace(/\s*\|\s*/, '：');
-  t = t.replace(/([a-zA-Z0-9\)?.!'"…])\s*:\s*([\u4e00-\u9fff])/g, '$1：$2');
   t = t.replace(/\s{2,}/g, ' ').trim();
-  // 还原标签
   return label + (label ? ' ' : '') + t;
 }
 
