@@ -618,7 +618,7 @@ import {
   StoryLanguage,
   StoryDuration,
 } from '../types';
-import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT, YI_JING_SHORT_SCRIPT_PROMPT, MINDFUL_PSYCHOLOGY_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT, applyTopicCountToPrompt } from '../constants';
+import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT, YI_JING_SHORT_SCRIPT_PROMPT, MINDFUL_PSYCHOLOGY_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH, applyTopicCountToPrompt } from '../constants';
 import { NicheSelector } from './NicheSelector';
 import { generateTopics, streamContentGeneration, initializeGemini, SEGMENT_RETRY_MAX, SEGMENT_RETRY_DELAY_MS } from '../services/geminiService';
 import { fetchMacroNewsDigestForPrompt } from '../services/macroNewsFeedService';
@@ -766,6 +766,32 @@ function ensureGreatPowerClosing(text: string): string {
   return `${trimmed} The game continues.`;
 }
 
+function ensureGreatPowerClosingZh(text: string): string {
+  const trimmed = text.trimEnd();
+  const hasClosing = /(这场博弈还在继续。?|博弈从未停止。?)\s*$/.test(trimmed);
+  if (hasClosing) {
+    const cleaned = trimmed.replace(/\s+$/, '');
+    if (/(这场博弈还在继续。|博弈从未停止。)\s*$/.test(cleaned)) return cleaned;
+    return cleaned.replace(/(这场博弈还在继续|博弈从未停止)[。！？]?\s*$/, '博弈从未停止。');
+  }
+
+  const lastChar = trimmed.slice(-1);
+  const hasTrailingPunct = /[。！？]/.test(lastChar);
+  if (!hasTrailingPunct) {
+    const lastSentenceEnd = Math.max(
+      trimmed.lastIndexOf('。'),
+      trimmed.lastIndexOf('！'),
+      trimmed.lastIndexOf('？')
+    );
+    if (lastSentenceEnd > trimmed.length - 200) {
+      const prefix = trimmed.slice(0, lastSentenceEnd + 1).trimEnd();
+      return `${prefix} 博弈从未停止。`;
+    }
+  }
+
+  return `${trimmed} 博弈从未停止。`;
+}
+
 /** 治愈心理学选题：去掉 * / **，竖线改「：」，英文与中文之间的半角冒号改全角「：」，保留【分类标签】 */
 function sanitizeMindfulPsychologyTopicLine(raw: string): string {
   // 提取分类标签
@@ -780,11 +806,186 @@ function sanitizeMindfulPsychologyTopicLine(raw: string): string {
   return label + (label ? ' ' : '') + t;
 }
 
+function sanitizeViralTopicLine(raw: string): string {
+  return raw
+    .replace(/^\s*[-*+•]\s*/, '')
+    .replace(/^\s*\d+[.)、：:\-]\s*/, '')
+    .replace(/^\s*第\s*\d+\s*[条项]\s*/, '')
+    .replace(/^\s*(标题|选题|题目)\s*[：:：-]\s*/i, '')
+    .replace(/^\s*["'“”‘’]+|["'“”‘’]+\s*$/g, '')
+    .replace(/\*+/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function looksLikeViralTopicLine(raw: string): boolean {
+  const line = sanitizeViralTopicLine(raw);
+  if (!line) return false;
+  if (line.length < 10 || line.length > 60) return false;
+  if (/^(国际要闻投喂|选题方向|标题格式|输出格式|角色定位|实时情报投喂|禁止|要求|说明|分析|总结|前言|结语|用户输入|workflow|task|role|profile)/i.test(line)) return false;
+  if (/^[#\[【(（]/.test(line)) return false;
+  if (/[。；;]/.test(line)) return false;
+  const hasHookPunctuation = /[？！：——]/.test(line);
+  const hasTitleChars = /[\u4e00-\u9fffA-Za-z]/.test(line);
+  return hasTitleChars && (hasHookPunctuation || line.length >= 16);
+}
+
+function sanitizeGreatPowerBilingualTopicLine(raw: string): string {
+  const line = sanitizeViralTopicLine(raw)
+    .replace(/\s*[|｜]\s*/g, ' | ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return line;
+}
+
+function looksLikeGreatPowerBilingualTopicLine(raw: string): boolean {
+  const line = sanitizeGreatPowerBilingualTopicLine(raw);
+  if (!line) return false;
+  if (line.length < 16 || line.length > 140) return false;
+  if (/^(international intelligence feed|topic alignment rule|bo yi hook rule|output format|title format|role|profile|workflow|task|requirements|analysis|summary|introduction|conclusion|user input)/i.test(line)) return false;
+  if (/^[#\[【(（]/.test(line)) return false;
+  if (!line.includes(' | ')) return false;
+  const [en, zh, ...rest] = line.split(' | ');
+  if (rest.length > 0) return false;
+  if (!en || !zh) return false;
+  if (!/[A-Za-z]/.test(en)) return false;
+  if (!/[\u4e00-\u9fff]/.test(zh)) return false;
+  const enWords = en.split(/\s+/).filter(Boolean).length;
+  if (enWords < 3 || enWords > 18) return false;
+  if (en.length < 10 || en.length > 90) return false;
+  if (zh.length < 6 || zh.length > 40) return false;
+  if ((en.match(/[.!?]/g) || []).length > 1) return false;
+  if ((zh.match(/[。！？]/g) || []).length > 0) return false;
+  return true;
+}
+
+function sanitizeGreatPowerBilingualFallbackLine(raw: string): string {
+  return sanitizeGreatPowerBilingualTopicLine(raw);
+}
+
+function looksLikeGreatPowerEnglishTopicLine(raw: string): boolean {
+  const line = sanitizeViralTopicLine(raw);
+  if (!line) return false;
+  if (line.length < 10 || line.length > 120) return false;
+  if (/^(international intelligence feed|topic alignment rule|bo yi hook rule|output format|title format|role|profile|workflow|task|requirements|analysis|summary|introduction|conclusion|user input)/i.test(line)) return false;
+  if (/^[#\[【(（]/.test(line)) return false;
+  if (/[。；]/.test(line)) return false;
+  const wordCount = line.split(/\s+/).filter(Boolean).length;
+  if (wordCount < 3 || wordCount > 22) return false;
+  const sentencePunctCount = (line.match(/[.!?]/g) || []).length;
+  if (sentencePunctCount > 2) return false;
+  const commaCount = (line.match(/,/g) || []).length;
+  if (commaCount > 2) return false;
+  const hasLetters = /[A-Za-z]/.test(line);
+  const looksLikeParagraph = wordCount > 16 && !/[:?!—-]/.test(line);
+  if (looksLikeParagraph) return false;
+  return hasLetters;
+}
+
+function looksLikeGreatPowerEnglishFallbackLine(raw: string): boolean {
+  const line = sanitizeViralTopicLine(raw);
+  if (!line) return false;
+  if (line.length < 10 || line.length > 120) return false;
+  if (/^(international intelligence feed|topic alignment rule|bo yi hook rule|output format|title format|role|profile|workflow|task|requirements|analysis|summary|introduction|conclusion|user input)/i.test(line)) return false;
+  if (/^[#\[【(（]/.test(line)) return false;
+  if (/[。；]/.test(line)) return false;
+  const wordCount = line.split(/\s+/).filter(Boolean).length;
+  if (wordCount < 3 || wordCount > 20) return false;
+  const sentencePunctCount = (line.match(/[.!?]/g) || []).length;
+  if (sentencePunctCount > 1) return false;
+  const commaCount = (line.match(/,/g) || []).length;
+  if (commaCount > 1) return false;
+  if (!/[A-Za-z]/.test(line)) return false;
+  if (!/[A-Z]/.test(line.charAt(0)) && !/^\d/.test(line)) return false;
+  return true;
+}
+
 // 治愈心理学语言类型定义（需要在使用前定义）
 type MindfulLanguage = 'en' | 'zh' | 'ko' | 'ja' | 'es' | 'de' | 'hi' | 'ru' | 'pt' | 'fr' | 'id' | 'th';
 
 // 大国博弈语言类型定义
 type GreatPowerLanguage = 'en' | 'zh';
+
+type OneShotScriptPlan = {
+  minChars: number;
+  maxChars: number;
+  targetLabel: string;
+  extraDirective: string;
+};
+
+function getOneShotScriptPlan(niche: NicheType): OneShotScriptPlan | null {
+  switch (niche) {
+    case NicheType.PSYCHOLOGY:
+    case NicheType.PHILOSOPHY_WISDOM:
+    case NicheType.MINDFUL_PSYCHOLOGY:
+      return {
+        minChars: 1500,
+        maxChars: 3000,
+        targetLabel: '1500 - 3000',
+        extraDirective:
+          '主题方向必须偏心理学、哲学智慧、治愈心理学表达。生成时就同步降低 AI 味：避免工整排比、避免教科书总结腔、避免“首先其次最后”、避免空泛升华套话。要像一个真正阅历深的人在连续讲述，口语自然，句长有变化，有停顿感，但不做后置清洗。',
+      };
+    case NicheType.FINANCE_CRYPTO:
+    case NicheType.GENERAL_VIRAL:
+    case NicheType.GREAT_POWER_GAME:
+    case NicheType.YI_JING_METAPHYSICS:
+      return {
+        minChars: 3000,
+        maxChars: 6000,
+        targetLabel: '3000 - 6000',
+        extraDirective:
+          '主题方向必须偏格局博弈、新闻热点、大国博弈、易经命理。生成时就同步降低 AI 味：避免标准评论模板、避免固定三段论、避免“据报道/由此可见”套话、避免重复口号。要一口气写成完整成稿，信息密度高，观点推进要有压迫感与连续性。',
+      };
+    case NicheType.TCM_METAPHYSICS:
+      return {
+        minChars: 5600,
+        maxChars: 6400,
+        targetLabel: '目标约 6000（实际控制成 5600 - 6400）',
+        extraDirective:
+          '主题方向必须偏中医玄学。目标字数控制在约6000字，允许上下浮动，但整体不要明显短于5600字或超过6400字。生成时直接写出最终口播稿，去掉任何分段并行、合并、洗稿思维。',
+      };
+    default:
+      return null;
+  }
+}
+
+function buildOneShotLongScriptPrompt(basePrompt: string, topic: string, niche: NicheType): string {
+  const plan = getOneShotScriptPlan(niche);
+  const seeded = basePrompt.replaceAll('{topic}', topic);
+  if (!plan) return seeded;
+  return `${seeded}\n\n【生成模式变更（最高优先级）】\n本次必须一次性直接输出最终完整成稿。\n- 禁止先列大纲再写正文\n- 禁止分段输出后再合并\n- 禁止输出“第1部分/第2部分/上篇/下篇/待续”等中间产物\n- 禁止生成后再做“去AI味清洗/洗稿/二次润色”思路\n- 必须在首次生成时就直接把 AI 味降下来，写成可直接发布的最终稿\n\n【篇幅硬要求】\n- 严格目标区间：${plan.targetLabel}\n- 最低不少于 ${plan.minChars} 字\n- 最高不超过 ${plan.maxChars} 字\n\n【风格总要求】\n${plan.extraDirective}\n\n【输出要求】\n- 只输出最终正文\n- 不要解释你的写法\n- 不要输出大纲、章节规划、创作说明、字数说明\n- 不要输出“以下是正文”“下面开始”等前置语`;}
+
+function clampOneShotLength(content: string, niche: NicheType): string {
+  const plan = getOneShotScriptPlan(niche);
+  if (!plan) return content.trim();
+  let text = content.trim();
+  if (text.length <= plan.maxChars) return text;
+
+  const truncated = text.slice(0, plan.maxChars);
+  const sentenceBreakCandidates = [
+    truncated.lastIndexOf('。'),
+    truncated.lastIndexOf('！'),
+    truncated.lastIndexOf('？'),
+    truncated.lastIndexOf('.'),
+    truncated.lastIndexOf('!'),
+    truncated.lastIndexOf('?'),
+    truncated.lastIndexOf('\n\n'),
+    truncated.lastIndexOf('\n'),
+  ];
+  const cutoff = Math.max(...sentenceBreakCandidates);
+
+  if (cutoff >= Math.max(plan.minChars - 1, 0)) {
+    const ender = truncated[cutoff];
+    const needsPunct = ender !== '。' && ender !== '！' && ender !== '？' && ender !== '.' && ender !== '!' && ender !== '?';
+    return `${truncated.slice(0, cutoff + 1).trim()}${needsPunct ? '。' : ''}`.trim();
+  }
+
+  return truncated.trim();
+}
+function shouldUseOneShotLongForm(niche: NicheType, scriptLengthMode: 'LONG' | 'SHORT'): boolean {
+  if (scriptLengthMode !== 'LONG') return false;
+  return niche !== NicheType.STORY_REVENGE;
+}
 
 /**
  * 将 NicheType 映射为评分专用的 NicheTypeForScoring
@@ -812,16 +1013,13 @@ function getParallelPipelineBundle(
   storyLanguage: StoryLanguage,
   storyDuration: StoryDuration,
   nicheConfig: NicheConfig,
-  mindfulLang?: MindfulLanguage,
   greatPowerLang?: GreatPowerLanguage,
   totalTargetChars?: number
 ) {
   const baseName = nicheConfig.name;
-  const isEnRevenge =
+    const isEnRevenge =
     niche === NicheType.STORY_REVENGE && storyLanguage === StoryLanguage.ENGLISH;
-  const isMindfulEnglish = niche === NicheType.MINDFUL_PSYCHOLOGY;
-  const effectiveLang = mindfulLang || 'en';
-  const outputLanguage: 'zh' | 'en' = isMindfulEnglish ? (effectiveLang === 'en' ? 'en' : 'zh') : (isEnRevenge ? 'en' : 'zh');
+  const outputLanguage: 'zh' | 'en' = isEnRevenge ? 'en' : 'zh';
 
   let logicBlueprint = PARALLEL_LOGIC_GENERIC;
   let channelLabel = `「${baseName}」频道长内容`;
@@ -869,35 +1067,14 @@ function getParallelPipelineBundle(
     }
   }
 
-  const mindfulEnglishLongParallel =
-    niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG';
-
   if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
-    // 中文走英文 pipeline（避免宠物名错乱），其他语言也走英文
-    const langMap: Record<MindfulLanguage, 'en' | 'zh'> = {
-      'en': 'en', 'zh': 'en', 'ko': 'en', 'ja': 'en', 'es': 'en',
-      'de': 'en', 'hi': 'en', 'ru': 'en', 'pt': 'en', 'fr': 'en',
-      'id': 'en', 'th': 'en'
-    };
-    const outputLang = langMap[effectiveLang] || 'en';
-    const isZhOutput = effectiveLang === 'zh';
-
-    channelLabel = isZhOutput
-      ? 'Mindful Paws–style 中文治愈心理学口播'
-      : 'Mindful Paws–style English healing psychology voice-over';
-    contentKindOutline = isZhOutput
-      ? (scriptLengthMode === 'SHORT' ? '短视频口播大纲（中文）' : '长视频口播大纲（中文）')
-      : (scriptLengthMode === 'SHORT' ? 'short-form voice-over outline (English)' : 'long-form voice-over outline (English)');
-    contentKindMerge = isZhOutput ? '口播脚本（中文）' : 'voice-over script';
-    directorLine = isZhOutput
-      ? '你是治愈心理学频道的制作人，负责生成中文 TTS 口播脚本。'
-      : 'You are the lead producer for a faceless YouTube healing-psychology channel (cat/dog/human emotional metaphors). Plan and write for **English** TTS.';
-    mergeEditorLine = isZhOutput
-      ? '你是资深编辑，合并中文口播脚本，保持温暖、口语化、真诚的叙事风格。中文内容应以第一人称「我」为中心，分享真实经历，段落长短不一，允许口语打断和自嘲。禁止使用「请点赞并订阅我的频道」等营销腔结尾。结尾应为随意、自嘲或开放式的自然收尾。'
-      : 'You are a senior editor merging English voice-over scripts; keep warm, spoken, authentic English like a real person sharing their experience. Use first-person "I" as the dominant voice, not "you" or "your body". Allow for natural imperfections, self-corrections, and uneven paragraph lengths. Never add a "Please like and subscribe" CTA — preserve any casual ending that sounds like a friend saying goodnight.';
-    mergeTone = isZhOutput
-      ? '全文保持温暖、口语化、真诚的叙事风格。第一人称「我」为中心。禁止使用「请点赞并订阅」「好了今天就到这里」「保重」「晚安各位」等营销腔或旁观式结尾。禁止使用大国博弈式结尾（「博弈还在继续」「博弈从未停止」等）。结尾应是随意、自嘲或开放式的自然收尾——如「好了，不说了，家里那只正催我停了」。'
-      : 'Merge in a warm, spoken, authentic first-person voice. **ABSOLUTELY FORBIDDEN closing phrases**: "Please like and subscribe", "Good night, my friends", "The game continues.", "The game never stops.", "Take care, everyone", or any public/broadcast-style ending. The final line must be casual, self-deprecating, or open-ended — like a friend saying goodnight. No CTA. No Markdown. No bold.';
+    // 治愈心理学全程中文输出
+    channelLabel = 'Mindful Paws–style 中文治愈心理学口播';
+    contentKindOutline = scriptLengthMode === 'SHORT' ? '短视频口播大纲（中文）' : '长视频口播大纲（中文）';
+    contentKindMerge = '口播脚本（中文）';
+    directorLine = '你是治愈心理学频道的制作人，负责生成中文 TTS 口播脚本。';
+    mergeEditorLine = '你是资深编辑，合并中文口播脚本，保持温暖、口语化、真诚的叙事风格。中文内容应以第一人称「我」为中心，分享真实经历，段落长短不一，允许口语打断和自嘲。禁止使用「请点赞并订阅我的频道」等营销腔结尾。结尾应为随意、自嘲或开放式的自然收尾。';
+    mergeTone = '全文保持温暖、口语化、真诚的叙事风格。第一人称「我」为中心。禁止使用「请点赞并订阅」「好了今天就到这里」「保重」「晚安各位」等营销腔或旁观式结尾。禁止使用大国博弈式结尾（「博弈还在继续」「博弈从未停止」等）。结尾应是随意、自嘲或开放式的自然收尾——如「好了，不说了，家里那只正催我停了」。';
   }
 
   // ── 新闻热点 GENERAL_VIRAL 赛道：长视频强制字数目标 ──
@@ -994,22 +1171,20 @@ function getParallelPipelineBundle(
       channelLabel,
       contentKind: contentKindOutline,
       logicBlueprint,
-      englishCharOutline: mindfulEnglishLongParallel,
+      englishCharOutline: false,
     },
     outlineSystem: buildParallelOutlineSystem(directorLine),
     segment: {
-      outputLanguage,
+      outputLanguage: 'zh',
       voiceRules,
-      englishChapterCharStrict: mindfulEnglishLongParallel,
-      mindfulLanguage: effectiveLang,
+      englishChapterCharStrict: false,
       closingStyle: (niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.TCM_METAPHYSICS) ? 'yijin' : 'mindful',
     },
     merge: {
       channelTag: baseName,
       toneInstruction: mergeTone,
-      outputLanguage,
+      outputLanguage: 'zh',
       contentKind: contentKindMerge,
-      mindfulLanguage: effectiveLang,
       closingStyle: (niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.TCM_METAPHYSICS) ? 'yijin' : 'mindful',
     },
     mergeSystem: buildParallelMergeSystem(mergeEditorLine),
@@ -1143,39 +1318,10 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     }
   }, [storyboardStyleId]);
 
-  // 治愈心理学多语言输出选项
-  const mindfulLanguages: { id: MindfulLanguage; name: string; native: string }[] = [
-    { id: 'en', name: 'English', native: '英文' },
-    { id: 'zh', name: '中文', native: '中文' },
-    { id: 'ko', name: '한국어', native: '韩文' },
-    { id: 'ja', name: '日本語', native: '日文' },
-    { id: 'es', name: 'Español', native: '西班牙文' },
-    { id: 'de', name: 'Deutsch', native: '德文' },
-    { id: 'hi', name: 'हिन्दी', native: '印地文' },
-    { id: 'ru', name: 'Русский', native: '俄文' },
-    { id: 'pt', name: 'Português', native: '葡萄牙文' },
-    { id: 'fr', name: 'Français', native: '法文' },
-    { id: 'id', name: 'Bahasa Indonesia', native: '印尼文' },
-    { id: 'th', name: 'ภาษาไทย', native: '泰文' },
-  ];
+  /** 治愈心理学全程中文输出（已移除多语言选项） */
+  const mindfulLanguage: MindfulLanguage = 'zh';
 
-  // 多语言 CTA 结尾语映射
-  const MINDFUL_LANGUAGE_CTAS: Record<MindfulLanguage, { cta: string; ctaRegex: RegExp }> = {
-    'zh': { cta: '写完了。狗/猫在打呼噜，我也睡了。希望你今晚睡个好觉。', ctaRegex: /(希望[^\n。！？]*睡个好觉|你也不是一个人|一起慢慢来|不急|我也睡了|晚安|就这样吧)$/ },
-    'en': { cta: 'Anyway, my dog is snoring now. Good night.', ctaRegex: /(?:my dog is snoring|Good night|Time to sleep|my dog is asleep|I should go)$/i },
-    'ko': { cta: '좋아요와 구독 부탁드립니다.', ctaRegex: /좋아요와 구독/i },
-    'ja': { cta: 'いいねと登録をお願いします。', ctaRegex: /いいね.*登録/i },
-    'es': { cta: 'Por favor, dale like y suscríbete a mi canal.', ctaRegex: /like.*suscr/i },
-    'de': { cta: 'Bitte liken und meinen Kanal abonnieren.', ctaRegex: /liken.*abonnieren/i },
-    'hi': { cta: 'कृपया लाइक करें और मेरी चैनल को सब्सक्राइब करें।', ctaRegex: /लाइक.*सब्सक्राइब/i },
-    'ru': { cta: 'Пожалуйста, поставьте лайк и подпишитесь на мой канал.', ctaRegex: /лайк.*подписк/i },
-    'pt': { cta: 'Por favor, clique em gostei e se inscreva no meu canal.', ctaRegex: /gostei.*inscrev/i },
-    'fr': { cta: 'Veuillez aimer et vous abonner à ma chaîne.', ctaRegex: /aimer.*abonn/i },
-    'id': { cta: 'Silakan like dan subscribe channel saya.', ctaRegex: /like.*subscribe/i },
-    'th': { cta: 'กรุณากดไลค์และติดตามช่องของฉันด้วยครับ', ctaRegex: /ไลค์.*ติดตาม/i },
-  };
-
-  const [mindfulLanguage, setMindfulLanguage] = useState<MindfulLanguage>('en');
+  /** 大国博弈语言状态（保留，供大国博弈赛道使用） */
   const [greatPowerLanguage, setGreatPowerLanguage] = useState<GreatPowerLanguage>('en');
 
   /** 易经命理·长视频：大纲 + 分段并行 + 合并润色 */
@@ -1214,7 +1360,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG') {
       setYiJingTotalTargetChars(6000);
     }
-  }, [niche, scriptLengthMode, greatPowerLanguage, mindfulLanguage]);
+  }, [niche, scriptLengthMode, greatPowerLanguage]);
   const parallelTotalTargetChars = useMemo(
     () =>
       niche === NicheType.MINDFUL_PSYCHOLOGY && scriptLengthMode === 'LONG'
@@ -1222,7 +1368,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
         : niche === NicheType.GREAT_POWER_GAME
           ? effectiveGpTarget
           : yiJingTotalTargetChars,
-    [niche, scriptLengthMode, yiJingTotalTargetChars, effectiveGpTarget, mindfulLanguage]
+    [niche, scriptLengthMode, yiJingTotalTargetChars, effectiveGpTarget]
   );
   /** 按目标总字数与单次输出上限自动推算章数（非固定 3–7） */
   const yiJingComputedSegCount = useMemo(
@@ -1521,7 +1667,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       setAdaptedContent('');
       setIsAdapting(false);
     }
-  }, [niche, tcmSubMode, financeSubMode, revengeSubMode, newsSubMode, showHistorySelector]);
+  }, [niche, tcmSubMode, financeSubMode, revengeSubMode, newsSubMode, greatPowerLanguage, showHistorySelector]);
 
   // SAFE ACCESS HELPER
   const getCurrentSubModeConfig = () => {
@@ -1724,8 +1870,19 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
                 prompt += `\n\n# 用户侧重（可选）\n用户输入：${inputVal}\n各选题须与此相关或可自然延伸，禁止完全无关主题。`;
             }
         } else if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
-            // Mindful Psychology 频道选题生成
+            // Mindful Psychology 频道选题生成：根据 UI 语言选择注入强制中文/英文声明
+            const ml = mindfulLanguage || 'en';
+            const isZh = ml === 'zh';
             prompt = config.topicPromptTemplate;
+            // 强制语言声明：覆盖模板里的默认格式
+            if (isZh) {
+                prompt = `【强制语言声明】本文档所有内容必须使用简体中文。选题标题必须是简体中文。\n\n` + prompt.replace(
+                    '## 选题格式（必须严格遵守）',
+                    '## 选题格式（必须严格遵守·中文）'
+                );
+            } else {
+                prompt = `【Language Override】Output all topics in English. Each line must be an English clickbait title only.\n\n` + prompt;
+            }
             if (inputVal.trim()) {
                 prompt += `\n\n# 用户侧重（可选）\n用户输入：${inputVal}\n各选题须与此相关或可自然延伸。`;
             }
@@ -1812,8 +1969,29 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 - 可用冒号/破折号/问号制造节奏，总长建议 20–45 汉字
 - 必须输出纯中文标题，不要任何英文`;
       } else {
-        // 英文模式：用 constants 标准模板
-        prompt = config.topicPromptTemplate.replace('{input}', inputVal || '（No specific direction given — draw from the most explosive geopolitical insider angles from current international situation）');
+        // 英文模式：强制输出双语爆款标题，格式固定为 English Title | 中文标题
+        prompt = `You are Bo Yi, a geopolitical insider analyst channel producer.
+
+User direction: ${inputVal.trim() || 'No specific direction given — draw from the most explosive geopolitical insider angles from the current international situation.'}
+
+Topic direction:
+- military blind spots, missile math, actual battle damage, command failures
+- strategic deception, hidden bargains, sanctions arithmetic, oil routes, naval choke points
+- China / US / Russia / Middle East / Iran / Israel / Taiwan / NATO power plays
+- internal memo logic, what leaders say in public versus what the numbers reveal
+- historical pattern repeats, regime overreach, battlefield reality versus propaganda
+
+Hard rules:
+- Output exactly ${resolvedPlanTopicCount} lines.
+- Each line must be ONE viral title only, not a paragraph.
+- Each line must use this exact bilingual format: English Title | 中文标题
+- Left side must be natural punchy English.
+- Right side must be natural punchy Chinese.
+- The English and Chinese must describe the same angle.
+- No numbering, no bullets, no intro, no analysis, no markdown, no quotes.
+- Every title must feel like an insider revelation, not a Reuters-style summary.
+- Keep each English side concise and clickable; keep each Chinese side concise and explosive.
+- Do not output pure English only. Do not output pure Chinese only. Every line must be bilingual.`;
       }
     }
 
@@ -1846,7 +2024,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
             // 英文模式
             const extraRules =
               '\n\n【Topic Alignment Rule — Highest Priority】Each topic title MUST be anchored to at least one item in the "International Intelligence Feed" above. Do NOT generate generic geopolitical topics disconnected from the live RSS intelligence. Cover at least 5 different news lines from the feed. Do NOT output 10 titles all restating the same news item.' +
-              '\n【Bo Yi Hook Rule】Every title must carry the Bo Yi insider-reveal voice: this is what the data actually shows, this is what they buried, this is what the arithmetic proves. Do NOT write news-wire summaries. Do NOT write official narrative restatements. Pure English titles only.';
+              '\n【Bo Yi Hook Rule】Every title must carry the Bo Yi insider-reveal voice: this is what the data actually shows, this is what they buried, this is what the arithmetic proves. Do NOT write news-wire summaries. Do NOT write official narrative restatements.' +
+              '\n【Output Format】Output exactly one bilingual title per line in this exact format: English Title | 中文标题. No bullets, no numbering, no analysis, no blank lines.';
             prompt = `${digest}\n\n---\n\n` + prompt + extraRules;
           }
         } else {
@@ -1876,19 +2055,63 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
         avoidTopics: pastTopics,
       });
       
-      const newTopics: Topic[] = rawTopics.map((t, i) => ({
+      const normalizedRawTopics =
+        niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'en'
+          ? rawTopics
+              .map((t) => sanitizeGreatPowerBilingualTopicLine(t))
+              .filter((t) => looksLikeGreatPowerBilingualTopicLine(t))
+              .slice(0, resolvedPlanTopicCount)
+          : niche === NicheType.GENERAL_VIRAL || niche === NicheType.GREAT_POWER_GAME
+            ? rawTopics
+                .map((t) => sanitizeViralTopicLine(t))
+                .filter((t) => looksLikeViralTopicLine(t))
+                .slice(0, resolvedPlanTopicCount)
+            : rawTopics;
+
+      const fallbackTopics =
+        niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'en'
+          ? rawTopics
+              .map((t) => sanitizeGreatPowerBilingualFallbackLine(t))
+              .filter((t) => looksLikeGreatPowerBilingualTopicLine(t) || looksLikeGreatPowerEnglishFallbackLine(t))
+              .slice(0, resolvedPlanTopicCount)
+          : niche === NicheType.GENERAL_VIRAL || niche === NicheType.GREAT_POWER_GAME
+            ? rawTopics.map((t) => sanitizeViralTopicLine(t)).filter(Boolean).slice(0, resolvedPlanTopicCount)
+            : rawTopics;
+
+      const finalRawTopics =
+        normalizedRawTopics.length >= resolvedPlanTopicCount
+          ? normalizedRawTopics.slice(0, resolvedPlanTopicCount)
+          : Array.from(new Set([...normalizedRawTopics, ...fallbackTopics])).slice(0, resolvedPlanTopicCount);
+
+      const newTopics: Topic[] = finalRawTopics.map((t, i) => ({
         id: `topic-${i}`,
         title:
-          niche === NicheType.MINDFUL_PSYCHOLOGY ? sanitizeMindfulPsychologyTopicLine(t) : t,
+          niche === NicheType.MINDFUL_PSYCHOLOGY
+            ? sanitizeMindfulPsychologyTopicLine(t)
+            : niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'en'
+              ? sanitizeGreatPowerBilingualTopicLine(t)
+              : niche === NicheType.GENERAL_VIRAL || niche === NicheType.GREAT_POWER_GAME
+                ? sanitizeViralTopicLine(t)
+                : t,
         selected: true,
       }));
+      console.log('[Generator] Topic normalization result:', {
+        niche,
+        greatPowerLanguage,
+        requestedCount: resolvedPlanTopicCount,
+        rawTopicsCount: rawTopics.length,
+        normalizedCount: normalizedRawTopics.length,
+        fallbackCount: fallbackTopics.length,
+        finalCount: finalRawTopics.length,
+        preview: finalRawTopics.slice(0, 5),
+      });
       setTopics(newTopics);
 
       // 全赛道选题去重：更新历史记录（保留最近30条）
       const key = niche + (niche === NicheType.TCM_METAPHYSICS ? `:${tcmSubMode}` : niche === NicheType.FINANCE_CRYPTO ? `:${financeSubMode}` : niche === NicheType.STORY_REVENGE ? `:${revengeSubMode}` : niche === NicheType.GENERAL_VIRAL ? `:${newsSubMode}` : '');
       recentTopicHistoryRef.current = {
         ...recentTopicHistoryRef.current,
-        [key]: [...(recentTopicHistoryRef.current[key] ?? []).slice(-30), ...rawTopics]
+        [key]: [...(recentTopicHistoryRef.current[key] ?? []).slice(-30), ...finalRawTopics]
       };
       setStatus(GenerationStatus.IDLE);
     } catch (err: any) {
@@ -2489,6 +2712,112 @@ ${segmentSourceText}
     []
   );
 
+  const handleOneShotLongFormGenerate = useCallback(async (): Promise<boolean> => {
+    const sel = topics.filter((t) => t.selected);
+    if (!sel.length) {
+      toast.warning('请先选择至少一个选题');
+      return false;
+    }
+    if (!apiKey?.trim()) {
+      toast.error('请先配置 API Key');
+      return false;
+    }
+
+    initializeGemini(apiKey, { provider });
+    setStatus(GenerationStatus.GENERATING);
+    setGeneratedContents([{ topic: sel[0].title, content: '' }]);
+    setActiveIndices(new Set([0]));
+    setViewIndex(0);
+    setBatchProgress({ current: 0, total: 100, hint: '正在初始化一次性长文生成…' });
+
+    const topic = sel[0];
+    const config = NICHES[niche];
+    const isGreatPowerZh = niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'zh';
+    const basePrompt = isGreatPowerZh
+      ? NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH
+      : config?.scriptPromptTemplate || '';
+    const prompt = buildOneShotLongScriptPrompt(basePrompt, topic.title, niche);
+    const systemInstruction = isGreatPowerZh
+      ? NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH
+      : config?.systemInstruction || '';
+
+    try {
+      let liveContent = '';
+      let progressValue = 8;
+      setBatchProgress({ current: progressValue, total: 100, hint: '模型已启动，正在生成正文…' });
+
+      await streamContentGeneration(
+        prompt,
+        systemInstruction,
+        (chunk) => {
+          liveContent += chunk;
+          setGeneratedContents([{ topic: topic.title, content: liveContent }]);
+          setYiJingMergedOutput(liveContent);
+          setTcmMergedOutput(liveContent);
+          const visibleChars = liveContent.trim().length;
+          progressValue = Math.min(92, Math.max(progressValue + Math.max(1, Math.floor(chunk.length / 120)), Math.min(92, 10 + Math.floor(visibleChars / 45))));
+          setBatchProgress({
+            current: progressValue,
+            total: 100,
+            hint: `正在生成正文… 当前约 ${visibleChars} 字，内容已实时写入右侧编辑区`,
+          });
+        },
+        undefined,
+        { maxTokens: 32768 }
+      );
+
+      let content = clampOneShotLength(liveContent.trim(), niche);
+      if (niche === NicheType.GREAT_POWER_GAME) {
+        content = greatPowerLanguage === 'zh'
+          ? ensureGreatPowerClosingZh(content.replace(/[A-Za-z]{4,}[\s\S]*$/g, '').trim() || content)
+          : ensureGreatPowerClosing(content);
+      }
+      if (!content) {
+        toast.error('生成失败：返回内容为空');
+        setStatus(GenerationStatus.ERROR);
+        setActiveIndices(new Set());
+        setBatchProgress({ current: 100, total: 100, hint: '生成失败：返回内容为空' });
+        return false;
+      }
+
+      setBatchProgress({ current: 96, total: 100, hint: '正在整理最终文案并执行字数校准…' });
+      setGeneratedContents([{ topic: topic.title, content }]);
+      setYiJingMergedOutput(content);
+      setTcmMergedOutput(content);
+      clearYiJingPipelinePanel();
+      clearTcmPipelinePanel();
+      setYiJingMergedOutput(content);
+      setTcmMergedOutput(content);
+      setParallelTopicRuns([]);
+      setActiveParallelTopicId(null);
+      setParallelTopicOutlineMap({});
+      setParallelTopicSegDraftsMap({});
+      setParallelTopicSegStatusMap({});
+      setStatus(GenerationStatus.COMPLETED);
+      setActiveIndices(new Set());
+      setBatchProgress({ current: 100, total: 100, hint: `已完成，最终约 ${content.length} 字` });
+
+      try {
+        const historyKey = getHistoryKeyForSubMode(niche, getParallelHistorySubModeId());
+        if (content.length > 200) {
+          saveHistory('generator', historyKey, content, { topic: topic.title, input: inputVal });
+        }
+      } catch {
+        /* ignore */
+      }
+
+      setTimeout(() => setBatchProgress(null), 1200);
+      toast.success('已按赛道要求一次性生成完整终稿');
+      return true;
+    } catch (e: any) {
+      toast.error(e?.message || '生成失败');
+      setStatus(GenerationStatus.ERROR);
+      setActiveIndices(new Set());
+      setBatchProgress({ current: 100, total: 100, hint: `生成失败：${e?.message || e}` });
+      return false;
+    }
+  }, [topics, apiKey, provider, niche, toast, inputVal, getParallelHistorySubModeId, greatPowerLanguage]);
+
   const normalizeYiJingBody = useCallback((content: string): string => {
     if (!content || content.length < 400) return content;
     if (!needsParagraphNormalization(content)) return content;
@@ -2555,7 +2884,6 @@ ${segmentSourceText}
       storyLanguage,
       storyDuration,
       NICHES[niche],
-      mindfulLanguage,
       greatPowerLanguage,
       parallelTotalTargetChars
     );
@@ -2657,7 +2985,6 @@ ${segmentSourceText}
       storyLanguage,
       storyDuration,
       config,
-      mindfulLanguage,
       greatPowerLanguage,
       parallelTotalTargetChars
     );
@@ -2787,7 +3114,6 @@ ${segmentSourceText}
         storyLanguage,
         storyDuration,
         NICHES[niche],
-        mindfulLanguage,
         greatPowerLanguage,
         parallelTotalTargetChars
       );
@@ -2941,157 +3267,8 @@ ${segmentSourceText}
       });
       pushYiJingLog(`合并完成，终稿约 ${norm.length} 字` + (savedCta ? '（已保留末尾自然结尾）' : ''));
 
-      // ===== 原创爆款模块：去AI味清洗 + AI味检测 =====
-      pushYiJingLog('[去AI味] 开始内容清洗...');
-      pushYiJingLog(`[去AI味] 输入文本长度: ${(norm || '').replace(/\s+/g, '').length} 字`);
-      pushYiJingLog('[去AI味] 正在调用 AI 模型进行深度去味改写...');
-
-      // 提取宠物名约束：中文走英文 pipeline，内容是英文，用英文名字约束
-      const petConstraint = niche === NicheType.MINDFUL_PSYCHOLOGY && effectiveLang === 'zh'
-        ? (() => {
-          const stats = getPetNameStats(norm);
-          if (stats.length === 0) return undefined;
-          // 找最高频的名字（出现次数相同则选最后出现的）
-          const canonical = stats.reduce((best, s) =>
-            s.count > best.count || (s.count === best.count && s.lastPos > best.lastPos) ? s : best, stats[0]);
-          // 只传规范名，不传 allNames 列表（allNames 包含大量误检测词）
-          return { canonicalName: canonical.name };
-        })()
-        : undefined;
-
-      let antiAiPolished = '';
-      let antiAiSuccess = false;
-      let antiAiPolishingResult: Awaited<ReturnType<typeof polishTextForAntiAi>> | null = null;
-      try {
-        antiAiPolishingResult = await polishTextForAntiAi(
-          norm,
-          {
-            apiKey,
-            onLog: (msg) => pushYiJingLog(`[去AI味] ${msg}`),
-            onChunk: (chunk) => {
-              antiAiPolished = chunk;
-            },
-            outputLanguage,
-            petNameConstraint: petConstraint,
-            nicheType: toNicheTypeForScoring(niche),
-          },
-          apiKey,
-          { provider }
-        );
-        antiAiSuccess = antiAiPolishingResult.success;
-
-        const polishedLen = (antiAiPolished || '').replace(/\s+/g, '').length;
-        if (petConstraint) {
-          pushYiJingLog(`[宠物名约束] 规范名: ${petConstraint.canonicalName}，全文统一使用`);
-        }
-        pushYiJingLog(`[去AI味] AI 返回结果长度: ${polishedLen} 字`);
-
-        if (antiAiPolished.trim() && polishedLen > 0) {
-          // 禁止删除 CTA！保留原文 CTA 完整性
-          let cleanedPolish = antiAiPolished.trim();
-
-          // 检查去 AI 味后文末是否还有 CTA，如果没有则添加保留的 CTA
-          let hasCtaInResult = false;
-          for (const pattern of ctaPatterns) {
-            if (pattern.test(cleanedPolish)) {
-              hasCtaInResult = true;
-              break;
-            }
-          }
-
-          // 如果保留了 CTA 但去 AI 味后丢失了，则添加回来
-          if (savedCta && !hasCtaInResult) {
-            cleanedPolish = cleanedPolish.trim() + '\n\n' + savedCta;
-            pushYiJingLog('[去AI味] 已补充保留的末尾自然结尾');
-          }
-
-          if (!/[。！？.!?]$/.test(cleanedPolish.trim())) {
-            cleanedPolish = cleanedPolish.trim() + '。';
-          }
-
-          const cleanedLen = (cleanedPolish || '').replace(/\s+/g, '').length;
-          pushYiJingLog(`[去AI味] 清理残留后长度: ${cleanedLen} 字`);
-
-        norm = cleanedPolish;
-
-        // 治愈心理学：英文宠物名一致性后处理（所有语言都走英文 pipeline）
-        if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
-          const beforeLen = norm.length;
-          norm = normalizeEnglishPetNames(norm);
-          if (norm.length !== beforeLen || norm !== cleanedPolish) {
-            pushYiJingLog('[宠物名清洗] 英文宠物名统一完成');
-          }
-        }
-
-        // 中文用户走英文 pipeline → 翻译成中文后显示
-        if (effectiveLang === 'zh') {
-          const translated = await translateToDisplayLanguage(norm, 'zh', (m) => pushYiJingLog(m));
-          if (translated && translated !== norm) {
-            norm = translated;
-            pushYiJingLog('[翻译] ✅ 中文翻译完成');
-          }
-          // 翻译后清理残留英文宠物词（my cat / my dog 等）
-          norm = normalizePetNames(norm);
-          norm = cleanResidualEnglishInChinese(norm);
-        }
-
-        // ===== 最终去重兜底（防止 AI 改写后仍产生重复结尾） =====
-        if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
-          norm = removeDuplicateEndings(norm);
-        }
-
-        setYiJingMergedOutput(norm);
-          setGeneratedContents((prev) => {
-            const next = [...prev];
-            const hit = next.findIndex((x) => x.topic === sel[0].title);
-            if (hit >= 0) {
-              next[hit] = { ...next[hit], content: norm };
-            }
-            return next;
-          });
-          pushYiJingLog('[去AI味] ✅ 清洗完成');
-          antiAiSuccess = true;
-        } else {
-          pushYiJingLog('[去AI味] ⚠️ 清洗返回为空，保留合并结果');
-        }
-      } catch (e: any) {
-        pushYiJingLog(`[去AI味] ❌ 清洗失败: ${e?.message || e}`);
-      }
-
-      // 人类感检测
-      pushYiJingLog('[人类感检测] 开始检测内容人类感...');
-      setYiJingIsRunningAiDetection(true);
-      try {
-        const detection = detectAiFeatures(norm, undefined, toNicheTypeForScoring(niche));
-        setYiJingAiDetection(detection);
-        pushYiJingLog(`[人类感检测] 完成 - 人类感 ${detection.score}/10分 (${detection.level === 'weak' ? '优秀' : detection.level === 'medium' ? '一般' : '较弱'})`);
-        if (detection.issues.length > 0) {
-          detection.issues.slice(0, 3).forEach(issue => {
-            pushYiJingLog(`[人类感检测] 问题: ${issue}`);
-          });
-        }
-        if (antiAiSuccess) {
-          const polishingResult = antiAiPolishingResult;
-          if (polishingResult?.isEffective) {
-            pushYiJingLog('[人类感检测] ✅ 清洗效果良好');
-          } else {
-            pushYiJingLog('[人类感检测] ⚠️ 清洗完成但口语特征增加较少');
-          }
-        }
-        if (detection.level === 'strong') {
-          pushYiJingLog('[人类感检测] ⚠️ 人类感较弱（<5分），建议点击"重新去AI味"按钮再次清洗');
-          toast.warning('人类感检测为"较弱"，建议继续清洗', 5000);
-        } else {
-          pushYiJingLog('[人类感检测] ✅ 人类感良好（≥5分），内容可发布');
-        }
-      } catch (e: any) {
-        pushYiJingLog(`[AI检测] 检测失败: ${e?.message || e}`);
-      } finally {
-        setYiJingIsRunningAiDetection(false);
-      }
-      // ===== 去AI味清洗结束 =====
-
-      // ===== 大国博弈英文：字数下限续写保护（单选题流水线） =====
+      // 第二阶段重构：取消生成后去 AI 味清洗与人类感检测，首次生成直接作为终稿
+      toast.success('已合并并写入右侧编辑器');
       if (niche === NicheType.GREAT_POWER_GAME && outputLanguage === 'en') {
         const gpTarget = MIN_GREAT_POWER_EN_CHARS; // 18000
         let gpExpandCount = 0;
@@ -3367,7 +3544,6 @@ ${segmentSourceText}
       storyLanguage,
       storyDuration,
       config,
-      mindfulLanguage,
       greatPowerLanguage,
       parallelTotalTargetChars
     );
@@ -3550,7 +3726,6 @@ ${segmentSourceText}
         storyLanguage,
         storyDuration,
         NICHES[niche],
-        mindfulLanguage,
         greatPowerLanguage,
         parallelTotalTargetChars
       );
@@ -3684,6 +3859,10 @@ ${segmentSourceText}
 
 
   const handleYiJingAutoPilot = useCallback(async (): Promise<boolean> => {
+    if (shouldUseOneShotLongForm(niche, scriptLengthMode)) {
+      return await handleOneShotLongFormGenerate();
+    }
+
     const sel = topics.filter((t) => t.selected);
     if (!sel.length) {
       toast.warning('请先选择至少一个选题');
@@ -3712,7 +3891,6 @@ ${segmentSourceText}
       storyLanguage,
       storyDuration,
       NICHES[niche],
-      mindfulLanguage,
       greatPowerLanguage,
       parallelTotalTargetChars
     );
@@ -4034,6 +4212,15 @@ ${segmentSourceText}
         return;
     }
 
+    if (shouldUseOneShotLongForm(niche, scriptLengthMode)) {
+      if (selectedTopics.length !== 1) {
+        toast.warning('当前长视频赛道已改为一次性生成，请只勾选 1 个选题');
+        return;
+      }
+      await handleOneShotLongFormGenerate();
+      return;
+    }
+
     // ⚠️ 关键：在生成开始时就锁定当前子模式配置，避免生成过程中子模式被切换导致历史记录 key 错误
     const currentSubModeConfig = getCurrentSubModeConfig();
     const currentNiche = niche;
@@ -4125,7 +4312,6 @@ ${segmentSourceText}
             storyLanguage,
             storyDuration,
             NICHES[niche],
-            mindfulLanguage,
             greatPowerLanguage,
             parallelTotalTargetChars
           );
@@ -4677,139 +4863,12 @@ ${segmentSourceText}
             }
           }
 
-          // ===== 自动生成流程：去AI味清洗 + AI味检测 =====
-          pushYiJingLog('[去AI味] 开始深度去味改写（替换+添加）...');
-          pushYiJingLog(`[去AI味] 输入文本长度: ${(finalText || '').replace(/\s+/g, '').length} 字` + (savedCta ? '（已保留末尾自然结尾）' : ''));
-
-          // 计算输出语言
+          // 第二阶段重构：取消自动生成后的去 AI 味清洗与人类感检测，直接以首轮成稿作为终稿
           const isEnRevengeBatch = niche === NicheType.STORY_REVENGE && storyLanguage === StoryLanguage.ENGLISH;
           const isMindfulEnglishBatch = niche === NicheType.MINDFUL_PSYCHOLOGY;
           const isGreatPowerGameBatch = niche === NicheType.GREAT_POWER_GAME;
-          // 大国博弈赛道使用 greatPowerLanguage，其他赛道使用 mindfulLanguage
           const effectiveLangBatch = isGreatPowerGameBatch ? greatPowerLanguage : (mindfulLanguage || 'en');
           const outputLanguageBatch: 'zh' | 'en' = isMindfulEnglishBatch ? (effectiveLangBatch === 'en' ? 'en' : 'zh') : (isEnRevengeBatch ? 'en' : (isGreatPowerGameBatch ? greatPowerLanguage : 'zh'));
-
-          // 提取宠物名约束：中文走英文 pipeline，内容是英文，不需要宠物名约束
-          const petConstraintBatch = isMindfulEnglishBatch && effectiveLangBatch === 'zh'
-            ? (() => {
-              const stats = getPetNameStats(finalText);
-              if (stats.length === 0) return undefined;
-              const canonical = stats.reduce((best, s) =>
-                s.count > best.count || (s.count === best.count && s.lastPos > best.lastPos) ? s : best, stats[0]);
-              return { canonicalName: canonical.name };
-            })()
-            : undefined;
-
-          let antiAiPolished = '';
-          let antiAiSuccess = false;
-          let antiAiPolishingResult: Awaited<ReturnType<typeof polishTextForAntiAi>> | null = null;
-          try {
-            antiAiPolishingResult = await polishTextForAntiAi(
-              finalText,
-              {
-                apiKey,
-                onLog: (msg) => pushYiJingLog(`[去AI味] ${msg}`),
-                onChunk: (chunk) => {
-                  antiAiPolished = chunk;
-                },
-                outputLanguage: outputLanguageBatch,
-                petNameConstraint: petConstraintBatch,
-                nicheType: toNicheTypeForScoring(niche),
-              },
-              apiKey,
-              { provider }
-            );
-            antiAiSuccess = antiAiPolishingResult.success;
-
-            const polishedLen = (antiAiPolished || '').replace(/\s+/g, '').length;
-            if (petConstraintBatch) {
-              pushYiJingLog(`[宠物名约束] 规范名: ${petConstraintBatch.canonicalName}，全文统一使用`);
-            }
-            pushYiJingLog(`[去AI味] AI 返回结果长度: ${polishedLen} 字`);
-
-            if (antiAiPolished.trim() && polishedLen > 0) {
-              // 禁止删除 CTA！保留原文 CTA 完整性
-              let cleanedPolish = antiAiPolished.trim();
-
-              // 检查去 AI 味后文末是否还有 CTA，如果没有则添加保留的 CTA
-              let hasCtaInResult = false;
-              for (const pattern of ctaPatterns) {
-                if (pattern.test(cleanedPolish)) {
-                  hasCtaInResult = true;
-                  break;
-                }
-              }
-              if (savedCta && !hasCtaInResult) {
-                cleanedPolish = cleanedPolish.trim() + '\n\n' + savedCta;
-                pushYiJingLog('[去AI味] 已补充保留的末尾自然结尾');
-              }
-
-              // 根据语言模式添加结尾标点
-              const endsWithPunct = /[。！？.!?]$/.test(cleanedPolish.trim());
-              if (!endsWithPunct) {
-                // 英文模式用英文句号，中文模式用中文句号
-                cleanedPolish = cleanedPolish.trim() + (outputLanguageBatch === 'zh' ? '。' : '.');
-              }
-
-              const cleanedLen = (cleanedPolish || '').replace(/\s+/g, '').length;
-              pushYiJingLog(`[去AI味] 清理残留后长度: ${cleanedLen} 字`);
-
-              finalText = cleanedPolish;
-
-              // 治愈心理学：英文宠物名一致性后处理
-              if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
-                finalText = normalizeEnglishPetNames(finalText);
-                finalText = removeDuplicateEndings(finalText);
-              }
-
-              // 中文走英文 pipeline → 翻译成中文
-              if (effectiveLangBatch === 'zh') {
-                const translated = await translateToDisplayLanguage(finalText, 'zh', (m) => pushYiJingLog(m));
-                if (translated && translated !== finalText) {
-                  finalText = translated;
-                  pushYiJingLog('[翻译] ✅ 中文翻译完成');
-                  // 翻译后清理残留英文宠物词
-                  finalText = normalizePetNames(finalText);
-                  finalText = cleanResidualEnglishInChinese(finalText);
-                }
-              }
-              pushYiJingLog('[去AI味] ✅ 清洗完成');
-              antiAiSuccess = true;
-            } else {
-              pushYiJingLog('[去AI味] ⚠️ 清洗返回为空，保留合并结果');
-            }
-          } catch (e: any) {
-            pushYiJingLog(`[去AI味] ❌ 清洗失败: ${e?.message || e}`);
-          }
-
-          // 人类感检测
-          pushYiJingLog('[人类感检测] 开始检测内容人类感...');
-          setYiJingIsRunningAiDetection(true);
-          try {
-            const detection = detectAiFeatures(finalText, undefined, 'tcm_metaphysics');
-            setYiJingAiDetection(detection);
-            pushYiJingLog(`[人类感检测] 完成 - 人类感 ${detection.score}/10分 (${detection.level === 'weak' ? '优秀' : detection.level === 'medium' ? '一般' : '较弱'})`);
-            if (detection.issues.length > 0) {
-              detection.issues.slice(0, 3).forEach(issue => {
-                pushYiJingLog(`[人类感检测] 问题: ${issue}`);
-              });
-            }
-            if (antiAiSuccess) {
-              if (antiAiPolishingResult?.isEffective) {
-                pushYiJingLog('[人类感检测] ✅ 清洗效果良好');
-              } else {
-                pushYiJingLog('[人类感检测] ⚠️ 清洗完成但口语特征增加较少');
-              }
-            }
-            if (detection.level === 'strong') {
-              pushYiJingLog('[人类感检测] ⚠️ 人类感较弱（<5分），建议点击"重新去AI味"按钮再次清洗');
-            }
-          } catch (e: any) {
-            pushYiJingLog(`[AI检测] 检测失败: ${e?.message || e}`);
-          } finally {
-            setYiJingIsRunningAiDetection(false);
-          }
-          // ===== 去AI味清洗结束 =====
 
           // ===== 大国博弈英文：字数下限续写保护 =====
           // 如果合并+去AI味后字数仍不足18000，触发续写补足
@@ -5690,6 +5749,16 @@ ${segmentSourceText}
         const cleanTopicTitle = topic.title.replace(/^\s*【[^】]*】\s*/, '').trim();
         // Use the selected script prompt
         let prompt = scriptTemplate.replace('{topic}', cleanTopicTitle);
+
+        // 治愈心理学：强制语言注入（覆盖模板默认英文设置）
+        if (niche === NicheType.MINDFUL_PSYCHOLOGY) {
+            const ml = mindfulLanguage || 'en';
+            const isZh = ml === 'zh';
+            const langOverride = isZh
+                ? '【语言强制声明】本次脚本输出语言为简体中文。所有正文、结尾、互动引导均须使用简体中文。禁止输出任何英文句子。'
+                : '【Language Override】This script MUST be written entirely in English. All body text, closing phrases, and CTA must be in English only. No Chinese.';
+            prompt = langOverride + '\n\n' + prompt;
+        }
 
         const macroRef =
           currentNiche === NicheType.GENERAL_VIRAL
@@ -7253,44 +7322,15 @@ ${segmentSourceText}
                   : niche === NicheType.EMOTION_TABOO
                     ? '短视频：400-500字，悬念开场+感官铺垫+心理拉扯+高光瞬间+反思引导。'
                     : niche === NicheType.YI_JING_METAPHYSICS
-                      ? '长视频：默认「大纲→多段并行→合并润色」生成约万字口播，减轻单请求截断；仍沿用曾氏口吻；短视频：≤500字快讲。'
+                      ? '长视频：一次性生成完整终稿，严格控制在 3000 - 6000。短视频：≤500字快讲。'
                       : niche === NicheType.MINDFUL_PSYCHOLOGY
-                        ? mindfulLanguage === 'zh'
-                          ? `长视频：中文全文约 ${MINDFUL_ZH_SCRIPT_CHARS_MIN}–${MINDFUL_ZH_SCRIPT_CHARS_MAX} 字符；分段并行工作台「目标全文字数」与此一致。短视频：≤500 字。`
-                          : `长视频：英文全文约 ${MINDFUL_EN_SCRIPT_CHARS_MIN}–${MINDFUL_EN_SCRIPT_CHARS_MAX} 字符（含空格）；分段并行工作台「目标全文字数」与此一致。短视频：≤500 字。`
-                        : '短视频：在选题基础上详细展开，加入排比与总结排列，输出 500 字以内短视频文案。'}
+                        ? '长视频：一次性生成完整终稿，严格控制在 1500 - 3000。短视频：≤500 字。'
+                        : niche === NicheType.FINANCE_CRYPTO || niche === NicheType.GENERAL_VIRAL || niche === NicheType.GREAT_POWER_GAME
+                          ? '长视频：一次性生成完整终稿，严格控制在 3000 - 6000。短视频：≤500 字。'
+                          : niche === NicheType.TCM_METAPHYSICS
+                            ? '长视频：一次性生成完整终稿，目标约 6000，实际控制成 5600 - 6400。短视频：≤500 字。'
+                            : '短视频：在选题基础上详细展开，加入排比与总结排列，输出 500 字以内短视频文案。'}
             </p>
-          </div>
-        )}
-
-        {/* 治愈心理学多语言输出选项 */}
-        {niche === NicheType.MINDFUL_PSYCHOLOGY && (
-          <div className="mb-6 animate-in fade-in duration-300 bg-gradient-to-r from-purple-900/30 to-indigo-900/30 p-4 rounded-xl border border-purple-500/30">
-            <label className="text-xs font-bold text-purple-400 flex items-center gap-1 mb-3">
-              <Globe size={14} /> 多语言全球化输出
-            </label>
-            <p className="text-[10px] text-slate-500 mb-3">选择输出语言，脚本和选题将根据目标语言和文化习惯调整风格</p>
-            <div className="flex flex-wrap gap-2">
-              {mindfulLanguages.map((lang) => (
-                <button
-                  key={lang.id}
-                  onClick={() => setMindfulLanguage(lang.id)}
-                  className={`px-3 py-1.5 rounded text-xs border transition-all flex items-center gap-1.5 ${
-                    mindfulLanguage === lang.id
-                      ? 'bg-purple-600 text-white border-purple-500'
-                      : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-purple-500 hover:text-purple-300'
-                  }`}
-                >
-                  <span>{lang.name}</span>
-                  <span className="text-[9px] opacity-60">({lang.native})</span>
-                </button>
-              ))}
-            </div>
-            {mindfulLanguage !== 'en' && (
-              <p className="text-[10px] text-purple-300/70 mt-2">
-                当前选择：{mindfulLanguages.find(l => l.id === mindfulLanguage)?.name} 输出，脚本将据此文化习惯调整
-              </p>
-            )}
           </div>
         )}
 
@@ -7455,11 +7495,15 @@ ${segmentSourceText}
                 <div className="flex justify-between items-center mb-3">
                     <span className="text-sm text-slate-400">
                         {niche === NicheType.STORY_REVENGE 
-                            ? `选择要生成的故事 (${storyDuration === StoryDuration.SHORT ? '短篇' : '長篇'}/${storyLanguage})；全文统一走分段并行 → 合并：`
-                            : '选择选题后，可并行处理多个选题；每个选题独立执行「大纲 → 并行各章 → 合并终稿」。'
+                            ? `选择要生成的故事 (${storyDuration === StoryDuration.SHORT ? '短篇' : '長篇'}/${storyLanguage})；全文统一走原有分段逻辑：`
+                            : '选择选题后，当前长视频赛道默认走一次性长文生成；每次选择 1 个选题生成最终成稿。'
                         }
                     </span>
-                    <span className="text-sm text-emerald-400 font-medium">已选 {topics.filter(t => t.selected).length} 个</span>
+                    <span className="text-sm text-emerald-400 font-medium">
+                      {shouldUseOneShotLongForm(niche, scriptLengthMode)
+                        ? `已选 ${topics.filter(t => t.selected).length} 个（长视频请只选 1 个）`
+                        : `已选 ${topics.filter(t => t.selected).length} 个`}
+                    </span>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[350px] overflow-y-auto pr-2 custom-scrollbar mb-6">
                     {topics.map(topic => (
@@ -7480,7 +7524,7 @@ ${segmentSourceText}
                     ))}
                 </div>
 
-                <div className="mb-6 p-4 rounded-xl border border-cyan-500/35 bg-slate-950/70 space-y-4">
+                <div className="mb-6 p-4 rounded-xl border border-cyan-500/35 bg-slate-950/70 space-y-4 hidden">
                     <div className="flex flex-wrap items-center gap-2 justify-between">
                       <h3 className="text-sm font-semibold text-cyan-300 flex items-center gap-2">
                         <ListOrdered size={16} />
@@ -8132,7 +8176,7 @@ ${segmentSourceText}
                             )}
                           </span>
                           <div className="flex items-center gap-2">
-                            {yiJingAiDetection?.level === 'strong' && (
+                            {false && yiJingAiDetection?.level === 'strong' && (
                               <button
                                 type="button"
                                 onClick={() => void handleYiJingReAntiAiPolish()}
@@ -8258,19 +8302,19 @@ ${segmentSourceText}
                 <div className="flex justify-end">
                      <button 
                         onClick={handleBatchGenerate}
-                        disabled={status === GenerationStatus.WRITING || yiJingPipelineBusy || tcmPipelineBusy}
+                        disabled={(status === GenerationStatus.WRITING || status === GenerationStatus.GENERATING) || yiJingPipelineBusy || tcmPipelineBusy || (shouldUseOneShotLongForm(niche, scriptLengthMode) && topics.filter((t) => t.selected).length !== 1)}
                         className="w-full md:w-auto px-8 py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg shadow-emerald-900/20 flex items-center justify-center gap-2 transition-all transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:transform-none"
                     >
-                        {status === GenerationStatus.WRITING || yiJingPipelineBusy ? (
+                        {(status === GenerationStatus.WRITING || status === GenerationStatus.GENERATING) || yiJingPipelineBusy ? (
                             <>
                                 <Loader2 className="animate-spin" />
-                                分段并行生成中…
+                                一次性长文生成中…
                             </>
                         ) : (
                             <>
                                 <>
                                   <Rocket size={18} className="text-amber-200" />
-                                  啟動分段并行撰寫（全自動）
+                                  啟動一次性長文生成
                                 </>
                             </>
                         )}
@@ -8283,7 +8327,7 @@ ${segmentSourceText}
         {/* ============================================================
             TCM 并行 Pipeline（对齐易经赛道架构）
         ============================================================ */}
-        {niche === NicheType.TCM_METAPHYSICS && (
+        {niche === NicheType.TCM_METAPHYSICS && false && (
             <div className="mt-8 p-5 bg-slate-800/50 border border-slate-700 rounded-xl animate-in fade-in duration-400">
                 <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-2">
@@ -8610,7 +8654,7 @@ ${segmentSourceText}
                                     {yiJingIsRunningAiDetection && (
                                         <span className="text-[10px] text-cyan-400 animate-pulse">检测中...</span>
                                     )}
-                                    {yiJingAiDetection?.level === 'strong' && (
+                                    {false && yiJingAiDetection?.level === 'strong' && (
                                         <button
                                             type="button"
                                             onClick={() => void handleYiJingReAntiAiPolish()}
@@ -8744,111 +8788,6 @@ ${segmentSourceText}
         />
       )}
 
-      {/* 人类感打分分析弹窗 */}
-      {showAiScoreModal && yiJingAiDetection && (
-        <div
-          className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4"
-          onClick={(e) => { if (e.target === e.currentTarget) setShowAiScoreModal(false); }}
-        >
-          <div className="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-md max-h-[80vh] overflow-y-auto">
-            {/* 标题栏 */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700">
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-bold text-slate-200">人类感分析</span>
-                <span className={`text-xs font-bold px-2 py-0.5 rounded ${
-                  yiJingAiDetection.level === 'weak' ? 'bg-emerald-500/20 text-emerald-300' :
-                  yiJingAiDetection.level === 'medium' ? 'bg-amber-500/20 text-amber-300' :
-                  'bg-rose-500/20 text-rose-300'
-                }`}>
-                  {yiJingAiDetection.score}/10 分
-                  ({yiJingAiDetection.level === 'weak' ? '优秀' : yiJingAiDetection.level === 'medium' ? '一般' : '较弱'})
-                </span>
-              </div>
-              <button
-                onClick={() => setShowAiScoreModal(false)}
-                className="text-slate-400 hover:text-white text-lg leading-none"
-              >
-                ×
-              </button>
-            </div>
-
-            {/* 总分进度条 */}
-            <div className="px-4 pt-3 pb-1">
-              <div className="flex justify-between text-[10px] text-slate-400 mb-1">
-                <span>0</span><span>10</span>
-              </div>
-              <div className="h-3 bg-slate-800 rounded-full overflow-hidden">
-                <div
-                  className={`h-full rounded-full transition-all ${
-                    yiJingAiDetection.score >= 7.5 ? 'bg-emerald-500' :
-                    yiJingAiDetection.score >= 5 ? 'bg-amber-500' : 'bg-rose-500'
-                  }`}
-                  style={{ width: `${(yiJingAiDetection.score / 10) * 100}%` }}
-                />
-              </div>
-            </div>
-
-            {/* 10维度详情 */}
-            <div className="px-4 py-3 space-y-1.5">
-              <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">维度得分</div>
-              {[
-                { key: 'templateWords', label: 'D1 模板词清洁度', desc: '每千字模板词越多分数越低' },
-                { key: 'colloquialDensity', label: 'D2 口语词密度', desc: '每千字口语词越多分数越高' },
-                { key: 'sentenceVariation', label: 'D3 句式多样性', desc: '句子长短变化越大越自然' },
-                { key: 'paragraphVariation', label: 'D4 段落不均匀度', desc: '段落长度差异越大越真实' },
-                { key: 'firstPersonVoice', label: 'D5 第一人称主体', desc: '"我"字占比越高越有代入感' },
-                { key: 'concreteDetails', label: 'D6 具体细节锚点', desc: '具体时间/地点/名字/动作越多越真实' },
-                { key: 'selfDeprecation', label: 'D7 自嘲/口语打断', desc: '自嘲句和口语打断越多越自然' },
-                { key: 'endingQuality', label: 'D8 结尾质量', desc: '自然结尾高分，硬广CTA低分' },
-                { key: 'storyStructure', label: 'D9 故事结构多样性', desc: '故事开场方式越多越不重复' },
-                { key: 'nameConsistency', label: 'D10 角色名一致性', desc: '全文同一角色名=高分，混乱=低分' },
-              ].map(({ key, label, desc }) => {
-                const value = (yiJingAiDetection.dimensions as any)[key] as number;
-                const isLow = value < 50;
-                return (
-                  <div key={key} className="flex items-center gap-2">
-                    <span className="text-[10px] text-slate-400 w-24 flex-shrink-0">{label}</span>
-                    <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full ${isLow ? 'bg-rose-500' : 'bg-emerald-500'}`}
-                        style={{ width: `${value}%` }}
-                      />
-                    </div>
-                    <span className={`text-[10px] font-bold w-7 text-right flex-shrink-0 ${isLow ? 'text-rose-400' : 'text-emerald-400'}`}>
-                      {value}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* 低分原因 */}
-            {yiJingAiDetection.issues.length > 0 && (
-              <div className="px-4 pb-4">
-                <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">低分原因</div>
-                <div className="space-y-1">
-                  {yiJingAiDetection.issues.map((issue, i) => (
-                    <div key={i} className="text-[10px] text-amber-400/80 flex items-start gap-1.5">
-                      <span className="text-amber-500 flex-shrink-0 mt-0.5">●</span>
-                      <span>{issue}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* 底部关闭按钮 */}
-            <div className="px-4 pb-4 flex justify-center">
-              <button
-                onClick={() => setShowAiScoreModal(false)}
-                className="px-6 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs rounded-md transition-colors"
-              >
-                关闭
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
