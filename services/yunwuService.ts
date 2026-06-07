@@ -750,16 +750,16 @@ export const generateImage = async (
       throw new Error('无法从响应中提取图片URL，请检查响应格式');
     }
 
-    // 封面设计：Gemini Flash 图模，三级备用链：gemini-3.1-flash → gpt-image-2-all → grok-imagine-image-pro
+    // 封面设计：Gemini Flash 图模，三级备用链：gemini-3.1-flash → gpt-image-2 → grok-imagine-image-pro
     if (opts.model === COVER_GEMINI_IMAGE_MODEL) {
       try {
         return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, COVER_GEMINI_PRIMARY, opts);
       } catch (primaryErr: any) {
-        console.warn('[YunwuService] 封面生图 Gemini 主模型失败，切换 gpt-image-2-all:', primaryErr?.message);
+        console.warn('[YunwuService] 封面生图 Gemini 主模型失败，切换 gpt-image-2:', primaryErr?.message);
         try {
-          return await yunwuOpenAiImageOnce(apiKey, baseUrl, 'gpt-image-2-all', opts);
+          return await yunwuOpenAiImageOnce(apiKey, baseUrl, 'gpt-image-2', opts);
         } catch (gptErr: any) {
-          console.warn('[YunwuService] 封面生图 gpt-image-2-all 失败，切换 grok-imagine-image-pro:', gptErr?.message);
+          console.warn('[YunwuService] 封面生图 gpt-image-2 失败，切换 grok-imagine-image-pro:', gptErr?.message);
           return await yunwuGrokImageOnce(apiKey, baseUrl, 'grok-imagine-image-pro', opts);
         }
       }
@@ -768,8 +768,13 @@ export const generateImage = async (
     // banana / banana-2：云雾 Gemini 原生 generateContent，支持 inlineData 参考图（文档示例：图生图 / 多图）
     if (opts.model === 'banana' || opts.model === 'banana-2') {
       const modelName =
-        opts.model === 'banana' ? 'gemini-2.5-flash-image' : 'gemini-3-pro-image-preview';
+        opts.model === 'banana' ? 'gemini-2.5-flash-image' : 'gemini-3.1-flash-image-preview';
       return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, modelName, opts);
+    }
+
+    // gpt-image-2-all：走 OpenAI images/generations（yunwu 中转 gpt-image-2）
+    if (opts.model === 'gpt-image-2-all') {
+      return await yunwuOpenAiImageOnce(apiKey, baseUrl, 'gpt-image-2', opts);
     }
 
     // grok-3-image / grok-4-image / grok-imagine：均走 chat/completions + vision 多段 content（云雾 images/generations 无参考图参数）
@@ -839,9 +844,9 @@ export const generateImage = async (
       throw lastGrokErr || new Error('Grok 生图失败');
     }
 
-    // gpt-image-2-all：走 images/generations 端点，主模型失败则切换备用
+    // gpt-image-2-all：走 images/generations 端点，主模型失败则切换 dall-e-3
     if (opts.model === 'gpt-image-2-all') {
-      const gptImagePrimary = 'gpt-image-2-all';
+      const gptImagePrimary = 'gpt-image-2';
       const gptImageFallback = 'dall-e-3';
       try {
         return await yunwuOpenAiImageOnce(apiKey, baseUrl, gptImagePrimary, opts);
@@ -870,6 +875,8 @@ async function yunwuOpenAiImageOnce(
   if (options.quality) body.quality = options.quality;
   if (options.n) body.n = options.n;
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120_000);
   const response = await fetch(`${baseUrl}${endpoint}`, {
     method: 'POST',
     headers: {
@@ -877,7 +884,9 @@ async function yunwuOpenAiImageOnce(
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
+    signal: controller.signal,
   });
+  clearTimeout(timeout);
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));

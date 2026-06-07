@@ -459,9 +459,10 @@ function taskPreviewImageUrl(task: OneClickQueueTask): string | undefined {
 const IMAGE_MODELS = [
   { id: 'sora-image', name: 'Sora Image', endpoint: '/v1/chat/completions', supportsImageToImage: false },
   { id: 'banana', name: 'Banana (Gemini 2.5 Flash)', endpoint: '/v1/images/generations', apiModelName: 'gemini-2.5-flash-image', supportsImageToImage: false },
-  { id: 'banana-2', name: 'Banana 2 (Gemini 3 Pro)', endpoint: '/v1/images/generations', apiModelName: 'gemini-3-pro-image-preview', supportsImageToImage: false },
+  { id: 'banana-2', name: 'Banana 2 (Gemini 3 Pro)', endpoint: '/v1/images/generations', apiModelName: 'gemini-3.1-flash-image-preview', supportsImageToImage: false },
   { id: 'grok-3-image', name: 'Grok 3 Image', endpoint: '/v1/chat/completions', supportsImageToImage: false },
   { id: 'grok-4-image', name: 'Grok 4 Image', endpoint: '/v1/chat/completions', supportsImageToImage: false },
+  { id: 'gpt-image-2-all', name: 'GPT Image 2 (gpt-image-2)', endpoint: '/v1/images/generations', apiModelName: 'gpt-image-2', supportsImageToImage: false },
   { id: 'jimeng-5.0', name: '即梦 5.0 (Jimeng)', endpoint: 'jimeng', isJimeng: true, supportsImageToImage: true, jimengModel: 'jimeng-5.0' },
   { id: 'jimeng-4.0', name: '即梦 4.0 (Jimeng)', endpoint: 'jimeng', isJimeng: true, supportsImageToImage: true, jimengModel: 'jimeng-4.0' },
 ];
@@ -483,16 +484,16 @@ const VIDEO_MODELS = [
 // 注意：DALL-E 3 只支持 1024x1024, 1024x1792, 1792x1024
 // Sora Image 只支持三种比例：1:1, 2:3, 3:2
 const IMAGE_RATIOS = [
-  { id: '1:1', name: '1:1 (正方形)', width: 1024, height: 1024, dallE3Supported: true, soraImageSupported: true },
-  { id: '2:3', name: '2:3 (竖屏)', width: 1024, height: 1536, dallE3Supported: false, soraImageSupported: true },
-  { id: '3:2', name: '3:2 (横屏)', width: 1536, height: 1024, dallE3Supported: false, soraImageSupported: true },
-  { id: '16:9', name: '16:9 (横屏)', width: 1920, height: 1080, dallE3Supported: false, soraImageSupported: false },
-  { id: '9:16', name: '9:16 (竖屏)', width: 1080, height: 1920, dallE3Supported: false, soraImageSupported: false },
-  { id: '4:3', name: '4:3 (标准)', width: 1024, height: 768, dallE3Supported: false, soraImageSupported: false },
-  { id: '3:4', name: '3:4 (竖屏)', width: 768, height: 1024, dallE3Supported: false, soraImageSupported: false },
+  { id: '1:1', name: '1:1 (正方形)', width: 1024, height: 1024, dallE3Supported: true, soraImageSupported: true, gptImage2Supported: true },
+  { id: '2:3', name: '2:3 (竖屏)', width: 1024, height: 1536, dallE3Supported: false, soraImageSupported: true, gptImage2Supported: true },
+  { id: '3:2', name: '3:2 (横屏)', width: 1536, height: 1024, dallE3Supported: false, soraImageSupported: true, gptImage2Supported: true },
+  { id: '16:9', name: '16:9 (横屏)', width: 1920, height: 1080, dallE3Supported: false, soraImageSupported: false, gptImage2Supported: false },
+  { id: '9:16', name: '9:16 (竖屏)', width: 1080, height: 1920, dallE3Supported: false, soraImageSupported: false, gptImage2Supported: false },
+  { id: '4:3', name: '4:3 (标准)', width: 1024, height: 768, dallE3Supported: false, soraImageSupported: false, gptImage2Supported: false },
+  { id: '3:4', name: '3:4 (竖屏)', width: 768, height: 1024, dallE3Supported: false, soraImageSupported: false, gptImage2Supported: false },
   // DALL-E 3 专用比例
-  { id: 'dall-e-3-portrait', name: 'DALL-E 3 竖屏 (1024x1792)', width: 1024, height: 1792, dallE3Supported: true, soraImageSupported: false },
-  { id: 'dall-e-3-landscape', name: 'DALL-E 3 横屏 (1792x1024)', width: 1792, height: 1024, dallE3Supported: true, soraImageSupported: false },
+  { id: 'dall-e-3-portrait', name: 'DALL-E 3 竖屏 (1024x1792)', width: 1024, height: 1792, dallE3Supported: true, soraImageSupported: false, gptImage2Supported: false },
+  { id: 'dall-e-3-landscape', name: 'DALL-E 3 横屏 (1792x1024)', width: 1792, height: 1024, dallE3Supported: true, soraImageSupported: false, gptImage2Supported: false },
 ];
 
 // 风格设置：与封面设计「画面风格」共用 COVER_STYLE_PRESETS（英文 prompt 追加到生图提示词）
@@ -2661,7 +2662,19 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const getImageSize = (model: string, ratioId: string): string => {
     const selectedRatio = IMAGE_RATIOS.find(r => r.id === ratioId);
     if (!selectedRatio) return '1024x1024';
-    
+
+    // gpt-image-2 支持固定尺寸，根据比例映射
+    if (model === 'gpt-image-2-all') {
+      if (selectedRatio.gptImage2Supported) {
+        return `${selectedRatio.width}x${selectedRatio.height}`;
+      } else {
+        const aspectRatio = selectedRatio.width / selectedRatio.height;
+        if (aspectRatio > 1) return '1536x1024';   // 横屏 → 3:2
+        if (aspectRatio < 1) return '1024x1536';   // 竖屏 → 2:3
+        return '1024x1024';                          // 正方形
+      }
+    }
+
     // DALL-E 3 只支持特定尺寸
     if (model === 'dall-e-3') {
       if (selectedRatio.dallE3Supported) {
@@ -2681,13 +2694,13 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         }
       }
     }
-    
+
     // Sora Image 支持任意比例，使用原始尺寸（比例会在提示词中添加）
     if (model === 'sora-image') {
       // 返回比例格式，用于在提示词中添加【比例】
       return `${selectedRatio.width}x${selectedRatio.height}`;
     }
-    
+
     // 其他模型使用原始尺寸
     return `${selectedRatio.width}x${selectedRatio.height}`;
   };
@@ -2962,6 +2975,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         }
       } else {
         // 其他模型：如果生成多张，需要多次调用（因为某些模型可能不支持 n 参数或支持有限）
+        const isGptImage2 = selectedImageModel === 'gpt-image-2-all';
         if (generateImageCount > 1) {
           // 多次调用生成多张图片
           for (let i = 0; i < generateImageCount; i++) {
@@ -2969,12 +2983,20 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               model: selectedImageModel,
               prompt: finalPrompt,
               size: imageSize,
-              quality: 'standard',
+              quality: isGptImage2 ? 'medium' : 'standard',
               n: 1, // 每次只生成1张，通过多次调用来生成多张
               ...charRefYunwu,
             };
-            
-            const result = await generateImage(apiKey, options);
+
+            let result = await generateImage(apiKey, options);
+            if (!result.success && isGptImage2) {
+              for (let retry = 1; retry < 3; retry++) {
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                appendTerminalLog('ImageGen', `镜头${shot.number}: gpt-image-2 重试 ${retry + 1}/3 ...`);
+                result = await generateImage(apiKey, options);
+                if (result.success) break;
+              }
+            }
             
             if (result.success) {
               // 处理单张图片的情况
@@ -3004,13 +3026,21 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             model: selectedImageModel,
             prompt: finalPrompt,
             size: imageSize,
-            quality: 'standard',
+            quality: isGptImage2 ? 'medium' : 'standard',
             n: 1,
             ...charRefYunwu,
           };
-          
-          const result = await generateImage(apiKey, options);
-          
+
+          let result = await generateImage(apiKey, options);
+          if (!result.success && isGptImage2) {
+            for (let retry = 1; retry < 3; retry++) {
+              await new Promise(resolve => setTimeout(resolve, 3000));
+              appendTerminalLog('ImageGen', `镜头${shot.number}: gpt-image-2 重试 ${retry + 1}/3 ...`);
+              result = await generateImage(apiKey, options);
+              if (result.success) break;
+            }
+          }
+
           if (result.success) {
             // 处理单张图片的情况
             if (result.url) {

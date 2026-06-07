@@ -141,6 +141,10 @@ export const PARALLEL_LOGIC_GENERIC =
 export const PARALLEL_LOGIC_YI_JING =
   '逻辑线清晰：痛点破局 → 易经天道/阴阳 → 故事与案例 → 落地心法 → 收束金句（可根据章数合并或拆分，但须层层递进）。';
 
+/** 睡前历史人物专用逻辑线 */
+export const PARALLEL_LOGIC_HISTORICAL =
+  '逻辑线：开头钩子（冲突/悬念/反常识）→ 人物生平关键节点铺陈 → 高潮命运转折 → 历史感慨与当下启示 → 固定收尾「我们下期见。」（叙事感强、情绪饱满、适合睡前聆听）。';
+
 export type ParallelOutlinePromptOpts = {
   /** 如「易经命理·长视频口播」 */
   channelLabel: string;
@@ -303,6 +307,87 @@ ${langLine}
 ${opts.voiceRules}
 3. 本段是全文的一段中间稿，**不要写「谢谢大家」「感谢收看」等全场收场语**，除非当前为最后一章且字数已接近本章上限。
 4. 只输出正文，不要标题行。`;
+}
+
+/**
+ * 睡前历史人物赛道专用 segment system instruction。
+ */
+export function buildHistoricalSegmentSystem(): string {
+  return `你是睡前听本书播客的历史人物故事制作人，负责生成中文 TTS 口播脚本。
+【核心原则】
+- 输出的每一章正文都是「睡前故事叙事」：画面感强、情绪递进、有悬疑感或感慨感
+- 全程使用简体中文，中文标点
+- 只输出正文，不要章节标题、不要 stage directions、不要 Markdown
+- 固定开头格式：每天一个睡前故事。今天咱们讲【人物名】。
+- 固定结尾格式（仅最后一章）：我们下期见。
+- 中间章不要任何「观众互动」「感谢观看」类旁观话语
+- 字数要求：内容完整性优先，不要因字数限制删减任何故事细节`;
+}
+
+/**
+ * 睡前历史人物赛道专用分段落 user prompt 构造器。
+ * 专门处理：固定开头钩子 + 叙事感强的正文 + 固定结尾。
+ */
+export function buildHistoricalSegmentUserPrompt(
+  params: {
+    topic: string;
+    coreTheme: string;
+    logicLine: string;
+    chapter: YiJingChapterPlan;
+    chapterIndex: number;
+    totalChapters: number;
+  }
+): string {
+  const { topic, coreTheme, logicLine, chapter, chapterIndex, totalChapters } = params;
+  const isFirst = chapterIndex === 0;
+  const isLast = chapterIndex === totalChapters - 1;
+
+  // 从选题中提取人物名（用于固定开头）
+  // topic 格式：「【[朝代・]人物名】一句话描述」，如【清・慈禧太后】...
+  // 只取「・」后面的人名，不要朝代前缀
+  const personMatch = topic.match(/[【]?[^・\n]*・([^】]+)[】]?/);
+  const personName = personMatch ? personMatch[1].trim() : topic;
+
+  // 开头钩子：根据人物和主题生成一个让人想继续听的开场
+  const openingHook: Record<number, string> = {
+    0: `开篇必须直接切入最震撼、最反常识的一个瞬间。` +
+      `不要铺垫「很久以前」「今天讲一个故事」这类废话。` +
+      `用一句话制造悬疑或冲突，让听众立刻被抓住想继续听。`,
+    1: `开头：自然承接上一章，用1-2句话带出本章场景或转折点，不要重复上一章的结尾句。`,
+  };
+
+  const firstChapterOpening = isFirst
+    ? `【开头格式（强制）】\n每天一个睡前故事。今天咱们讲${personName}。\n` +
+      `接下来立即切入本故事的【核心冲突或命运转折点】，不要有任何背景铺垫。\n` +
+      `让听众一开头就觉得「哇，这个我一定要听完」。`
+    : `【衔接上章（强制）】\n用1-2句话承接上一章结尾（「${chapter.opening_echo}」），然后自然过渡到本章核心。`;
+
+  const closingInstruction = isLast
+    ? `【结尾格式（强制，仅最后一章）】\n` +
+      `本章结尾必须使用固定收尾语：**我们下期见。**\n` +
+      `不得在「我们下期见」之前加任何「感谢观看」「点赞」「关注」「下期预告」等旁观话术。\n` +
+      `先有一句感慨或开放式叙述，再接「我们下期见。」然后立即停止。`
+    : `【本章结尾】\n自然收束，用1-2句带出故事悬念或情感余韵（呼应「${chapter.bridge_to_next}」），为下一章做铺垫。`;
+
+  return `【总选题】${topic}
+【全文主题】${coreTheme}
+【逻辑主线】${logicLine}
+
+【本章（第 ${chapterIndex + 1}/${totalChapters} 章）】${chapter.title}
+【本章字数】${chapter.min_chars}–${chapter.max_chars} 字（内容完整性优先，不要因字数删减故事细节）
+
+${firstChapterOpening}
+
+【本章核心素材】${chapter.core_brief}
+
+${closingInstruction}
+
+【写作规范】
+1. 只输出正文，不要章节标题行、不要 Markdown、不要 stage directions
+2. 全程简体中文，中文标点（，。！？）
+3. 字数在 ${chapter.min_chars}–${chapter.max_chars} 范围内；如有偏差可接受，内容完整性优先
+4. 不要写任何旁观式互动话术（「感谢观看」「下期见」「点赞」等）
+5. 叙事有画面感、有情绪递进，像睡前故事一样引人入胜`;
 }
 
 /**

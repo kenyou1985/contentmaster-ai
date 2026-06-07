@@ -20,6 +20,8 @@ import platform
 import tempfile
 import re
 import random
+import struct
+import typing
 from pathlib import Path
 from datetime import datetime
 from urllib.parse import urlparse
@@ -647,8 +649,68 @@ def _process_audio_for_export(audio_path: str) -> bool:
         return False
 
 
+def _mp4_box_duration(path: str) -> typing.Optional[int]:
+    """直接解析 MP4 文件的 moov>trak>mdia>mdhd box，返回时长微秒数。"""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        moov_idx = data.find(b"moov")
+        if moov_idx < 0:
+            return None
+        moov_size = struct.unpack(">I", data[moov_idx - 4 : moov_idx])[0]
+        moov_data = data[moov_idx + 4 : moov_idx + moov_size]
+        i = 0
+        while i <= len(moov_data) - 8:
+            s = struct.unpack(">I", moov_data[i : i + 4])[0]
+            t = moov_data[i + 4 : i + 8].decode("ascii", errors="?")
+            if s == 0 or s < 8:
+                i += 1
+                continue
+            if t == "trak":
+                trak_data = moov_data[i + 8 : i + s]
+                j = 0
+                while j <= len(trak_data) - 8:
+                    s2 = struct.unpack(">I", trak_data[j : j + 4])[0]
+                    t2 = trak_data[j + 4 : j + 8].decode("ascii", errors="?")
+                    if s2 == 0 or s2 < 8:
+                        j += 1
+                        continue
+                    if t2 == "mdia":
+                        mdia_data = trak_data[j + 8 : j + s2]
+                        k = 0
+                        while k <= len(mdia_data) - 8:
+                            s3 = struct.unpack(">I", mdia_data[k : k + 4])[0]
+                            t3 = mdia_data[k + 4 : k + 8].decode("ascii", errors="?")
+                            if s3 == 0 or s3 < 8:
+                                k += 1
+                                continue
+                            if t3 == "mdhd":
+                                p = k + 8
+                                v = mdia_data[p]
+                                if v == 0:
+                                    ts = struct.unpack(">I", mdia_data[p + 12 : p + 16])[0]
+                                    dur = struct.unpack(">I", mdia_data[p + 16 : p + 20])[0]
+                                else:
+                                    ts = struct.unpack(">I", mdia_data[p + 20 : p + 24])[0]
+                                    dur = struct.unpack(">Q", mdia_data[p + 24 : p + 32])[0]
+                                if ts > 0:
+                                    return int(dur / ts * 1_000_000)
+                            k += s3
+                    j += s2
+            i += s
+        return None
+    except Exception:
+        return None
+
+
 def _ffprobe_video_meta(path: str):
-    """返回 (duration_us, width, height)，失败则为 (None, 0, 0)。"""
+    """返回 (duration_us, width, height)，失败则为 (None, 0, 0)。
+
+    优先级：
+    1. stream.duration（部分 AI 生成视频用此字段）
+    2. format.duration（标准字段）
+    3. nb_read_frames / avg_frame_rate（metadata 损坏时的兜底）
+    """
     try:
         r = subprocess.run(
             [
@@ -658,7 +720,7 @@ def _ffprobe_video_meta(path: str):
                 "-select_streams",
                 "v:0",
                 "-show_entries",
-                "stream=width,height",
+                "stream=width,height,duration,nb_read_frames,avg_frame_rate",
                 "-show_entries",
                 "format=duration",
                 "-of",
@@ -676,7 +738,38 @@ def _ffprobe_video_meta(path: str):
         fmt = data.get("format") or {}
         w = int(st.get("width") or 0)
         h = int(st.get("height") or 0)
-        d = float(fmt.get("duration") or 0)
+
+        # 1) stream.duration（部分 AI 视频依赖此字段）
+        d = float(st.get("duration") or 0)
+
+        # 2) format.duration 兜底
+        if d <= 0:
+            d = float(fmt.get("duration") or 0)
+
+        # 3) nb_read_frames / avg_frame_rate（metadata 不完整时的兜底，如 LTX/Sora 生成视频）
+        if d <= 0:
+            nb_frames_str = st.get("nb_read_frames")
+            fps_str = st.get("avg_frame_rate")
+            if nb_frames_str and fps_str:
+                try:
+                    nb_frames = float(nb_frames_str)
+                    fps_parts = fps_str.split("/")
+                    fps = float(fps_parts[0]) / float(fps_parts[1]) if "/" in fps_str else float(fps_str)
+                    if nb_frames > 0 and fps > 0:
+                        d = nb_frames / fps
+                        print(f"[ffprobe] duration via nb_read_frames: {d:.2f}s (frames={nb_frames}, fps={fps})", file=sys.stderr)
+                except (ValueError, ZeroDivisionError):
+                    pass
+
+        # 保存 ffprobe 最终计算结果，用于日志对比
+        ffprobe_d = d
+
+        # 4) 直接解析 MP4 box（AI 视频如 LTX 的 format.duration 常损坏，用此值覆盖 ffprobe 结果）
+        mp4_dur_us = _mp4_box_duration(path)
+        if mp4_dur_us and mp4_dur_us > 0:
+            d = mp4_dur_us / 1_000_000
+            print(f"[ffprobe] duration via MP4 box parse: {d:.3f}s (overrides ffprobe={ffprobe_d:.3f}s)", file=sys.stderr)
+
         du = max(33_333, int(d * 1_000_000)) if d > 0 else None
         return du, w, h
     except Exception:
@@ -1182,13 +1275,14 @@ def _build_lv59_main_script(
             vol: float,
             intro_clip_us=None,
             common_keyframes: list = None,
+            speed: float = 1.0,
         ) -> None:
             sp_id = _make_id()
             cv_id = _make_id()
             ma_id = _make_id()
             scm_id = _make_id()
             vs_id = _make_id()
-            mats["speeds"].append({"curve_speed": None, "id": sp_id, "mode": 0, "speed": 1.0, "type": "speed"})
+            mats["speeds"].append({"curve_speed": None, "id": sp_id, "mode": 0, "speed": speed, "type": "speed"})
             mats["canvases"].append(
                 {
                     "album_image": "",
@@ -1256,7 +1350,7 @@ def _build_lv59_main_script(
                     },
                     "reverse": False,
                     "source_timerange": {"start": 0, "duration": src_dur},
-                    "speed": 1.0,
+                    "speed": speed,
                     "target_timerange": {"start": t_start, "duration": tgt_dur},
                     "template_id": "",
                     "template_scene": "default",
@@ -1284,34 +1378,51 @@ def _build_lv59_main_script(
             shot_last_seg_idx.append(len(video_segments) - 1)
             shot_last_seg_dur.append(int(dur_us))
         else:
-            # 视频短于配音/镜头槽位时：多段首尾相接循环铺滿整条 duration_us，每段 source==target、speed=1，无慢放也无黑屏
-            mat_d = max(33_333, int(mat_duration) if mat_duration else int(dur_us))
+            # ── 视频对齐逻辑（按音频时长对齐）────────────────────────────────
+            # mat_d = 视频素材总时长（微秒），由 ffprobe 探测。
+            # slot_d = 当前镜头在时间线上占用的时长（微秒），由音频决定。
+            #
+            # 原则：视频对齐音频，不循环拼接。视频超长则裁剪，不足则调速拉长。
+            #   1. mat_d >= slot_d：取前面 slot_d 秒（trim）
+            #   2. mat_d <  slot_d：调 speed 拉长（speed = mat_d / slot_d）
+            #
+            mat_d = int(mat_duration) if mat_duration else int(dur_us)
+            mat_d = max(33_333, mat_d)
             slot_d = max(33_333, int(dur_us))
-            pos = int(start_us)
-            remain = slot_d
-            chunk_i = 0
             vol = 0.0 if has_tts else 1.0
-            while remain > 33_333:
-                chunk = min(remain, mat_d)
-                intro_us = chunk if chunk_i == 0 else None
-                # Ken Burns 效果：仅在第一段（镜头开始）且启用了特效时添加
-                kb_kfs = _build_ken_burns_zoom(chunk) if chunk_i == 0 and (random_transitions or random_filters) else None
+
+            if mat_d >= slot_d:
+                # 情况 1：视频足够长，只取前面 slot_d 秒，无循环
+                kb_kfs = _build_ken_burns_zoom(slot_d) if random_transitions or random_filters else None
                 _append_one_video_segment(
-                    t_start=pos,
-                    src_dur=chunk,
-                    tgt_dur=chunk,
+                    t_start=int(start_us),
+                    src_dur=slot_d,
+                    tgt_dur=slot_d,
                     vol=vol,
-                    intro_clip_us=intro_us,
+                    intro_clip_us=slot_d,
                     common_keyframes=kb_kfs,
+                    speed=1.0,
                 )
-                pos += chunk
-                remain -= chunk
-                chunk_i += 1
-            # 记录本镜「最后一个 segment」：用于镜头边界转场
-            shot_last_seg_idx.append(len(video_segments) - 1)
-            # 最后一小段时长 = chunk（小）或 remain 刚好归零说明整除
-            last_seg_d = chunk if remain <= 33_333 and chunk_i > 0 else mat_d
-            shot_last_seg_dur.append(int(last_seg_d))
+                shot_last_seg_idx.append(len(video_segments) - 1)
+                shot_last_seg_dur.append(slot_d)
+            else:
+                # 情况 2：视频不够，调速拉长（不循环）
+                # speed > 1.0 表示加速（视频实际播放变快，时长缩短）
+                # 我们要拉长视频，所以 speed < 1.0
+                spd = mat_d / slot_d
+                spd = max(0.1, min(spd, 1.0))   # 限制 speed 范围 [0.1, 1.0]
+                kb_kfs = _build_ken_burns_zoom(slot_d) if random_transitions or random_filters else None
+                _append_one_video_segment(
+                    t_start=int(start_us),
+                    src_dur=mat_d,
+                    tgt_dur=slot_d,
+                    vol=vol,
+                    intro_clip_us=slot_d,
+                    common_keyframes=kb_kfs,
+                    speed=spd,
+                )
+                shot_last_seg_idx.append(len(video_segments) - 1)
+                shot_last_seg_dur.append(slot_d)
 
         apath = row.get("audio_abs")
         if apath and os.path.isfile(apath):
@@ -1948,6 +2059,8 @@ def create_draft_on_mac(
         if use_video and local_video_path:
             vabs = _safe_abs_for_jianying(local_video_path)
             vd, vw, vh = _ffprobe_video_meta(vabs)
+            # ffprobe 失败时 fallback 到前端传入的 shot.duration（而非音频时长）
+            mat_dur = vd if vd else base_dur
             if vd:
                 duration_us = vd
             row["media_kind"] = "video"
@@ -1955,7 +2068,9 @@ def create_draft_on_mac(
             row["video_client_path"] = _material_path_for_client(vabs)
             row["video_w"] = vw or width
             row["video_h"] = vh or height
-            row["video_material_duration_us"] = vd or duration_us
+            # 视频素材时长：强制使用 ffprobe 探测值（最终 fallback 到 shot.duration）
+            # 绝对不能 fallback 到 duration_us（那是镜头槽位时长，会被音频覆盖）
+            row["video_material_duration_us"] = mat_dur
             row["duration_us"] = duration_us
         else:
             image_url = shot.get("imageUrl") or (shot.get("imageUrls", [None])[0] if shot.get("imageUrls") else None)

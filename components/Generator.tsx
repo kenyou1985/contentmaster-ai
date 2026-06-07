@@ -636,6 +636,8 @@ import {
   buildBoYiParallelOutlineSystem,
   buildParallelSegmentUserPrompt,
   buildBoYiParallelSegmentUserPrompt,
+  buildHistoricalSegmentSystem,
+  buildHistoricalSegmentUserPrompt,
   buildParallelMergeUserPrompt,
   buildBoYiParallelMergeUserPrompt,
   buildParallelMergeSystem,
@@ -648,6 +650,7 @@ import {
   YI_JING_BAND2_MAX,
   PARALLEL_LOGIC_GENERIC,
   PARALLEL_LOGIC_YI_JING,
+  PARALLEL_LOGIC_HISTORICAL,
   type YiJingOutlinePayload,
   type YiJingChapterPlan,
 } from '../services/yiJingParallelLongForm';
@@ -1077,10 +1080,10 @@ function getParallelPipelineBundle(
     channelLabel = '睡前历史人物长故事口播';
     contentKindOutline = scriptLengthMode === 'SHORT' ? '短视频口播大纲（中文）' : '长视频口播大纲（中文）';
     contentKindMerge = '口播脚本（中文）';
-    directorLine = '你是睡前听本书播客的历史人物故事制作人，负责生成中文 TTS 口播脚本。';
+    directorLine = '你是睡前听本书播客的历史人物故事制作人，负责为睡前历史人物故事生成章节大纲。';
     mergeEditorLine = '你是资深编辑，合并中文口播脚本，保持叙事感强、情绪饱满、适合睡前聆听的叙事风格。';
     mergeTone = '全文保持叙事感强、情绪饱满、适合睡前聆听的叙事风格。禁止使用大国博弈式结尾（「博弈还在继续」等）。结尾应是固定收尾：「我们下期见。」';
-    logicBlueprint = '叙事节奏：开场悬念引入 → 人物生平故事展开 → 高潮命运转折 → 人生感慨收束。睡前故事需有画面感、有情绪递进，结尾用一句感慨或开放式叙事留白，让听众带着思考入睡。';
+    logicBlueprint = PARALLEL_LOGIC_HISTORICAL;
   }
 
   const historicalMergeSystem = niche === NicheType.HISTORICAL_FIGURE
@@ -1090,6 +1093,19 @@ function getParallelPipelineBundle(
       '全文保持叙事感强、情绪饱满、适合睡前聆听的叙事风格。' +
       '结尾固定输出：「我们下期见。」——不得多写任何其他引导词。' +
       '只输出合并后的完整终稿正文，不得加任何前言或说明。'
+    : null;
+
+  const historicalOutlineSystem = niche === NicheType.HISTORICAL_FIGURE
+    ? buildParallelOutlineSystem(
+        '你是睡前听本书播客的历史人物故事制作人，负责为睡前历史人物故事生成章节大纲。' +
+        '每个章节都需要有画面感、有叙事张力。' +
+        '大纲章节标题必须是纯自然短句，不含数字编号。' +
+        '只输出合法 JSON，禁止其它文字。'
+      )
+    : null;
+
+  const historicalSegmentSystem = niche === NicheType.HISTORICAL_FIGURE
+    ? buildHistoricalSegmentSystem()
     : null;
 
   // ── 新闻热点 GENERAL_VIRAL 赛道：长视频强制字数目标 ──
@@ -1190,13 +1206,14 @@ function getParallelPipelineBundle(
       logicBlueprint,
       englishCharOutline: false,
     },
-    outlineSystem: buildParallelOutlineSystem(directorLine),
+    outlineSystem: historicalOutlineSystem || buildParallelOutlineSystem(directorLine),
     segment: {
       outputLanguage: 'zh' as const,
       voiceRules,
       englishChapterCharStrict: false,
       closingStyle: ((niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.TCM_METAPHYSICS) ? 'yijin' : 'historical') as 'yijin' | 'historical',
     },
+    segmentSystem: historicalSegmentSystem || undefined,
     merge: {
       channelTag: baseName,
       toneInstruction: mergeTone,
@@ -4393,12 +4410,13 @@ ${segmentSourceText}
 
           // 2) 分段并行
           const config = NICHES[niche];
-          // 大国博弈走独立分支 bundle.segmentSystem；其他赛道用 NICHES.systemInstruction
+          // 大国博弈和睡前历史人物走独立 bundle.segmentSystem；其他赛道用 NICHES.systemInstruction
           const sys =
-            niche === NicheType.GREAT_POWER_GAME && (bundle as any).segmentSystem
+            ((niche === NicheType.GREAT_POWER_GAME || niche === NicheType.HISTORICAL_FIGURE) && (bundle as any).segmentSystem)
               ? (bundle as any).segmentSystem
               : config.systemInstruction;
           const isTcmSegment = niche === NicheType.TCM_METAPHYSICS;
+          const isHistoricalSegment = niche === NicheType.HISTORICAL_FIGURE;
           const tcmLessonInstructions = isTcmSegment && tcmSubMode === TcmSubModeId.TIME_TABOO ? [
             '',
             '第一节课：紧急通报与警示——点出节气/日子的危险性，痛骂致命错误，制造生存危机；语气自然延续引子。',
@@ -4427,6 +4445,15 @@ ${segmentSourceText}
                     },
                     bundle.segment
                   )
+                : isHistoricalSegment
+                ? buildHistoricalSegmentUserPrompt({
+                    topic: topicTitle,
+                    coreTheme: parsed.core_theme,
+                    logicLine: parsed.logic_line,
+                    chapter: ch,
+                    chapterIndex: chIdx,
+                    totalChapters: parsed.chapters.length,
+                  })
                 : buildBoYiParallelSegmentUserPrompt(
                     {
                       topic: topicTitle,
