@@ -35,36 +35,6 @@ export const COVER_STYLE_PRESETS: CoverStylePreset[] = [
       'Modern Chinese guochao / classical mood: hanfu or traditional motifs, red walls and tiles, ink accents, elegant poster layout.',
   },
   {
-    id: 'ink_wash',
-    label: '水墨风（Ink Wash）',
-    promptEn:
-      'Chinese ink wash painting: black-gray ink on rice-paper texture, wet brush strokes, generous negative space, expressive xieyi mood.',
-  },
-  {
-    id: 'oil',
-    label: '油画（Oil Painting）',
-    promptEn:
-      'Classical oil painting: thick impasto brushwork, rich saturated pigments, fine-art canvas texture, dramatic chiaroscuro.',
-  },
-  {
-    id: 'watercolor',
-    label: '水彩（Watercolor）',
-    promptEn:
-      'Soft watercolor illustration: transparent washes, gentle bleeding edges, dreamy pastel atmosphere, light paper grain.',
-  },
-  {
-    id: 'cyberpunk',
-    label: '赛博朋克（Cyberpunk）',
-    promptEn:
-      'Cyberpunk neon city: magenta and cyan glow, dark futuristic streets, holographic UI accents, sci-fi cinematic lighting.',
-  },
-  {
-    id: 'steampunk',
-    label: '蒸汽朋克（Steampunk）',
-    promptEn:
-      'Steampunk aesthetic: brass gears, steam pipes, Victorian retro-futurism, warm metal and leather textures.',
-  },
-  {
     id: 'pixel',
     label: '像素风（Pixel Art）',
     promptEn:
@@ -83,10 +53,22 @@ export const COVER_STYLE_PRESETS: CoverStylePreset[] = [
       'Ultra minimal flat design: simple geometric shapes, solid color blocks, no gradients, modern clean Swiss-style layout.',
   },
   {
-    id: 'anime_aesthetics',
-    label: '复古动漫（anime aesthetics）',
+    id: 'historical_figure',
+    label: '日本80年代OVA（Japanese 80s OVA）',
     promptEn:
-      '采用干净、柔和的勾线笔风格，角色居中，拒绝冗杂，画面清爽、简洁、有呼吸感，局部点缀淡雅水彩，现代数字插画风格，干净的米白色背景，编辑插画风格，心理学概念艺术，充满情感且柔和',
+      '怀旧动画电影胶片质感，手绘巅峰之作，精致线条手绘，色彩饱满浓郁，最高精细度作画，540p粗粝质感，刻意的不清晰感，经典日本80年代OVA画风。画面呈现低保真、高饱和度、低对比度色调，自带复古胶片颗粒与自然噪点，轻微画面失真，叠加印刷网点效果，营造出复古朦胧的视觉氛围与柔焦感。赛博朋克，复古未来。',
+  },
+  {
+    id: 'anime_aesthetics',
+    label: '美式漫画（American Comics）',
+    promptEn:
+      '美式漫画风格，用浓重、清晰的黑色轮廓线勾勒人物和场景，线条富有粗细变化，增强画面的立体感与动感；色彩采用平涂与渐变结合的方式，既保留手绘的质感，又通过色彩层次突出画面重点；人物表情和动作极度夸张，强化情绪表达，强调戏剧冲突与个性，同时也借鉴了日式漫画对服饰、场景道具等细节的刻画方式，整体呈现出写实基底上的夸张幽默效果。',
+  },
+  {
+    id: 'beatrice_alemagna',
+    label: 'Beatrice Alemagna 风格',
+    promptEn:
+      '以彩色铅笔绘制，线条扭曲夸张纹理笨拙笔意，呈现Beatrice Alemagna风格，运用稚拙笔触，描绘出日常生活场景，乖张快意，张力另类，吐槽感，幽默趣味儿，全景，单色渐变背景。',
   },
   {
     id: 'minimalist',
@@ -95,22 +77,10 @@ export const COVER_STYLE_PRESETS: CoverStylePreset[] = [
       'Minimalist flat illustration, clean simple design, tidy composition, generous negative space, low detail, soft low-saturation palette, Morandi tones, unified color scheme, black outlines, simplified geometric shapes, smooth lines, refined premium look, modern internet-style illustration,',
   },
   {
-    id: 'historical_figure',
-    label: '睡前历史人物(Historical)',
+    id: 'historical_narrative',
+    label: '睡前历史人物（Historical Narrative）',
     promptEn:
       'Historical narrative illustration, storybook aesthetic, warm muted tones, atmospheric lighting, emotional depth, classical meets contemporary style, cinematic composition, soft gradients, gentle palette, elegant and contemplative mood.',
-  },
-  {
-    id: 'surreal',
-    label: '超现实主义（Surrealism）',
-    promptEn:
-      'Surreal dreamlike collage: impossible juxtaposition, distorted perspective, bold symbolic imagery, high visual impact.',
-  },
-  {
-    id: 'film_retro',
-    label: '胶片 / 复古（Film/Retro）',
-    promptEn:
-      'Analog film / retro photo: visible grain, faded colors, light leaks, vintage filter, nostalgic mood.',
   },
 ];
 

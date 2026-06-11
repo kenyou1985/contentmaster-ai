@@ -36,6 +36,13 @@ function cleanStoryboardOutput(text: string): string {
   // 英文标签
   out = out.replace(/(?:^|\n)\s*Image prompts?\s*[:：]\s*/gim, '图片提示词:');
 
+  // 1b. 缩写标签标准化：图/视/景/声/效 → 完整标签
+  out = out.replace(/(?:^|\n)\s*图\s*[:：]\s*/g, '图片提示词:');
+  out = out.replace(/(?:^|\n)\s*视\s*[:：]\s*/g, '视频提示词:');
+  out = out.replace(/(?:^|\n)\s*景\s*[:：]\s*/g, '景别:');
+  out = out.replace(/(?:^|\n)\s*声\s*[:：]\s*/g, '语音分镜:');
+  out = out.replace(/(?:^|\n)\s*效\s*[:：]\s*/g, '音效:');
+
   // 1c. 视频标签：格鲁吉亚 ვიდიო/ვიდეო/ვიდო、孟加拉 ভিডিও、卡纳达 ವೀಡಿಯೊ、印地 वीडियो
   // 注意：不要放单独的 "ვიდ"，它太贪婪会吃掉 "ვიდიო/ვიდეო" 的前缀，留下孤立字符
   const vidNoise = [
@@ -236,6 +243,69 @@ function cleanStoryboardOutput(text: string): string {
 }
 
 /**
+ * 从分镜内容中提取角色信息（从已有的角色信息区块解析，或从图片提示词中提取人物）
+ */
+function extractRolesFromStoryboardContent(text: string): Array<{ name: string; alias: string; description: string }> {
+  const roles: Array<{ name: string; alias: string; description: string }> = [];
+
+  // 方案1：从已有的角色信息区块解析
+  const charBlockMatch = text.match(/(?:^|\n)角色信息\s*\n([\s\S]*?)(?=(?:^|\n)(?:场景信息|$))/m);
+  if (charBlockMatch) {
+    const block = charBlockMatch[1];
+    const entryRegex = /\[名称\]\s*(.+?)\s*\n\[别名\]\s*(.+?)\s*\n\[描述\]\s*(.+?)(?=\n\[名称\]|$)/gs;
+    let m;
+    while ((m = entryRegex.exec(block)) !== null) {
+      roles.push({ name: m[1].trim(), alias: m[2].trim(), description: m[3].trim() });
+    }
+  }
+
+  // 方案2：从图片提示词中提取常见人物词汇
+  if (roles.length === 0) {
+    const commonPeople = [
+      '老板', '妻子', '孩子', '儿子', '女儿', '父亲', '母亲', '老人',
+      '银行经理', '客户', '员工', '机修工', '中介', '销售员', '饭局上的人',
+      '中年男人', '中年老板', '中年男人', '女人', '男人'
+    ];
+    const imgPrompts = text.match(/图片提示词[：:]\s*([^\n]+)/g) || [];
+    const allPromptText = imgPrompts.join(' ');
+
+    for (const person of commonPeople) {
+      if (allPromptText.includes(person)) {
+        // 避免重复
+        if (!roles.some(r => r.name.includes(person))) {
+          roles.push({
+            name: person,
+            alias: person,
+            description: `${person}形象，具体形象根据图片提示词和原文确定`
+          });
+        }
+      }
+    }
+  }
+
+  return roles;
+}
+
+/**
+ * 从分镜内容中提取场景信息（从已有的场景信息区块解析）
+ */
+function extractScenesFromStoryboardContent(text: string): Array<{ name: string; alias: string; description: string }> {
+  const scenes: Array<{ name: string; alias: string; description: string }> = [];
+
+  const sceneBlockMatch = text.match(/(?:^|\n)场景信息\s*\n([\s\S]*?)$/m);
+  if (sceneBlockMatch) {
+    const block = sceneBlockMatch[1];
+    const entryRegex = /\[名称\]\s*(.+?)\s*\n\[别名\]\s*(.+?)\s*\n\[描述\]\s*(.+?)(?=\n\[名称\]|$)/gs;
+    let m;
+    while ((m = entryRegex.exec(block)) !== null) {
+      scenes.push({ name: m[1].trim(), alias: m[2].trim(), description: m[3].trim() });
+    }
+  }
+
+  return scenes;
+}
+
+/**
  * 阶段 7：验证并自动修复分镜格式。
  * - 检查每个镜头是否有 图片提示词/视频提示词/景别/语音分镜/音效
  * - 检查是否有角色信息和场景信息
@@ -312,11 +382,11 @@ function validateAndFixStoryboardFormat(text: string, niche: NicheType = NicheTy
 
   // 字段名变体映射（用于检测）
   const fieldVariants: Record<string, RegExp[]> = {
-    '图片提示词': [/图片提示词/, /圖片提示詞/],
-    '视频提示词': [/视频提示词/, /視頻提示詞/],
-    '景别': [/景别/, /景別/],
-    '语音分镜': [/语音分镜/, /語音分鏡/],
-    '音效': [/音效/],
+    '图片提示词': [/图片提示词/, /圖片提示詞/, /^图:/, /^图：/],
+    '视频提示词': [/视频提示词/, /視頻提示詞/, /^视:/, /^视：/],
+    '景别': [/景别/, /景別/, /^景:/, /^景：/],
+    '语音分镜': [/语音分镜/, /語音分鏡/, /^声:/, /^声：/],
+    '音效': [/音效/, /^效:/, /^效：/],
   };
 
   const lastRealIndex = shotBlocks.length - 1;
@@ -347,21 +417,59 @@ function validateAndFixStoryboardFormat(text: string, niche: NicheType = NicheTy
       const hasRoleInfo = /角色信息/.test(out) || /Character Information/i.test(out);
       const hasSceneInfo = /场景信息/.test(out) || /Scene Information/i.test(out);
 
-      if (!hasRoleInfo || !hasSceneInfo) {
-        const charInfo = getNicheCharacterInfo(niche);
-        const sceneDesc = getNicheSceneDescription(niche);
+        if (!hasRoleInfo || !hasSceneInfo) {
+          const charInfo = getNicheCharacterInfo(niche);
+          // 先尝试从已有分镜内容中动态提取角色和场景
+          const extractedRoles = extractRolesFromStoryboardContent(out);
+          const extractedScenes = extractScenesFromStoryboardContent(out);
 
-        // 强制使用中文标签（无论内容语言）
-        if (!hasRoleInfo) {
-          const roleInfo = `\n\n角色信息\n\n[名称] ${charInfo.name}\n[别名] ${charInfo.alias}\n[描述] ${charInfo.description}\n\n[名称] 讲述者\n[角色类型] 人物\n[别名] Narrator\n[描述] 第一人称叙述者，情绪细腻、疲惫但自我觉察强，语气温和克制。`;
-          fixedBlock += roleInfo;
-        }
+          // 优先使用提取到的角色/场景，否则降级到赛道默认值
+          const roleName = extractedRoles[0]?.name || charInfo.name;
+          const roleAlias = extractedRoles[0]?.alias || charInfo.alias;
+          const roleDesc = extractedRoles[0]?.description || charInfo.description;
+          const sceneName = extractedScenes[0]?.name || `场景-${charInfo.name}相关空间`;
+          const sceneAlias = extractedScenes[0]?.alias || sceneName;
+          const sceneDesc = extractedScenes[0]?.description || getNicheSceneDescription(niche);
 
-        if (!hasSceneInfo) {
-          const sceneBlock = `\n\n场景信息\n\n[名称] 场景-${charInfo.name}讲学空间\n[别名] Scene - ${charInfo.name} Teaching Space\n[描述] ${sceneDesc}`;
-          fixedBlock += sceneBlock;
+          // 强制使用中文标签（无论内容语言）
+          if (!hasRoleInfo) {
+            const narratorInfo = extractedRoles.find(r => /旁白|讲述| narrator | narrator/i.test(r.name));
+            const narratorDesc = narratorInfo?.description || '第一人称叙述者，情绪细腻、疲惫但自我觉察强，语气温和克制，全程平铺叙事、无夸张起伏，串联全片人生故事。';
+            const narratorName = narratorInfo?.name || '讲述者';
+            const narratorAlias = narratorInfo?.alias || 'Narrator';
+
+            let roleInfo = `\n\n角色信息\n\n[名称] ${narratorName}\n[别名] ${narratorAlias}\n[描述] ${narratorDesc}`;
+
+            // 逐个添加提取到的角色（去除重复和旁白）
+            const seenNames = new Set<string>();
+            for (const r of extractedRoles) {
+              const key = r.name + r.alias;
+              if (!seenNames.has(key) && !/旁白|讲述| narrator/i.test(r.name)) {
+                seenNames.add(key);
+                roleInfo += `\n\n[名称] ${r.name}\n[别名] ${r.alias}\n[描述] ${r.description}`;
+              }
+            }
+
+            // 如果没有提取到任何角色，添加赛道默认角色
+            if (seenNames.size === 0) {
+              roleInfo += `\n\n[名称] ${roleName}\n[别名] ${roleAlias}\n[描述] ${roleDesc}`;
+            }
+
+            fixedBlock += roleInfo;
+          }
+
+          if (!hasSceneInfo) {
+            let sceneBlock = `\n\n场景信息\n\n[名称] ${sceneName}\n[别名] ${sceneAlias}\n[描述] ${sceneDesc || charInfo.description}`;
+
+            // 添加其他提取到的场景
+            for (let si = 1; si < extractedScenes.length; si++) {
+              const s = extractedScenes[si];
+              sceneBlock += `\n\n[名称] ${s.name}\n[别名] ${s.alias}\n[描述] ${s.description}`;
+            }
+
+            fixedBlock += sceneBlock;
+          }
         }
-      }
     }
 
     fixedBlocks.push(fixedBlock);
@@ -490,18 +598,21 @@ const splitIntoSentences = (text: string): string[] => {
  * - 英文：每段300-450字符
  * - 禁止句子/单词中间切割
  */
-const segmentTextByShots = (text: string, targetShots: number): string[] => {
+const segmentTextByShots = (text: string, targetShots: number, targetCharsPerShot?: number): string[] => {
   const cleaned = text.replace(/\s+/g, ' ').trim();
   if (!cleaned) return [];
 
   const isEnglish = isEnglishText(cleaned);
 
-  // 根据语言设置目标字数范围
-  const avgChars = isEnglish
-    ? Math.max(350, Math.round(cleaned.length / targetShots))
-    : Math.max(200, Math.round(cleaned.length / targetShots));
-  const minLen = Math.round(avgChars * 0.8);
-  const maxLen = Math.round(avgChars * 1.2);
+  // 人生副本赛道：强制30字/镜；其他赛道：动态计算
+  const useFixed30Char = targetCharsPerShot === 30;
+  const avgChars = useFixed30Char
+    ? 30
+    : isEnglish
+      ? Math.max(350, Math.round(cleaned.length / targetShots))
+      : Math.max(200, Math.round(cleaned.length / targetShots));
+  const minLen = useFixed30Char ? 15 : Math.round(avgChars * 0.8);
+  const maxLen = useFixed30Char ? 35 : Math.round(avgChars * 1.2);
 
   // 按句子分割
   const sentences = splitIntoSentences(cleaned);
@@ -601,6 +712,103 @@ const segmentTextByShots = (text: string, targetShots: number): string[] => {
 
   return segments.slice(0, targetShots);
 };
+
+/**
+ * 人生副本赛道专用：强制将超长镜头文案拆分为30字左右的短镜头
+ * 逐个镜头检查，拆词后重新编号，同时复制图片提示词/视频提示词/景别
+ */
+function forceSplitLongShotText(text: string): string {
+  const MAX_CHARS = 35;
+
+  // 按镜头块分割
+  const blocks = text.split(/(?=^镜头\s*\d+【)/m);
+  const newBlocks: string[] = [];
+  let globalShotNum = 0;
+
+  for (const block of blocks) {
+    if (!block.trim()) continue;
+
+    const headerMatch = block.match(/^(镜头\s*)(\d+)(\[[^\]]*\])/);
+    if (!headerMatch) {
+      newBlocks.push(block);
+      continue;
+    }
+
+    const headerPrefix = headerMatch[1];
+    const headerTitle = headerMatch[3];
+
+    // 提取镜头文案（兼容 图:/图片提示词: 两种格式）
+    const shotTextMatch = block.match(/镜头文案[：:]\s*(.+?)(?=\n(?:图[：:]|图片提示词[：:]|视[：:]|视频提示词[：:]|景[：:]|景别[：:]|声[：:]|语音分镜[：:]|效[：:]|音效[：:]|镜头\s|$))/s);
+    if (!shotTextMatch) {
+      globalShotNum++;
+      newBlocks.push(block.replace(/^(镜头\s*)\d+(\[[^\]]*\])/, `$1${globalShotNum}$2`));
+      continue;
+    }
+
+    let shotText = shotTextMatch[1].trim();
+
+    // 检查是否需要拆分：镜头文案 > MAX_CHARS 字
+    if (shotText.length > MAX_CHARS) {
+      // 按逗号/句号/顿号/分号拆分句子
+      const sentences = shotText.match(/[^，。、；！？.!?]+[，。、；！？.!?]?/g) || [shotText];
+      const parts: string[] = [];
+      let buffer = '';
+
+      for (const sent of sentences) {
+        const trimmed = sent.trim();
+        if (!trimmed) continue;
+
+        if (!buffer) {
+          buffer = trimmed;
+        } else if ((buffer + trimmed).length <= MAX_CHARS) {
+          buffer += trimmed;
+        } else {
+          if (buffer) parts.push(buffer);
+          buffer = trimmed;
+        }
+      }
+      if (buffer) parts.push(buffer);
+
+      // 提取其他字段（兼容 图:/图片提示词: 两种格式）
+      const imgMatch = block.match(/(?:图[：:]|图片提示词[：:])\s*(.+?)(?=\n(?:视[：:]|视频提示词[：:]|景[：:]|景别[：:]|声[：:]|语音分镜[：:]|效[：:]|音效[：:]|镜头\s|$))/s);
+      const vidMatch = block.match(/(?:视[：:]|视频提示词[：:])\s*(.+?)(?=\n(?:景[：:]|景别[：:]|声[：:]|语音分镜[：:]|效[：:]|音效[：:]|镜头\s|$))/s);
+      const shotMatch = block.match(/(?:景[：:]|景别[：:])\s*(.+?)(?=\n(?:声[：:]|语音分镜[：:]|效[：:]|音效[：:]|镜头\s|$))/s);
+      const voiceMatch = block.match(/(?:声[：:]|语音分镜[：:])\s*(.+?)(?=\n(?:效[：:]|音效[：:]|镜头\s|$))/s);
+      const sfxMatch = block.match(/(?:效[：:]|音效[：:])\s*(.+?)(?=\n(?:镜头\s|$))/s);
+
+      const img = imgMatch ? imgMatch[1].trim() : '';
+      const vid = vidMatch ? vidMatch[1].trim() : '';
+      const shot = shotMatch ? shotMatch[1].trim() : '中景';
+      const voice = voiceMatch ? voiceMatch[1].trim() : '旁白，语气平静';
+      const sfx = sfxMatch ? sfxMatch[1].trim() : '无';
+
+      // 每个拆分镜头都带完整字段
+      for (const part of parts) {
+        globalShotNum++;
+        newBlocks.push(
+          `${headerPrefix}${globalShotNum}${headerTitle}\n` +
+          `镜头文案：${part}\n` +
+          `图片提示词：${img}\n` +
+          `视频提示词：${vid}\n` +
+          `景别：${shot}\n` +
+          `语音分镜：${voice}\n` +
+          `音效：${sfx}\n`
+        );
+      }
+    } else {
+      // 不需要拆分，直接更新编号
+      globalShotNum++;
+      newBlocks.push(
+        block.replace(
+          /^(镜头\s*)\d+(\[[^\]]*\])/,
+          `$1${globalShotNum}$2`
+        )
+      );
+    }
+  }
+
+  return newBlocks.join('\n');
+}
 // ========== 分镜文本切分工具函数结束 ==========
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
@@ -2330,7 +2538,7 @@ Hard rules:
       const isAnimeAestheticsStyle = storyboardStyleId === 'anime_aesthetics';
 
       // 【预切分原文】严格按照句子边界切分，保证完整性
-      const scriptSegments = segmentTextByShots(effectiveScript, estimatedShots);
+      const scriptSegments = segmentTextByShots(effectiveScript, estimatedShots, isLifeDungeonTrack ? 30 : undefined);
 
       // 构建每镜头的预切分文案提示
       const segmentsPrompt = scriptSegments
@@ -2437,6 +2645,11 @@ ${isEnglishScript
         model,
         { maxTokens: 128_000, idleTimeoutMs: 180_000, firstChunkTimeoutMs: 60_000 }
       );
+
+      // 人生副本赛道：强制拆分超长镜头文案（30字/镜后处理）
+      if (isLifeDungeonTrack) {
+        localContent = forceSplitLongShotText(localContent);
+      }
 
       // 三轮清洗：标准清洗 → 深度扫描 → 格式检查与自动修复
       localContent = validateAndFixStoryboardFormat(deepCleanStoryboard(cleanStoryboardOutput(localContent)), niche);
@@ -6800,47 +7013,14 @@ ${segmentSourceText}
                     ended = true;
                 }
 
-
-                    let cleaned = sanitizeTtsScript(localContent);
-                    if (isEnglish) {
-                        cleaned = cleaned
-                            .split('\n')
-                            .filter(line => !/[\u4e00-\u9fff]/.test(line))
-                            .join('\n');
-                    }
-                    localContent = cleaned;
-
-                    // Generate a short Chinese summary and append
-                    let summaryText = '';
-                    await streamContentGeneration(
-                        [
-                            '请用中文输出 2-4 句的簡短故事总结，不得超過 200 字。',
-                            '只输出总结内容，不要标题、不要符号、不要前言后语。',
-                            '禁止输出例如「Suggested Title Options」或任何非故事总结內容。',
-                            '',
-                            localContent.slice(-3000)
-                        ].join('\n'),
-                        '你是中文摘要助手。',
-                        (chunk) => {
-                            summaryText += chunk;
-                        }
-                    );
-
-                    summaryText = summaryText
-                        .replace(/[\r\n]+/g, ' ')
-                        .replace(/^\s+|\s+$/g, '')
-                        .slice(0, 200);
-
-                    const finalContent = `${localContent}\n\n=== SUMMARY ===\n${summaryText}`;
-                // 保存到 Map 中，用于最后统一保存历史记录
-                generatedContentsMap.set(index, { topic: topic.title, content: finalContent });
-                
+                // 所有赛道：脚本保存
+                generatedContentsMap.set(index, { topic: topic.title, content: localContent });
                 setGeneratedContents(prev => {
                     const newArr = [...prev];
                     if (newArr[index]) {
                         newArr[index] = {
                             ...newArr[index],
-                            content: finalContent
+                            content: localContent
                         };
                     }
                     return newArr;
