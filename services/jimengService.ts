@@ -110,17 +110,134 @@ function convertToJimengParams(width: number, height: number): { ratio: string; 
  * @param options 生成选项
  * @param overrides 可选：自定义 baseUrl / Bearer（线上服务一般无需 session）
  */
+// 单次调用即梦生成一张图片的内部实现（不含兜底）
+// 返回 { success: true, url } | { success: false, error }
+async function _callJimengApiOnce(
+  url: string,
+  body: Record<string, unknown>,
+  headers: Record<string, string>,
+  imageIndex: number,
+): Promise<{ success: true; url: string } | { success: false; error: string }> {
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+
+      try {
+        const errorJson = JSON.parse(errorText);
+        errorMessage = errorJson.error || errorJson.message || errorMessage;
+      } catch {
+        errorMessage = errorText || errorMessage;
+      }
+
+      if (response.status === 0 || response.status === 500) {
+        try {
+          const errorJson = JSON.parse(errorText);
+          errorMessage = errorJson.suggestion
+            ? `${errorJson.error || errorMessage}\n\n${errorJson.suggestion}`
+            : (errorJson.error || errorMessage);
+        } catch {
+          errorMessage = '无法连接到即梦API服务，请确保服务正在运行';
+        }
+      } else if (response.status === 401) {
+        errorMessage = '鉴权失败，请检查线上服务或 Token 配置';
+      }
+
+      return { success: false, error: `第 ${imageIndex} 张图片生成失败: ${errorMessage}` };
+    }
+
+    const result = await response.json();
+
+    if (result.data && Array.isArray(result.data) && result.data.length > 0) {
+      return { success: true, url: result.data[0].url };
+    } else {
+      return { success: false, error: `第 ${imageIndex} 张图片: ${result.error || result.message || '响应无图片数据'}` };
+    }
+  } catch (error: unknown) {
+    const err = error as Error;
+    let errorMessage = err.message || '未知错误';
+    if (errorMessage.includes('Failed to fetch') || errorMessage.includes('NetworkError')) {
+      errorMessage = `网络连接失败，无法连接到 ${url}`;
+    }
+    return { success: false, error: `第 ${imageIndex} 张图片: ${errorMessage}` };
+  }
+}
+
+// multipart 图生图单次调用（不含兜底）
+async function _callJimengCompositionOnce(
+  url: string,
+  formData: FormData,
+  headers: Record<string, string>,
+  imageIndex: number,
+): Promise<{ success: true; url: string } | { success: false; error: string }> {
+  try {
+    const response = await fetch(url, { method: 'POST', headers, body: formData });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+
+      try {
+        const errorJson = JSON.parse(errorText);
+        errorMessage = errorJson.error || errorJson.message || errorMessage;
+      } catch {
+        errorMessage = errorText || errorMessage;
+      }
+
+      if (response.status === 0 || response.status === 500) {
+        try {
+          const errorJson = JSON.parse(errorText);
+          errorMessage = errorJson.suggestion
+            ? `${errorJson.error || errorMessage}\n\n${errorJson.suggestion}`
+            : (errorJson.error || errorMessage);
+        } catch {
+          errorMessage = '无法连接到即梦API服务，请确保服务正在运行';
+        }
+      } else if (response.status === 401) {
+        errorMessage = '鉴权失败，请检查线上服务或 Token 配置';
+      }
+
+      return { success: false, error: `第 ${imageIndex} 张图片生成失败: ${errorMessage}` };
+    }
+
+    const result = await response.json();
+
+    if (result.data && Array.isArray(result.data) && result.data.length > 0) {
+      return { success: true, url: result.data[0].url };
+    } else {
+      return { success: false, error: `第 ${imageIndex} 张图片: ${result.error || result.message || '响应无图片数据'}` };
+    }
+  } catch (error: unknown) {
+    const err = error as Error;
+    let errorMessage = err.message || '未知错误';
+    if (errorMessage.includes('Failed to fetch') || errorMessage.includes('NetworkError')) {
+      errorMessage = `网络连接失败，无法连接到 ${url}`;
+    }
+    return { success: false, error: `第 ${imageIndex} 张图片: ${errorMessage}` };
+  }
+}
+
+/**
+ * 即梦图片生成（内部统一兜底逻辑）
+ * 优先使用传入的 model（如 jimeng-5.0），失败后自动以 jimeng-4.0 重试
+ */
 export async function generateJimengImages(
   options: JimengImageGenerationOptions,
   overrides?: { apiBaseUrl?: string; sessionId?: string }
 ): Promise<JimengGenerationResult> {
-  const { 
-    prompt, 
-    num_images = 1, 
-    width = 1080, 
-    height = 1920, 
+  const {
+    prompt,
+    num_images = 1,
+    width = 1080,
+    height = 1920,
     model = 'jimeng-5.0',
-    ratio, 
+    ratio,
     resolution,
     images,
     sample_strength = 0.7
@@ -129,263 +246,149 @@ export async function generateJimengImages(
   const apiBaseUrl = normalizeJimengBaseUrl(overrides?.apiBaseUrl ?? JIMENG_API_BASE_URL);
   const sessionId = (overrides?.sessionId ?? '').trim();
 
-  // 基础 headers
   const jsonHeadersBase: Record<string, string> = { 'Content-Type': 'application/json' };
-  
-  // 统一按 Bearer 透传 sessionId（Railway 上部署的 jimeng-api 也需要）
   const jsonHeaders: Record<string, string> = (sessionId && sessionId.length > 10)
     ? { ...jsonHeadersBase, Authorization: `Bearer ${sessionId}` }
     : jsonHeadersBase;
 
-  // 判断是文生图还是图生图
   const isImageToImage = images && images.length > 0;
-  const endpoint = isImageToImage 
-    ? `${apiBaseUrl}/v1/images/compositions`  // 图生图端点
-    : `${apiBaseUrl}/v1/images/generations`;  // 文生图端点
-  
-  // 如果提供了 ratio 和 resolution，直接使用；否则从 width/height 转换
+
   let finalRatio = ratio;
   let finalResolution = resolution;
-  
   if (!finalRatio || !finalResolution) {
     const converted = convertToJimengParams(width, height);
     finalRatio = finalRatio || converted.ratio;
     finalResolution = finalResolution || converted.resolution;
   }
 
-  // 图生图：jimeng-api 要求 HTTP(S) URL 用 JSON；本地/base64 必须用 multipart（data URL 放 JSON 不会生效）
-  if (isImageToImage) {
-    const compositionsUrl = `${apiBaseUrl}/v1/images/compositions`;
-
-    const multipartHeaders: Record<string, string> = {};
-    if (sessionId && sessionId.length > 10) {
-      multipartHeaders.Authorization = `Bearer ${sessionId}`;
-    }
-
-    const needsMultipart = images!.some(
-      (img) => img.startsWith('data:') || img.startsWith('blob:')
-    );
-
-    const buildFormData = async (): Promise<FormData> => {
-      const formData = new FormData();
-      formData.append('prompt', prompt);
-      if (finalRatio) formData.append('ratio', finalRatio);
-      if (finalResolution) formData.append('resolution', finalResolution);
-      formData.append('sample_strength', String(sample_strength));
-
-      for (const image of images!) {
-        if (image.startsWith('data:') || image.startsWith('blob:')) {
-          const res = await fetch(image);
-          const blob = await res.blob();
-          const ext = blob.type.includes('png') ? 'png' : blob.type.includes('webp') ? 'webp' : 'jpg';
-          formData.append('images', blob, `reference.${ext}`);
-        } else {
-          const res = await fetch(image);
-          if (!res.ok) throw new Error(`无法加载参考图: ${image.slice(0, 80)}`);
-          const blob = await res.blob();
-          const ext = blob.type.includes('png') ? 'png' : 'jpg';
-          formData.append('images', blob, `reference.${ext}`);
-        }
-      }
-      return formData;
-    };
-
-    const jsonData: Record<string, unknown> = {
-      prompt,
-      model,
-      images: images!,
-      sample_strength,
-    };
-    if (finalRatio) jsonData.ratio = finalRatio;
-    if (finalResolution) jsonData.resolution = finalResolution;
-
-    // 即梦API每次调用只生成一张图片，如果需要多张，需要多次调用
-    const targetCount = num_images || 1;
-    const imageResults: Array<{ url: string }> = [];
-    const errors: string[] = [];
-
-    for (let i = 0; i < targetCount; i++) {
-      try {
-        let response: Response;
-        if (needsMultipart) {
-          const formData = await buildFormData();
-          response = await fetch(compositionsUrl, {
-            method: 'POST',
-            headers: multipartHeaders,
-            body: formData,
-          });
-        } else {
-          response = await fetch(compositionsUrl, {
-            method: 'POST',
-            headers: jsonHeaders,
-            body: JSON.stringify(jsonData),
-          });
-        }
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
-          
-          try {
-            const errorJson = JSON.parse(errorText);
-            errorMessage = errorJson.error || errorJson.message || errorMessage;
-          } catch {
-            errorMessage = errorText || errorMessage;
-          }
-
-          if (response.status === 0 || response.status === 500) {
-            try {
-              const errorJson = JSON.parse(errorText);
-              if (errorJson.suggestion) {
-                errorMessage = `${errorJson.error || errorMessage}\n\n${errorJson.suggestion}`;
-              } else {
-                errorMessage = errorJson.error || errorMessage;
-              }
-            } catch {
-              errorMessage = '无法连接到即梦API服务，请确保服务正在运行';
-            }
-          } else if (response.status === 401) {
-            errorMessage = '鉴权失败，请检查线上服务或 Token 配置';
-          }
-
-          errors.push(`第 ${i + 1} 张图片生成失败: ${errorMessage}`);
-          continue;
-        }
-
-        const result = await response.json();
-
-        if (result.data && Array.isArray(result.data) && result.data.length > 0) {
-          imageResults.push(...result.data);
-        } else {
-          errors.push(`第 ${i + 1} 张图片: ${result.error || result.message || '响应无图片数据'}`);
-        }
-      } catch (error: any) {
-        let errorMessage = '未知错误';
-        if (error.message) {
-          if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
-            errorMessage = `网络连接失败，无法连接到 ${apiBaseUrl}`;
-          } else {
-            errorMessage = error.message;
-          }
-        }
-        errors.push(`第 ${i + 1} 张图片: ${errorMessage}`);
-      }
-    }
-
-    if (imageResults.length > 0) {
-      return {
-        success: true,
-        data: imageResults,
-        message: errors.length > 0 
-          ? `成功生成 ${imageResults.length} 张图片，${errors.length} 张失败` 
-          : `成功生成 ${imageResults.length} 张图片`
-      };
-    } else {
-      return {
-        success: false,
-        error: errors.length > 0 ? errors.join('\n') : '所有图片生成失败'
-      };
-    }
-  }
-
-  // 文生图模式
-  const url = `${apiBaseUrl}/v1/images/generations`;
-
-  // 即梦API需要的参数格式
-  const data: any = {
-    prompt,
-    model,
+  // 统一生成基础请求体（model 字段后续可覆盖）
+  const buildBaseBody = (m: string) => {
+    const base: Record<string, unknown> = { prompt, model: m };
+    if (finalRatio) base.ratio = finalRatio;
+    if (finalResolution) base.resolution = finalResolution;
+    return base;
   };
-  
-  // 即梦API只支持 ratio 和 resolution，不支持 width/height
-  if (finalRatio) {
-    data.ratio = finalRatio;
-  }
-  if (finalResolution) {
-    data.resolution = finalResolution;
-  }
 
-  // 即梦API每次调用只生成一张图片，如果需要多张，需要多次调用
-  const targetCount = num_images || 1;
+  // 构建多图遍历结果（优先模型失败后兜底）
   const imageResults: Array<{ url: string }> = [];
   const errors: string[] = [];
 
+  const targetCount = num_images || 1;
+
   for (let i = 0; i < targetCount; i++) {
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: jsonHeaders,
-        body: JSON.stringify(data)
-      });
+    const idx = i + 1;
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
-        
-        try {
-          const errorJson = JSON.parse(errorText);
-          errorMessage = errorJson.error || errorJson.message || errorMessage;
-        } catch {
-          errorMessage = errorText || errorMessage;
-        }
-
-        // 特殊错误处理
-        if (response.status === 0 || response.status === 500) {
-          try {
-            const errorJson = JSON.parse(errorText);
-            if (errorJson.suggestion) {
-              errorMessage = `${errorJson.error || errorMessage}\n\n${errorJson.suggestion}`;
-            } else {
-              errorMessage = errorJson.error || errorMessage;
-            }
-          } catch {
-            errorMessage = '无法连接到即梦API服务，请确保服务正在运行';
-          }
-        } else if (response.status === 401) {
-          errorMessage = '鉴权失败，请检查线上服务或 Token 配置';
-        }
-
-        errors.push(`第 ${i + 1} 张图片生成失败: ${errorMessage}`);
-        continue;
+    // ── 图生图分支 ──
+    if (isImageToImage) {
+      const compositionsUrl = `${apiBaseUrl}/v1/images/compositions`;
+      const multipartHeaders: Record<string, string> = {};
+      if (sessionId && sessionId.length > 10) {
+        multipartHeaders.Authorization = `Bearer ${sessionId}`;
       }
 
-      const result = await response.json();
+      const needsMultipart = images!.some(
+        (img) => img.startsWith('data:') || img.startsWith('blob:'),
+      );
 
-      // 检查响应格式
-      if (result.data && Array.isArray(result.data) && result.data.length > 0) {
-        // 即梦API每次返回一张图片
-        imageResults.push(...result.data);
+      // 优先 jimeng-5.0
+      let r = await _callJimengCompositionOnce(
+        compositionsUrl,
+        _buildCompositionFormData(prompt, finalRatio, finalResolution, sample_strength, images!, model, needsMultipart),
+        multipartHeaders,
+        idx,
+      );
+
+      // 5.0 失败则用 4.0 重试（避免重复构建 FormData，仅在 multipart 时需要）
+      if (!r.success && model === 'jimeng-5.0') {
+        r = await _callJimengCompositionOnce(
+          compositionsUrl,
+          _buildCompositionFormData(prompt, finalRatio, finalResolution, sample_strength, images!, 'jimeng-4.0', needsMultipart),
+          multipartHeaders,
+          idx,
+        );
+      }
+
+      if (r.success) {
+        imageResults.push({ url: r.url });
       } else {
-        errors.push(`第 ${i + 1} 张图片: ${result.error || result.message || '响应无图片数据'}`);
+        errors.push(r.error);
       }
-    } catch (error: any) {
-      let errorMessage = '未知错误';
-      if (error.message) {
-        if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
-          errorMessage = `网络连接失败，无法连接到 ${apiBaseUrl}`;
-        } else {
-          errorMessage = error.message;
-        }
-      }
-      errors.push(`第 ${i + 1} 张图片: ${errorMessage}`);
+      continue;
+    }
+
+    // ── 文生图分支 ──
+    const url = `${apiBaseUrl}/v1/images/generations`;
+    const body = buildBaseBody(model);
+
+    let r = await _callJimengApiOnce(url, body, jsonHeaders, idx);
+
+    // 5.0 失败则用 4.0 重试
+    if (!r.success && model === 'jimeng-5.0') {
+      r = await _callJimengApiOnce(url, buildBaseBody('jimeng-4.0'), jsonHeaders, idx);
+    }
+
+    if (r.success) {
+      imageResults.push({ url: r.url });
+    } else {
+      errors.push(r.error);
     }
   }
 
-  // 返回结果
   if (imageResults.length > 0) {
     return {
       success: true,
       data: imageResults,
-      message: errors.length > 0 
-        ? `成功生成 ${imageResults.length} 张图片，${errors.length} 张失败` 
-        : `成功生成 ${imageResults.length} 张图片`
+      message: errors.length > 0
+        ? `成功生成 ${imageResults.length} 张图片，${errors.length} 张失败`
+        : `成功生成 ${imageResults.length} 张图片`,
     };
   } else {
     return {
       success: false,
-      error: errors.length > 0 ? errors.join('\n') : '所有图片生成失败'
+      error: errors.length > 0 ? errors.join('\n') : '所有图片生成失败',
     };
   }
+}
+
+// 构建图生图 FormData 的辅助函数（供 _callJimengCompositionOnce 调用）
+function _buildCompositionFormData(
+  prompt: string,
+  finalRatio: string | undefined,
+  finalResolution: string | undefined,
+  sample_strength: number,
+  images: string[],
+  model: string,
+  needsMultipart: boolean,
+): FormData {
+  const formData = new FormData();
+  formData.append('prompt', prompt);
+  formData.append('model', model);
+  formData.append('sample_strength', String(sample_strength));
+  if (finalRatio) formData.append('ratio', finalRatio);
+  if (finalResolution) formData.append('resolution', finalResolution);
+
+  for (const image of images) {
+    if (image.startsWith('data:') || image.startsWith('blob:')) {
+      const ext = image.includes('image/png') ? 'png' : image.includes('image/webp') ? 'webp' : 'jpg';
+      formData.append('images', dataUrlToBlob(image), `ref.${ext}`);
+    } else {
+      formData.append('images', image);
+    }
+  }
+  return formData;
+}
+
+function dataUrlToBlob(dataUrl: string): Blob {
+  const parts = dataUrl.split(',');
+  const mimeMatch = parts[0].match(/:(.*?);/);
+  const mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+  const bstr = atob(parts[1]);
+  const n = bstr.length;
+  const u8arr = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    u8arr[i] = bstr.charCodeAt(i);
+  }
+  return new Blob([u8arr], { type: mime });
 }
 
 export async function generateJimengVideoAsync(
