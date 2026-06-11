@@ -169,7 +169,7 @@ async function _callJimengApiOnce(
   }
 }
 
-// multipart 图生图单次调用（不含兜底）
+// 图生图单次调用（只取第一张，与 _callJimengApiOnce 一致，保留供其他场景使用）
 async function _callJimengCompositionOnce(
   url: string,
   formData: FormData,
@@ -223,6 +223,62 @@ async function _callJimengCompositionOnce(
   }
 }
 
+// 图生图一次调用取所有图片 URL（与 _callJimengApiAll 对应）
+async function _callJimengCompositionAll(
+  url: string,
+  formData: FormData,
+  headers: Record<string, string>,
+): Promise<{ success: true; urls: string[] } | { success: false; error: string }> {
+  try {
+    const response = await fetch(url, { method: 'POST', headers, body: formData });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+
+      try {
+        const errorJson = JSON.parse(errorText);
+        errorMessage = errorJson.error || errorJson.message || errorMessage;
+      } catch {
+        errorMessage = errorText || errorMessage;
+      }
+
+      if (response.status === 0 || response.status === 500) {
+        try {
+          const errorJson = JSON.parse(errorText);
+          errorMessage = errorJson.suggestion
+            ? `${errorJson.error || errorMessage}\n\n${errorJson.suggestion}`
+            : (errorJson.error || errorMessage);
+        } catch {
+          errorMessage = '无法连接到即梦API服务，请确保服务正在运行';
+        }
+      } else if (response.status === 401) {
+        errorMessage = '鉴权失败，请检查线上服务或 Token 配置';
+      }
+
+      return { success: false, error: errorMessage };
+    }
+
+    const result = await response.json();
+
+    if (result.data && Array.isArray(result.data) && result.data.length > 0) {
+      const urls = result.data
+        .map((item: { url?: string }) => item.url)
+        .filter((u: string) => !!u);
+      return { success: true, urls };
+    } else {
+      return { success: false, error: result.error || result.message || '响应无图片数据' };
+    }
+  } catch (error: unknown) {
+    const err = error as Error;
+    let errorMessage = err.message || '未知错误';
+    if (errorMessage.includes('Failed to fetch') || errorMessage.includes('NetworkError')) {
+      errorMessage = `网络连接失败，无法连接到 ${url}`;
+    }
+    return { success: false, error: errorMessage };
+  }
+}
+
 /**
  * 即梦图片生成（内部统一兜底逻辑）
  * 优先使用传入的 model（如 jimeng-5.0），失败后自动以 jimeng-4.0 重试
@@ -261,7 +317,6 @@ export async function generateJimengImages(
     finalResolution = finalResolution || converted.resolution;
   }
 
-  // 统一生成基础请求体（model 字段后续可覆盖）
   const buildBaseBody = (m: string) => {
     const base: Record<string, unknown> = { prompt, model: m };
     if (finalRatio) base.ratio = finalRatio;
@@ -269,66 +324,53 @@ export async function generateJimengImages(
     return base;
   };
 
-  // 构建多图遍历结果（优先模型失败后兜底）
   const imageResults: Array<{ url: string }> = [];
   const errors: string[] = [];
 
-  const targetCount = num_images || 1;
-
-  for (let i = 0; i < targetCount; i++) {
-    const idx = i + 1;
-
-    // ── 图生图分支 ──
-    if (isImageToImage) {
-      const compositionsUrl = `${apiBaseUrl}/v1/images/compositions`;
-      const multipartHeaders: Record<string, string> = {};
-      if (sessionId && sessionId.length > 10) {
-        multipartHeaders.Authorization = `Bearer ${sessionId}`;
-      }
-
-      const needsMultipart = images!.some(
-        (img) => img.startsWith('data:') || img.startsWith('blob:'),
-      );
-
-      // 优先 jimeng-5.0
-      let r = await _callJimengCompositionOnce(
-        compositionsUrl,
-        _buildCompositionFormData(prompt, finalRatio, finalResolution, sample_strength, images!, model, needsMultipart),
-        multipartHeaders,
-        idx,
-      );
-
-      // 5.0 失败则用 4.0 重试（避免重复构建 FormData，仅在 multipart 时需要）
-      if (!r.success && model === 'jimeng-5.0') {
-        r = await _callJimengCompositionOnce(
-          compositionsUrl,
-          _buildCompositionFormData(prompt, finalRatio, finalResolution, sample_strength, images!, 'jimeng-4.0', needsMultipart),
-          multipartHeaders,
-          idx,
-        );
-      }
-
-      if (r.success) {
-        imageResults.push({ url: r.url });
-      } else {
-        errors.push(r.error);
-      }
-      continue;
+  // ── 图生图分支（单次调用取所有图片） ──
+  if (isImageToImage) {
+    const compositionsUrl = `${apiBaseUrl}/v1/images/compositions`;
+    const multipartHeaders: Record<string, string> = {};
+    if (sessionId && sessionId.length > 10) {
+      multipartHeaders.Authorization = `Bearer ${sessionId}`;
     }
 
-    // ── 文生图分支 ──
-    const url = `${apiBaseUrl}/v1/images/generations`;
-    const body = buildBaseBody(model);
+    const needsMultipart = images!.some(
+      (img) => img.startsWith('data:') || img.startsWith('blob:'),
+    );
 
-    let r = await _callJimengApiOnce(url, body, jsonHeaders, idx);
+    const formData = _buildCompositionFormData(
+      prompt, finalRatio, finalResolution, sample_strength, images!, model, needsMultipart,
+    );
+
+    let r = await _callJimengCompositionAll(compositionsUrl, formData, multipartHeaders);
 
     // 5.0 失败则用 4.0 重试
     if (!r.success && model === 'jimeng-5.0') {
-      r = await _callJimengApiOnce(url, buildBaseBody('jimeng-4.0'), jsonHeaders, idx);
+      const fallbackFormData = _buildCompositionFormData(
+        prompt, finalRatio, finalResolution, sample_strength, images!, 'jimeng-4.0', needsMultipart,
+      );
+      r = await _callJimengCompositionAll(compositionsUrl, fallbackFormData, multipartHeaders);
     }
 
     if (r.success) {
-      imageResults.push({ url: r.url });
+      imageResults.push(...r.urls.map((u) => ({ url: u })));
+    } else {
+      errors.push(r.error);
+    }
+  } else {
+    // ── 文生图分支（一次 API 调用取所有图片） ──
+    const url = `${apiBaseUrl}/v1/images/generations`;
+
+    let r = await _callJimengApiAll(url, buildBaseBody(model), jsonHeaders, num_images);
+
+    // 5.0 失败则用 4.0 重试
+    if (!r.success && model === 'jimeng-5.0') {
+      r = await _callJimengApiAll(url, buildBaseBody('jimeng-4.0'), jsonHeaders, num_images);
+    }
+
+    if (r.success) {
+      imageResults.push(...r.urls.map((u) => ({ url: u })));
     } else {
       errors.push(r.error);
     }
@@ -347,6 +389,68 @@ export async function generateJimengImages(
       success: false,
       error: errors.length > 0 ? errors.join('\n') : '所有图片生成失败',
     };
+  }
+}
+
+// 单次调用即梦生成多张图片（文生图专用，一次请求取全部图片）
+async function _callJimengApiAll(
+  url: string,
+  body: Record<string, unknown>,
+  headers: Record<string, string>,
+  expectedCount: number,
+): Promise<{ success: true; urls: string[] } | { success: false; error: string }> {
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+
+      try {
+        const errorJson = JSON.parse(errorText);
+        errorMessage = errorJson.error || errorJson.message || errorMessage;
+      } catch {
+        errorMessage = errorText || errorMessage;
+      }
+
+      if (response.status === 0 || response.status === 500) {
+        try {
+          const errorJson = JSON.parse(errorText);
+          errorMessage = errorJson.suggestion
+            ? `${errorJson.error || errorMessage}\n\n${errorJson.suggestion}`
+            : (errorJson.error || errorMessage);
+        } catch {
+          errorMessage = '无法连接到即梦API服务，请确保服务正在运行';
+        }
+      } else if (response.status === 401) {
+        errorMessage = '鉴权失败，请检查线上服务或 Token 配置';
+      }
+
+      return { success: false, error: errorMessage };
+    }
+
+    const result = await response.json();
+
+    if (result.data && Array.isArray(result.data) && result.data.length > 0) {
+      // 返回所有图片 URL，而非只取第一张
+      const urls = result.data
+        .map((item: { url?: string }) => item.url)
+        .filter((u: string) => !!u);
+      return { success: true, urls };
+    } else {
+      return { success: false, error: result.error || result.message || '响应无图片数据' };
+    }
+  } catch (error: unknown) {
+    const err = error as Error;
+    let errorMessage = err.message || '未知错误';
+    if (errorMessage.includes('Failed to fetch') || errorMessage.includes('NetworkError')) {
+      errorMessage = `网络连接失败，无法连接到 ${url}`;
+    }
+    return { success: false, error: errorMessage };
   }
 }
 

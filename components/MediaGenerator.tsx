@@ -98,6 +98,10 @@ interface Shot {
   /** TTS 音频原始时长（秒，保留小数精度），优先用于剪映导出 */
   audioDurationExact?: number;
   voiceGenerating?: boolean;
+  /** 配音生成失败标记（超时等原因导致轮询未获取到结果） */
+  voiceFailed?: boolean;
+  /** 配音生成失败原因 */
+  voiceFailedReason?: string;
   imageUrls?: string[]; // 支持多张图片
   videoUrl?: string; // 保留向后兼容（显示第一个视频）
   videoUrls?: string[]; // 支持多个视频（追加模式）
@@ -259,6 +263,8 @@ function queueSnapshotRowsToShots(raw: unknown[] | undefined | null): Shot[] {
       audioDurationSec: p.audioDurationSec,
       audioDurationExact: p.audioDurationExact,
       voiceSourceText: (p as any).voiceSourceText,
+      voiceFailed: (rowAny as any).voiceFailed,
+      voiceFailedReason: (rowAny as any).voiceFailedReason,
       imageUrls: p.imageUrls,
       videoUrl: p.videoUrl,
       videoUrls: p.videoUrls,
@@ -402,6 +408,8 @@ function restoredShotsFromProject(shots: MediaProjectRecord['shots']): Shot[] {
       audioDurationSec: p.audioDurationSec,
       audioDurationExact: p.audioDurationExact,
       voiceSourceText: (p as any).voiceSourceText,
+      voiceFailed: (row as any).voiceFailed,
+      voiceFailedReason: (row as any).voiceFailedReason,
       imageUrls: p.imageUrls,
       videoUrl: p.videoUrl,
       videoUrls: p.videoUrls,
@@ -3496,10 +3504,16 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       'Voice',
       `镜头${shot.number}: 开始生成配音（${speakText.slice(0, 40)}${speakText.length > 40 ? '…' : ''}）`
     );
-    updateShot(shot.id, { voiceGenerating: true });
+    updateShot(shot.id, { voiceGenerating: true, voiceFailed: false, voiceFailedReason: undefined });
     const speed = opts?.speed ?? 1.0;
     const emphasisStrength = opts?.emphasisStrength ?? 0.5;
     const pitch = opts?.pitch ?? 0;
+
+    /** 客户端超时兜底：超过 10 分钟强制取消（后台可能已完成但轮询未拿到 URL） */
+    const VOICE_GENERATION_TIMEOUT_MS = 10 * 60 * 1000;
+    const clientTimeout = new AbortController();
+    const timeoutId = setTimeout(() => clientTimeout.abort(), VOICE_GENERATION_TIMEOUT_MS);
+
     try {
       let refPath: string | undefined = selected?.runningHubAudioPath?.trim();
       if (selected && !refPath && selected.audioDataUrl?.trim()) {
@@ -3520,31 +3534,56 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           `镜头${shot.number}: TTS ai-app（参考音 ${refPath.slice(0, 28)}…）语言=${effectiveLang}`
         );
       }
-      const r = await generateAudioWithRetry(
-        runningHubApiKey,
-        {
-          text: speakText,
-          referenceAudioPath: refPath,
-          referenceLanguage: effectiveLang,
-          speed,
-          prosodyEnhance: true,
-          breath: true,
-          autoPause: true,
-          pauseStrength: 0.7,
-          emphasisStrength,
-          pitch,
-          volume: 1.0,
-        },
-        {
-          onRetry: ({ attemptNumber, maxAttempts, error }) => {
-            appendTerminalLog(
-              'Voice',
-              `镜头${shot.number}: TTS 失败 — ${error.slice(0, 120)}${error.length > 120 ? '…' : ''} · 自动重试 ${attemptNumber}/${maxAttempts}`
-            );
-          },
+
+      // 包装 generateAudioWithRetry，支持客户端超时中断
+      const runWithTimeout = async () => {
+        try {
+          return await generateAudioWithRetry(
+            runningHubApiKey,
+            {
+              text: speakText,
+              referenceAudioPath: refPath,
+              referenceLanguage: effectiveLang,
+              speed,
+              prosodyEnhance: true,
+              breath: true,
+              autoPause: true,
+              pauseStrength: 0.7,
+              emphasisStrength,
+              pitch,
+              volume: 1.0,
+            },
+            {
+              onRetry: ({ attemptNumber, maxAttempts, error }) => {
+                if (clientTimeout.signal.aborted) return;
+                appendTerminalLog(
+                  'Voice',
+                  `镜头${shot.number}: TTS 失败 — ${error.slice(0, 120)}${error.length > 120 ? '…' : ''} · 自动重试 ${attemptNumber}/${maxAttempts}`
+                );
+              },
+            }
+          );
+        } catch (outerErr: any) {
+          if (clientTimeout.signal.aborted) {
+            return { success: false, error: '客户端超时' };
+          }
+          throw outerErr;
         }
-      );
-      if (!r.success) throw new Error(r.error || 'TTS 请求失败');
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const r: any = await Promise.race([
+        runWithTimeout(),
+        new Promise<{ success: false; error: string }>((_, reject) => {
+          clientTimeout.signal.addEventListener('abort', () => reject(new Error('CLIENT_TIMEOUT')));
+        }),
+      ]);
+
+      clearTimeout(timeoutId);
+
+      if (!r.success) {
+        throw new Error(r.error || 'TTS 请求失败');
+      }
       const audioUrl = r.url;
 
       if (!audioUrl) throw new Error('未获取到音频地址');
@@ -3566,6 +3605,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         audioDurationSec,
         voiceSourceText: speakText,
         voiceGenerating: false,
+        voiceFailed: false,
+        voiceFailedReason: undefined,
       });
       appendTerminalLog(
         'Voice',
@@ -3577,8 +3618,17 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       }
       return playableUrl;
     } catch (e: any) {
-      updateShot(shot.id, { voiceGenerating: false });
-      appendTerminalLog('Voice', `镜头${shot.number}: 配音失败 — ${e?.message || e}`);
+      clearTimeout(timeoutId);
+      const errMsg = e?.message || e;
+      const isTimeout = errMsg === 'CLIENT_TIMEOUT';
+      updateShot(shot.id, {
+        voiceGenerating: false,
+        voiceFailed: true,
+        voiceFailedReason: isTimeout
+          ? '配音生成超时（后台可能已完成，请稍后重试）'
+          : (errMsg || '配音失败'),
+      });
+      appendTerminalLog('Voice', `镜头${shot.number}: 配音失败 — ${errMsg}`);
       throw e;
     }
   };
@@ -5494,18 +5544,17 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                     >
                       {shot.imageGenerating ? '生成中…' : '重新繪圖'}
                     </button>
-                    {/* 音频：左侧试听/暂停 + 右侧重新配音 */}
+                    {/* 音频：左侧试听/重新生成 + 右侧重新配音 */}
                     <div className="flex gap-1">
                       <button
                         type="button"
                         disabled={shot.voiceGenerating}
                         onClick={async () => {
-                          if (shot.voiceAudioUrl) {
-                            // 已有音频 → 点一次播/暂停切换
+                          if (shot.voiceAudioUrl && !shot.voiceFailed) {
+                            // 已有音频且未失败 → 点一次播/暂停切换
                             const u = shot.voiceAudioUrl.trim();
                             const isPlaying = playingAudioShotId === shot.id;
                             if (isPlaying) {
-                              // 暂停（toggleAudioPlayback 会处理）
                               await toggleAudioPlayback(shot.id, u);
                             } else {
                               const ok = await toggleAudioPlayback(shot.id, u);
@@ -5513,7 +5562,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                             }
                             return;
                           }
-                          // 无音频 → 先生成再试听
+                          // 无音频 或 失败状态 → 先生成再试听
                           try {
                             await synthesizeVoiceForShot(shot, { playAfter: true });
                           } catch (e: any) {
@@ -5523,9 +5572,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                         className={`text-[10px] px-2 py-1 rounded whitespace-nowrap disabled:opacity-50 ${
                           playingAudioShotId === shot.id
                             ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                            : shot.voiceFailed
+                            ? 'bg-red-600 hover:bg-red-500 text-white'
                             : 'bg-slate-700 hover:bg-slate-600 text-white'
                         }`}
-                        title={shot.voiceAudioUrl ? '点击试听/暂停' : '使用 RunningHub 生成配音'}
+                        title={shot.voiceAudioUrl && !shot.voiceFailed ? '点击试听/暂停' : '生成配音'}
                       >
                         {shot.voiceGenerating ? '生成中…' : playingAudioShotId === shot.id ? '暂停试听' : '音频试听'}
                       </button>
@@ -5540,12 +5591,21 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                             toast.error(e?.message || '配音生成失败', 6000);
                           }
                         }}
-                        className="text-[10px] px-2 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded whitespace-nowrap disabled:opacity-50"
-                        title="重新生成配音"
+                        className={`text-[10px] px-2 py-1 rounded whitespace-nowrap ${
+                          shot.voiceFailed ? 'bg-red-600 hover:bg-red-500 text-white' : 'bg-amber-600 hover:bg-amber-500 text-white'
+                        } ${shot.voiceGenerating ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        title={shot.voiceFailed ? `失败原因：${shot.voiceFailedReason || '未知错误'}，点击重新生成` : '重新生成配音'}
                       >
                         重新配音
                       </button>
                     </div>
+                    {/* 配音失败原因提示 */}
+                    {shot.voiceFailed && (
+                      <div className="flex items-center gap-1 text-[8px] text-red-400 mt-0.5 pr-2" title={shot.voiceFailedReason}>
+                        <AlertCircle size={10} />
+                        <span className="truncate max-w-[120px]">{shot.voiceFailedReason || '配音失败'}</span>
+                      </div>
+                    )}
                     {/* 视频：左侧制作动画 + 右侧重新制作 */}
                     <div className="flex gap-1">
                       <button
