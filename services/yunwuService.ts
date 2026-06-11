@@ -772,9 +772,20 @@ export const generateImage = async (
       return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, modelName, opts);
     }
 
-    // gpt-image-2-all：走 OpenAI images/generations（yunwu 中转 gpt-image-2）
+    // gpt-image-2-all：主模型 gpt-image-2，有参考图时自动走 images/edits；失败则切换 dall-e-3
     if (opts.model === 'gpt-image-2-all') {
-      return await yunwuOpenAiImageOnce(apiKey, baseUrl, 'gpt-image-2', opts);
+      const gptImagePrimary = 'gpt-image-2';
+      const gptImageFallback = 'dall-e-3';
+      try {
+        return await yunwuOpenAiImageOnce(apiKey, baseUrl, gptImagePrimary, opts);
+      } catch (primaryErr: any) {
+        console.warn(
+          '[YunwuService] gpt-image-2-all 主模型失败，切换备用:',
+          gptImagePrimary,
+          primaryErr?.message
+        );
+        return await yunwuOpenAiImageOnce(apiKey, baseUrl, gptImageFallback, opts);
+      }
     }
 
     // grok-3-image / grok-4-image / grok-imagine：均走 chat/completions + vision 多段 content（云雾 images/generations 无参考图参数）
@@ -844,28 +855,61 @@ export const generateImage = async (
       throw lastGrokErr || new Error('Grok 生图失败');
     }
 
-    // gpt-image-2-all：走 images/generations 端点，主模型失败则切换 dall-e-3
-    if (opts.model === 'gpt-image-2-all') {
-      const gptImagePrimary = 'gpt-image-2';
-      const gptImageFallback = 'dall-e-3';
-      try {
-        return await yunwuOpenAiImageOnce(apiKey, baseUrl, gptImagePrimary, opts);
-      } catch (primaryErr: any) {
-        console.warn(
-          '[YunwuService] gpt-image-2-all 主模型失败，切换备用:',
-          gptImagePrimary,
-          primaryErr?.message
-        );
-        return await yunwuOpenAiImageOnce(apiKey, baseUrl, gptImageFallback, opts);
-      }
-    }
-
 async function yunwuOpenAiImageOnce(
   apiKey: string,
   baseUrl: string,
   modelId: string,
   options: ImageGenerationOptions
 ): Promise<GenerationResult> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120_000);
+  const hasRef = options.referenceDataUrls && options.referenceDataUrls.length > 0;
+
+  // 有参考图时：gpt-image-2 必须走 images/edits 端点（其他模型走 generations）
+  if (hasRef && modelId === 'gpt-image-2') {
+    const endpoint = '/v1/images/edits';
+    // images/edits 需要 multipart/form-data，参考图和 mask 均以 data URL 传入
+    const formData = new FormData();
+    formData.append('model', modelId);
+    formData.append('prompt', options.prompt || '');
+    for (const refUrl of options.referenceDataUrls!) {
+      // data URL → Blob
+      const [meta, b64] = refUrl.split(',', 2);
+      const mimeMatch = meta.match(/data:([^;]+)/);
+      const mime = mimeMatch ? mimeMatch[1] : 'image/png';
+      const binary = atob(b64);
+      const arr = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
+      const blob = new Blob([arr], { type: mime });
+      formData.append('image', blob, 'reference.png');
+    }
+    if (options.size) formData.append('size', options.size);
+    if (options.quality) formData.append('quality', options.quality);
+    if (options.n) formData.append('n', String(options.n));
+
+    const response = await fetch(`${baseUrl}${endpoint}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: formData,
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
+      const errorMessage = errorData.error?.message || `HTTP ${response.status}: ${response.statusText}`;
+      throw new Error(errorMessage);
+    }
+
+    const data = await response.json();
+    const first = data.data?.[0];
+    const normalizedUrl =
+      openAiImageDataItemToUrl(first) || (typeof data.url === 'string' ? data.url.trim() : undefined);
+
+    return { success: true, data, url: normalizedUrl };
+  }
+
+  // 无参考图 / 其他模型：走 images/generations
   const endpoint = '/v1/images/generations';
   const body: Record<string, unknown> = {
     model: modelId,
@@ -875,8 +919,6 @@ async function yunwuOpenAiImageOnce(
   if (options.quality) body.quality = options.quality;
   if (options.n) body.n = options.n;
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 120_000);
   const response = await fetch(`${baseUrl}${endpoint}`, {
     method: 'POST',
     headers: {

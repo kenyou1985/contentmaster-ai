@@ -1473,14 +1473,20 @@ def _build_lv59_main_script(
 
         apath = row.get("audio_abs")
         if apath and os.path.isfile(apath):
-            probe_adur = row.get("audio_duration_us")
-            if probe_adur and int(probe_adur) > 0:
-                adur = int(probe_adur)
+            # ── 关键修复：先处理音频，再取值 ─────────────────────────────
+            # _process_audio_for_export 会在音频末尾追加 300ms 静音垫。
+            # 必须在追加静音垫之前或之后统一探测时长，
+            # 否则 materials["audios"].duration（处理前）与 source_timerange（处理后）不一致，
+            # 导致剪映读取材料时截断尾音。
+            _process_audio_for_export(apath)
+            # 处理后重新探测真实时长
+            processed_dur = _ffprobe_duration_us(apath)
+            if processed_dur and processed_dur > 0:
+                adur = int(processed_dur)
             else:
-                adur = int(dur_us)
+                # 兜底：用处理前探测的时长
+                adur = max(33_333, int(row.get("audio_duration_us", 0) or dur_us))
             adur = max(adur, int(dur_us))
-            # 音频时长直接使用 probe 到的值，不再做尾部裁剪
-            # （_process_audio_for_export 已追加了 300ms 静音垫，无需再裁剪）
             aud_mat_id = _make_id()
             lm = uuid.uuid4().hex
             music_id = str(uuid.uuid4())
@@ -1491,7 +1497,7 @@ def _build_lv59_main_script(
                     "category_name": "local",
                     "check_flag": 1,
                     "copyright_limit_type": "none",
-                    "duration": adur,
+                    "duration": adur,  # ← 用处理后（含静音垫）的真实时长
                     "effect_id": "",
                     "formula_id": "",
                     "id": aud_mat_id,
@@ -2162,8 +2168,7 @@ def create_draft_on_mac(
             if ok:
                 row["audio_abs"] = _safe_abs_for_jianying(lap)
                 row["audio_client_path"] = _material_path_for_client(row["audio_abs"])
-                # 使用 ffmpeg 处理音频：去除末尾噪声/静音，添加淡出效果
-                _process_audio_for_export(row["audio_abs"])
+                # 音频时长在此阶段探测，作为兜底；真实处理（追加静音垫）在 _build_lv59_main_script 中统一进行
                 probe_us = _ffprobe_duration_us(row["audio_abs"])
                 # 以文件实测为准；客户端 audioDurationSec 多为文案估算，取 max 会把时间线拉长得远超真实波形（见 pyJianYingDraft：片段时长应对齐素材）。
                 if probe_us:

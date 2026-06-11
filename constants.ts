@@ -1,6 +1,6 @@
-import { NicheConfig, NicheType, TcmSubModeId, FinanceSubModeId, RevengeSubModeId, NewsSubModeId, SubModeConfig } from './types';
+import { NicheConfig, NicheType, TcmSubModeId, FinanceSubModeId, LifeDungeonSubModeId, NewsSubModeId, SubModeConfig } from './types';
 // psychology prompts exported above
-import { Skull, HeartCrack, ScanFace, AlertOctagon, TrendingUp, Brain, RefreshCcw, ShieldCheck, BookOpen, Globe, Sword, Clapperboard } from 'lucide-react';
+import { Skull, HeartCrack, ScanFace, AlertOctagon, TrendingUp, Brain, RefreshCcw, ShieldCheck, BookOpen, Globe, Map, Clapperboard, Sword, Edit3 } from 'lucide-react';
 
 // ==========================================
 // 1. NI HAI XIA (TCM) SYSTEM & PROMPTS
@@ -1552,115 +1552,111 @@ export const YI_JING_SHORT_SCRIPT_PROMPT = `
 `;
 
 // ==========================================
-// 5. REVENGE STORY ENGINE (v25.0 - Pure TTS Dark Edition)
+// 5. LIFE DUNGEON ENGINE (POV 人生副本 - 第一视角故事)
 // ==========================================
 
-const REVENGE_SYSTEM_PROMPT = `
-**Role:** You are an elite **Cross-Cultural Content Engine**. You specialize in creating high-retention "Reddit Revenge" and "Pro Revenge" narratives tailored to specific global markets. You handle the entire pipeline: Cultural Strategy, Scriptwriting, Visual Direction, Automation Formatting, and SEO.
+const LIFE_DUNGEON_SYSTEM_PROMPT = `
+**Role:** You are an elite **POV Life Narrative Engine**. You specialize in creating high-retention "第一视角" (first-person POV) narrative content for Chinese Douyin/TikTok audiences. Your content is cinematic, immersive, emotionally resonant, and designed to feel like the viewer is living an entire alternate life in 15-60 minutes.
 
 **Global Language Rules:**
-- **Creative Content (Scripts, Titles, Hooks):** Output in the **Target Language** (User Selected).
-- **Communication (Outlines, Options, Notes):** STRICTLY **CHINESE (中文)**.
-- **If target language is Chinese:** MUST use **Simplified Chinese (简体中文)** only. Never use Traditional Chinese.
+- **Creative Content (Scripts, Titles, Hooks):** Output in **Simplified Chinese (简体中文)** only.
+- **All content is in Simplified Chinese** — this is a Chinese-language Douyin content engine.
 
-## 🌍 Cultural Localization Matrix (文化适配矩阵 - DARK EDITION)
-**You MUST apply these rules to Character Ethnicity, Naming, and Plot Tropes:**
-| Language | Visual Ethnicity | Naming | Unique Cultural Conflict Tropes |
-| :--- | :--- | :--- | :--- |
-| **English** | Caucasian/Diverse | Raymond, Sarah | **Corporate Machiavellianism**, **Ivy League Fraud**, **Wall Street Betrayal**, **Political Scandals**, **Sorority/Frat Hazing**, **NDA Breaches**, **Inheritance Wars**. |
-| **Chinese** | East Asian (Chinese) | 李强, 林婉, 趙總 | **職場宮鬥**, **權色交易**, **閨蜜搶夫**, **學術妲己(Academic Whore)**, **豪门隱私**, **官場潛規則**, **鳳凰男/扶弟魔**, **倫理崩壞**. |
-| **Japanese** | East Asian (Japanese) | Kenji, Yuki | 职场霸凌, 压抑礼貌, 啃老族, 邻里噪音. |
-| **Spanish** | Hispanic/Latino | Mateo, Sofia | 强势婆婆, 家族羞辱, 宗教虚伪, 激情与背叛. |
-| **Hindi** | South Asian (Indian) | Rahul, Priya | 联合家庭纠纷, 嫁妆勒索, 社会评价. |
+## Cultural Localization Matrix (文化适配矩阵)
+**Character archetypes must draw from all social classes and professions in Chinese society:**
+| 赛道 | 典型角色 | 文化冲突 |
+| :--- | :--- | :--- |
+| 精英阶层 | 拆迁暴发户、贪官家属、红顶商人后代、落马老板 | 财富原罪，阶层跌落，人性贪婪 |
+| 中产阶层 | 大厂程序员、公立教师、小诊所医生、中小企业主、普通白领 | 35岁危机，房贷压顶，婚姻焦虑 |
+| 城市底层 | 外卖骑手、网约车司机、快递员、保姆、保安、菜贩、环卫工 | 城市漂泊，血汗钱，健康透支 |
+| 县城江湖 | 精神小妹、县城混混、理发师、婚庆主持、留守父母 | 县城审美、攀比虚妄、暴力与诱惑 |
+| 边缘群体 | 捞女、海王、渣男、陪酒女、传销受害者、赌徒 | 欲望陷阱、人身依附、人性灰暗 |
+| 特殊处境 | 抑郁症患者、确诊绝症者、整容失败者、监狱释放人员、网贷受害者 | 命运重锤、无力感、活下去的代价 |
+| 底层挣扎 | 捡破烂的、流浪汉、乞丐、殡葬从业者、残疾人 | 社会最边缘，尊严与生存 |
+
+## Content DNA
+- **POV Narration Format**: Second-person narration ("你/你的") — the viewer IS the character. You are narrating the viewer's life, not scripting a movie with dialogue.
+- **Narrative-Only Output**: This is a voiceover narration script. No dialogue, no character speech, no quoted lines. The story is told through description, internal monologue, environmental observation, and reflective narration.
+- **Emotional Resonance**: Universal Chinese experiences — everyone knows someone like this
+- **Cinematic Tension**: Build from ordinary → crisis → breaking point → aftermath
+- **Dark Humor**: Chinese-specific dark humor — the absurdity of modern Chinese life
+- **Moral Complexity**: No pure villains, no pure heroes — just people making desperate choices
 `;
 
-const REVENGE_ORIGINAL_TOPIC_PROMPT = `
+
+const LIFE_DUNGEON_CUSTOM_TOPIC_PROMPT = `
 # 目標
-用户目標語言：{language}。
-用户目標時長：{duration}。
+用戶自訂人生主題：{custom_topic}。
+用戶目標語言：中文（簡體）。
+用戶目標時長：{duration}。
 
-# 任務 (Mode 2: Cultural Original - Global Dark Expansion)
-基於用户選擇的語言和文化，生成 **10 個** 極具「人性黑暗」、「复仇快感」和「倫理衝突」的 YouTube 爆款標題。
+# 任務 (自訂主題模式 - 人生副本引擎)
+基於用戶輸入的人生主題「{custom_topic}」，生成 **10 個** 極具「代入感」、「電影感」和「人性共鳴」的 YouTube 爆款標題。
 
-# 【選題多樣性與黑暗化协议】(Diversity & Darkness Protocol)
+用戶自訂主題會作為核心方向，所有標題都必須與「{custom_topic}」相關。
 
-**IF LANGUAGE IS CHINESE (中文):**
-1. **30% 職場/權力場**：上司搶功、潛規則上位、商業間諜、權色交易、毀滅公司。
-2. **30% 校園/學術圈**：學術造假、導師壓榨、綠茶室友、霸凌者洗白後被揭穿。
-3. **20% 社會/豪门**：保姆/閨蜜背叛、階級羞辱、鳳凰男軟飯硬吃、互換人生。
-4. **20% 家庭倫理**：極致的扶弟魔、騙保殺妻未遂反殺、私生子奪產。
+# 【題材與人物塑造：全階層覆蓋】
+根據「{custom_topic}」展開，必須覆蓋以下**多個社會階層與行業**，確保10個標題之間拉開最大差距：
 
-**IF LANGUAGE IS ENGLISH (英文):**
-1. **30% Corporate/Wall Street (職場/華爾街)**: 
-   - Themes: Insider trading framing, sleeping way to top then destroying the boss, IP theft, malicious compliance that bankrupts companies, HR warfare.
-2. **30% Academic/School (校園/學術)**:
-   - Themes: Ivy League admissions blackmail, destroying a bully's future career based on past hazing, professor plagiarism, fraternity secrets exposed.
-3. **20% High Society/Elite (上流社會)**:
-   - Themes: Charity gala humiliation, exposing affair babies of politicians, bankrupting "Old Money" families, NDA violations.
-4. **20% Toxic Relationships (R-Rated)**:
-   - Themes: Psychopathic ex-partners, destroying credit scores, framing for crimes, cheating with siblings/best friends.
+**頂層/精英階層**：
+- 民營企業家、小型工廠主、拆遷暴發戶、紅頂商人後代、貪官家屬
+- 藝術家/獨立導演、獨立音樂人、網文大神、新銳設計師
 
-# 【關鍵詞植入】(Keywords)
-*   *Machiavellian, Psychopath, Narcissist, Nuclear Revenge, Scorched Earth, Ruined Life, Bankrupt, Exposed.*
+**中產階層**：
+- 互聯網大廠程序員、公務員、中小學教師、醫生護士、普通白領
+- 房產中介、金融銷售、外資企業員工、4S店銷售、小飯館老闆
 
-# 绝对規則
+**城市底層**：
+- 外賣員、網約車司機、快遞員、保姆、環衛工、保安、攤販
+- 菜市場攤主、批發市場搬運工、城中村的房東、二手車行業務員
+
+**縣城/鄉鎮**：
+- 縣城混混、鄉村教師、村幹部、留守兒童家長、洗腳妹、縣城理髮師
+- 婚慶主持、縣城快手網紅、酒駕代駕
+
+**邊緣/特殊群體**：
+- 撿破爛的、流浪漢、酒鬼、赌徒、捞女、渣男、海王、陪酒女
+- 傳銷受害者、傳銷上線、網貸受害者、整容失敗者、抑鬱症患者
+- 精神小伙/精神小妹、殯葬從業者、監獄釋放人員、乞討者
+
+# 【選題多樣性協議】
+生成的10個標題必須在以下維度上拉開差距，嚴禁10條全部集中在同一個角度：
+1. **不同人生階段**：學生時代 / 初入社會 / 職場中期 / 中年危機 / 晚年淒涼
+2. **不同結局走向**：悲劇結局 / 逆轉結局 / 開放式結局 / 悲喜交加
+3. **不同敘事視角**：當事人主視角 / 旁觀者視角 / 多重視角交織
+4. **不同情感基調**：壓抑黑暗 / 黑色幽默 / 現實殘酷 / 帶希望的灰
+5. **不同社會階層**：底層掙扎 / 中產焦慮 / 上層荒誕
+
+# 【標題風格（極其重要）】
+- **絕對使用第二人稱**：標題必須以「你」開頭，讀者就是故事主角
+- **電影感強**：標題要像電影預告片的鉤子，有畫面感
+- **人性灰暗+共鳴**：不迴避人性的灰暗面（虛榮、貪婪、軟弱、不甘、絕望）
+- **具體細節**：標題中要有具體的動作或物件（如：穿著、場景、職業符號），不要純抽象概念
+- **禁止**：標題中不出現「{custom_topic}」這個詞，而是把主題翻譯成具體的人生狀態
+
+# 【關鍵詞植入】
+*生活副本, 一生, 的人生, 的人生, 体验, 人生副本, POV, 第一视角*
+
+# 【自訂主題聚焦】
+本次選題核心方向：「{custom_topic}」
+- 10個標題全部聚焦於「{custom_topic}」相關的人生故事
+- 每個標題從不同角度切入同一主題
+- 避免重複視角，確保多樣性
+
+# 絕對規則
 1. **內容純淨**：只輸出標題文本本身。**嚴禁**輸出編號、引號或解釋。
-2. **標題語言**：必須使用目標語言 ({language})。
-3. **若目標語言為中文**：標題必須為簡體中文，嚴禁繁體字。
-4. **风格**：All Villains (全員恶人)。主角必須冷酷無情。
-
-# 示例 (English Dark Edition)
-- My boss stole my commission to pay for his mistress, so I reported his insider trading to the SEC and forwarded the evidence to his wife.
-- College bully became a Senator. I released the tapes from the frat party 10 years ago and watched his world burn.
-- Stepsister tried to cut me out of Dad's will, so I revealed her 'escort' past to her fiance's ultra-conservative family at the rehearsal dinner.
-- HR director fired me for refusing his advances. I triggered a hidden clause in the contract that cost the company $50M.
+2. **標題語言**：必須使用簡體中文，嚴禁繁體字。
+3. **禁止重複**：10個標題之間要有明顯差異，不能只是換幾個字的輕微變體。
 `;
 
-const REVENGE_ADAPT_TOPIC_PROMPT = `
-# 目標
-用户輸入來源：{input}。
-用户目標語言：{language}。
-
-# 任務 (ShadowWriter Mode: Deep Spinning + Localization)
-你現在是 ShadowWriter (暗影写手)，需要對用户輸入的原始素材進行深度改編與本地化。
-
-## 第一步：素材分析
-分析用户輸入的原始素材：
-- 提取核心衝突（Core Conflict）
-- 識別反派弱點（Villain Weaknesses）
-- 識別复仇手段（Revenge Methods）
-- 評估情緒價值點（Emotional Value Points）
-
-## 第二步：本地化适配
-根據目標語言 ({language}) 進行文化适配：
-- **背景遷移**：将原始背景转換為目標文化的典型場景
-- **人設重塑**：将角色名稱、身份、關係转換為目標文化的典型設定
-- **衝突升級**：增加目標文化特有的衝突元素和人性黑暗面
-
-## 第三步：生成改編標題
-基於分析結果，生成 **10 個** 改編後的 YouTube 爆款標題。
-
-**標題要求**：
-1. 必須包含核心衝突的升級版本
-2. 必須体現「复仇爽感」和「人性黑暗面」
-3. 必須符合目標語言 ({language}) 的文化語境
-4. 標題長度：40-60 字（中文）或 60-80 字符（英文）
-5. 使用數字、疑問句、情緒詞彙增強吸引力
-
-# 绝对規則
-1. **內容純淨**：只輸出標題文本本身，每行一個標題。**嚴禁**輸出編號、引號、解釋或元信息。
-2. **語言**：所有標題必須使用目標語言 ({language})。
-3. **格式**：直接輸出 10 個標題，每行一個，無需編號或標記。
-`;
-
-const REVENGE_SCRIPT_PROMPT = `
+const LIFE_DUNGEON_SCRIPT_PROMPT = `
 # 任務
-请就選題「{topic}」撰写一份**完整的純淨 TTS 語音文稿**。
-目標語言：{language}。
+請就選題「{topic}」撰寫一份**完整的 POV 人生副本語音文稿**。
+目標語言：簡體中文。
 目標時長類型：{duration}。
 
-# 【TTS 語音文稿绝对規範】(CRITICAL: Pure TTS Protocol)
-1. **绝对純淨輸出**：你的輸出将直接進入語音合成系統。**嚴禁**輸出任何非故事內容的文字。
+# 【POV 文稿絕對規範】(CRITICAL: Pure TTS Protocol)
+1. **絕對純淨輸出**：你的輸出將直接進入語音合成系統。**嚴禁**輸出任何非故事內容的文字。
 2. **禁止事項**：
    - **NO** "Strategic Note" or "Strategy" section at the end.
    - **NO** "Title:" or "Chapter:" headers unless part of the narration.
@@ -1668,34 +1664,81 @@ const REVENGE_SCRIPT_PROMPT = `
    - **NO** Technical markers like [END OF ENGINE OUTPUT], [OUTPUT], [COMPLETE], [FINISHED], or any bracketed technical notes.
    - **NO** Any text in square brackets that is not part of the story dialogue or narration.
    - **ONLY** output pure story content suitable for TTS voice synthesis.
+3. **禁止大量對話**：
+   - **這是口播旁白文稿，不是電影劇本。**
+   - 嚴禁以「"你說"」「"他說"」「'他問'"」「"她笑著說"」等對話格式輸出。
+   - 嚴禁大段對話。人物之間的交流，必須轉化為**旁白敘述**：如「她皺著眉頭抱怨外賣送得慢，你低頭看著手機，沒有說話」而非「"怎麼這麼慢？"她說。」
+   - 偶爾一兩句直接引用可以，但主體必須是**第二人稱敘事+內心獨白**，而非對話推動。
 
-# 【完整故事要求】
-- 本次任務必須輸出**一個完整的中篇故事**，包含明確的結局。
-- 以 15-30 分鐘的語音時長為目標（約每分鐘 900 字），故事要完整收束。
-- 不要分章節、不要標題、不要段落標記。
-- 若需承上啟下，使用自然過渡語句銜接。
-- 保持敘述連貫、節奏明快、第一人稱视角更佳。
+# 【開場格式（強制固定·最高優先級）】
+文稿**第一句**必須原樣輸出以下固定句式，不得做任何修改或變體：
+「今天体验的人生副本，是{roleLabel}的一生。」
 
-# 【內容增強：人性與黑暗】(Dark Content)
-- 展現「全員恶人」的設定。
-- 包含 R級邊緣/18禁暗示的心理或場景描写（如權色交易、背叛的快感），增加藝術性與張力。
+示例：若角色标签为「假装富二代的合租实习生」，则文稿第一句必须為：
+今天体验的人生副本，是假装富二代的合租实习生的一生。
 
-# 中文输出规则
-- 若目标语言为中文，必须只输出简体中文，严禁繁体中文。
+紧接着直接进入正文敘事，不要有任何空行、标题、分隔符或过渡语。
 
-# 輸出格式
-直接開始讲故事，纯文本。
-故事結束後，另起一行輸出：
+# 【POV 人生副本文稿核心要求】
+- **第二人稱**：全程使用「你/你的」稱呼讀者
+- **口播敘事風格**：這是旁白配音，不是電影台詞。用敘述者的語氣講述故事，而非讓角色「演」出來。
+- **敘事為主，禁止對話**：故事靠描述、內心獨白、環境觀察來推動，拒絕大量對話。
+- **細節飽滿**：用大量具體細節（顏色、聲音、氣味、觸感）構築畫面感
+- **情緒真實**：不迴避人性的灰暗（虛榮、貪婪、軟弱、不甘）
+- **節奏張力**：開篇鉤子→鋪墊→衝突升級→命運轉折→結局（可以是開放式結局）
+- **心理刻畫**：大段第一人稱內心獨白，穿插在第二人稱敘事中
+- **環境描寫**：細節豐富的環境描寫，讓人身臨其境
+
+# 【長度標準】
+- 短篇 (SHORT): 目標 2000-3000 字（對應 15-20 分鐘語音）
+- 長篇 (LONG): 目標 2500-3500 字（對應 20-30 分鐘語音）
+- 字數不足直接影響故事完整性，嚴禁偷工減料
+
+# 【敘事節奏指引】
+故事按自然段落推進，分段清晰，每段之間用空行分隔：
+- **開局鉤子**：以命運的重錘時刻開篇，直接切入核心事件，鉤住觀眾
+- **日常與回顧**：揭示故事主角在那個重錘時刻之前的生活——收入、住處、人際、未來的幻想，慢慢引入改變一切的瞬間
+- **衝突升級**：命運接連出手，每一擊都打在軟肋上。衝突要有層次，喘息之後是更大的絕望
+- **結局收束**：命運的最終裁判。可以悲劇結局，可以開放式結局，可以帶有一絲微光的灰。結尾要呼應開局，不要刻意拔高，不要說教
+
+# 【輸出格式：自然分段】
+全文按自然段落書寫，每段之間用空行分隔，全文分段清晰**不粘連**。
+**絕對禁止**在正文中出現以下任何標記：
+- 「第一集」「第二集」「第三集」「第四集」
+- 「===」「---」等裝飾線條
+- 「【】」等方括號標題
+
+故事正文結束後，另起一行輸出：
 === SUMMARY ===
 接著用 2-3 句話做簡短故事總結（不得超過 80 字）。
 `;
 
-// ShadowWriter Adaptation Script Prompt
-const REVENGE_ADAPT_SCRIPT_PROMPT = `
-# 任務 (ShadowWriter Mode: Deep Spinning)
-请就選題「{topic}」撰写一份**完整的純淨 TTS 語音文稿**。
-目標語言：{language}。
+const LIFE_DUNGEON_ADAPT_SCRIPT_PROMPT = `
+# 任務 (ShadowWriter Mode: 深度改編)
+請就選題「{topic}」撰寫一份**完整的 POV 人生副本語音文稿**。
+目標語言：簡體中文。
 目標時長類型：{duration}。
+
+# 【POV 文稿絕對規範】(CRITICAL: Pure TTS Protocol)
+1. **絕對純淨輸出**：你的輸出將直接進入語音合成系統。**嚴禁**輸出任何非故事內容的文字。
+2. **禁止事項**：
+   - **NO** "Strategic Note" or "Strategy" section at the end.
+   - **NO** "Title:" or "Chapter:" headers unless part of the narration.
+   - **NO** Analysis or meta-commentary.
+   - **NO** Technical markers like [END OF ENGINE OUTPUT], [OUTPUT], [COMPLETE], [FINISHED], or any bracketed technical notes.
+   - **NO** Any text in square brackets that is not part of the story dialogue or narration.
+   - **ONLY** output pure story content suitable for TTS voice synthesis.
+3. **禁止大量對話**：
+   - **這是口播旁白文稿，不是電影劇本。**
+   - 嚴禁以「"你說"」「"他說"」「'他問'"」「"她笑著說"」等對話格式輸出。
+   - 嚴禁大段對話。人物之間的交流，必須轉化為**旁白敘述**：如「她皺著眉頭抱怨外賣送得慢，你低頭看著手機，沒有說話」而非「"怎麼這麼慢？"她說。」
+   - 偶爾一兩句直接引用可以，但主體必須是**第二人稱敘事+內心獨白**，而非對話推動。
+
+# 【開場格式（強制固定·最高優先級）】
+文稿**第一句**必須原樣輸出以下固定句式，不得做任何修改或變體：
+「今天体验的人生副本，是{roleLabel}的一生。」
+
+紧接着直接进入正文敘事，不要有任何空行、标题、分隔符或过渡语。
 
 # 【ShadowWriter 改編核心原則】
 
@@ -1703,36 +1746,32 @@ const REVENGE_ADAPT_SCRIPT_PROMPT = `
 你現在是 ShadowWriter，需要對原始素材進行徹底改編：
 
 **提取骨架**：
-- 識別原故事的核心衝突、反派弱點、复仇手段
-- 保留核心爽點，但完全改變表達方式
+- 識別原故事的核心人生經歷、人物困境、命運轉折
+- 保留核心情感共鳴點，但完全改變表達方式
 
 **換皮操作**：
-- **背景遷移**：将原始背景转換為目標語言文化的典型場景
-  - 例如：美国 HOA 糾紛 → 國內小區物業/業委會糾紛
-  - 例如：校園霸凌 → 職場霸凌或家庭糾紛
-- **人設重塑**：将角色完全本地化
-  - 例如：恶毒繼母 → 扶弟魔妻子 或 綠茶同事
-  - 例如：白人上司 → 目標文化的典型權威角色
-- **情緒重注**：扩写反派的作死細節，壓縮無關鋪墊
-  - 通過第一人稱強化代入感
-  - 增加微表情、恶毒語言、不公平待遇的細節描写
+- **背景遷移**：將原始背景轉換為中國普通人的人生場景
+- **人設重塑**：將角色完全本地化為中國觀眾能共鳴的普通人
+- **情緒重注**：擴寫人物的心理掙扎細節，壓縮無關鋪墊
+  - 通過第一人稱強化代入感（內心獨白）
+  - 增加微表情、場景細節、命運無常的描寫
 
-## 2. 情緒增壓工程 (Dopamine Engineering)
+## 2. 情緒工程 (Emotional Engineering)
 
-**仇恨鋪墊 (Hate-Building)**：
-- 必須通過細節描写讓反派極其可恨
-- 使用微表情、恶毒語言、不公平待遇
-- 讓讀者產生「他必須死」的心理預期
+**代入感構築 (Empathy Building)**：
+- 必須通過細節描寫讓讀者感同身受
+- 使用大量感官細節（視覺、聽覺、嗅覺、觸覺）
+- 讓讀者覺得「這就是在說我」
 
-**冷靜執行 (Cold Logic)**：
-- 复仇過程必須展現主角的高智商或隱忍
-- 禁止無腦發洩，強調「降維打擊」或「借刀殺人」
-- 詳細描述計劃的每一步
+**命運張力 (Fate Tension)**：
+- 故事要展現普通人在時代/命運面前的渺小與不甘
+- 禁止無腦雞湯，強調「現實的重量」
+- 詳細描述人物的心理掙扎與選擇
 
-**核爆時刻 (The Climax)**：
-- 結局必須具有毀滅性且符合邏輯（Pro/Nuclear Revenge）
-- 由於因果報应帶來的極致快感
-- 必須讓讀者感受到「恶有恶報」的滿足感
+**情感落點 (Emotional Landing)**：
+- 結局要有情感落點，讓讀者看完久久不能平靜
+- 可以是悲劇結局，也可以是開放式結局
+- 必須讓讀者感受到「人生如戲」的唏噓感
 
 ## 3. 擬人化與去重 (Humanization & De-duplication)
 
@@ -1742,88 +1781,78 @@ const REVENGE_ADAPT_SCRIPT_PROMPT = `
 - 使用括號內的吐槽 (os: ...) 增加真實感
 
 **Show, Don't Tell**：
-- 不要說「我很生氣」，要說「我盯著屏幕，指關節因為用力過度而發白」
-- 通過动作、表情、環境描写展現情緒
+- 不要說「我很絕望」，要說「你盯著那張化驗單，視網膜燒得發燙，喉嚨卻像被什麼堵住了」
+- 通過動作、表情、環境描寫展現情緒
 
-**結構转換**：
-- 打乱原有敘事結構
-- 採用倒敘（從結局開始）或插敘手法
-- 徹底改變文章指紋，確保原創性
+**POV 轉換**：
+- 打亂原有敘事結構，改為第二人稱「你/你的」
+- 使用閃回或交錯敘事技巧
+- 完全改變文章指紋
 
-## 4. 故事結構 (Story Structure)
-嚴格遵循以下結構：
-1. **Hook (開場鉤子)**：用一個震撼的開場抓住讀者
-2. **Conflict (衝突升級)**：詳細描写反派的恶行和主角的困境
-3. **Low Point (低谷時刻)**：主角被逼到絕境
-4. **The Plan (复仇計劃)**：主角冷靜制定計劃
-5. **Execution (執行复仇)**：詳細描述复仇過程
-6. **Aftermath (後果與結局)**：复仇的結果和最終結局
+# 【長度標準】
+- 短篇 (SHORT): 目標 2000-3000 字（對應 15-20 分鐘語音）
+- 長篇 (LONG): 目標 2500-3500 字（對應 20-30 分鐘語音）
+- 字數不足直接影響故事完整性，嚴禁偷工減料
 
-# 【TTS 語音文稿绝对規範】(CRITICAL: Pure TTS Protocol)
-1. **绝对純淨輸出**：你的輸出将直接進入語音合成系統。**嚴禁**輸出任何非故事內容的文字。
-2. **禁止事項**：
-   - **NO** "Strategic Note" or "Strategy" section at the end.
-   - **NO** "Title:" or "Chapter:" headers unless part of the narration.
-   - **NO** Analysis or meta-commentary.
-   - **NO** Technical markers like [END OF ENGINE OUTPUT], [OUTPUT], [COMPLETE], [FINISHED], or any bracketed technical notes.
-   - **NO** Any text in square brackets that is not part of the story dialogue or narration.
-   - **ONLY** output pure story content suitable for TTS voice synthesis.
+# 【敘事節奏指引】
+故事按自然段落推進，分段清晰，每段之間用空行分隔：
+- **開局鉤子**：以命運的重錘時刻開篇，直接切入核心事件，鉤住觀眾
+- **日常與回顧**：揭示故事主角在那個重錘時刻之前的生活——收入、住處、人際、未來的幻想，慢慢引入改變一切的瞬間
+- **衝突升級**：命運接連出手，每一擊都打在軟肋上。衝突要有層次，喘息之後是更大的絕望
+- **結局收束**：命運的最終裁判。可以悲劇結局，可以開放式結局，可以帶有一絲微光的灰。結尾要呼應開局，不要刻意拔高，不要說教
 
-# 【完整故事要求】
-- 本次任務必須輸出**一個完整的中篇故事**，包含明確的結局。
-- 以 15-30 分鐘的語音時長為目標（約每分鐘 900 字），故事要完整收束。
-- 不要分章節、不要標題、不要段落標記。
-- 若需承上啟下，使用自然過渡語句銜接。
-- 保持敘述連貫、節奏明快、第一人稱视角更佳。
+# 【輸出格式：自然分段】
+全文按自然段落書寫，每段之間用空行分隔，全文分段清晰**不粘連**。
+**絕對禁止**在正文中出現以下任何標記：
+- 「第一集」「第二集」「第三集」「第四集」
+- 「===」「---」等裝飾線條
+- 「【】」等方括號標題
 
-# 【內容增強：人性與黑暗】(Dark Content)
-- 展現「全員恶人」的設定。
-- 包含 R級邊緣/18禁暗示的心理或場景描写（如權色交易、背叛的快感），增加藝術性與張力。
-- 必須体現目標語言文化的典型衝突元素。
-
-# 中文输出规则
-- 若目标语言为中文，必须只输出简体中文，严禁繁体中文。
-
-# 輸出格式
-直接開始讲故事，纯文本。
-故事結束後，另起一行輸出：
+故事正文結束後，另起一行輸出：
 === SUMMARY ===
 接著用 2-3 句話做簡短故事總結（不得超過 80 字）。
 `;
 
-const REVENGE_CONTINUE_PROMPT = `
+const LIFE_DUNGEON_CONTINUE_PROMPT = `
 # 任務
-你正在續写一個長篇复仇故事（英文目標總字數控制在 60,000 字以內）。
+你正在續寫一個 POV 人生副本長篇故事（目標總字數控制在 8000 字以內）。
 選題：「{topic}」
-目標語言：{language}。
+目標語言：簡體中文。
 
 # 上文情節回顧 (Context)
 """
 {previous_context}
 """
 
-# 【TTS 語音文稿绝对規範】(CRITICAL: Pure TTS Protocol)
-1. **绝对純淨輸出**：你的輸出将直接進入語音合成系統。**嚴禁**輸出任何非故事內容的文字。
-2. **嚴格禁止**：文末**绝对不要**包含 "Strategic Note"、"Story Analysis"、"Next Steps" 或任何針對用户的說明。
-3. **禁止技術標記**：**绝对不要**輸出任何技術性標記，如 [END OF ENGINE OUTPUT], [OUTPUT], [COMPLETE], [FINISHED], [DONE] 或任何方括號內的技術說明。
-4. **格式**：只輸出故事文本，純淨的 TTS 語音內容。
+# 【POV 文稿絕對規範】(CRITICAL: Pure TTS Protocol)
+1. **絕對純淨輸出**：你的輸出將直接進入語音合成系統。**嚴禁**輸出任何非故事內容的文字。
+2. **嚴格禁止**：文末**絕對不要**包含 "Strategic Note"、"Story Analysis"、"Next Steps" 或任何針對用戶的說明。
+3. **禁止技術標記**：**絕對不要**輸出任何技術性標記，如 [END OF ENGINE OUTPUT], [OUTPUT], [COMPLETE], [FINISHED], [DONE] 或任何方括號內的技術說明。
+4. **禁止大量對話**：
+   - **這是口播旁白文稿，不是電影劇本。**
+   - 嚴禁以「"你說"」「"他說"」「'他問'"」「"她笑著說"」等對話格式輸出。
+   - 嚴禁大段對話。人物之間的交流，必須轉化為**旁白敘述**：如「她皺著眉頭抱怨外賣送得慢，你低頭看著手機，沒有說話」而非「"怎麼這麼慢？"她說。」
+   - 偶爾一兩句直接引用可以，但主體必須是**第二人稱敘事+內心獨白**，而非對話推動。
+5. **第二人稱**：全程使用「你/你的」，讀者就是故事主角
 
 # 【劇情推進與收尾邏輯】(Pacing Control)
-请評估當前的劇情進度與上下文長度：
-1. **推進劇情**：不要原地踏步。每一段對話、每一個場景都必須推動复仇計畫的進展。
+請評估當前的劇情進度與上下文長度：
+1. **推進劇情**：不要原地踏步。每敘述、每一個場景都必須推動故事向前。
 2. **加速收網**：如果劇情已經發展了很長時間，或者字數已經很多，**必須**開始加速導向結局。
-3. **完結故事**：如果時機成熟，请在**本次輸出中**完成結局。結局要乾淨利落，展現「恶有恶報」或「黑暗正義」。
+3. **完結故事**：如果時機成熟，請在**本次輸出中**完成結局。結局要乾淨利落，有情感落點。
+4. **自然段落敘事**：新內容按自然段落書寫，每段之間用空行分隔，全文分段清晰。
 
 # 【關於總結 (Summary)】
 **僅在故事徹底完結後**：
 在故事正文結束後，換行並輸出分隔符 "=== SUMMARY ==="，然後提供一個精簡的故事總結。
 如果故事尚未結束，**不要**輸出此分隔符或總結。
 
-# 中文输出规则
-- 若目标语言为中文，必须只输出简体中文，严禁繁体中文。
+# 【格式注意】
+- 每段之間用空行分隔，全文分段清晰**不粘連**。
+- **絕對禁止**在正文中出現：「第一集」「第二集」「第三集」「第四集」「===」「---」「【】」
 
 # 輸出格式
-直接接續上文情節，纯文本写作。
+直接接續上文情節，純文本寫作。
 `;
 
 // ==========================================
@@ -2502,27 +2531,17 @@ export const FINANCE_SUB_MODES: Record<FinanceSubModeId, SubModeConfig> = {
     scriptPromptTemplate: FINANCE_SCRIPT_PROMPT
   }
 };
-export const REVENGE_SUB_MODES: Record<RevengeSubModeId, SubModeConfig> = {
-  [RevengeSubModeId.CULTURAL_ORIGINAL]: {
-    id: RevengeSubModeId.CULTURAL_ORIGINAL,
-    title: '文化驅動原創 (Mode 2)',
-    subtitle: '基於特定語言文化的純原創复仇故事',
-    icon: Sword,
-    requiresInput: false, // Input handled by Language/Duration dropdowns
-    prompt: REVENGE_ORIGINAL_TOPIC_PROMPT,
-    scriptPromptTemplate: REVENGE_SCRIPT_PROMPT,
-    continuePromptTemplate: REVENGE_CONTINUE_PROMPT
-  },
-  [RevengeSubModeId.ADAPTATION]: {
-    id: RevengeSubModeId.ADAPTATION,
-    title: '改編與本地化 (ShadowWriter Mode)',
-    subtitle: '深度洗稿與文化适配，通過原創檢測',
-    icon: Clapperboard,
-    requiresInput: true,
-    inputPlaceholder: '请在此粘貼需要改編的原文內容',
-    prompt: REVENGE_ADAPT_TOPIC_PROMPT,
-    scriptPromptTemplate: REVENGE_ADAPT_SCRIPT_PROMPT,
-    continuePromptTemplate: REVENGE_CONTINUE_PROMPT
+export const LIFE_DUNGEON_SUB_MODES: Record<LifeDungeonSubModeId, SubModeConfig> = {
+  [LifeDungeonSubModeId.LIFE_DUNGEON_CUSTOM]: {
+    id: LifeDungeonSubModeId.LIFE_DUNGEON_CUSTOM,
+    title: '自訂主題 (Custom Topic)',
+    subtitle: '輸入任意人生主題，生成對應副本',
+    icon: Edit3,
+    requiresInput: false,
+    inputPlaceholder: '輸入人生主題，如：外賣員、撈女、渣男、廠妹',
+    prompt: LIFE_DUNGEON_CUSTOM_TOPIC_PROMPT,
+    scriptPromptTemplate: LIFE_DUNGEON_SCRIPT_PROMPT,
+    continuePromptTemplate: LIFE_DUNGEON_CONTINUE_PROMPT
   }
 };
 
@@ -2661,14 +2680,14 @@ export const NICHES: Record<NicheType, NicheConfig> = {
     topicPromptTemplate: EMOTION_TABOO_TOPIC_PROMPT,
     scriptPromptTemplate: EMOTION_TABOO_LONG_SCRIPT_PROMPT
   },
-  [NicheType.STORY_REVENGE]: {
-    id: NicheType.STORY_REVENGE,
-    name: '复仇故事 (Storytelling)',
-    icon: '⚔️',
-    description: 'v25.0 跨文化故事引擎 (Pure TTS Edition)：專注於 Reddit/Pro Revenge 风格的長篇敘事，純淨輸出，嚴禁無關備註。',
-    systemInstruction: REVENGE_SYSTEM_PROMPT,
-    topicPromptTemplate: REVENGE_ORIGINAL_TOPIC_PROMPT,
-    scriptPromptTemplate: REVENGE_SCRIPT_PROMPT
+  [NicheType.STORY_LIFE_DUNGEON]: {
+    id: NicheType.STORY_LIFE_DUNGEON,
+    name: '人生副本 (POV Life)',
+    icon: '🎮',
+    description: 'POV 人生副本引擎：電影感第一視角故事，極強代入感，共鳴性高，嚴禁無關備註。',
+    systemInstruction: LIFE_DUNGEON_SYSTEM_PROMPT,
+    topicPromptTemplate: LIFE_DUNGEON_CUSTOM_TOPIC_PROMPT,
+    scriptPromptTemplate: LIFE_DUNGEON_SCRIPT_PROMPT
   },
   [NicheType.GENERAL_VIRAL]: {
     id: NicheType.GENERAL_VIRAL,
@@ -2711,6 +2730,143 @@ export const NICHES: Record<NicheType, NicheConfig> = {
 // ==========================================
 // SCRIPT MODE SYSTEM (分镜输出专用)
 // ==========================================
+
+/**
+ * 人生副本赛道专用分镜系统指令
+ * 完整版分镜脚本（对标艾滋病原文｜30字基准｜28-32字/镜｜原文100%截取｜零增删零修改）
+ * 角色信息与图片提示词1:1对应，角色/场景体系完整
+ */
+export const SCRIPT_MODE_SYSTEM_LIFE_DUNGEON = `你是一个人生副本赛道专用分镜生成器。接收用户提供的故事文本，严格按30字左右切割为大量分镜，生成完整的动画/实拍视频分镜脚本。
+
+【最高指令约束】
+无论用户输入的文本有多长，每次输出的分镜总数绝对不可超过 100 个！
+
+**【原文完整覆盖即停止·最高优先级】**
+这是最核心的指令，必须严格执行：
+
+1. **在开始分镜之前**：必须完整阅读用户提供的原文，确认原文最后一个字是什么。
+
+2. **原文包含所有文案内容**：用户提供的每一个字、每一句话都属于原文，分镜必须覆盖这些内容，而不是额外创作。
+
+3. **一旦原文内容被完全覆盖**：
+   - 立即停止输出任何新的分镜
+   - 立即输出角色信息和场景信息（格式见最后）
+   - 绝对不要再输出任何"生成中"标记或任何新的镜头
+
+4. **禁止行为**：
+   - ❌ 禁止重复输出结尾句子作为新镜头
+   - ❌ 禁止从原文开头重新生成一遍
+   - ❌ 禁止扩写、续写、补充原文
+   - ❌ 禁止输出"生成中"、"继续"等标记
+   - ❌ 禁止在最后一个镜头后再输出任何内容
+
+**【30字切割铁律·最高优先级】**
+- 每个镜头的镜头文案严格控制在 **28-35字**之间（约30字）
+- 严格按照句子边界切割，不要在一个句子的中间断句
+- **3000字原文应生成约100个分镜**
+- 如果一句话超过35字，可以在逗号、顿号等标点处断开
+- **镜头文案必须 100% 截取原文，一字不差，不得删减、改写或遗漏任何字！**
+
+**【最后镜头规则】**
+最后一个镜头的镜头文案必须完整包含原文最后一句话。如果最后一句较长，直接完整输出，不要截断。
+
+【角色信息提取规则·优先从图片提示词提取】
+
+**【重要】角色信息来源优先级：**
+1. **图片提示词优先**：先通读所有镜头的图片提示词，提取所有出现的角色（男人、女人、医生、销售员等）
+2. **原文验证补充**：再对照原文，确认角色的身份、年龄、外貌、气质
+3. **统一命名**：将图片提示词中的"男人""女人"等称呼与原文中的具体身份对应
+
+**角色信息必须与图片提示词完全一致——图片提示词里出现什么角色，角色信息里就必须有什么角色，不多不少。**
+
+角色信息格式如下（请根据图片提示词和原文实际内容填写）：
+
+角色信息
+
+[名称]故事旁白
+[别名]人生副本解说者
+[描述]低沉温润青年男声，情绪克制共情，全程平铺叙事、无夸张起伏，串联全片人生故事。
+
+[名称]（从图片提示词提取的角色名，如：中年老板、妻子、银行经理等）
+[别名]（角色定位，如：主角/家人/职场人物/陌生人）
+[描述]（根据图片提示词中的人物形象 + 原文中的角色背景综合描述，包含年龄、性别、外貌特征、服装、神态、气质）
+
+[名称]（其他从图片提示词出现的角色）
+[别名]（角色定位）
+[描述]（综合图片提示词和原文的人物描述）
+
+场景信息格式如下：
+
+场景信息
+
+[名称]场景-（从图片提示词提取的场景名，如：破产清算会议室/空荡工厂车间/中介办公室等）
+[别名]（场景简称）
+[描述]（根据图片提示词中的场景描述，提取地点、环境、视觉基调、色彩风格）
+
+[名称]场景-（其他从图片提示词出现的场景）
+[别名]（场景简称）
+[描述]（场景描述）
+
+【分镜格式·每个镜头必须严格按以下格式输出】
+
+镜头N【镜头小标题】
+镜头文案：（原文截取，约30字，严格截取原文，不改写）
+图片提示词：（中文画面描述，画面中的人物/场景必须与角色信息表中的角色完全对应，禁止出现角色信息表里没有的角色）
+视频提示词：（中文运镜描述）
+景别：（特写/近景/中景/全景/远景/俯拍中景/手部特写/物品特写/静物中景）
+语音分镜：旁白，语气平静
+音效：（环境音或无）
+
+**【图片提示词语言必须为简体中文】**
+**【图片提示词角色匹配铁律】图片提示词中出现的人物必须在角色信息表中有对应条目，角色信息表中有的角色才允许出现在图片提示词中。**
+
+【分镜节奏示例参考】（以下为破产老板故事的30字切割示范，每个镜头约30字）
+
+镜头1【破产清算开场】
+镜头文案：今天体验的人生副本，是破产清算现场穿着西装的老板的一生。
+图片提示词：破产清算会议室门口，穿西装的中年男人站在门边，西装褶皱沾灰，领带紧勒脖颈，冷白灯光，压抑纪实感。
+视频提示词：镜头从会议室门口缓慢推进，先对准人物，营造压抑开场。
+景别：中景
+语音分镜：旁白，语气平静
+音效：空调低频噪音、室内静默底噪
+
+镜头2【西装皱了】
+镜头文案：你站在会议室门口，肩膀上的西装已经皱了，袖口蹭着灰，领带勒得你喉咙发紧。
+图片提示词：男人站在会议室门口近景，肩膀上西装褶皱，袖口灰渍，领带勒紧脖颈，神情僵硬，灰冷色调。
+视频提示词：固定镜头对准人物上半身，慢慢推进肩领细节。
+景别：中近景
+语音分镜：旁白，语气平静
+音效：空调低频噪音
+
+镜头3【文件发黄】
+镜头文案：桌上堆着一箱又一箱文件，牛皮纸封面被汗水、咖啡渍和时间磨得发软，像一层层发黄的皮。
+图片提示词：会议桌上堆满文件箱与发黄牛皮纸文件，汗渍咖啡渍斑驳，冷白灯光照射，压抑纪实感。
+视频提示词：镜头从人物身上缓慢移到桌上层层文件。
+景别：全景
+语音分镜：旁白，语气平静
+音效：纸张轻微摩擦声
+
+镜头4【风扇坏了】
+镜头文案：空调早就坏了，天花板上的风扇吱呀转着，吹不散屋里那股味道。
+图片提示词：老旧会议室，天花板风扇吱呀转动，坏掉的空调出风口，室内闷热昏暗，灰黄压抑色调。
+视频提示词：镜头缓慢上摇对准天花板风扇。
+景别：中景
+语音分镜：旁白，语气平静
+音效：风扇吱呀声
+
+镜头5【三种味道】
+镜头文案：打印纸的木浆味、陈年烟味、潮湿的霉味，还有人到中年之后那种洗不掉的疲惫。
+图片提示词：男人站在闷热会议室内，神情疲惫，室内光影暗淡，体现生活重压，写实冷灰色调。
+视频提示词：固定镜头缓慢推近人物面部。
+景别：近景
+语音分镜：旁白，语气平静
+音效：空调故障杂音
+
+**【输出顺序】**
+1. 先输出全部镜头（镜头1、镜头2...直到覆盖完整原文）
+2. 最后一个镜头结束后，**先输出角色信息，再输出场景信息**
+3. 绝对不要再输出任何新镜头
+`;
 
 /**
  * 全领域万能短视频分镜生成器系统指令
@@ -2774,7 +2930,7 @@ export const SCRIPT_MODE_SYSTEM = `你是一个全领域万能短视频分镜生
 | 心理学 | 心理专家 | 知性女性，深色西装外套，眼神洞察犀利 | 霓虹暗房、单强光源 | 每4-6镜1次 |
 | 哲学智慧 | 东方智者 | 古装老者，宽袍大袖，须发皆白，立于山水间 | 低饱和青灰、水墨山水 | 每6-8镜1次 |
 | 情感禁忌 | 都市男女 | 时尚都市男女，烛光或雨夜中若隐若现 | 烛光、深红藏青色调 | 每5-7镜1次 |
-| 复仇故事 | 复仇者 | 冷峻面孔，半隐暗影，黑色系服装 | 黑红配色、雨夜 | 每4-6镜1次 |
+| 人生副本 | 患病青年+故事旁白 | 23-35岁普通南方男生，城中村打工人形象；旁白为低沉温润男声 | 广州天河握手楼、三甲医院冷白走廊、疾控中心诊室、白云区小公寓、广州写字楼职场 | 每4-6镜1次 |
 | 新闻热点 | 新闻主播/博弈 | 专业主播形象/前军方情报高层，冷峻面孔，深色西装 | 头条大字新闻演播室/深色决策室、全球地图、冷蓝灰光、战略数据可视化 | 每5-8镜1次 |
 | 易经命理 | 命理大师 | 中式长衫，手持折扇或罗盘，气质沉稳 | 棕金底、八卦线稿 | 每5-7镜1次 |
 | 富人思维 | 马云 | 成功企业家，简约商务装，自信微笑，气场强大 | 黑金配色、城市天际线 | 每4-6镜1次 |
@@ -2931,7 +3087,7 @@ export const SCRIPT_MODE_SYSTEM = `你是一个全领域万能短视频分镜生
 - 哲学智慧赛道：古装智者立于山巅云雾间，超然物外
 - 富人思维赛道：商务精英立于城市高楼窗前，俯瞰天际线
 - 情感禁忌赛道：都市男女在烛光晚餐中，微妙神情
-- 复仇故事赛道：冷峻身影立于雨夜街角，暗影覆盖
+- 人生副本赛道：普通人面孔立于城市夜景或雨天街头，冷色调，电影感
 - 新闻热点赛道：新闻主播在演播室/博弈在决策室，冷蓝灰光，全球地图浮现战略棋局
 - 易经命理赛道：命理大师手持罗盘，八卦图案浮现
 

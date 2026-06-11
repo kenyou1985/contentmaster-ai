@@ -7,7 +7,7 @@ export const COVER_NICHE_ORDER: NicheType[] = [
   NicheType.PSYCHOLOGY,
   NicheType.PHILOSOPHY_WISDOM,
   NicheType.EMOTION_TABOO,
-  NicheType.STORY_REVENGE,
+  NicheType.STORY_LIFE_DUNGEON,
   NicheType.GENERAL_VIRAL,
   NicheType.YI_JING_METAPHYSICS,
   NicheType.GREAT_POWER_GAME,
@@ -79,13 +79,13 @@ const PROFILES: Record<NicheType, CoverNicheProfile> = {
     schemeCHint: '雨中车窗模糊外景 + 都市男女手特写，高情绪对比。',
     refUploadHint: '可上传色调参考；提示词强调电影剧照感、成人向情绪片。',
   },
-  [NicheType.STORY_REVENGE]: {
+  [NicheType.STORY_LIFE_DUNGEON]: {
     styleDna:
-      '复仇故事向：黑红配色、雨夜、刀锋/火焰隐喻、粗衬线标题；**融入冷峻复仇者身影**，戏剧张力、叙事片预告。',
-    schemeAHint: '雨夜街道，复仇者背影或侧影立于街角，电影宽画幅。',
-    schemeBHint: '黑底血红十字线或断裂符号 + 复仇宣言大字。',
-    schemeCHint: '复仇者半脸阴影分割，眼神特写，高噪点。',
-    refUploadHint: '可上传反派/主角剪影参考；提示词强调暗黑剧情片缩略图。',
+      '人生副本 POV 向：電影感寫實風格、暖灰調、霓虹暗房、城市邊緣地帶、縣城氛圍；**融入普通中國人的身影**，沒有金手指，沒有主角光環，強烈的時代感和命運感，電影預告片質感。',
+    schemeAHint: '城市邊緣/縣城場景，普通中國人背影或側影立於街角，電影寬畫幅。',
+    schemeBHint: '暖灰底 + 白字一句POV鉤子（如「你的人生副本，開始了」）。',
+    schemeCHint: '普通人半臉陰影分割，眼神特寫，高噪點電影感。',
+    refUploadHint: '可上傳普通中國人生活場景參考；提示詞強調電影感寫實風格。',
   },
   [NicheType.GENERAL_VIRAL]: {
     styleDna:

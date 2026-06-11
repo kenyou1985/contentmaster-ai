@@ -613,12 +613,11 @@ import {
   GenerationStatus,
   TcmSubModeId,
   FinanceSubModeId,
-  RevengeSubModeId,
+  LifeDungeonSubModeId,
   NewsSubModeId,
-  StoryLanguage,
-  StoryDuration,
+  LifeDungeonLength,
 } from '../types';
-import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, REVENGE_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT, YI_JING_SHORT_SCRIPT_PROMPT, HISTORICAL_FIGURE_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH, applyTopicCountToPrompt } from '../constants';
+import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, LIFE_DUNGEON_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT, YI_JING_SHORT_SCRIPT_PROMPT, HISTORICAL_FIGURE_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH, applyTopicCountToPrompt } from '../constants';
 import { NicheSelector } from './NicheSelector';
 import { generateTopics, streamContentGeneration, initializeGemini, SEGMENT_RETRY_MAX, SEGMENT_RETRY_DELAY_MS } from '../services/geminiService';
 import { fetchMacroNewsDigestForPrompt } from '../services/macroNewsFeedService';
@@ -795,6 +794,95 @@ function ensureGreatPowerClosingZh(text: string): string {
   return `${trimmed} 博弈从未停止。`;
 }
 
+/**
+ * 人生副本选题：提取副本角色名称
+ * 从标题中提取"什么xx的人生"结构，返回角色名如"假装富二代的合租实习生"
+ * 用法：今天体验的人生副本，是[角色名]的一生
+ */
+function extractLifeDungeonRoleLabel(topicTitle: string): string {
+  const raw = topicTitle.trim();
+
+  // 匹配模式1：逗号分隔的故事类标题
+  // 如："你是一个假装富二代的合租实习生，月薪3500却天天点外卖"
+  const commaMatch = raw.match(/^你[是为]?(.+?)，/);
+  if (commaMatch && commaMatch[1] && commaMatch[1].length >= 2 && commaMatch[1].length <= 30) {
+    return commaMatch[1].trim();
+  }
+
+  // 匹配模式2：含"的"字的核心名词结构
+  // 如："你的外卖员人生副本"，"你的富士康厂妹的一生副本"
+  const deMatch = raw.match(/^(?:你(?:的|是)?)(.+?)(?:的(?:人生|故事|副本)|一生|的人生)/);
+  if (deMatch && deMatch[1] && deMatch[1].length >= 2 && deMatch[1].length <= 30) {
+    return deMatch[1].trim();
+  }
+
+  // 匹配模式3：以"是"开头的副标题
+  // 如："是外卖员的一生副本"
+  const shiMatch = raw.match(/^是(.+?)(?:的一生|的副本|的人生)/);
+  if (shiMatch && shiMatch[1] && shiMatch[1].length >= 2 && shiMatch[1].length <= 30) {
+    return shiMatch[1].trim();
+  }
+
+  // 匹配模式4：破折号/冒号后面的角色
+  // 如："外卖员的人生副本——月薪3500"
+  const dashMatch = raw.match(/[——:：](.+?)(?:的(?:人生|副本)|的一生|的人生)/);
+  if (dashMatch && dashMatch[1] && dashMatch[1].length >= 2 && dashMatch[1].length <= 30) {
+    return dashMatch[1].trim();
+  }
+
+  // 匹配模式5：标题末尾的"XX的一生"结构，取其前缀
+  const suffixMatch = raw.match(/(.{2,20})的一生/);
+  if (suffixMatch && suffixMatch[1]) {
+    return suffixMatch[1].trim();
+  }
+
+  // 兜底：取标题前15个字作为角色
+  return raw.slice(0, 15).trim();
+}
+
+/**
+ * 人生副本角色标注格式化：加上"xx外卖员"等前缀
+ * 从标题中识别角色类型，补全标注
+ * 如："假装富二代的合租实习生" → "合租实习生·假装富二代"
+ */
+function formatRoleLabel(roleLabel: string, topicTitle: string): string {
+  // 常见职业/身份词：用于识别核心角色
+  const roleKeywords = [
+    '外卖员', '厂妹', '厂弟', '富士康', '流水线', '保洁', '保安',
+    '服务员', '收银员', '司机', '滴滴', '网约车', '快递员', '骑手',
+    '网红', '主播', '陪酒', '陪聊', '偶像', '练习生',
+    '捞女', '渣男', '海王', '酒托', '骗子',
+    '乞丐', '流浪汉', '赌徒', '吸毒', '传销',
+    '程序员', '实习生', '大学生', '高中生', '中专生',
+    '宝妈', '家庭主妇', '寡妇', '剩女', '捞女',
+    '房东', '租客', '合租',
+    '网红', '微商', '代购',
+    '演员', '临时演员', '群众演员',
+    '老板', '生意人', '摊贩', '小贩',
+    '农民', '农民工', '矿工', '建筑工',
+  ];
+
+  for (const kw of roleKeywords) {
+    if (topicTitle.includes(kw)) {
+      // 如果 roleLabel 已经包含关键词，直接返回
+      if (roleLabel.includes(kw)) return roleLabel;
+
+      // 如果关键词是前缀，放在前面
+      const kwPos = topicTitle.indexOf(kw);
+      const beforeKw = topicTitle.slice(Math.max(0, kwPos - 15), kwPos).trim();
+      // 如果 roleLabel 包含描述性前缀（如"假装富二代的"），组合
+      if (beforeKw.length > 2 && beforeKw.length <= 15) {
+        return `${beforeKw}${kw}`;
+      }
+      // 否则角色就是关键词本身
+      return kw;
+    }
+  }
+
+  // 没有识别到职业关键词，直接返回角色标签
+  return roleLabel;
+}
+
 /** 历史人物选题：去掉 * / **，保留【分类标签】和中文标题 */
 function sanitizeMindfulPsychologyTopicLine(raw: string): string {
   const labelMatch = raw.match(/^\s*【([^】]+)】/);
@@ -950,6 +1038,14 @@ function getOneShotScriptPlan(niche: NicheType): OneShotScriptPlan | null {
         extraDirective:
           '主题方向必须偏中医玄学。目标字数控制在约6000字，允许上下浮动，但整体不要明显短于5600字或超过6400字。生成时直接写出最终口播稿，去掉任何分段并行、合并、洗稿思维。',
       };
+    case NicheType.STORY_LIFE_DUNGEON:
+      return {
+        minChars: 2000,
+        maxChars: 3500,
+        targetLabel: '2000 - 3500',
+        extraDirective:
+          '主题方向必须偏人生副本 POV 故事。生成时就同步降低 AI 味：禁止每段都有升华句、禁止整齐对称的"总分总"结构、禁止序列词堆砌（"首先其次最后"）。要有电影感的叙事节奏，有具体的感官细节（颜色、声音、气味），让观众感觉身临其境。口语自然，句长有变化，有停顿感，有跳跃感。不要写创作说明、字数说明、前置语，直接输出故事正文。',
+      };
     default:
       return null;
   }
@@ -992,7 +1088,7 @@ function shouldUseOneShotLongForm(niche: NicheType, scriptLengthMode: 'LONG' | '
   if (scriptLengthMode !== 'LONG') return false;
   // 睡前历史人物需要 10000+ 字，超出单次输出上限，走分段并行 pipeline
   if (niche === NicheType.HISTORICAL_FIGURE) return false;
-  return niche !== NicheType.STORY_REVENGE;
+  return true; // 所有赛道（含人生副本）均走一次性直出
 }
 
 /**
@@ -1006,7 +1102,7 @@ function toNicheTypeForScoring(niche: NicheType): NicheTypeForScoring {
     case NicheType.PSYCHOLOGY: return 'psychology';
     case NicheType.PHILOSOPHY_WISDOM: return 'philosophy_wisdom';
     case NicheType.EMOTION_TABOO: return 'emotion_taboo';
-    case NicheType.STORY_REVENGE: return 'story_revenge';
+    case NicheType.STORY_LIFE_DUNGEON: return 'story_revenge';
     case NicheType.GENERAL_VIRAL: return 'news';
     case NicheType.GREAT_POWER_GAME: return 'great_power_game';
     case NicheType.HISTORICAL_FIGURE: return 'mindful_psychology';
@@ -1018,16 +1114,13 @@ function toNicheTypeForScoring(niche: NicheType): NicheTypeForScoring {
 function getParallelPipelineBundle(
   niche: NicheType,
   scriptLengthMode: 'LONG' | 'SHORT',
-  storyLanguage: StoryLanguage,
-  storyDuration: StoryDuration,
+  storyLength: LifeDungeonLength,
   nicheConfig: NicheConfig,
   greatPowerLang?: GreatPowerLanguage,
   totalTargetChars?: number
 ) {
   const baseName = nicheConfig.name;
-    const isEnRevenge =
-    niche === NicheType.STORY_REVENGE && storyLanguage === StoryLanguage.ENGLISH;
-  const outputLanguage: 'zh' | 'en' = isEnRevenge ? 'en' : 'zh';
+  const outputLanguage: 'zh' | 'en' = 'zh';
 
   let logicBlueprint = PARALLEL_LOGIC_GENERIC;
   let channelLabel = `「${baseName}」频道长内容`;
@@ -1064,15 +1157,13 @@ function getParallelPipelineBundle(
     mergeTone = '全文语气统一为倪海厦式骂醒风格：犀利、直接、口语化。全文禁止重复套话，以下句式只允许出现1次：爬山故事、"你们不要笑……说不下去了"叹息句、"我跟你讲……算了不说这个了"省略句。语气词"我跟你讲""说真的""我这话难听"各不超过2次。各段衔接自然，禁止出现两段内容高度相似的重复段落。【结尾CTA（强制）】全文结尾只能输出以下唯一一句，不得多写任何其他引导词：「身体是本钱，评论区打上"安康"两字，咱们下期再见。」禁止使用大国博弈式结尾（"博弈还在继续"等）。';
   }
 
-  if (niche === NicheType.STORY_REVENGE) {
-    channelLabel = `「复仇故事」${storyLanguage} 叙事`;
+  if (niche === NicheType.STORY_LIFE_DUNGEON) {
+    channelLabel = '「人生副本」POV 叙事';
     contentKindOutline =
-      storyDuration === StoryDuration.LONG ? '长篇叙事分章大纲' : '短篇叙事分章大纲';
-    contentKindMerge = '叙事脚本';
-    directorLine = `你是专业叙事总编导；须规划 **${storyLanguage}** 语种的分章结构，符合该赛道复仇/打脸叙事节奏。`;
-    if (outputLanguage === 'en') {
-      mergeEditorLine = 'You are a senior story editor merging serialized narrative acts.';
-    }
+      storyLength === LifeDungeonLength.LONG ? '长篇POV分章大纲' : '短篇POV分章大纲';
+    contentKindMerge = 'POV叙事脚本';
+    directorLine = '你是POV人生副本叙事总编导；须规划分章结构，符合人生副本/POV故事的电影感叙事节奏。';
+    mergeEditorLine = '你是资深POV叙事编辑，合并各段草稿，保持电影感叙事风格和强烈的代入感。';
   }
 
   if (niche === NicheType.HISTORICAL_FIGURE) {
@@ -1270,19 +1361,17 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const MAX_GREAT_POWER_EN_CHARS = 22000; // 英文硬上限
   const MAX_SCRIPT_CONTINUATIONS = 3;
   const MAX_TCM_SCRIPT_CONTINUATIONS = 20;
-  const REVENGE_SHORT_MIN = 13500; // 15 min * 900 chars/min
-  const REVENGE_SHORT_MAX = 27000; // 30 min * 900 chars/min
-  const REVENGE_LONG_CN_MIN = 18000; // 60 min * 300 chars/min
-  const REVENGE_LONG_CN_MAX = 21000; // 70 min * 300 chars/min
-  const REVENGE_LONG_EN_MIN = 54000; // 60 min * 900 chars/min
-  const REVENGE_LONG_EN_MAX = 63000; // ~70 min buffer
-  const MAX_REVENGE_CONTINUATIONS = 4;
+  const LIFE_DUNGEON_SHORT_MIN = 2000; // 约 15-20min 语音
+  const LIFE_DUNGEON_SHORT_MAX = 3000; // 约 20min 语音
+  const LIFE_DUNGEON_LONG_MIN = 2500; // 约 20-30min 语音
+  const LIFE_DUNGEON_LONG_MAX = 3500; // 约 25-30min 语音
+  const MAX_LIFE_DUNGEON_CONTINUATIONS = 4;
   const [niche, setNiche] = useState<NicheType>(NicheType.TCM_METAPHYSICS);
   
   // Sub-mode states
   const [tcmSubMode, setTcmSubMode] = useState<TcmSubModeId>(TcmSubModeId.TIME_TABOO);
   const [financeSubMode, setFinanceSubMode] = useState<FinanceSubModeId>(FinanceSubModeId.GEOPOLITICAL_FLASH);
-  const [revengeSubMode, setRevengeSubMode] = useState<RevengeSubModeId>(RevengeSubModeId.CULTURAL_ORIGINAL);
+  const [lifeDungeonSubMode, setLifeDungeonSubMode] = useState<LifeDungeonSubModeId>(LifeDungeonSubModeId.LIFE_DUNGEON_CUSTOM);
   const [newsSubMode, setNewsSubMode] = useState<NewsSubModeId>(NewsSubModeId.GEO_POLITICS);
   
   // Script length mode for TCM/Finance/Psychology
@@ -1293,9 +1382,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const [planTopicCountIsCustom, setPlanTopicCountIsCustom] = useState(false);
   const [planTopicCountCustomValue, setPlanTopicCountCustomValue] = useState('8');
 
-  // Revenge Story Settings
-  const [storyLanguage, setStoryLanguage] = useState<StoryLanguage>(StoryLanguage.ENGLISH);
-  const [storyDuration, setStoryDuration] = useState<StoryDuration>(StoryDuration.SHORT);
+  // Life Dungeon Settings
+  const [lifeDungeonLength, setLifeDungeonLength] = useState<LifeDungeonLength>(LifeDungeonLength.SHORT);
 
   const [inputVal, setInputVal] = useState('');
   const [topics, setTopics] = useState<Topic[]>([]);
@@ -1599,10 +1687,10 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (st) return st;
     if (niche === NicheType.TCM_METAPHYSICS) return tcmSubMode;
     if (niche === NicheType.FINANCE_CRYPTO) return financeSubMode;
-    if (niche === NicheType.STORY_REVENGE) return revengeSubMode;
+    if (niche === NicheType.STORY_LIFE_DUNGEON) return lifeDungeonSubMode;
     if (niche === NicheType.GENERAL_VIRAL) return newsSubMode;
     return 'default';
-  }, [niche, tcmSubMode, financeSubMode, revengeSubMode, newsSubMode]);
+  }, [niche, tcmSubMode, financeSubMode, lifeDungeonSubMode, newsSubMode]);
 
   // 处理子模式切换（不带自动弹窗）
   const handleSubModeChange = (nicheType: NicheType, submodeId: string, setFunc: (id: any) => void) => {
@@ -1653,8 +1741,8 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
         setTcmSubMode(pendingSubModeChange.submode as TcmSubModeId);
       } else if (pendingSubModeChange.niche === NicheType.FINANCE_CRYPTO) {
         setFinanceSubMode(pendingSubModeChange.submode as FinanceSubModeId);
-      } else if (pendingSubModeChange.niche === NicheType.STORY_REVENGE) {
-        setRevengeSubMode(pendingSubModeChange.submode as RevengeSubModeId);
+      } else if (pendingSubModeChange.niche === NicheType.STORY_LIFE_DUNGEON) {
+        setLifeDungeonSubMode(pendingSubModeChange.submode as LifeDungeonSubModeId);
       } else if (pendingSubModeChange.niche === NicheType.GENERAL_VIRAL) {
         setNewsSubMode(pendingSubModeChange.submode as NewsSubModeId);
       }
@@ -1704,13 +1792,13 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       setAdaptedContent('');
       setIsAdapting(false);
     }
-  }, [niche, tcmSubMode, financeSubMode, revengeSubMode, newsSubMode, greatPowerLanguage, showHistorySelector]);
+  }, [niche, tcmSubMode, financeSubMode, lifeDungeonSubMode, newsSubMode, greatPowerLanguage, showHistorySelector]);
 
   // SAFE ACCESS HELPER
   const getCurrentSubModeConfig = () => {
     if (niche === NicheType.TCM_METAPHYSICS) return TCM_SUB_MODES[tcmSubMode];
     if (niche === NicheType.FINANCE_CRYPTO) return FINANCE_SUB_MODES[financeSubMode];
-    if (niche === NicheType.STORY_REVENGE) return REVENGE_SUB_MODES[revengeSubMode];
+    if (niche === NicheType.STORY_LIFE_DUNGEON) return LIFE_DUNGEON_SUB_MODES[lifeDungeonSubMode];
     if (niche === NicheType.GENERAL_VIRAL) return NEWS_SUB_MODES[newsSubMode];
     if (niche === NicheType.YI_JING_METAPHYSICS) return null;
     if (niche === NicheType.PSYCHOLOGY) return null;
@@ -1724,7 +1812,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const getSubModesForRender = () => {
      if (niche === NicheType.TCM_METAPHYSICS) return TCM_SUB_MODES;
      if (niche === NicheType.FINANCE_CRYPTO) return FINANCE_SUB_MODES;
-     if (niche === NicheType.STORY_REVENGE) return REVENGE_SUB_MODES;
+     if (niche === NicheType.STORY_LIFE_DUNGEON) return LIFE_DUNGEON_SUB_MODES;
      if (niche === NicheType.GENERAL_VIRAL) return NEWS_SUB_MODES;
      if (niche === NicheType.YI_JING_METAPHYSICS) return null;
      if (niche === NicheType.PSYCHOLOGY) return null;
@@ -1749,7 +1837,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
   const shouldShowInput = () => {
     const config = getCurrentSubModeConfig();
-    if (config) return config.requiresInput || config.optionalInput;
+    if (config) return config.requiresInput || config.optionalInput || niche === NicheType.STORY_LIFE_DUNGEON;
     if (niche === NicheType.YI_JING_METAPHYSICS) return true;
     if (niche === NicheType.PSYCHOLOGY) return false;
     if (niche === NicheType.PHILOSOPHY_WISDOM) return false;
@@ -1885,9 +1973,16 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
         }
 
         // 3. Story Specific Injection
-        if (niche === NicheType.STORY_REVENGE) {
-             prompt = prompt.replace('{language}', storyLanguage);
-             prompt = prompt.replace('{duration}', storyDuration);
+        if (niche === NicheType.STORY_LIFE_DUNGEON) {
+             prompt = prompt.replace('{language}', '简体中文');
+             prompt = prompt.replace('{duration}', lifeDungeonLength);
+             // 自定义主题模式：注入用户输入的人生主题；留空则让模型自由推理
+             if (inputVal.trim()) {
+                 prompt = prompt.replace('{custom_topic}', inputVal.trim());
+             } else {
+                 prompt = prompt.replace(/# 【自訂主題聚焦】[\s\S]*?(?=\n# 【關鍵詞植入】)/, '');
+                 prompt = prompt.replace('{custom_topic}', '');
+             }
         }
 
     } else {
@@ -1938,7 +2033,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     const nicheKey = niche
       + (niche === NicheType.TCM_METAPHYSICS ? `:${tcmSubMode}` : '')
       + (niche === NicheType.FINANCE_CRYPTO ? `:${financeSubMode}` : '')
-      + (niche === NicheType.STORY_REVENGE ? `:${revengeSubMode}` : '')
+      + (niche === NicheType.STORY_LIFE_DUNGEON ? `:${lifeDungeonSubMode}` : '')
       + (niche === NicheType.GENERAL_VIRAL ? `:${newsSubMode}` : '');
     const pastTopics = (recentTopicHistoryRef.current[nicheKey] ?? []);
 
@@ -2120,18 +2215,26 @@ Hard rules:
           ? normalizedRawTopics.slice(0, resolvedPlanTopicCount)
           : Array.from(new Set([...normalizedRawTopics, ...fallbackTopics])).slice(0, resolvedPlanTopicCount);
 
-      const newTopics: Topic[] = finalRawTopics.map((t, i) => ({
-        id: `topic-${i}`,
-        title:
+      const newTopics: Topic[] = finalRawTopics.map((t, i) => {
+        const title =
           niche === NicheType.HISTORICAL_FIGURE
             ? sanitizeMindfulPsychologyTopicLine(t)
             : niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'en'
               ? sanitizeGreatPowerBilingualTopicLine(t)
               : niche === NicheType.GENERAL_VIRAL || niche === NicheType.GREAT_POWER_GAME
                 ? sanitizeViralTopicLine(t)
-                : t,
-        selected: true,
-      }));
+                : t;
+        const roleLabel =
+          niche === NicheType.STORY_LIFE_DUNGEON
+            ? extractLifeDungeonRoleLabel(t)
+            : undefined;
+        return {
+          id: `topic-${i}`,
+          title,
+          selected: true,
+          ...(roleLabel ? { roleLabel } : {}),
+        };
+      });
       console.log('[Generator] Topic normalization result:', {
         niche,
         greatPowerLanguage,
@@ -2145,7 +2248,7 @@ Hard rules:
       setTopics(newTopics);
 
       // 全赛道选题去重：更新历史记录（保留最近30条）
-      const key = niche + (niche === NicheType.TCM_METAPHYSICS ? `:${tcmSubMode}` : niche === NicheType.FINANCE_CRYPTO ? `:${financeSubMode}` : niche === NicheType.STORY_REVENGE ? `:${revengeSubMode}` : niche === NicheType.GENERAL_VIRAL ? `:${newsSubMode}` : '');
+      const key = niche + (niche === NicheType.TCM_METAPHYSICS ? `:${tcmSubMode}` : niche === NicheType.FINANCE_CRYPTO ? `:${financeSubMode}` : niche === NicheType.STORY_LIFE_DUNGEON ? `:${lifeDungeonSubMode}` : niche === NicheType.GENERAL_VIRAL ? `:${newsSubMode}` : '');
       recentTopicHistoryRef.current = {
         ...recentTopicHistoryRef.current,
         [key]: [...(recentTopicHistoryRef.current[key] ?? []).slice(-30), ...finalRawTopics]
@@ -2190,7 +2293,6 @@ Hard rules:
     let localContent = '';
 
     try {
-      const { SCRIPT_MODE_SYSTEM } = await import('../constants');
 
       const scriptLength = effectiveScript.length;
       
@@ -2200,26 +2302,36 @@ Hard rules:
       const totalSampleChars = scriptSample.replace(/\s/g, '').length;
       const isEnglishScript = totalSampleChars > 0 && latinChars / totalSampleChars > 0.5;
       
-      // 【核心逻辑】动态计算分镜数量（30-60个）和每镜头目标字数
-      // 中文：200-300字/镜头，英文：300-450字符/镜头
-      // 分镜数量 = ceil(原文字数 / 目标每镜头字数)
-      const targetCharsPerShot = isEnglishScript ? 380 : 250;  // 英文更长因为字符更多
+      const isLifeDungeonTrack = niche === NicheType.STORY_LIFE_DUNGEON;
+
+      // 【核心逻辑】动态计算分镜数量和每镜头目标字数
+      // 人生副本赛道：约30字/镜（3000字原文≈100镜，上限100镜）
+      // 通用赛道中文：200-300字/镜头，英文：300-450字符/镜头
+      const targetCharsPerShot = isEnglishScript
+        ? 380
+        : isLifeDungeonTrack
+          ? 30
+          : 250;
       let estimatedShots = Math.ceil(scriptLength / targetCharsPerShot);
-      // 限制在30-60个镜头之间
-      estimatedShots = Math.max(30, Math.min(60, estimatedShots));
+      // 人生副本赛道80-100镜，通用赛道30-60镜
+      estimatedShots = isLifeDungeonTrack
+        ? Math.max(80, Math.min(100, estimatedShots))
+        : Math.max(30, Math.min(60, estimatedShots));
       // 重新计算每镜头字数（根据实际分镜数）
       const charsPerShot = Math.ceil(scriptLength / estimatedShots);
 
       const systemInstruction =
-        '你是一个全领域万能短视频分镜生成器。接收故事文本，通过"语义合并"与"抽象概念具象化"生成动画/实拍视频提示词。**严格按照格式输出分镜内容，禁止输出任何前缀说明或分析过程。**';
+        isLifeDungeonTrack
+          ? '你是一个人生副本赛道专用分镜生成器。接收用户提供的故事文本，逐句提取并生成完整的动画/实拍视频分镜脚本。**严格按照格式输出分镜内容，禁止输出任何前缀说明或分析过程。**'
+          : '你是一个全领域万能短视频分镜生成器。接收故事文本，通过"语义合并"与"抽象概念具象化"生成动画/实拍视频提示词。**严格按照格式输出分镜内容，禁止输出任何前缀说明或分析过程。**';
 
       const stylePromptEn = getMediaImageStylePromptEn(storyboardStyleId);
       const isMinimalistStyle = storyboardStyleId === 'minimalist';
       const isAnimeAestheticsStyle = storyboardStyleId === 'anime_aesthetics';
-      
+
       // 【预切分原文】严格按照句子边界切分，保证完整性
       const scriptSegments = segmentTextByShots(effectiveScript, estimatedShots);
-      
+
       // 构建每镜头的预切分文案提示
       const segmentsPrompt = scriptSegments
         .map((seg, i) => `【镜头 ${i + 1} 原文段落（约 ${seg.length} 字）】\n${seg}`)
@@ -2237,8 +2349,25 @@ Hard rules:
             ? `**【画面风格预设】**用户已选画面风格；${promptLangHint}可融入英文风格关键词（如 anime aesthetics、minimalist 等风格词保留英文）。`
             : `**【图片提示词语言】**${promptLangHint}`;
 
-      // 【关键Prompt】明确告诉模型：镜头文案=预切分的原文，不做任何修改
-      const prompt = `${SCRIPT_MODE_SYSTEM}
+      const { SCRIPT_MODE_SYSTEM, SCRIPT_MODE_SYSTEM_LIFE_DUNGEON } = await import('../constants');
+
+      // 人生副本赛道使用专用模板，其他赛道走通用流程
+      const prompt = isLifeDungeonTrack
+        ? `${SCRIPT_MODE_SYSTEM_LIFE_DUNGEON}
+
+# 用户脚本（共 ${scriptLength} 字）
+
+**【核心逻辑 - 必须严格遵守】**
+**镜头文案 = 上面预切分的原文段落，一字不差！禁止删减、压缩、扩写！**
+
+${segmentsPrompt}
+
+${styleDirective}
+
+**【语言一致性】中文原文的镜头文案用完整中文，图片/视频提示词用中文。**
+**【最后镜头完整性 - 最高优先级】最后一个镜头（镜头${estimatedShots}）的文案必须完整包含原文最后一段的全部内容，禁止截断！**
+**【禁止】不要输出赛道分类描述。图片提示词只描述画面内容本身。**`
+        : `${SCRIPT_MODE_SYSTEM}
 
 # 用户脚本（共 ${scriptLength} 字，${estimatedShots} 个镜头，每镜头约 ${charsPerShot} 字）
 
@@ -2445,7 +2574,7 @@ Replace words while keeping EXACT same length. That's ALL.
 - DO NOT write "下课", "散会", "各位再见" in the middle
 - These phrases ONLY appear at the absolute final conclusion
 
-**Output Language**: ${storyLanguage}
+**Output Language**: 简体中文
 **Output**: ONLY the rewritten text. NO technical notes.`;
 
     try {
@@ -2921,8 +3050,7 @@ ${segmentSourceText}
     const bundle = getParallelPipelineBundle(
       niche,
       scriptLengthMode,
-      storyLanguage,
-      storyDuration,
+      lifeDungeonLength,
       NICHES[niche],
       greatPowerLanguage,
       parallelTotalTargetChars
@@ -2979,8 +3107,7 @@ ${segmentSourceText}
     provider,
     niche,
     scriptLengthMode,
-    storyLanguage,
-    storyDuration,
+    lifeDungeonLength,
     topics,
     yiJingComputedSegCount,
     parallelTotalTargetChars,
@@ -3022,8 +3149,7 @@ ${segmentSourceText}
     const bundle = getParallelPipelineBundle(
       niche,
       scriptLengthMode,
-      storyLanguage,
-      storyDuration,
+      lifeDungeonLength,
       config,
       greatPowerLanguage,
       parallelTotalTargetChars
@@ -3109,8 +3235,7 @@ ${segmentSourceText}
     provider,
     niche,
     scriptLengthMode,
-    storyLanguage,
-    storyDuration,
+    lifeDungeonLength,
     topics,
     yiJingOutlineParsed,
     yiJingOutlineText,
@@ -3140,19 +3265,17 @@ ${segmentSourceText}
     setBatchProgress({ current: 0, total: 1, hint: '正在合并、统一语气…' });
 
     // 计算输出语言
-    const isEnRevenge = niche === NicheType.STORY_REVENGE && storyLanguage === StoryLanguage.ENGLISH;
     const isMindfulEnglish = niche === NicheType.HISTORICAL_FIGURE;
     const isGreatPowerGame = niche === NicheType.GREAT_POWER_GAME;
     // 大国博弈赛道使用 greatPowerLanguage，其他赛道使用 historicalLanguage
     const effectiveLang = isGreatPowerGame ? greatPowerLanguage : (historicalLanguage || 'en');
-    const outputLanguage: 'zh' | 'en' = isMindfulEnglish ? (effectiveLang === 'en' ? 'en' : 'zh') : (isEnRevenge ? 'en' : (isGreatPowerGame ? greatPowerLanguage : 'zh'));
+    const outputLanguage: 'zh' | 'en' = isMindfulEnglish ? (effectiveLang === 'en' ? 'en' : 'zh') : (isGreatPowerGame ? greatPowerLanguage : 'zh');
 
     try {
       const bundle = getParallelPipelineBundle(
         niche,
         scriptLengthMode,
-        storyLanguage,
-        storyDuration,
+        lifeDungeonLength,
         NICHES[niche],
         greatPowerLanguage,
         parallelTotalTargetChars
@@ -3436,8 +3559,7 @@ ${segmentSourceText}
     provider,
     niche,
     scriptLengthMode,
-    storyLanguage,
-    storyDuration,
+    lifeDungeonLength,
     topics,
     yiJingSegDrafts,
     parallelTotalTargetChars,
@@ -3466,12 +3588,11 @@ ${segmentSourceText}
     setYiJingAiDetection(null);
 
     // 计算输出语言
-    const isEnRevenge = niche === NicheType.STORY_REVENGE && storyLanguage === StoryLanguage.ENGLISH;
     const isMindfulEnglish = niche === NicheType.HISTORICAL_FIGURE;
     const isGreatPowerGame = niche === NicheType.GREAT_POWER_GAME;
     // 大国博弈赛道使用 greatPowerLanguage，其他赛道使用 historicalLanguage
     const effectiveLang = isGreatPowerGame ? greatPowerLanguage : (historicalLanguage || 'en');
-    const outputLanguage: 'zh' | 'en' = isMindfulEnglish ? (effectiveLang === 'en' ? 'en' : 'zh') : (isEnRevenge ? 'en' : (isGreatPowerGame ? greatPowerLanguage : 'zh'));
+    const outputLanguage: 'zh' | 'en' = isMindfulEnglish ? (effectiveLang === 'en' ? 'en' : 'zh') : (isGreatPowerGame ? greatPowerLanguage : 'zh');
 
     try {
       let textToPolish = yiJingMergedOutput;
@@ -3582,8 +3703,7 @@ ${segmentSourceText}
     const bundle = getParallelPipelineBundle(
       niche,
       scriptLengthMode,
-      storyLanguage,
-      storyDuration,
+      lifeDungeonLength,
       config,
       greatPowerLanguage,
       parallelTotalTargetChars
@@ -3735,7 +3855,7 @@ ${segmentSourceText}
       setTimeout(() => setBatchProgress(null), 900);
     }
   }, [
-    apiKey, provider, niche, scriptLengthMode, storyLanguage, storyDuration,
+    apiKey, provider, niche, scriptLengthMode, lifeDungeonLength,
     topics, pushTcmLog, toast, parallelTotalTargetChars,
   ]);
 
@@ -3764,8 +3884,7 @@ ${segmentSourceText}
       const bundle = getParallelPipelineBundle(
         niche,
         scriptLengthMode,
-        storyLanguage,
-        storyDuration,
+        lifeDungeonLength,
         NICHES[niche],
         greatPowerLanguage,
         parallelTotalTargetChars
@@ -3894,7 +4013,7 @@ ${segmentSourceText}
       setTcmPipelineBusy(false);
     }
   }, [
-    apiKey, provider, niche, scriptLengthMode, storyLanguage, storyDuration,
+    apiKey, provider, niche, scriptLengthMode, lifeDungeonLength,
     topics, tcmSegDrafts, parallelTotalTargetChars, pushTcmLog, toast, historicalLanguage,
   ]);
 
@@ -3929,8 +4048,7 @@ ${segmentSourceText}
     const bundle = getParallelPipelineBundle(
       niche,
       scriptLengthMode,
-      storyLanguage,
-      storyDuration,
+      lifeDungeonLength,
       NICHES[niche],
       greatPowerLanguage,
       parallelTotalTargetChars
@@ -4225,8 +4343,7 @@ ${segmentSourceText}
     provider,
     niche,
     scriptLengthMode,
-    storyLanguage,
-    storyDuration,
+    lifeDungeonLength,
     topics,
     parallelTotalTargetChars,
     collectStreamText,
@@ -4272,8 +4389,8 @@ ${segmentSourceText}
       currentSubModeId = tcmSubMode;
     } else if (niche === NicheType.FINANCE_CRYPTO) {
       currentSubModeId = financeSubMode;
-    } else if (niche === NicheType.STORY_REVENGE) {
-      currentSubModeId = revengeSubMode;
+    } else if (niche === NicheType.STORY_LIFE_DUNGEON) {
+      currentSubModeId = lifeDungeonSubMode;
     } else if (niche === NicheType.GENERAL_VIRAL) {
       currentSubModeId = newsSubMode;
     } else {
@@ -4290,9 +4407,9 @@ ${segmentSourceText}
     // Initialize API
     initializeGemini(apiKey, { provider });
 
-    /** 全赛道统一：大纲 → 分段并行 → 合并（复仇改编模式仍走原流式路径） */
+    /** 全赛道统一：人生副本走一次性直出，其他走分段并行 */
     const useGlobalParallelPipeline =
-      !(niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION);
+      niche !== NicheType.STORY_LIFE_DUNGEON;
 
     if (useGlobalParallelPipeline) {
       setStatus(GenerationStatus.WRITING);
@@ -4350,8 +4467,7 @@ ${segmentSourceText}
           const bundle = getParallelPipelineBundle(
             niche,
             scriptLengthMode,
-            storyLanguage,
-            storyDuration,
+            lifeDungeonLength,
             NICHES[niche],
             greatPowerLanguage,
             parallelTotalTargetChars
@@ -4922,11 +5038,10 @@ ${segmentSourceText}
           }
 
           // 第二阶段重构：取消自动生成后的去 AI 味清洗与人类感检测，直接以首轮成稿作为终稿
-          const isEnRevengeBatch = niche === NicheType.STORY_REVENGE && storyLanguage === StoryLanguage.ENGLISH;
           const isMindfulEnglishBatch = niche === NicheType.HISTORICAL_FIGURE;
           const isGreatPowerGameBatch = niche === NicheType.GREAT_POWER_GAME;
           const effectiveLangBatch = isGreatPowerGameBatch ? greatPowerLanguage : (historicalLanguage || 'en');
-          const outputLanguageBatch: 'zh' | 'en' = isMindfulEnglishBatch ? (effectiveLangBatch === 'en' ? 'en' : 'zh') : (isEnRevengeBatch ? 'en' : (isGreatPowerGameBatch ? greatPowerLanguage : 'zh'));
+          const outputLanguageBatch: 'zh' | 'en' = isMindfulEnglishBatch ? (effectiveLangBatch === 'en' ? 'en' : 'zh') : (isGreatPowerGameBatch ? greatPowerLanguage : 'zh');
 
           // ===== 大国博弈英文：字数下限续写保护 =====
           // 如果合并+去AI味后字数仍不足18000，触发续写补足
@@ -5706,10 +5821,10 @@ ${segmentSourceText}
                 niche === NicheType.YI_JING_METAPHYSICS ||
                 niche === NicheType.GENERAL_VIRAL ||
                 niche === NicheType.HISTORICAL_FIGURE;
-            const isRevengeShort =
-                niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.SHORT;
-            const isRevengeLong =
-                niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.LONG;
+            const isLifeDungeonShort =
+                niche === NicheType.STORY_LIFE_DUNGEON && lifeDungeonLength === LifeDungeonLength.SHORT;
+            const isLifeDungeonLong =
+                niche === NicheType.STORY_LIFE_DUNGEON && lifeDungeonLength === LifeDungeonLength.LONG;
             const isShortScript =
                 (niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.HISTORICAL_FIGURE) &&
                 scriptLengthMode === 'SHORT';
@@ -5743,11 +5858,10 @@ ${segmentSourceText}
                                             : MIN_NEWS_SCRIPT_CHARS;
                     totalExpected += minChars;
                 }
-            } else if (isRevengeShort) {
-                totalExpected += REVENGE_SHORT_MIN;
-            } else if (isRevengeLong) {
-                const isEnglish = storyLanguage === StoryLanguage.ENGLISH;
-                totalExpected += isEnglish ? REVENGE_LONG_EN_MIN : REVENGE_LONG_CN_MIN;
+            } else if (isLifeDungeonShort) {
+                totalExpected += LIFE_DUNGEON_SHORT_MIN;
+            } else if (isLifeDungeonLong) {
+                totalExpected += LIFE_DUNGEON_LONG_MIN;
             } else {
                 // 默认估算
                 totalExpected += 3000;
@@ -5886,34 +6000,17 @@ ${segmentSourceText}
         }
         
         // Inject Story Variables if applicable
-        if (niche === NicheType.STORY_REVENGE) {
-             prompt = prompt.replace('{language}', storyLanguage);
-             prompt = prompt.replace('{duration}', storyDuration);
+        if (niche === NicheType.STORY_LIFE_DUNGEON) {
+             prompt = prompt.replace('{language}', '简体中文');
+             prompt = prompt.replace('{duration}', lifeDungeonLength);
+             const roleLabel = topic.roleLabel
+               ? formatRoleLabel(topic.roleLabel, topic.title)
+               : '主角';
+             prompt = prompt.replace('{roleLabel}', roleLabel);
         }
         
         // Determine system instruction based on mode
         let systemInstruction = config.systemInstruction;
-        if (niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION) {
-            // ShadowWriter system prompt with language injection
-            systemInstruction = `**Role:** You are **ShadowWriter (暗影写手)**, an elite story architect who excels in human psychology, creative writing, and traffic algorithms. You specialize in transforming plain, fragmented, or reused source material into high-completion-rate, high-emotional-value "revenge thrillers" that pass originality checks.
-
-**Core Objective:** Deeply "rewrite" and adapt input source material (Raw Text) to make it logically tighter, emotionally more extreme, and original enough to pass plagiarism checks, while preserving core satisfaction points.
-
-🧠 **Core Competencies (核心能力)**
-
-1. **Emotion Amplification (情绪增压 - Dopamine Engineering)**
-   - **Hate-Building (仇恨铺垫)**: Must use detailed descriptions (micro-expressions, malicious language, unfair treatment) to make the villain extremely hateful.
-   - **Cold Logic (冷静执行)**: The revenge process must showcase the protagonist's high intelligence or patience. No mindless venting. Emphasize "dimensional reduction" or "using others to kill."
-   - **The Climax (核爆时刻)**: The ending must be devastating yet logical (Pro/Nuclear Revenge), delivering extreme satisfaction through karmic retribution.
-
-2. **Humanization & De-duplication (拟人化与去重)**
-   - **Anti-AI Tone**: Prohibit textbook-style flat narration. Use extensive colloquialisms, slang, inner monologues, and parenthetical asides.
-   - **Show, Don't Tell**: Don't say "I'm angry." Show through actions and descriptions.
-   - **Structure Shift**: Disrupt the original narrative structure. Use flashback or interleaving techniques to completely change the article's fingerprint.
-
-**Output Language**: Use target language (${storyLanguage}) for all creative content.
-**Output Format**: ONLY pure TTS voice content. NO technical markers, NO meta-commentary, NO explanations.`;
-        }
         
         try {
             const layoutEligibleNiche =
@@ -5929,7 +6026,7 @@ ${segmentSourceText}
                 if (mapIsShortScript) return content;
                 if (
                     !layoutEligibleNiche &&
-                    !(niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.LONG)
+                    !(niche === NicheType.STORY_LIFE_DUNGEON && lifeDungeonLength === LifeDungeonLength.LONG)
                 ) {
                     return content;
                 }
@@ -6035,10 +6132,10 @@ ${segmentSourceText}
                 niche === NicheType.YI_JING_METAPHYSICS ||
                 niche === NicheType.GENERAL_VIRAL ||
                 niche === NicheType.HISTORICAL_FIGURE;
-            const isRevengeShort =
-                niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.SHORT;
-            const isRevengeLong =
-                niche === NicheType.STORY_REVENGE && storyDuration === StoryDuration.LONG;
+            const isLifeDungeonShort =
+                niche === NicheType.STORY_LIFE_DUNGEON && lifeDungeonLength === LifeDungeonLength.SHORT;
+            const isLifeDungeonLong =
+                niche === NicheType.STORY_LIFE_DUNGEON && lifeDungeonLength === LifeDungeonLength.LONG;
             const isShortScript =
                 (niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.HISTORICAL_FIGURE) &&
                 scriptLengthMode === 'SHORT';
@@ -6652,21 +6749,16 @@ ${segmentSourceText}
                 }
             }
 
-            if (isRevengeShort || isRevengeLong) {
-                const isEnglish = storyLanguage === StoryLanguage.ENGLISH;
-                const minChars = isRevengeLong
-                    ? (isEnglish ? REVENGE_LONG_EN_MIN : REVENGE_LONG_CN_MIN)
-                    : REVENGE_SHORT_MIN;
-                const maxChars = isRevengeLong
-                    ? (isEnglish ? REVENGE_LONG_EN_MAX : REVENGE_LONG_CN_MAX)
-                    : REVENGE_SHORT_MAX;
+            if (isLifeDungeonShort || isLifeDungeonLong) {
+                const minChars = isLifeDungeonLong ? LIFE_DUNGEON_LONG_MIN : LIFE_DUNGEON_SHORT_MIN;
+                const maxChars = isLifeDungeonLong ? LIFE_DUNGEON_LONG_MAX : LIFE_DUNGEON_SHORT_MAX;
 
                 let continueCount = 0;
                 let ended = false;
-                const cnLongFlavor = isRevengeLong && !isEnglish
+                const cnLongFlavor = isLifeDungeonLong && !isEnglish
                     ? '加強細節描寫與氛圍鋪陳，融入禁忌、暗黑、情色擦邊元素，但保持故事合理與連貫。'
                     : '';
-                while (localContent.length < minChars && continueCount < MAX_REVENGE_CONTINUATIONS) {
+                while (localContent.length < minChars && continueCount < MAX_LIFE_DUNGEON_CONTINUATIONS) {
                     continueCount += 1;
                     const context = localContent.slice(-2500);
                     const continuePrompt = [
@@ -6708,37 +6800,38 @@ ${segmentSourceText}
                     ended = true;
                 }
 
-                let cleaned = sanitizeTtsScript(localContent);
-                if (isEnglish) {
-                    cleaned = cleaned
-                        .split('\n')
-                        .filter(line => !/[\u4e00-\u9fff]/.test(line))
-                        .join('\n');
-                }
-                localContent = cleaned;
 
-                // Generate a short Chinese summary and append
-                let summaryText = '';
-                await streamContentGeneration(
-                    [
-                        '请用中文输出 2-4 句的簡短故事总结，不得超過 200 字。',
-                        '只输出总结内容，不要标题、不要符号、不要前言后语。',
-                        '禁止输出例如「Suggested Title Options」或任何非故事总结內容。',
-                        '',
-                        localContent.slice(-3000)
-                    ].join('\n'),
-                    '你是中文摘要助手。',
-                    (chunk) => {
-                        summaryText += chunk;
+                    let cleaned = sanitizeTtsScript(localContent);
+                    if (isEnglish) {
+                        cleaned = cleaned
+                            .split('\n')
+                            .filter(line => !/[\u4e00-\u9fff]/.test(line))
+                            .join('\n');
                     }
-                );
+                    localContent = cleaned;
 
-                summaryText = summaryText
-                    .replace(/[\r\n]+/g, ' ')
-                    .replace(/^\s+|\s+$/g, '')
-                    .slice(0, 200);
+                    // Generate a short Chinese summary and append
+                    let summaryText = '';
+                    await streamContentGeneration(
+                        [
+                            '请用中文输出 2-4 句的簡短故事总结，不得超過 200 字。',
+                            '只输出总结内容，不要标题、不要符号、不要前言后语。',
+                            '禁止输出例如「Suggested Title Options」或任何非故事总结內容。',
+                            '',
+                            localContent.slice(-3000)
+                        ].join('\n'),
+                        '你是中文摘要助手。',
+                        (chunk) => {
+                            summaryText += chunk;
+                        }
+                    );
 
-                const finalContent = `${localContent}\n\n=== SUMMARY ===\n${summaryText}`;
+                    summaryText = summaryText
+                        .replace(/[\r\n]+/g, ' ')
+                        .replace(/^\s+|\s+$/g, '')
+                        .slice(0, 200);
+
+                    const finalContent = `${localContent}\n\n=== SUMMARY ===\n${summaryText}`;
                 // 保存到 Map 中，用于最后统一保存历史记录
                 generatedContentsMap.set(index, { topic: topic.title, content: finalContent });
                 
@@ -6972,8 +7065,9 @@ ${segmentSourceText}
           .replace('{topic}', baseTitle)
           .replace('{previous_context}', context);
       
-      if (niche === NicheType.STORY_REVENGE) {
-          prompt = prompt.replace('{language}', storyLanguage);
+      if (niche === NicheType.STORY_LIFE_DUNGEON) {
+          prompt = prompt.replace('{language}', '简体中文');
+             prompt = prompt.replace('{duration}', lifeDungeonLength);
       }
 
       // 5. Stream Generation
@@ -6981,14 +7075,6 @@ ${segmentSourceText}
           const config = NICHES[niche];
           // Determine system instruction based on mode
           let systemInstruction = config.systemInstruction;
-          if (niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION) {
-              systemInstruction = `**Role:** You are **ShadowWriter (暗影写手)**, an elite story architect who excels in human psychology, creative writing, and traffic algorithms. You specialize in transforming plain, fragmented, or reused source material into high-completion-rate, high-emotional-value "revenge thrillers" that pass originality checks.
-
-**Core Objective:** Deeply "rewrite" and adapt input source material (Raw Text) to make it logically tighter, emotionally more extreme, and original enough to pass plagiarism checks, while preserving core satisfaction points.
-
-**Output Language**: Use target language (${storyLanguage}) for all creative content.
-**Output Format**: ONLY pure TTS voice content. NO technical markers, NO meta-commentary, NO explanations.`;
-          }
           
           await streamContentGeneration(
               prompt,
@@ -7033,8 +7119,8 @@ ${segmentSourceText}
                 currentSubModeIdForHistory = tcmSubMode;
               } else if (niche === NicheType.FINANCE_CRYPTO) {
                 currentSubModeIdForHistory = financeSubMode;
-              } else if (niche === NicheType.STORY_REVENGE) {
-                currentSubModeIdForHistory = revengeSubMode;
+              } else if (niche === NicheType.STORY_LIFE_DUNGEON) {
+                currentSubModeIdForHistory = lifeDungeonSubMode;
               } else if (niche === NicheType.GENERAL_VIRAL) {
                 currentSubModeIdForHistory = newsSubMode;
               } else {
@@ -7129,6 +7215,35 @@ ${segmentSourceText}
           </h2>
           {(() => {
             const staticSid = getStaticGeneratorSubModeId(niche);
+            if (niche === NicheType.STORY_LIFE_DUNGEON) {
+              const hk = getHistoryKeyForSubMode(niche, lifeDungeonSubMode);
+              const cnt = getHistory('generator', hk).length;
+              return (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const records = getHistory('generator', hk);
+                    if (records.length === 0) {
+                      toast.info('暂无脚本历史记录，请先生成长文后再试');
+                      return;
+                    }
+                    setHistoryRecords(records);
+                    setPendingSubModeChange({ niche, submode: lifeDungeonSubMode });
+                    setShowHistorySelector(true);
+                  }}
+                  className="shrink-0 flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-600 bg-slate-800/80 hover:bg-slate-700/90 text-slate-300 text-sm transition-colors"
+                  title="查看并加载本赛道已保存的成稿脚本"
+                >
+                  <History size={16} className="text-emerald-400" />
+                  脚本历史
+                  {cnt > 0 && (
+                    <span className="text-[10px] font-mono text-emerald-400/90 bg-emerald-950/50 px-1.5 py-0.5 rounded">
+                      {cnt}
+                    </span>
+                  )}
+                </button>
+              );
+            }
             if (!staticSid) return null;
             const hk = getHistoryKeyForSubMode(niche, staticSid);
             const cnt = getHistory('generator', hk).length;
@@ -7218,7 +7333,7 @@ ${segmentSourceText}
         </div>
         
         {/* Sub-Category Selection Grid */}
-        {activeSubModes && (
+        {activeSubModes && niche !== NicheType.STORY_LIFE_DUNGEON && (
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
                 {Object.values(activeSubModes).map((mode) => {
                     const Icon = mode.icon;
@@ -7231,9 +7346,9 @@ ${segmentSourceText}
                     } else if (niche === NicheType.FINANCE_CRYPTO) {
                         activeModeId = financeSubMode;
                         setActiveFunc = setFinanceSubMode;
-                    } else if (niche === NicheType.STORY_REVENGE) {
-                        activeModeId = revengeSubMode;
-                        setActiveFunc = setRevengeSubMode;
+                    } else if (niche === NicheType.STORY_LIFE_DUNGEON) {
+                        activeModeId = lifeDungeonSubMode;
+                        setActiveFunc = setLifeDungeonSubMode;
                     } else if (niche === NicheType.GENERAL_VIRAL) {
                         activeModeId = newsSubMode;
                         setActiveFunc = setNewsSubMode;
@@ -7288,27 +7403,15 @@ ${segmentSourceText}
             </div>
         )}
 
-        {/* Revenge Story Specific Selectors */}
-        {niche === NicheType.STORY_REVENGE && (
+        {/* Life Dungeon Specific Selectors */}
+        {niche === NicheType.STORY_LIFE_DUNGEON && (
              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6 animate-in fade-in duration-300 bg-slate-800/30 p-4 rounded-xl border border-slate-700/50">
                 <div className="space-y-2">
                     <label className="text-xs font-bold text-emerald-400 flex items-center gap-1">
-                        <Globe size={14} /> 目標語言 (Target Language)
+                        <Globe size={14} /> 目標語言
                     </label>
-                    <div className="grid grid-cols-3 md:grid-cols-5 gap-2">
-                         {Object.values(StoryLanguage).map((lang) => (
-                             <button
-                                key={lang}
-                                onClick={() => setStoryLanguage(lang)}
-                                className={`px-2 py-1.5 rounded text-xs border transition-all ${
-                                    storyLanguage === lang 
-                                    ? 'bg-emerald-600 text-white border-emerald-500' 
-                                    : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'
-                                }`}
-                             >
-                                 {lang}
-                             </button>
-                         ))}
+                    <div className="px-3 py-2 rounded text-xs border bg-slate-900 border-emerald-600 text-emerald-300">
+                        简体中文
                     </div>
                 </div>
 
@@ -7318,20 +7421,20 @@ ${segmentSourceText}
                     </label>
                     <div className="flex gap-2">
                          <button
-                            onClick={() => setStoryDuration(StoryDuration.SHORT)}
+                            onClick={() => setLifeDungeonLength(LifeDungeonLength.SHORT)}
                             className={`flex-1 px-3 py-1.5 rounded text-xs border transition-all ${
-                                storyDuration === StoryDuration.SHORT 
-                                ? 'bg-emerald-600 text-white border-emerald-500' 
+                                lifeDungeonLength === LifeDungeonLength.SHORT
+                                ? 'bg-emerald-600 text-white border-emerald-500'
                                 : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'
                             }`}
                          >
                              短篇 (15-30m)
                          </button>
                          <button
-                            onClick={() => setStoryDuration(StoryDuration.LONG)}
+                            onClick={() => setLifeDungeonLength(LifeDungeonLength.LONG)}
                             className={`flex-1 px-3 py-1.5 rounded text-xs border transition-all ${
-                                storyDuration === StoryDuration.LONG 
-                                ? 'bg-emerald-600 text-white border-emerald-500' 
+                                lifeDungeonLength === LifeDungeonLength.LONG
+                                ? 'bg-emerald-600 text-white border-emerald-500'
                                 : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'
                             }`}
                          >
@@ -7429,50 +7532,7 @@ ${segmentSourceText}
           </div>
         )}
 
-        {/* Input Area (Conditional) */}
-        {niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION ? (
-          // Adaptation Mode: Large textarea input + output area
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="block text-sm text-slate-400 font-medium">
-                输入原文 (Source Text)
-              </label>
-              <textarea
-                value={inputVal}
-                onChange={(e) => setInputVal(e.target.value)}
-                placeholder="请在此粘貼需要改編的原文內容..."
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-slate-100 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all resize-none custom-scrollbar h-[300px]"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="block text-sm text-slate-400 font-medium flex items-center justify-between">
-                <span>改編結果 (Adapted Content)</span>
-                {adaptedContent && (
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(adaptedContent);
-                    }}
-                    className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
-                  >
-                    <Copy size={12} /> 复制
-                  </button>
-                )}
-              </label>
-              <div className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-slate-200 h-[300px] overflow-y-auto whitespace-pre-wrap leading-relaxed custom-scrollbar">
-                {adaptedContent || (isAdapting ? (
-                  <div className="flex items-center gap-2 text-slate-500">
-                    <Loader2 className="animate-spin" size={16} />
-                    <span>正在改編中...</span>
-                  </div>
-                ) : (
-                  <div className="text-slate-600 text-sm">改编后的内容将显示于此</div>
-                ))}
-                {isAdapting && adaptedContent && <span className="inline-block w-2 h-4 bg-emerald-500 ml-1 animate-pulse" />}
-              </div>
-            </div>
-          </div>
-        ) : (
-          // Normal Mode: Original input layout
+        {/* Input Area */}
         <div className="flex flex-col md:flex-row gap-4 items-start">
             <div className="flex-1 w-full">
               {shouldShowInput() ? (
@@ -7517,44 +7577,40 @@ ${segmentSourceText}
                     : '一键生成爆款Hooks'}
             </button>
         </div>
-        )}
-
-        {/* Adaptation Mode Button */}
-        {niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION && (
-          <div className="flex justify-end mt-4">
-            <button 
-              onClick={handleAdaptContent}
-              disabled={isAdapting || !inputVal.trim()}
-              className={`px-8 py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg shadow-emerald-900/20 flex items-center justify-center gap-2 transition-all transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:transform-none`}
-            >
-              {isAdapting ? (
-                <>
-                  <Loader2 className="animate-spin" />
-                  正在改編中...
-                </>
-              ) : (
-                <>
-                  開始改編
-                  <Zap size={18} fill="currentColor" />
-                </>
-              )}
-            </button>
-          </div>
-        )}
 
         {/* 错误提示已改用 Toast 通知 */}
 
-        {/* Topics List - Hide in Adaptation Mode */}
-        {topics.length > 0 &&
-          !(niche === NicheType.STORY_REVENGE && revengeSubMode === RevengeSubModeId.ADAPTATION) && (
+        {/* Topics List */}
+        {topics.length > 0 && (
             <div className="mt-8 animate-in slide-in-from-bottom-4 duration-500">
                 <div className="flex justify-between items-center mb-3">
-                    <span className="text-sm text-slate-400">
-                        {niche === NicheType.STORY_REVENGE 
-                            ? `选择要生成的故事 (${storyDuration === StoryDuration.SHORT ? '短篇' : '長篇'}/${storyLanguage})；全文统一走原有分段逻辑：`
-                            : '选择选题后，当前长视频赛道默认走一次性长文生成；每次选择 1 个选题生成最终成稿。'
-                        }
-                    </span>
+                    <div className="flex items-center gap-3">
+                        <span className="text-sm text-slate-400">
+                            {niche === NicheType.STORY_LIFE_DUNGEON
+                                ? `选择要生成的故事 (${lifeDungeonLength === LifeDungeonLength.SHORT ? '短篇' : '長篇'})；全文统一走原有分段逻辑：`
+                                : '选择选题后，当前长视频赛道默认走一次性长文生成；每次选择 1 个选题生成最终成稿。'
+                            }
+                        </span>
+                        {niche === NicheType.STORY_LIFE_DUNGEON && (() => {
+                            const historyKey = getHistoryKeyForSubMode(niche, lifeDungeonSubMode);
+                            const records = getHistory('generator', historyKey);
+                            return records.length > 0 ? (
+                                <button
+                                    type="button"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        setHistoryRecords(records);
+                                        setShowHistorySelector(true);
+                                    }}
+                                    className="px-2 py-0.5 bg-slate-700/80 hover:bg-slate-600 text-slate-300 text-[11px] rounded border border-slate-600/80 flex items-center gap-1 transition-all"
+                                    title="读取历史记录"
+                                >
+                                    <History size={12} />
+                                    读取历史
+                                </button>
+                            ) : null;
+                        })()}
+                    </div>
                     <span className="text-sm text-emerald-400 font-medium">
                       {shouldUseOneShotLongForm(niche, scriptLengthMode)
                         ? `已选 ${topics.filter(t => t.selected).length} 个（长视频请只选 1 个）`
@@ -7562,22 +7618,34 @@ ${segmentSourceText}
                     </span>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[350px] overflow-y-auto pr-2 custom-scrollbar mb-6">
-                    {topics.map(topic => (
-                        <div 
+                    {topics.map(topic => {
+                      const displayRoleLabel = topic.roleLabel
+                        ? formatRoleLabel(topic.roleLabel, topic.title)
+                        : null;
+                      return (
+                        <div
                             key={topic.id}
                             onClick={() => toggleTopic(topic.id)}
                             className={`p-4 rounded-lg border cursor-pointer transition-all flex items-start gap-3 group ${
-                                topic.selected 
-                                ? 'bg-emerald-900/30 border-emerald-500/50 shadow-inner' 
+                                topic.selected
+                                ? 'bg-emerald-900/30 border-emerald-500/50 shadow-inner'
                                 : 'bg-slate-800 border-slate-700 opacity-70 hover:opacity-100 hover:border-slate-500'
                             }`}
                         >
                             <div className={`w-5 h-5 rounded border mt-0.5 flex items-center justify-center flex-shrink-0 transition-colors ${topic.selected ? 'bg-emerald-600 border-emerald-600' : 'border-slate-500 group-hover:border-slate-400'}`}>
                                 {topic.selected && <Sparkles size={12} className="text-white" />}
                             </div>
-                            <span className="text-sm text-slate-200 leading-snug font-medium">{topic.title}</span>
+                            <div className="flex flex-col gap-1 min-w-0">
+                              {displayRoleLabel && (
+                                <span className="inline-block text-[10px] font-semibold text-amber-300 bg-amber-400/10 border border-amber-400/30 rounded px-1.5 py-0.5 max-w-full break-words">
+                                  副本身份：{displayRoleLabel}
+                                </span>
+                              )}
+                              <span className="text-sm text-slate-200 leading-snug font-medium">{topic.title}</span>
+                            </div>
                         </div>
-                    ))}
+                      );
+                    })}
                 </div>
 
                 <div className="mb-6 p-4 rounded-xl border border-cyan-500/35 bg-slate-950/70 space-y-4 hidden">
@@ -8495,8 +8563,8 @@ ${segmentSourceText}
         {/* 全赛道·一键动画分镜区域 */}
           <div className="mt-8 p-4 bg-slate-800/50 border border-slate-700 rounded-xl">
             <div className="flex items-center gap-2 mb-4">
-              <span className="text-lg">{niche === NicheType.HISTORICAL_FIGURE ? '🐾' : niche === NicheType.PSYCHOLOGY ? '🧠' : niche === NicheType.PHILOSOPHY_WISDOM ? '🪷' : niche === NicheType.EMOTION_TABOO ? '🕯️' : niche === NicheType.STORY_REVENGE ? '⚔️' : niche === NicheType.GENERAL_VIRAL ? '🔥' : niche === NicheType.YI_JING_METAPHYSICS ? '📿' : niche === NicheType.GREAT_POWER_GAME ? '🎯' : niche === NicheType.TCM_METAPHYSICS ? '☯️' : niche === NicheType.FINANCE_CRYPTO ? '💰' : '🎬'}</span>
-              <span className="text-slate-200 font-medium">{niche === NicheType.HISTORICAL_FIGURE ? '睡前历史人物频道' : niche === NicheType.PSYCHOLOGY ? '心理学' : niche === NicheType.PHILOSOPHY_WISDOM ? '哲学智慧' : niche === NicheType.EMOTION_TABOO ? '情感禁忌' : niche === NicheType.STORY_REVENGE ? '复仇故事' : niche === NicheType.GENERAL_VIRAL ? '新闻热点' : niche === NicheType.YI_JING_METAPHYSICS ? '易经命理' : niche === NicheType.GREAT_POWER_GAME ? '大国博弈' : niche === NicheType.TCM_METAPHYSICS ? '中医玄学' : niche === NicheType.FINANCE_CRYPTO ? '金融投资' : '一键动画分镜'}：动画分镜</span>
+              <span className="text-lg">{niche === NicheType.HISTORICAL_FIGURE ? '🐾' : niche === NicheType.PSYCHOLOGY ? '🧠' : niche === NicheType.PHILOSOPHY_WISDOM ? '🪷' : niche === NicheType.EMOTION_TABOO ? '🕯️' : niche === NicheType.STORY_LIFE_DUNGEON ? '⚔️' : niche === NicheType.GENERAL_VIRAL ? '🔥' : niche === NicheType.YI_JING_METAPHYSICS ? '📿' : niche === NicheType.GREAT_POWER_GAME ? '🎯' : niche === NicheType.TCM_METAPHYSICS ? '☯️' : niche === NicheType.FINANCE_CRYPTO ? '💰' : '🎬'}</span>
+              <span className="text-slate-200 font-medium">{niche === NicheType.HISTORICAL_FIGURE ? '睡前历史人物频道' : niche === NicheType.PSYCHOLOGY ? '心理学' : niche === NicheType.PHILOSOPHY_WISDOM ? '哲学智慧' : niche === NicheType.EMOTION_TABOO ? '情感禁忌' : niche === NicheType.STORY_LIFE_DUNGEON ? '人生副本' : niche === NicheType.GENERAL_VIRAL ? '新闻热点' : niche === NicheType.YI_JING_METAPHYSICS ? '易经命理' : niche === NicheType.GREAT_POWER_GAME ? '大国博弈' : niche === NicheType.TCM_METAPHYSICS ? '中医玄学' : niche === NicheType.FINANCE_CRYPTO ? '金融投资' : '一键动画分镜'}：动画分镜</span>
             </div>
             <div ref={storyboardAnchorRef}>
               <button
@@ -8810,8 +8878,8 @@ ${segmentSourceText}
                 setTcmSubMode(submodeId as TcmSubModeId);
               } else if (nicheType === NicheType.FINANCE_CRYPTO) {
                 setFinanceSubMode(submodeId as FinanceSubModeId);
-              } else if (nicheType === NicheType.STORY_REVENGE) {
-                setRevengeSubMode(submodeId as RevengeSubModeId);
+              } else if (nicheType === NicheType.STORY_LIFE_DUNGEON) {
+                setLifeDungeonSubMode(submodeId as LifeDungeonSubModeId);
               } else if (nicheType === NicheType.GENERAL_VIRAL) {
                 setNewsSubMode(submodeId as NewsSubModeId);
               }

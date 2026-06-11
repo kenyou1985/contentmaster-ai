@@ -41,7 +41,7 @@ export type NicheTypeForScoring =
   | 'psychology'         // 心理学/Awake Mentor
   | 'philosophy_wisdom'   // 哲学智慧/禅意
   | 'emotion_taboo'      // 情感禁忌/Taboo Love
-  | 'story_revenge'      // 复仇故事/Storytelling
+  | 'story_life_dungeon'    // 人生副本/POV Life
   | 'news'               // 新闻热点/小美
   | 'yi_jing'            // 易经命理/曾仕强
   | 'rich_mindset'       // 富人思维/马云
@@ -473,7 +473,7 @@ export function detectNicheType(text: string): NicheTypeForScoring {
     '婚姻', '爱情', '欲望', '道德',
   ];
   
-  // 复仇故事/Storytelling赛道特征
+  // 人生副本赛道特征
   const revengeKeywords = [
     '复仇', 'revenge', 'reddit', '故事', '逆转', '翻盘',
     '算计', '反杀', '以牙还牙', '以其人之道',
@@ -639,7 +639,7 @@ function getNicheWeights(nicheType: NicheTypeForScoring): number[] {
       return [0.08, 0.12, 0.12, 0.10, 0.10, 0.15, 0.08, 0.08, 0.12, 0.05];
     
     case 'story_revenge':
-      // 复仇故事：强调故事结构（D9）、细节锚点（D6）、具体情节（D6）
+      // 人生副本：强调故事结构（D9）、细节锚点（D6）、具体情节（D6）
       // 故事风格：叙事张力、情节反转、细节丰富
       return [0.08, 0.10, 0.10, 0.08, 0.08, 0.15, 0.08, 0.10, 0.15, 0.08];
     

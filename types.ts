@@ -2,7 +2,7 @@
 export enum NicheType {
   YI_JING_METAPHYSICS = 'YI_JING_METAPHYSICS',
   TCM_METAPHYSICS = 'TCM_METAPHYSICS',
-  STORY_REVENGE = 'STORY_REVENGE',
+  STORY_LIFE_DUNGEON = 'STORY_LIFE_DUNGEON',
   FINANCE_CRYPTO = 'FINANCE_CRYPTO',
   GENERAL_VIRAL = 'GENERAL_VIRAL',
   PSYCHOLOGY = 'PSYCHOLOGY',
@@ -42,10 +42,9 @@ export enum FinanceSubModeId {
   SURVIVAL_WISDOM = 'SURVIVAL_WISDOM'         // 破局智慧：普通人在博弈中自保
 }
 
-// Revenge Story Sub-categories
-export enum RevengeSubModeId {
-  CULTURAL_ORIGINAL = 'CULTURAL_ORIGINAL',
-  ADAPTATION = 'ADAPTATION'
+// Life Dungeon Sub-categories
+export enum LifeDungeonSubModeId {
+  LIFE_DUNGEON_CUSTOM = 'LIFE_DUNGEON_CUSTOM'
 }
 
 // News Commentary Sub-categories
@@ -57,23 +56,15 @@ export enum NewsSubModeId {
   GREAT_POWER_GAME = 'GREAT_POWER_GAME'
 }
 
-// Revenge Story Settings
-export enum StoryLanguage {
-  ENGLISH = 'English',
-  CHINESE = 'Chinese',
-  JAPANESE = 'Japanese',
-  SPANISH = 'Spanish',
-  HINDI = 'Hindi'
-}
-
-export enum StoryDuration {
+// Life Dungeon Settings
+export enum LifeDungeonLength {
   SHORT = 'SHORT', // 15-30 mins
   LONG = 'LONG'    // 1 hour+
 }
 
 // Generic SubMode Config Interface
 export interface SubModeConfig {
-  id: string; // TcmSubModeId | FinanceSubModeId | RevengeSubModeId
+  id: string; // TcmSubModeId | FinanceSubModeId | LifeDungeonSubModeId
   title: string;
   subtitle: string;
   icon: any; 
@@ -89,6 +80,8 @@ export interface Topic {
   id: string;
   title: string;
   selected: boolean;
+  /** 人生副本赛道：副本角色标注，如"假装富二代的合租实习生" */
+  roleLabel?: string;
 }
 
 export enum GenerationStatus {

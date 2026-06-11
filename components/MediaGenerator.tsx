@@ -114,14 +114,10 @@ interface Shot {
   selectedImageIndex?: number; // 选中的图片索引（-1 表示未选中）
 }
 
-/** 镜头文案里「角色-语气：」或「角色：」后的口播正文（无前缀则整段即正文） */
+/** 镜头文案：完整文案即为配音正文（不再按冒号截断） */
 function getCaptionSpeakBody(caption: string): string {
   const c = (caption || '').trim();
   if (!c) return '';
-  const m = c.match(/^[^-:：]+-[^:：]+[:：]\s*([\s\S]*)$/);
-  if (m) return stripOuterQuotes(m[1].trim());
-  const m2 = c.match(/^[^:：]+[:：]\s*([\s\S]*)$/);
-  if (m2) return stripOuterQuotes(m2[1].trim());
   return stripOuterQuotes(c);
 }
 
@@ -2333,7 +2329,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       NicheType.YI_JING_METAPHYSICS,
       NicheType.TCM_METAPHYSICS,
       NicheType.FINANCE_CRYPTO,
-      NicheType.STORY_REVENGE,
+      NicheType.STORY_LIFE_DUNGEON,
       NicheType.GENERAL_VIRAL,
       NicheType.PSYCHOLOGY,
       NicheType.PHILOSOPHY_WISDOM,

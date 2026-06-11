@@ -68,13 +68,13 @@ export const NICHE_CHARACTER_PROFILES: Record<NicheType, NicheCharacterProfile> 
     frequencySuggestion: '每5-7个分镜出现1次，在情感转折或高潮时出现'
   },
 
-  [NicheType.STORY_REVENGE]: {
-    nicheName: '复仇故事',
-    characterName: '复仇者',
-    characterDescription: '冷峻面孔，半隐于暗影中，眼神坚毅果决，穿着黑色系服装，气场强大',
-    roleDescription: '代表被伤害后选择反击的主人公',
-    visualStyle: '黑红配色、雨夜、刀锋/火焰隐喻、粗衬线标题',
-    frequencySuggestion: '每4-6个分镜出现1次，在故事高潮或关键抉择时出现'
+  [NicheType.STORY_LIFE_DUNGEON]: {
+    nicheName: '人生副本',
+    characterName: '普通人',
+    characterDescription: '普通中國人面容，穿著樸實無華，帶有時代痕跡，表情真實而複雜，在城市出租屋、農村老家、工廠車間、網吧、縣城中學等場景中若隱若現',
+    roleDescription: '代表普通中國人的視角，沒有金手指，沒有主角光環，只有真實的人生掙扎',
+    visualStyle: '電影感寫實風格、暖灰調、霓虹暗房、城市邊緣地帶、縣城氛圍；畫面有電影感、敘事感強',
+    frequencySuggestion: '每3-5個分鏡出現1次，在故事關鍵轉折或情感高潮時出現'
   },
 
   [NicheType.GENERAL_VIRAL]: {
