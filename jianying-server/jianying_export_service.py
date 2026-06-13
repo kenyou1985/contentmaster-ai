@@ -548,105 +548,12 @@ def _ffprobe_duration_us(path: str):
     return None
 
 
-def _process_audio_for_export(audio_path: str) -> bool:
+def _probe_audio_duration(audio_path: str) -> typing.Optional[int]:
     """
-    使用 ffmpeg 标准化音频 + 追加尾部静音垫（而非裁剪/淡出）：
-    - 统一采样率 48000Hz + 立体声
-    - 追加 300ms 静音垫：防止剪映解码时误判音频结束而截断尾音
-    - 不做 silenceremove（避免误删正常音频内容）
-    - 不做 afade 淡出（淡出会导致尾音被切除，听起来像截断）
-    返回 True 表示处理成功，False 表示跳过处理（文件不存在或 ffmpeg 不可用）
+    直接探测音频文件时长（微秒），不做任何处理/转码/追加静音。
+    返回 None 表示探测失败。
     """
-    import tempfile as _tempfile
-
-    if not os.path.isfile(audio_path):
-        return False
-
-    try:
-        subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5, check=True)
-    except Exception:
-        print(f"[jianying_export] ffmpeg 不可用，跳过音频处理", file=sys.stderr, flush=True)
-        return False
-
-    try:
-        dur_r = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", audio_path],
-            capture_output=True, text=True, timeout=30
-        )
-        if dur_r.returncode != 0:
-            return False
-
-        try:
-            total_dur = float(dur_r.stdout.strip())
-        except ValueError:
-            return False
-
-        if total_dur < 0.5:
-            return False
-
-        silence_pad = 0.3  # 300ms 静音垫
-
-        temp_fd, temp_path = _tempfile.mkstemp(suffix='.wav')
-        os.close(temp_fd)
-
-        try:
-            # 方案A：concat 两个流（原始音频 + 静音）再重采样
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", audio_path,
-                "-f", "lavfi",
-                "-t", str(silence_pad),
-                "-i", "anullsrc=r=48000:cl=stereo",
-                "-filter_complex",
-                f"[0:a]aresample=48000,apad=whole_dur={total_dur + silence_pad}[a0];[a0][1:a]concat=n=2:v=0:a=1",
-                "-ar", "48000",
-                "-ac", "2",
-                temp_path
-            ]
-
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-
-            if result.returncode != 0 or not os.path.isfile(temp_path):
-                # 方案B（备选）：apad 追加静音
-                print(f"[jianying_export] 方案A失败，尝试方案B: {result.stderr[:100] if result.stderr else ''}", file=sys.stderr, flush=True)
-                cmd_b = [
-                    "ffmpeg", "-y",
-                    "-i", audio_path,
-                    "-af", f"aresample=48000,apad=whole_dur={total_dur + silence_pad}",
-                    "-ar", "48000",
-                    "-ac", "2",
-                    temp_path
-                ]
-                result = subprocess.run(cmd_b, capture_output=True, text=True, timeout=60)
-
-            if result.returncode == 0 and os.path.isfile(temp_path):
-                check_r = subprocess.run(
-                    ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", temp_path],
-                    capture_output=True, text=True, timeout=30
-                )
-                if check_r.returncode == 0:
-                    try:
-                        processed_dur = float(check_r.stdout.strip())
-                        if processed_dur >= total_dur - 0.05:
-                            shutil.move(temp_path, audio_path)
-                            print(f"[jianying_export] 音频处理完成: {audio_path} (原 {total_dur:.2f}s → {processed_dur:.2f}s，含 {silence_pad*1000:.0f}ms 静音垫)",
-                                  file=sys.stderr, flush=True)
-                            return True
-                    except ValueError:
-                        pass
-            else:
-                print(f"[jianying_export] 音频处理失败: {result.stderr[:200] if result.stderr else '未知错误'}", file=sys.stderr, flush=True)
-        finally:
-            if os.path.isfile(temp_path):
-                try:
-                    os.unlink(temp_path)
-                except Exception:
-                    pass
-
-        return False
-    except Exception as e:
-        print(f"[jianying_export] 音频处理异常: {e}", file=sys.stderr, flush=True)
-        return False
+    return _ffprobe_duration_us(audio_path)
 
 
 def _mp4_box_duration(path: str) -> typing.Optional[int]:
@@ -1432,8 +1339,8 @@ def _build_lv59_main_script(
             else:
                 adur = int(dur_us)
             adur = max(adur, int(dur_us))
-            # 音频时长直接使用 probe 到的值，不再做尾部裁剪
-            # （_process_audio_for_export 已追加了 300ms 静音垫，无需再裁剪）
+            # 音频时长直接使用 ffprobe 探测到的值，原样使用原始音频文件，100% 保留
+            # 素材时长（source_timerange.duration）和时间线时长（target_timerange.duration）完全对齐为音频真实时长
             aud_mat_id = _make_id()
             lm = uuid.uuid4().hex
             music_id = str(uuid.uuid4())
@@ -1516,14 +1423,9 @@ def _build_lv59_main_script(
             audio_target_dur = use_src
             seg_end_us = start_us + audio_target_dur  # 片段在时间线上的绝对结束时间
 
-            # ── 不做交叉淡入淡出（防止尾音被截断感）───────────────────────
-            # 旧逻辑：200ms 交叉淡出 keyframe 将音量渐变为 0，听感上像音频被切断。
-            # 根本原因：fade-out 只是衰减音量，但 source_timerange.duration 仍指向完整音频，
-            #           剪映渲染时 keyframe volume=0 + source_timerange 没读完 = 尾音被截断。
-            # 正确做法：
-            #   1. 每段音频保持全音量（1.0），不做任何音量 keyframe
-            #   2. 音频文件末尾已在 _process_audio_for_export 中追加了 300ms 静音垫
-            #   3. 片段时间轴紧密衔接，自然形成段间过渡，无需 keyframe 控制
+            # ── 不做任何音量 keyframe ────────────────────────────────
+            # 原始音频原样使用，音量全程 1.0，source_timerange.duration == target_timerange.duration == audio 真实时长
+            # 不追加静音垫，不做淡出，不做任何音频处理，确保尾音完整不被删减
             audio_common_kfs: list = []  # 空列表 = 无音量 keyframe = 全程音量 1.0
 
             audio_segments.append(
@@ -2117,9 +2019,9 @@ def create_draft_on_mac(
             if ok:
                 row["audio_abs"] = _safe_abs_for_jianying(lap)
                 row["audio_client_path"] = _material_path_for_client(row["audio_abs"])
-                # 使用 ffmpeg 处理音频：去除末尾噪声/静音，添加淡出效果
-                _process_audio_for_export(row["audio_abs"])
-                probe_us = _ffprobe_duration_us(row["audio_abs"])
+                # 直接探测音频时长，不做任何 ffmpeg 处理/转码/追加静音
+                # 原始音频原样使用，100% 保留，不删减任何内容
+                probe_us = _probe_audio_duration(row["audio_abs"])
                 # 以文件实测为准；客户端 audioDurationSec 多为文案估算，取 max 会把时间线拉长得远超真实波形（见 pyJianYingDraft：片段时长应对齐素材）。
                 if probe_us:
                     row["audio_duration_us"] = int(probe_us)

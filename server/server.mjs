@@ -189,6 +189,25 @@ function runPython(args) {
   return runPythonStdin(args, undefined, null);
 }
 
+// ---- 安全深拷贝（不使用 JSON.parse(JSON.stringify())，避免大 data URL 触发 V8 Invalid string length）----
+function cleanedShotsFromDataUrls(shots, replacements) {
+  return shots.map(shot => {
+    const result = {};
+    for (const [key, value] of Object.entries(shot)) {
+      if (key === 'imageUrls' && Array.isArray(value)) {
+        result[key] = value.map(u =>
+          (u && typeof u === 'string' && u.startsWith('data:')) ? (replacements[u] || u) : u
+        );
+      } else if (typeof value === 'string' && (key === 'imageUrl' || key === 'audioUrl' || key === 'voiceoverAudioUrl' || key === 'videoUrl')) {
+        result[key] = (value.startsWith('data:')) ? (replacements[value] || value) : value;
+      } else {
+        result[key] = value;
+      }
+    }
+    return result;
+  });
+}
+
 // ---- Data URL → Temp File 转换（避免超长 stdin JSON）----
 function extractDataUrlsToTempFiles(shots) {
   const tempDir = join('/tmp', `jianying_data_${Date.now()}`);
@@ -249,7 +268,8 @@ function extractDataUrlsToTempFiles(shots) {
   }
 
   // Walk through shots and replace data URLs with file paths
-  const cleanedShots = JSON.parse(JSON.stringify(shots)); // deep clone
+  // 注意：不使用 JSON.parse(JSON.stringify()) 深拷贝，超大 data URL 会触发 V8 "Invalid string length"
+  const cleanedShots = cleanedShotsFromDataUrls(shots, replacements);
   for (let i = 0; i < cleanedShots.length; i++) {
     const shot = cleanedShots[i];
     for (const key of ['imageUrl', 'audioUrl', 'voiceoverAudioUrl', 'videoUrl']) {

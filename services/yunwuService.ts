@@ -164,6 +164,11 @@ function stripLeadingTrailingCodeFence(s: string): string {
   return t;
 }
 
+/** 清除 AI 推理标签（gpt-5.4-mini 等推理模型会输出 <think>…</think> 标签包裹的思考过程） */
+function stripThinkTags(s: string): string {
+  return s.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+}
+
 const TTS_POLISH_BASE_SYSTEM = `You are a professional dubbing script editor for neural TTS.
 Optimize the user's lines for natural, fluent speech: improve punctuation and phrase breaks for breathing, remove timestamps/meta noise, keep emotional tone and facts intact.
 Rules:
@@ -568,6 +573,23 @@ const convertRatioToSoraFormat = (ratioId: string): string => {
 };
 
 /**
+ * 将 size 转换为 DALL-E 3 支持的尺寸
+ * DALL-E 3 只支持: 1024x1024, 1024x1792, 1792x1024
+ * @param size 原始尺寸（如 1920x1080, 1080x1920 等）
+ * @returns DALL-E 3 兼容的尺寸
+ */
+function convertSizeForDalle3(size?: string): string {
+  if (!size) return '1024x1024';
+  const [w, h] = size.split('x').map(Number);
+  if (!w || !h) return '1024x1024';
+  const aspectRatio = w / h;
+  // DALL-E 3 支持的宽高比: 1:1, ~0.57 (9:16/2:3), ~1.78 (16:9/3:2)
+  if (Math.abs(aspectRatio - 1) < 0.1) return '1024x1024';
+  if (aspectRatio < 1) return '1024x1792'; // 竖屏
+  return '1792x1024'; // 横屏
+}
+
+/**
  * 生成图片
  */
 export const generateImage = async (
@@ -784,7 +806,13 @@ export const generateImage = async (
           gptImagePrimary,
           primaryErr?.message
         );
-        return await yunwuOpenAiImageOnce(apiKey, baseUrl, gptImageFallback, opts);
+        // DALL-E 3 只支持 1024x1024, 1024x1792, 1792x1024，切到 dall-e-3 时必须转换 size
+        const fallbackOpts: ImageGenerationOptions = {
+          ...opts,
+          model: gptImageFallback,
+          size: convertSizeForDalle3(opts.size),
+        };
+        return await yunwuOpenAiImageOnce(apiKey, baseUrl, gptImageFallback, fallbackOpts);
       }
     }
 
@@ -861,91 +889,110 @@ async function yunwuOpenAiImageOnce(
   modelId: string,
   options: ImageGenerationOptions
 ): Promise<GenerationResult> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 120_000);
   const hasRef = options.referenceDataUrls && options.referenceDataUrls.length > 0;
 
-  // 有参考图时：gpt-image-2 必须走 images/edits 端点（其他模型走 generations）
-  if (hasRef && modelId === 'gpt-image-2') {
-    const endpoint = '/v1/images/edits';
-    // images/edits 需要 multipart/form-data，参考图和 mask 均以 data URL 传入
-    const formData = new FormData();
-    formData.append('model', modelId);
-    formData.append('prompt', options.prompt || '');
-    for (const refUrl of options.referenceDataUrls!) {
-      // data URL → Blob
-      const [meta, b64] = refUrl.split(',', 2);
-      const mimeMatch = meta.match(/data:([^;]+)/);
-      const mime = mimeMatch ? mimeMatch[1] : 'image/png';
-      const binary = atob(b64);
-      const arr = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
-      const blob = new Blob([arr], { type: mime });
-      formData.append('image', blob, 'reference.png');
-    }
-    if (options.size) formData.append('size', options.size);
-    if (options.quality) formData.append('quality', options.quality);
-    if (options.n) formData.append('n', String(options.n));
+  // 503 / 网络错误可重试，服务器错误（5xx）/客户端错误（4xx）不重试
+  const isRetryable = (status: number) => status === 503 || status === 502 || status === 429;
+  const MAX_RETRIES = 3;
+  let lastError: Error | null = null;
 
-    const response = await fetch(`${baseUrl}${endpoint}`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}` },
-      body: formData,
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120_000);
 
-    if (!response.ok) {
+    try {
+      let response: Response;
+
+      if (hasRef && modelId === 'gpt-image-2') {
+        // images/edits 端点（需要参考图）
+        const endpoint = '/v1/images/edits';
+        const formData = new FormData();
+        formData.append('model', modelId);
+        formData.append('prompt', options.prompt || '');
+        for (const refUrl of options.referenceDataUrls!) {
+          const [meta, b64] = refUrl.split(',', 2);
+          const mime = meta.match(/data:([^;]+)/)?.[1] || 'image/png';
+          const binary = atob(b64);
+          const arr = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
+          formData.append('image', new Blob([arr], { type: mime }), 'reference.png');
+        }
+        if (options.size) formData.append('size', options.size);
+        if (options.quality) formData.append('quality', options.quality);
+        if (options.n) formData.append('n', String(options.n));
+
+        response = await fetch(`${baseUrl}${endpoint}`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}` },
+          body: formData,
+          signal: controller.signal,
+        });
+      } else {
+        // images/generations 端点
+        const endpoint = '/v1/images/generations';
+        const body: Record<string, unknown> = { model: modelId, prompt: options.prompt };
+        if (options.size) body.size = options.size;
+        if (options.quality) body.quality = options.quality;
+        if (options.n) body.n = options.n;
+
+        response = await fetch(`${baseUrl}${endpoint}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+      }
+
+      clearTimeout(timeout);
+
+      if (response.ok) {
+        const data = await response.json();
+        const first = data.data?.[0];
+        const normalizedUrl =
+          openAiImageDataItemToUrl(first) ||
+          (typeof data.url === 'string' ? data.url.trim() : undefined);
+        return { success: true, data, url: normalizedUrl };
+      }
+
+      // 可重试错误：503/502/429
+      if (isRetryable(response.status) && attempt < MAX_RETRIES - 1) {
+        const delayMs = (attempt + 1) * 2000;
+        console.warn(`[YunwuService] ${modelId} 尝试 ${attempt + 1} 失败 (HTTP ${response.status})，${delayMs}ms 后重试...`);
+        await new Promise((r) => setTimeout(r, delayMs));
+        continue;
+      }
+
+      // 不可重试或已达最大重试次数
       const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
       const errorMessage = errorData.error?.message || `HTTP ${response.status}: ${response.statusText}`;
       throw new Error(errorMessage);
+
+    } catch (err: any) {
+      clearTimeout(timeout);
+      const isNetworkErr =
+        err.name === 'TypeError' || // fetch 网络错误（断网、域名解析失败等）
+        err.message?.includes('network') ||
+        err.message?.includes('NetworkError') ||
+        err.message?.includes('Failed to fetch') ||
+        err.message?.includes('net::');
+
+      // 网络错误可重试
+      if (isNetworkErr && attempt < MAX_RETRIES - 1) {
+        const delayMs = (attempt + 1) * 2000;
+        console.warn(`[YunwuService] ${modelId} 网络错误 (${err.message?.slice(0, 80)}), ${delayMs}ms 后重试...`);
+        await new Promise((r) => setTimeout(r, delayMs));
+        continue;
+      }
+
+      lastError = err;
+      break;
     }
-
-    const data = await response.json();
-    const first = data.data?.[0];
-    const normalizedUrl =
-      openAiImageDataItemToUrl(first) || (typeof data.url === 'string' ? data.url.trim() : undefined);
-
-    return { success: true, data, url: normalizedUrl };
   }
 
-  // 无参考图 / 其他模型：走 images/generations
-  const endpoint = '/v1/images/generations';
-  const body: Record<string, unknown> = {
-    model: modelId,
-    prompt: options.prompt,
-  };
-  if (options.size) body.size = options.size;
-  if (options.quality) body.quality = options.quality;
-  if (options.n) body.n = options.n;
-
-  const response = await fetch(`${baseUrl}${endpoint}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-    signal: controller.signal,
-  });
-  clearTimeout(timeout);
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
-    const errorMessage = errorData.error?.message || `HTTP ${response.status}: ${response.statusText}`;
-    throw new Error(errorMessage);
-  }
-
-  const data = await response.json();
-  const first = data.data?.[0];
-  const normalizedUrl =
-    openAiImageDataItemToUrl(first) || (typeof data.url === 'string' ? data.url.trim() : undefined);
-
-  return {
-    success: true,
-    data,
-    url: normalizedUrl,
-  };
+  throw lastError || new Error(`${modelId} 生成失败`);
 }
 
 async function yunwuGrokImageOnce(

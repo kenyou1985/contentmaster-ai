@@ -1473,18 +1473,11 @@ def _build_lv59_main_script(
 
         apath = row.get("audio_abs")
         if apath and os.path.isfile(apath):
-            # ── 关键修复：先处理音频，再取值 ─────────────────────────────
-            # _process_audio_for_export 会在音频末尾追加 300ms 静音垫。
-            # 必须在追加静音垫之前或之后统一探测时长，
-            # 否则 materials["audios"].duration（处理前）与 source_timerange（处理后）不一致，
-            # 导致剪映读取材料时截断尾音。
-            _process_audio_for_export(apath)
-            # 处理后重新探测真实时长
-            processed_dur = _ffprobe_duration_us(apath)
-            if processed_dur and processed_dur > 0:
-                adur = int(processed_dur)
+            # 直接探测原始音频时长，不做任何处理
+            orig_dur = _ffprobe_duration_us(apath)
+            if orig_dur and orig_dur > 0:
+                adur = int(orig_dur)
             else:
-                # 兜底：用处理前探测的时长
                 adur = max(33_333, int(row.get("audio_duration_us", 0) or dur_us))
             adur = max(adur, int(dur_us))
             aud_mat_id = _make_id()

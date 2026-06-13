@@ -572,8 +572,10 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const activeAudioRef = useRef<{ audio: HTMLAudioElement; shotId: string } | null>(null);
   /** 当前在播放的 shotId（用于按钮文字切换） */
   const [playingAudioShotId, setPlayingAudioShotId] = useState<string | null>(null);
-  /** 避免并行重新绘图因 React 闭包延迟导致同 shot 重复触发：shotId → in-flight Promise */
+  /** 避免并行重新绘图：shotId → in-flight Promise */
   const imageGenPromisesRef = useRef<Map<string, Promise<boolean>>>(new Map());
+  /** 取消信号：shotId → true 表示该任务已被用户取消（finally 块会清理） */
+  const imageGenCancelledRef = useRef<Map<string, boolean>>(new Map());
   const [selectedImageModel, setSelectedImageModel] = useState('jimeng-5.0');
   const [selectedVideoModel, setSelectedVideoModel] = useState(VIDEO_MODELS[0].id);
   const [selectedImageRatio, setSelectedImageRatio] = useState('16:9'); // 默认横屏 16:9
@@ -1346,10 +1348,13 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     });
 
     // 图片和配音真正并行执行（走不同模型/服务，互不干扰）
-    // 图片并发 100，配音并发用 runningHubConcurrency
+    // GPT Image 2 使用最大 20 并发 + 500ms 间隔，其他模型使用 100 并发
+    const isGptImage2 = selectedImageModel === 'gpt-image-2-all';
+    const imageConcurrency = isGptImage2 ? 20 : 100;
+    const imageStaggerMs = isGptImage2 ? 500 : 0;
     const imageGenPromise = (async () => {
       if (imageTasks.length > 0) {
-        appendTerminalLog('Pipeline', `开始生成 ${imageTasks.length} 个镜头的图片（并发 100）…`);
+        appendTerminalLog('Pipeline', `开始生成 ${imageTasks.length} 个镜头的图片（并发 ${imageConcurrency}${isGptImage2 ? ' + 500ms 间隔' : ''}）…`);
         const tasks = imageTasks.map(({ snap, idx }) => async () => {
           const num = snap.number;
           setOneClickPipelineProgress(`图片 ${idx + 1}/${targetShots.length} (镜头${num})`);
@@ -1376,7 +1381,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           }
           return false;
         });
-        await runConcurrentTasks(tasks, 100, () => {});
+        await runConcurrentTasks(tasks, imageConcurrency, () => {}, imageStaggerMs);
       }
     })();
 
@@ -2710,7 +2715,20 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   };
 
   // 生成单个图片（支持生成多张）；返回是否成功（避免依赖 React setState 延迟闭包误判）
+  // 点击时若正在生成中，则取消当前生成（而非拒绝操作）
   const handleGenerateImage = async (shot: Shot, regenerate: boolean = false): Promise<boolean> => {
+    // 正在生成中 → 取消当前生成
+    if (imageGenPromisesRef.current.has(shot.id)) {
+      imageGenCancelledRef.current.set(shot.id, true); // 标记取消，finally 会清理
+      imageGenPromisesRef.current.delete(shot.id);
+      appendTerminalLog('ImageGen', `镜头${shot.number}: 用户取消生成`);
+      updateShot(shot.id, { imageGenerating: false });
+      // 重新启用按钮
+      const btn = document.querySelector(`[data-shot-id="${shot.id}"] .regenerate-btn`) as HTMLButtonElement | null;
+      if (btn) { btn.disabled = false; btn.textContent = '重新繪圖'; }
+      return false;
+    }
+
     // 立即设置按钮禁用状态，避免等待 setState
     const btn = document.querySelector(`[data-shot-id="${shot.id}"] .regenerate-btn`) as HTMLButtonElement | null;
     if (btn) btn.disabled = true;
@@ -2718,6 +2736,16 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     if (imageGenPromisesRef.current.has(shot.id)) return false;
     const promise = (async () => {
       const selectedModel = IMAGE_MODELS.find(m => m.id === selectedImageModel);
+      // 每次 await 之前检查是否被取消
+      const isCancelled = () => imageGenCancelledRef.current.get(shot.id);
+      const checkCancelled = () => {
+        if (isCancelled()) {
+          imageGenPromisesRef.current.delete(shot.id);
+          updateShot(shot.id, { imageGenerating: false });
+          return true;
+        }
+        return false;
+      };
     
     // 检查 API Key 配置
     if (selectedModel?.isJimeng) {
@@ -2844,7 +2872,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               ...generationOptions,
               num_images: 1, // 每次生成1张
             });
-            
+            if (checkCancelled()) return false;
+
             if (result.success) {
               if (result.url) {
                 newImageUrls.push(result.url);
@@ -2862,7 +2891,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           }
         } else {
           const result = await generateRunningHubImage(apiKey, generationOptions);
-          
+          if (checkCancelled()) return false;
+
           if (result.success) {
             if (result.url) {
               newImageUrls = [result.url];
@@ -2909,7 +2939,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           generationOptions,
           { sessionId: jimengSessionId }
         );
-        
+        if (checkCancelled()) return false;
+
         if (result.success && result.data) {
           newImageUrls = result.data.map(item => item.url);
           appendTerminalLog('ImageGen', `镜头${shot.number}: 即梦完成，${newImageUrls.length} 张`);
@@ -2937,7 +2968,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     };
     
     const result = await generateImage(apiKey, options);
-    
+    if (checkCancelled()) return false;
+
     if (result.success && result.url) {
             newImageUrls.push(result.url);
           } else if (result.success && result.data?.data && Array.isArray(result.data.data)) {
@@ -2951,6 +2983,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           // 延迟避免API限流
           if (i < generateImageCount - 1) {
             await new Promise(resolve => setTimeout(resolve, 2000)); // 增加到2秒延迟
+            if (checkCancelled()) return false;
           }
         }
       } else if (chatCompletionsModels.includes(selectedImageModel)) {
@@ -2965,7 +2998,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         };
         
         const result = await generateImage(apiKey, options);
-        
+
         if (result.success) {
           if (result.url) {
             newImageUrls = [result.url];
@@ -2993,15 +3026,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             };
 
             let result = await generateImage(apiKey, options);
-            if (!result.success && isGptImage2) {
-              for (let retry = 1; retry < 3; retry++) {
-                await new Promise(resolve => setTimeout(resolve, 3000));
-                appendTerminalLog('ImageGen', `镜头${shot.number}: gpt-image-2 重试 ${retry + 1}/3 ...`);
-                result = await generateImage(apiKey, options);
-                if (result.success) break;
-              }
-            }
-            
+            if (checkCancelled()) return false;
             if (result.success) {
               // 处理单张图片的情况
               if (result.url) {
@@ -3036,14 +3061,6 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           };
 
           let result = await generateImage(apiKey, options);
-          if (!result.success && isGptImage2) {
-            for (let retry = 1; retry < 3; retry++) {
-              await new Promise(resolve => setTimeout(resolve, 3000));
-              appendTerminalLog('ImageGen', `镜头${shot.number}: gpt-image-2 重试 ${retry + 1}/3 ...`);
-              result = await generateImage(apiKey, options);
-              if (result.success) break;
-            }
-          }
 
           if (result.success) {
             // 处理单张图片的情况
@@ -3099,19 +3116,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       return false;
     } finally {
       imageGenPromisesRef.current.delete(shot.id);
-      // 重新启用按钮
+      imageGenCancelledRef.current.delete(shot.id);
       const btn = document.querySelector(`[data-shot-id="${shot.id}"] .regenerate-btn`) as HTMLButtonElement | null;
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = '重新繪圖';
-      }
+      if (btn) { btn.disabled = false; btn.textContent = '重新繪圖'; }
     }
     })();
     imageGenPromisesRef.current.set(shot.id, promise);
     return promise;
   };
-
-  // 辅助函数：追加视频URL到镜头
   const appendVideoToShot = (shotId: string, videoUrl: string, cachedUrl?: string) => {
     const shot = shotsRef.current.find(s => s.id === shotId);
     if (!shot) return;
@@ -3942,28 +3954,27 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     }
   };
 
-  // 并发控制辅助函数：限制同时执行的任务数量
+  // 并发控制辅助函数：限制同时执行的任务数量，支持任务间隔启动
   const runConcurrentTasks = async <T,>(
     tasks: (() => Promise<T>)[],
     concurrency: number,
-    onProgress?: (completed: number, total: number) => void
+    onProgress?: (completed: number, total: number) => void,
+    /** 相邻任务启动间隔（毫秒），0 表示立即启动 */
+    staggerMs: number = 0
   ): Promise<{ success: T[]; failed: { error: any; index: number }[] }> => {
     const results: { success: T[]; failed: { error: any; index: number }[] } = {
       success: [],
       failed: []
     };
-    
+
     let completed = 0;
     let currentIndex = 0;
-    
-    // 创建并发池
-    const workers: Promise<void>[] = [];
-    
+
     const runNext = async (): Promise<void> => {
       while (currentIndex < tasks.length) {
         const index = currentIndex++;
         const task = tasks[index];
-        
+
         try {
           const result = await task();
           results.success.push(result);
@@ -3978,17 +3989,22 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             onProgress(completed, tasks.length);
           }
         }
+
+        // 任务完成后，等待 staggerMs 再启动下一个（错开并发峰值）
+        if (staggerMs > 0 && currentIndex < tasks.length) {
+          await new Promise(resolve => setTimeout(resolve, staggerMs));
+        }
       }
     };
-    
+
     // 启动并发工作池
+    const workers: Promise<void>[] = [];
     for (let i = 0; i < Math.min(concurrency, tasks.length); i++) {
       workers.push(runNext());
     }
-    
-    // 等待所有任务完成
+
     await Promise.all(workers);
-    
+
     return results;
   };
 
@@ -4048,15 +4064,18 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         }
       );
       
-      // 并发执行，使用用户设置的并发数
-      const concurrency = runningHubConcurrency;
-      const results = await runConcurrentTasks(
-        tasks,
-        concurrency,
-        (completed, total) => {
-          setBatchProgress(prev => prev ? { ...prev, current: completed } : null);
-        }
-      );
+      // 对 GPT Image 2 使用最大 20 并发 + 500ms 间隔，避免 yunwu.ai 后端限流报错
+    const isGptImage2 = selectedImageModel === 'gpt-image-2-all';
+    const concurrency = isGptImage2 ? 20 : runningHubConcurrency;
+    const staggerMs = isGptImage2 ? 500 : 0;
+    const results = await runConcurrentTasks(
+      tasks,
+      concurrency,
+      (completed, total) => {
+        setBatchProgress(prev => prev ? { ...prev, current: completed } : null);
+      },
+      staggerMs
+    );
       
       const successCount = results.success.length;
       const failCount = results.failed.length;
@@ -4663,8 +4682,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             <div className="flex items-center gap-1 border-r border-slate-700 pr-2 mr-1">
               <button
                 onClick={handleBatchGenerateImages}
-                disabled={imageGeneratingCount > 0}
-                className="flex items-center gap-1 px-2 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
+                className="flex items-center gap-1 px-2 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition-all"
                 title="批量生成图片"
               >
                 <Rocket size={13} />
@@ -5538,11 +5556,13 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                           toast.error(`图片生成失败: ${error.message || '未知错误'}`, 6000);
                         }
                       }}
-                      disabled={shot.imageGenerating}
-                      className="regenerate-btn text-[10px] px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded whitespace-nowrap disabled:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-100"
+                      disabled={shot.imageGenerating && !imageGenPromisesRef.current.has(shot.id)}
+                      className="regenerate-btn text-[10px] px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded whitespace-nowrap disabled:bg-slate-600 disabled:cursor-default disabled:opacity-100"
                       title="重新绘图"
                     >
-                      {shot.imageGenerating ? '生成中…' : '重新繪圖'}
+                      {shot.imageGenerating ? (
+                        imageGenPromisesRef.current.has(shot.id) ? '取消生成' : '生成中…'
+                      ) : '重新繪圖'}
                     </button>
                     {/* 音频：左侧试听/重新生成 + 右侧重新配音 */}
                     <div className="flex gap-1">
