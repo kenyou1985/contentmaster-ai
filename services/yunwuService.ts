@@ -231,7 +231,7 @@ async function runTtsPolishChat(
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content;
     if (typeof content !== 'string' || !content.trim()) return fallback;
-    const out = stripLeadingTrailingCodeFence(content).trim();
+    const out = stripThinkTags(stripLeadingTrailingCodeFence(content).trim());
     return out.length >= 2 ? out : fallback;
   } catch (e) {
     console.warn('[YunwuService] TTS polish request failed, using raw text:', e);
