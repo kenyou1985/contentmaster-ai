@@ -229,6 +229,127 @@ function inferAudioMimeFromUrl(url: string): string | undefined {
   return map[ext];
 }
 
+/** V8 字符串最大长度 (~512MB)，低于此阈值时 client 端 stringify 安全 */
+const V8_MAX_SAFE_STRING = 450 * 1024 * 1024; // 留 60MB 余地
+
+/**
+ * 探测 payload 序列化大小，若超 V8 限制，把 shots 内嵌的 data URL
+ * 提取并上传到 server 端 temp dir，shots 中 data URL 替换为 file path。
+ * 失败或已存在 file:// 时透传。
+ */
+async function ensurePayloadSerializable(
+  payload: Record<string, unknown>,
+  onProgress?: (progress: number, message: string) => void,
+): Promise<Record<string, unknown>> {
+  let size = 0;
+  try {
+    size = JSON.stringify(payload).length;
+  } catch (e: any) {
+    console.warn('[JianyingExport] payload 初次序列化失败，提取 data URL:', e?.message);
+  }
+  if (size <= V8_MAX_SAFE_STRING) return payload;
+
+  console.warn(`[JianyingExport] payload 过大 (${(size / 1024 / 1024).toFixed(1)}MB)，提取 data URL 到 server temp dir`);
+  onProgress?.(8, 'Payload 过大，提取内嵌媒体到本地临时文件...');
+  return await uploadInlineDataUrlsToServer(payload);
+}
+
+interface MediaExtractItem {
+  mime: string;
+  data: string; // base64 部分（不含 "data:xxx;base64," 前缀）
+}
+
+/**
+ * 遍历 payload.shots，把所有内嵌的 data URL 收集起来：
+ * 1. 一次性 POST 到 /api/jianying/upload-media-batch
+ * 2. server 写入 /tmp/jianying_data_xxx/media_NNNN.ext
+ * 3. 客户端按相同顺序把 shots 中对应 data URL 替换为返回的 file path
+ * 4. 同步在 payload 里记录 _tempMediaDir，便于后续清理（可选）
+ */
+async function uploadInlineDataUrlsToServer(
+  payload: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const shots = Array.isArray(payload.shots) ? (payload.shots as any[]) : [];
+  if (shots.length === 0) return payload;
+
+  // 第一步：按出现顺序收集去重后的 data URL → mime+base64
+  const dataUrlToIdx = new Map<string, number>();
+  const items: MediaExtractItem[] = [];
+
+  const collect = (val: any) => {
+    if (typeof val !== 'string') return;
+    if (!val.startsWith('data:')) return;
+    if (dataUrlToIdx.has(val)) return;
+    const headerEnd = val.indexOf(',');
+    if (headerEnd < 0) return;
+    const header = val.slice(0, headerEnd);
+    const m = /^data:([^;]+)(?:;base64)?$/i.exec(header);
+    if (!m) return;
+    const mime = m[1].trim().toLowerCase();
+    const b64 = val.slice(headerEnd + 1);
+    dataUrlToIdx.set(val, items.length);
+    items.push({ mime, data: b64 });
+  };
+
+  for (const shot of shots) {
+    collect(shot?.imageUrl);
+    if (Array.isArray(shot?.imageUrls)) {
+      for (const u of shot.imageUrls) collect(u);
+    }
+    collect(shot?.audioUrl);
+    collect(shot?.voiceoverAudioUrl);
+    collect(shot?.videoUrl);
+  }
+
+  if (items.length === 0) return payload;
+
+  console.log(`[JianyingExport] 上传 ${items.length} 个内嵌 media 到 server temp dir`);
+
+  // 第二步：上传到 server
+  const res = await fetch('/api/jianying/upload-media-batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items }),
+    signal: AbortSignal.timeout(300_000), // 5 分钟
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error(`upload-media-batch 失败 (${res.status}): ${txt.slice(0, 300)}`);
+  }
+  const result = await res.json();
+  if (!result?.success || !Array.isArray(result.paths)) {
+    throw new Error(`upload-media-batch 响应异常: ${JSON.stringify(result).slice(0, 300)}`);
+  }
+  const paths: string[] = result.paths;
+  if (paths.length !== items.length) {
+    throw new Error(`upload-media-batch 路径数不匹配: ${paths.length} vs ${items.length}`);
+  }
+
+  // 第三步：替换 shots 中的 data URL 为 file path（不修改原 payload 对象，浅拷贝 shots）
+  const replace = (val: any): any => {
+    if (typeof val !== 'string') return val;
+    if (!val.startsWith('data:')) return val;
+    const idx = dataUrlToIdx.get(val);
+    if (idx === undefined) return val;
+    return paths[idx];
+  };
+
+  const newShots = shots.map((shot) => {
+    if (!shot || typeof shot !== 'object') return shot;
+    const out: any = { ...shot };
+    out.imageUrl = replace(shot.imageUrl);
+    if (Array.isArray(shot.imageUrls)) {
+      out.imageUrls = shot.imageUrls.map((u: any) => replace(u));
+    }
+    out.audioUrl = replace(shot.audioUrl);
+    out.voiceoverAudioUrl = replace(shot.voiceoverAudioUrl);
+    out.videoUrl = replace(shot.videoUrl);
+    return out;
+  });
+
+  return { ...payload, shots: newShots };
+}
+
 /**
  * 导出前处理媒体 URL
  * 
@@ -421,6 +542,10 @@ async function localExport(
 ): Promise<JianyingExportResult> {
   onProgress?.(10, '提交本地任务...');
 
+  // 探测 payload 序列化大小：超 V8 字符串限制 (~512MB) 时，把 data URL 上传到 server temp dir，
+  // 避免 fetch body 触发 "Invalid string length"
+  payload = await ensurePayloadSerializable(payload, onProgress);
+
   // 尝试本地异步接口
   try {
     const startRes = await fetch('/api/jianying/export/start', {
@@ -461,10 +586,23 @@ async function localExportSync(
   timeoutMs: number,
 ): Promise<JianyingExportResult> {
   try {
+    let body: string;
+    try {
+      body = JSON.stringify(payload);
+    } catch (e: any) {
+      // 客户端序列化失败：尝试再提取一次 data URL
+      if (e?.message?.includes('string length')) {
+        console.warn('[JianyingExport] 同步端点 payload 序列化失败，再次提取 data URL');
+        const newPayload = await uploadInlineDataUrlsToServer(payload);
+        body = JSON.stringify(newPayload);
+      } else {
+        throw e;
+      }
+    }
     const res = await fetch(`${base}/export`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body,
       signal: AbortSignal.timeout(timeoutMs),
     });
 

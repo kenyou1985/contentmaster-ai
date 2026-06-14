@@ -646,6 +646,60 @@ async function handleRequest(req, res) {
     return;
   }
 
+  // POST /api/jianying/upload-media-batch  → 客户端上传 data URL 到 server temp dir
+  // 请求体：{ items: [{ mime, data: "base64..." }, ...] }
+  // 响应：{ tempDir, paths: ["/tmp/jianying_data_xxx/media_0000.png", ...] }
+  // 客户端拿到 paths 后，把 shots 中对应 data URL 替换为 path，再 stringify
+  if (req.method === 'POST' && url.pathname === '/api/jianying/upload-media-batch') {
+    const chunks = [];
+    req.on('data', (chunk) => { chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+    req.on('end', () => {
+      try {
+        const body = Buffer.concat(chunks).toString('utf8');
+        const payload = JSON.parse(body);
+        const items = Array.isArray(payload?.items) ? payload.items : [];
+        if (items.length === 0) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: 'items 不能为空' }));
+          return;
+        }
+
+        const tempDir = join('/tmp', `jianying_data_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
+        mkdirSync(tempDir, { recursive: true });
+        const paths = [];
+
+        const MIME_EXT = {
+          'image/png': '.png', 'image/jpeg': '.jpg', 'image/jpg': '.jpg',
+          'image/gif': '.gif', 'image/webp': '.webp',
+          'audio/mpeg': '.mp3', 'audio/mp3': '.mp3', 'audio/wav': '.wav',
+          'audio/ogg': '.ogg', 'audio/m4a': '.m4a', 'audio/aac': '.aac',
+          'audio/flac': '.flac', 'audio/x-flac': '.flac',
+          'video/mp4': '.mp4', 'video/quicktime': '.mov', 'video/webm': '.webm',
+          'video/x-m4v': '.m4v',
+        };
+
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i] || {};
+          const mime = String(item.mime || 'application/octet-stream');
+          const ext = MIME_EXT[mime] || '.bin';
+          const fileName = `media_${String(i).padStart(4, '0')}${ext}`;
+          const filePath = join(tempDir, fileName);
+          const b64 = String(item.data || '');
+          const buf = Buffer.from(b64, 'base64');
+          writeFileSync(filePath, buf);
+          paths.push(filePath);
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, tempDir, paths }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
   // POST /api/jianying/echo  → 调试：原样返回请求体
   if (req.method === 'POST' && url.pathname === '/api/jianying/echo') {
     let body = '';
