@@ -9,6 +9,7 @@ import {
   polishTextForTtsSpeechWithStyle,
 } from '../services/yunwuService';
 import { cacheVideo, getCachedVideoUrl, downloadVideo } from '../services/videoCacheService';
+import { cacheImage, getCachedImageUrl } from '../services/imageCacheService';
 import {
   generateImage as generateRunningHubImage,
   generateVideo as generateRunningHubVideo,
@@ -107,6 +108,8 @@ interface Shot {
   videoUrls?: string[]; // 支持多个视频（追加模式）
   cachedVideoUrl?: string; // 缓存的视频 Blob URL
   cachedVideoUrls?: string[]; // 缓存的视频 Blob URL 数组
+  cachedImageUrl?: string; // 缓存的图片 Blob URL（优先显示）
+  cachedImageUrls?: string[]; // 缓存的图片 Blob URL 数组
   imageGenerating?: boolean;
   videoGenerating?: boolean;
   /** 视频生成失败标记 */
@@ -415,6 +418,8 @@ function restoredShotsFromProject(shots: MediaProjectRecord['shots']): Shot[] {
       videoUrls: p.videoUrls,
       cachedVideoUrl: p.cachedVideoUrl,
       cachedVideoUrls: p.cachedVideoUrls,
+      cachedImageUrl: p.cachedImageUrl,
+      cachedImageUrls: p.cachedImageUrls,
       selected: p.selected,
       selectedImageIndex: p.selectedImageIndex,
       imageGenerating: false,
@@ -436,6 +441,11 @@ function firstPersistedShotPreviewImageUrl(project: MediaProjectRecord): string 
       ? sh0.selectedImageIndex
       : 0;
   const u = sh0.imageUrls[idx] ?? sh0.imageUrls[0];
+  // 优先用缓存（避免 jimeng 签名过期后无法显示）
+  if (u && /^https?:\/\//i.test(u)) {
+    const cached = getCachedImageUrl(u);
+    if (cached) return cached;
+  }
   return normalizePersistedMediaUrl(u);
 }
 
@@ -3097,9 +3107,28 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           selectedIndex = currentUrls.length;
         }
 
+        // 自动下载并缓存图片（避免 jimeng 签名过期后历史记录白屏）
+        const cachedImageUrls = [...(shot.cachedImageUrls || [])];
+        for (let ci = 0; ci < newImageUrls.length; ci++) {
+          const u = newImageUrls[ci];
+          if (u && /^https?:\/\//i.test(u)) {
+            const cached = await cacheImage(u);
+            if (cached !== u) {
+              cachedImageUrls.push(cached);
+            } else {
+              cachedImageUrls.push(undefined);
+            }
+          } else {
+            cachedImageUrls.push(undefined);
+          }
+        }
+        // 对齐数组长度
+        while (cachedImageUrls.length < updatedUrls.length) cachedImageUrls.push(undefined);
+
         updateShot(shot.id, {
           imageUrls: updatedUrls,
           selectedImageIndex: selectedIndex,
+          cachedImageUrls,
           imageGenerating: false
         });
         appendTerminalLog('ImageGen', `镜头${shot.number}: 完成，当前共 ${updatedUrls.length} 张图`);
@@ -5362,10 +5391,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                       <>
                         {shot.imageUrls.length <= 2 ? (
                           <>
-                            {/* 主图 */}
+                            {/* 主图：优先用缓存 URL，避免 jimeng 签名过期后白屏 */}
                             <div className="relative">
                               <img
-                                src={shot.imageUrls[shot.selectedImageIndex !== undefined && shot.selectedImageIndex >= 0 ? shot.selectedImageIndex : 0]}
+                                src={(() => {
+                                  const idx = shot.selectedImageIndex !== undefined && shot.selectedImageIndex >= 0 ? shot.selectedImageIndex : 0;
+                                  const cached = shot.cachedImageUrls?.[idx] || shot.cachedImageUrl;
+                                  return cached || shot.imageUrls![idx];
+                                })()}
                                 alt={`镜头${shot.number}-主图`}
                                 className="w-full h-32 object-cover rounded border border-slate-700 cursor-pointer"
                                 onDoubleClick={() => {
@@ -5384,15 +5417,16 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                                 </div>
                               )}
                             </div>
-                            {/* 缩略图（只有1-2张时显示） */}
+                            {/* 缩略图（只有1-2张时显示）：同样优先用缓存 */}
                             {shot.imageUrls.length > 1 && (
                               <div className="flex gap-1">
                                 {shot.imageUrls.slice(0, 2).map((url, index) => {
                                   const isSelected = (shot.selectedImageIndex !== undefined && shot.selectedImageIndex >= 0 ? shot.selectedImageIndex : 0) === index;
+                                  const cached = shot.cachedImageUrls?.[index];
                                   return (
                                     <img
                                       key={index}
-                                      src={url}
+                                      src={cached || url}
                                       alt={`缩略图${index + 1}`}
                                       className={`w-12 h-12 object-cover rounded border-2 cursor-pointer ${
                                         isSelected ? 'border-orange-500' : 'border-slate-700'
@@ -5410,10 +5444,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                             <div className="grid grid-cols-2 gap-1">
                               {shot.imageUrls.map((url, index) => {
                                 const isSelected = (shot.selectedImageIndex !== undefined && shot.selectedImageIndex >= 0 ? shot.selectedImageIndex : 0) === index;
+                                const cached = shot.cachedImageUrls?.[index];
                                 return (
                                   <div key={index} className="relative">
                                     <img
-                                      src={url}
+                                      src={cached || url}
                                       alt={`图片${index + 1}`}
                                       className={`w-full h-16 object-cover rounded border-2 cursor-pointer ${
                                         isSelected ? 'border-orange-500' : 'border-slate-700'

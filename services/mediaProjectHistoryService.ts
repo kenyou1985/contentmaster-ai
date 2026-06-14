@@ -5,6 +5,7 @@
 
 import { lsGetItem, lsSetItem } from './storageService';
 import { getCachedVideoUrl } from './videoCacheService';
+import { getCachedImageUrl } from './imageCacheService';
 import { resolveRunningHubOutputUrl } from './runninghubService';
 
 const STORAGE_KEY = 'contentmaster_media_projects_v1';
@@ -262,10 +263,12 @@ function generateMediaSnapshotIdFromList(existing: string[]): string {
   return `${prefix}-${String(Date.now() % 1000).padStart(3, '0')}`;
 }
 
-/** 恢复镜头并尽量接上本地视频缓存（与 videoUrls 下标对齐） */
+/** 恢复镜头并尽量接上本地视频/图片缓存（与 videoUrls/imageUrls 下标对齐） */
 export function persistedShotToShot(s: PersistedShot): PersistedShot & {
   cachedVideoUrl?: string;
   cachedVideoUrls?: string[];
+  cachedImageUrl?: string;
+  cachedImageUrls?: string[];
   imageGenerating?: boolean;
   videoGenerating?: boolean;
   voiceoverGenerating?: boolean;
@@ -277,6 +280,21 @@ export function persistedShotToShot(s: PersistedShot): PersistedShot & {
   // selectedImageIndex 未存/越界时：有图则默认第 0 张（与 UI 行为一致）
   let selImg = s.selectedImageIndex;
   if (selImg === undefined || selImg < 0 || selImg >= imageCount) selImg = imageCount > 0 ? 0 : undefined;
+
+  // 尝试为每张图片接上本地缓存（避免历史快照里 jimeng 403 签名过期后无图）
+  const cachedImageUrls =
+    imageUrls.length > 0
+      ? imageUrls.map((u) => {
+          if (u.startsWith('http://') || u.startsWith('https://')) {
+            return getCachedImageUrl(u) || undefined;
+          }
+          return undefined;
+        })
+      : undefined;
+  const hasImageCache = cachedImageUrls?.some(Boolean);
+  const firstCachedImage = hasImageCache
+    ? [...(cachedImageUrls || [])].reverse().find(Boolean)
+    : undefined;
 
   const videoUrls =
     s.videoUrls && s.videoUrls.length > 0 ? [...s.videoUrls] : s.videoUrl ? [s.videoUrl] : [];
@@ -303,6 +321,8 @@ export function persistedShotToShot(s: PersistedShot): PersistedShot & {
     videoUrl: last >= 0 ? videoUrls[last] : s.videoUrl,
     cachedVideoUrls: hasBlob ? cachedVideoUrls : undefined,
     cachedVideoUrl: hasBlob ? [...(cachedVideoUrls || [])].reverse().find(Boolean) : undefined,
+    cachedImageUrls: hasImageCache ? cachedImageUrls : undefined,
+    cachedImageUrl: firstCachedImage,
     imageGenerating: false,
     videoGenerating: false,
     voiceoverGenerating: false,

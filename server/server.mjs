@@ -149,11 +149,20 @@ function runPythonStdin(args, stdinData, onProgress) {
       if (stderr.trim()) {
         console.error(`[server] Python stderr:\n${stderr.slice(0, 5000)}`);
       }
-      // 检查 stderr 中是否有真正的错误（而非进度输出）
-      const errorPatterns = ['error', 'exception', 'traceback', 'failed', 'Error:', 'Exception:', 'Traceback'];
-      const hasError = errorPatterns.some(pattern => 
-        stderr.toLowerCase().includes(pattern.toLowerCase()) && !stderr.includes('[PROGRESS]')
-      );
+      // 检查 stderr 中是否有真正的错误（而非进度输出 / WARN 日志）
+      // 关键：必须逐行检查，忽略 [PROGRESS] / [jianying_export] / [WARN] 等非错误行，
+      // 避免 [WARN] 下载最终失败 等正常警告被误判为 error
+      const REAL_ERROR_PATTERNS = ['error', 'exception', 'traceback', 'Error:', 'Exception:', 'Traceback'];
+      const NON_ERROR_LINE_MARKERS = ['[PROGRESS]', '[WARN]', '[jianying_export]', '[jianying-server]'];
+      const hasError = stderr
+        .split('\n')
+        .some((line) => {
+          const trimmed = line.trim();
+          if (!trimmed) return false;
+          if (NON_ERROR_LINE_MARKERS.some((m) => trimmed.includes(m))) return false;
+          const lower = trimmed.toLowerCase();
+          return REAL_ERROR_PATTERNS.some((p) => lower.includes(p.toLowerCase()));
+        });
       
       if (code !== 0 || hasError) {
         // 提取错误信息

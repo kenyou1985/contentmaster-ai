@@ -229,13 +229,20 @@ function inferAudioMimeFromUrl(url: string): string | undefined {
   return map[ext];
 }
 
-/** V8 字符串最大长度 (~512MB)，低于此阈值时 client 端 stringify 安全 */
-const V8_MAX_SAFE_STRING = 450 * 1024 * 1024; // 留 60MB 余地
+/**
+ * V8 字符串最大长度约为 512MB。客户端必须在此阈值内完成 JSON.stringify，
+ * 否则 fetch body 会抛 "Invalid string length"。
+ * 设为 0 表示不做客户端预探测（依赖 try/catch 兜底），上限依然是 V8 512MB。
+ */
+const V8_MAX_SAFE_STRING = 480 * 1024 * 1024; // 留 30MB 余地给 server 端 header / wrapper
 
 /**
  * 探测 payload 序列化大小，若超 V8 限制，把 shots 内嵌的 data URL
  * 提取并上传到 server 端 temp dir，shots 中 data URL 替换为 file path。
  * 失败或已存在 file:// 时透传。
+ *
+ * 重要：不要在客户端丢弃任何大文件 —— 本地导出不应有大小上限；
+ * 当 payload 超出 V8 字符串限制时自动走 server temp dir 方案，保证不丢内容。
  */
 async function ensurePayloadSerializable(
   payload: Record<string, unknown>,
