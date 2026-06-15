@@ -592,6 +592,78 @@ function convertSizeForDalle3(size?: string): string {
 /**
  * 生成图片
  */
+/**
+ * 通用 fetch 包装：自动重试 503/429/网络中断（指数退避 + jitter）
+ * - 单次 503/429：重试 3 次
+ * - 网络错误（fetch 抛 TypeError / ERR_CONNECTION_RESET / ERR_CONNECTION_CLOSED）：重试 3 次
+ * - 退避：第 1 次 2s，第 2 次 4s + 随机 0~2s jitter，第 3 次 8s + 随机 0~4s jitter
+ * - 4xx（除 429）：立即失败（不重试），减少无效请求
+ */
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  opts: {
+    /** 超时时间（毫秒） */
+    timeoutMs?: number;
+    /** 最大重试次数（含首次） */
+    maxRetries?: number;
+    /** 上下文标识（用于日志） */
+    label?: string;
+  } = {}
+): Promise<Response> {
+  const { timeoutMs = 120_000, maxRetries = 3, label = 'request' } = opts;
+  const isRetryableStatus = (status: number) => status === 503 || status === 502 || status === 429 || status === 504;
+  const isNetworkErr = (e: any) =>
+    e?.name === 'TypeError' ||
+    e?.name === 'AbortError' ||
+    e?.message?.includes('network') ||
+    e?.message?.includes('NetworkError') ||
+    e?.message?.includes('Failed to fetch') ||
+    e?.message?.includes('net::') ||
+    e?.message?.includes('ERR_CONNECTION') ||
+    e?.message?.includes('aborted');
+
+  let lastErr: any = null;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const resp = await fetch(url, { ...init, signal: controller.signal });
+      clearTimeout(timer);
+      if (resp.ok) return resp;
+      // 不可重试：4xx（除 429）立即返回
+      if (!isRetryableStatus(resp.status) && resp.status >= 400 && resp.status < 500) {
+        return resp;
+      }
+      // 可重试：503/429/504
+      if (attempt < maxRetries) {
+        // 429 优先看 Retry-After header，否则指数退避
+        const retryAfterRaw = resp.headers.get('Retry-After');
+        const retryAfterSec = retryAfterRaw ? Math.max(1, parseInt(retryAfterRaw, 10) || 0) : 0;
+        const baseDelay = retryAfterSec > 0 ? retryAfterSec * 1000 : 2000 * Math.pow(2, attempt - 1);
+        const jitter = Math.random() * 2000;
+        const wait = baseDelay + jitter;
+        console.warn(`[YunwuService] ${label} HTTP ${resp.status}，${Math.round(wait)}ms 后重试 (${attempt}/${maxRetries - 1})`);
+        await new Promise((r) => setTimeout(r, wait));
+        continue;
+      }
+      return resp;
+    } catch (e: any) {
+      clearTimeout(timer);
+      lastErr = e;
+      if (!isNetworkErr(e) || attempt >= maxRetries) {
+        throw e;
+      }
+      const baseDelay = 2000 * Math.pow(2, attempt - 1);
+      const jitter = Math.random() * 2000;
+      const wait = baseDelay + jitter;
+      console.warn(`[YunwuService] ${label} 网络错误 (${e?.message?.slice(0, 80) || e})，${Math.round(wait)}ms 后重试 (${attempt}/${maxRetries - 1})`);
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+  throw lastErr || new Error(`${label} 重试 ${maxRetries} 次仍失败`);
+}
+
 export const generateImage = async (
   apiKey: string,
   options: ImageGenerationOptions
@@ -664,8 +736,9 @@ export const generateImage = async (
       
       // 在提示词末尾添加比例标记
       finalPrompt = `${finalPrompt}【${ratio}】`;
-      
+
       // 使用 chat/completions 端点，模型名称使用 sora_image（下划线）
+      // 注意：503/429/网络错误会自动重试（指数退避 + jitter），避免 yunwu 限流时整批失败
       const endpoint = '/v1/chat/completions';
       const body = {
         model: 'sora_image', // 使用下划线
@@ -677,20 +750,23 @@ export const generateImage = async (
         ],
         temperature: 0.7,
       };
-      
-      const response = await fetch(`${baseUrl}${endpoint}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
+      const response = await fetchWithRetry(
+        `${baseUrl}${endpoint}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(body),
         },
-        body: JSON.stringify(body),
-      });
-      
+        { label: `sora_image(${opts.model})` }
+      );
+
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
         const errorMessage = errorData.error?.message || errorData.message || `HTTP ${response.status}: ${response.statusText}`;
-        
+
         // 检查是否是"模型不可用"的错误
         if (errorMessage.includes('No available channels') || errorMessage.includes('not available')) {
           throw new Error(`模型 "${opts.model}" 在当前账户中不可用。\n\n可能原因：\n1. 该模型需要特殊权限或白名单\n2. 该模型暂未在您的账户中启用\n3. 当前账户余额不足或配额已用完\n\n建议：\n- 联系 yunwu.ai 客服确认模型可用性和账户权限\n- 或尝试使用其他视频生成模型`);
@@ -1066,8 +1142,9 @@ async function yunwuGrokImageOnce(
 }
 
     // 其他模型使用 images/generations 端点（含 z-image-turbo 等 OpenAI 兼容图模）
-    let endpoint = '/v1/images/generations';
-    let body: any = {
+    // 503/429/网络错误自动重试（指数退避 + jitter），避免 yunwu 限流时整批失败
+    const endpoint = '/v1/images/generations';
+    const body: any = {
       model: opts.model,
       prompt: opts.prompt,
     };
@@ -1076,22 +1153,26 @@ async function yunwuGrokImageOnce(
     if (opts.size) body.size = opts.size;
     if (opts.quality) body.quality = opts.quality;
     if (opts.n) body.n = opts.n;
-    
-    const response = await fetch(`${baseUrl}${endpoint}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+
+    const response = await fetchWithRetry(
+      `${baseUrl}${endpoint}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
       },
-      body: JSON.stringify(body),
-    });
-    
+      { label: `images/generations(${opts.model})` }
+    );
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
       const errorMessage = errorData.error?.message || `HTTP ${response.status}: ${response.statusText}`;
       throw new Error(errorMessage);
     }
-    
+
     const data = await response.json();
     const first = data.data?.[0];
     const normalizedUrl =

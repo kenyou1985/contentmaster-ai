@@ -1358,19 +1358,21 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     });
 
     // 图片和配音真正并行执行（走不同模型/服务，互不干扰）
-    // GPT Image 2 使用最大 20 并发 + 500ms 间隔，其他模型使用 100 并发
+    // GPT Image 2 使用最大 20 并发 + 500ms 间隔，其他模型使用 100 并发 + 200ms 错开（避免 yunwu 限流 503/429）
     const isGptImage2 = selectedImageModel === 'gpt-image-2-all';
     const imageConcurrency = isGptImage2 ? 20 : 100;
-    const imageStaggerMs = isGptImage2 ? 500 : 0;
+    const imageStaggerMs = isGptImage2 ? 500 : 200;
     const imageGenPromise = (async () => {
       if (imageTasks.length > 0) {
-        appendTerminalLog('Pipeline', `开始生成 ${imageTasks.length} 个镜头的图片（并发 ${imageConcurrency}${isGptImage2 ? ' + 500ms 间隔' : ''}）…`);
+        appendTerminalLog('Pipeline', `开始生成 ${imageTasks.length} 个镜头的图片（并发 ${imageConcurrency}${isGptImage2 ? ' + 500ms 间隔' : ' + 200ms 错开'}）…`);
         const tasks = imageTasks.map(({ snap, idx }) => async () => {
           const num = snap.number;
           setOneClickPipelineProgress(`图片 ${idx + 1}/${targetShots.length} (镜头${num})`);
           appendTerminalLog('ImageGen', `镜头${num}: 开始生成图片`);
-          let retries = 3;
-          while (retries > 0) {
+          // 注意：服务层 fetchWithRetry 已经自动重试 3 次（503/429/网络错误）
+          // 这里外层最多再 1 次重试（避免 yunwu 服务侧持续 503 时整批任务全部 9 次重试导致长时间卡住）
+          let outerRetries = 1;
+          while (outerRetries >= 0) {
             try {
               const ok = await handleGenerateImage(snap, false);
               if (ok) {
@@ -1379,14 +1381,18 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               }
               throw new Error('图片生成失败');
             } catch (err: any) {
-              retries--;
-              appendTerminalLog('ImageGen', `镜头${num}: 生成失败 (${err.message}), 剩余${retries}次`);
-              if (retries === 0) {
+              const errMsg = String(err?.message || err);
+              const isTransient = /503|429|HTTP 5\d\d|net::|Failed to fetch|ERR_CONNECTION/i.test(errMsg);
+              if (!isTransient || outerRetries === 0) {
+                appendTerminalLog('ImageGen', `镜头${num}: 生成失败 — ${errMsg}`);
                 updateShot(snap.id, { imageGenerating: false });
-                toast.error(`镜头${num}图片生成失败`);
+                toast.error(`镜头${num}图片生成失败: ${errMsg}`, 8000);
                 return false;
               }
-              await new Promise(r => setTimeout(r, 3000));
+              outerRetries--;
+              const waitMs = 5000 + Math.random() * 3000;
+              appendTerminalLog('ImageGen', `镜头${num}: 瞬时错误，${Math.round(waitMs)}ms 后重试 (剩余 ${outerRetries + 1} 次)`);
+              await new Promise(r => setTimeout(r, waitMs));
             }
           }
           return false;
@@ -3142,7 +3148,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     } catch (error: any) {
       updateShot(shot.id, { imageGenerating: false });
       appendTerminalLog('ImageGen', `镜头${shot.number}: 异常 — ${error?.message || error}`);
-      return false;
+      // 抛出，让外层 toast 提示用户
+      throw error;
     } finally {
       imageGenPromisesRef.current.delete(shot.id);
       imageGenCancelledRef.current.delete(shot.id);
@@ -4094,9 +4101,10 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       );
       
       // 对 GPT Image 2 使用最大 20 并发 + 500ms 间隔，避免 yunwu.ai 后端限流报错
+      // 其他模型（z-image-turbo、sora_image、grok 等）也加上 200ms 错开，进一步降低 503/429 概率
     const isGptImage2 = selectedImageModel === 'gpt-image-2-all';
     const concurrency = isGptImage2 ? 20 : runningHubConcurrency;
-    const staggerMs = isGptImage2 ? 500 : 0;
+    const staggerMs = isGptImage2 ? 500 : 200;
     const results = await runConcurrentTasks(
       tasks,
       concurrency,
@@ -5588,7 +5596,18 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                         try {
                           await handleGenerateImage(shot, true);
                         } catch (error: any) {
-                          toast.error(`图片生成失败: ${error.message || '未知错误'}`, 6000);
+                          const msg = String(error?.message || '未知错误');
+                          const isYunwuOverload = /503|429|net::|ERR_CONNECTION|Failed to fetch/i.test(msg);
+                          if (isYunwuOverload) {
+                            toast.error(
+                              `yunwu.ai 后端临时过载（${msg}）\n\n` +
+                              `已自动重试 3 次仍失败。可能 yunwu 正在限流或服务异常。\n` +
+                              `请稍候 1-2 分钟后重试，或联系 yunwu 客服确认。`,
+                              10000
+                            );
+                          } else {
+                            toast.error(`图片生成失败: ${msg}`, 6000);
+                          }
                         }
                       }}
                       disabled={shot.imageGenerating && !imageGenPromisesRef.current.has(shot.id)}
