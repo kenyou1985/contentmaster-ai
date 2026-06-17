@@ -546,7 +546,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     if (externalSetRunningHubKey) externalSetRunningHubKey(runningHubApiKey);
   }, [runningHubApiKey, externalSetRunningHubKey]);
 
-  // RunningHub 并发数设置（默认 1，最大 20）
+  // RunningHub 并发数设置（默认 5，最大 20）
   const [runningHubConcurrency, setRunningHubConcurrency] = useState(() => {
     initRunningHubConcurrency();
     return getRunningHubMaxConcurrent();

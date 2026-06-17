@@ -1,9 +1,9 @@
 /**
  * RunningHub 配音 / 视频任务全局并发槽：批量配音 + 批量视频 + 单点操作共享，避免同时超过 API 承载。
- * 并发数可由用户在 UI 中配置（默认 1，最大 20）。
+ * 并发数可由用户在 UI 中配置（默认 5，最大 20）。
  */
 
-const DEFAULT_CONCURRENT = 1;
+const DEFAULT_CONCURRENT = 5;
 const MAX_CONCURRENT = 20;
 
 let maxConcurrent = DEFAULT_CONCURRENT;
@@ -59,13 +59,26 @@ export function setRunningHubMaxConcurrent(n: number): void {
 /** 从 localStorage 恢复并发数设置 */
 export function initRunningHubConcurrency(): void {
   try {
+    // 旧版本（默认 1）迁移：清除旧值，强制使用新默认 5
+    const VERSION_KEY = 'RUNNINGHUB_MAX_CONCURRENT_VERSION';
+    const version = localStorage.getItem(VERSION_KEY);
+    if (version !== '5-default') {
+      localStorage.removeItem('RUNNINGHUB_MAX_CONCURRENT');
+      localStorage.setItem(VERSION_KEY, '5-default');
+      maxConcurrent = DEFAULT_CONCURRENT;
+      localStorage.setItem('RUNNINGHUB_MAX_CONCURRENT', String(DEFAULT_CONCURRENT));
+      return;
+    }
     const stored = localStorage.getItem('RUNNINGHUB_MAX_CONCURRENT');
     if (stored) {
       const n = parseInt(stored, 10);
       if (!isNaN(n) && n >= 1 && n <= MAX_CONCURRENT) {
         maxConcurrent = n;
+        return;
       }
     }
+    maxConcurrent = DEFAULT_CONCURRENT;
+    localStorage.setItem('RUNNINGHUB_MAX_CONCURRENT', String(DEFAULT_CONCURRENT));
   } catch {}
 }
 
