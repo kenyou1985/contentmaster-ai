@@ -238,7 +238,7 @@ export async function uploadReferenceVideoToRunningHub(
 
   onProgress?.(30);
 
-  const res = await fetch('https://www.runninghub.cn/task/openapi/upload', {
+  const res = await fetch('https://www.runninghub.ai/task/openapi/upload', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}` },
     body: formData,
@@ -284,7 +284,7 @@ export async function submitDigitalHumanTask(
   }
 ): Promise<string> {
   const res = await fetch(
-    `https://www.runninghub.cn/openapi/v2/run/ai-app/${DIGITAL_HUMAN_AI_APP_ID}`,
+    `https://www.runninghub.ai/openapi/v2/run/ai-app/${DIGITAL_HUMAN_AI_APP_ID}`,
     {
       method: 'POST',
       headers: {
@@ -425,7 +425,7 @@ function extractVideoUrlFromResults(data: any): string | null {
 
 async function tryGetOutputs(apiKey: string, taskId: string): Promise<string[]> {
   try {
-    const res = await fetch('https://www.runninghub.cn/task/openapi/get-outputs', {
+    const res = await fetch('https://www.runninghub.ai/task/openapi/get-outputs', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

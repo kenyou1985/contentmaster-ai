@@ -1,7 +1,7 @@
 /**
  * RunningHub API 服务
  * 支持多模板调用：视频模板、音频TTS模板、图片模板
- * API文档: https://www.runninghub.cn/runninghub-api-doc-cn/
+ * API文档: https://www.runninghub.ai/runninghub-api-doc-cn/
  */
 
 import {
@@ -73,7 +73,7 @@ export interface RunningHubResult {
   urls?: string[];
 }
 
-const BASE_URL = 'https://www.runninghub.cn';
+const BASE_URL = 'https://www.runninghub.ai';
 
 /**
  * query / 任务结果里常见为相对路径（如 api/xxx.wav），浏览器与剪映下载需补全为站点绝对 URL
@@ -132,7 +132,7 @@ const OPENAPI_V2_BASE = `${BASE_URL}/openapi/v2`;
 /** 通用请求头（官方文档要求） */
 const makeHeaders = (apiKey: string) => ({
   'Content-Type': 'application/json',
-  'Host': 'www.runninghub.cn',
+  'Host': 'www.runninghub.ai',
   'Authorization': `Bearer ${apiKey}`,
 });
 
@@ -621,7 +621,7 @@ export const uploadImageToRunningHub = async (apiKey: string, imageUrl: string):
   });
 
   // 如果已经是 RunningHub 的图片路径，直接返回
-  if (imageUrl.includes('runninghub.cn') || imageUrl.includes('rh-images') || imageUrl.includes('/uploads/')) {
+  if (imageUrl.includes('runninghub.ai') || imageUrl.includes('runninghub.cn') || imageUrl.includes('rh-images') || imageUrl.includes('/uploads/')) {
     console.log('[RunningHub] 已是 RunningHub 图片路径，直接返回:', imageUrl);
     return imageUrl;
   }
@@ -734,7 +734,7 @@ export const uploadImageToRunningHub = async (apiKey: string, imageUrl: string):
   if (data.code !== 0) throw new Error(`图片上传失败: ${data.msg || data.message}`);
 
   // 返回相对路径（不带 base URL），ComfyUI LoadImageFromUrl 节点会自行拼接完整 URL
-  // ⚠️ 传完整 URL（如 https://www.runninghub.cn/api/xxx.jpg）会导致 ComfyUI
+  // ⚠️ 传完整 URL（如 https://www.runninghub.ai/api/xxx.jpg）会导致 ComfyUI
   //   HTTP 下载时拿到无效内容（403/401/重定向页面），PIL 无法识别为图片
   const uploadedPath = data.data?.fileName || data.data?.filePath || imageUrl;
   const relativePath = (uploadedPath || '').startsWith('/')
@@ -809,7 +809,7 @@ const WAN22_AI_APP_RUN_ID = '1950058606949523457';
 
 /**
  * 默认 TTS / 配音：POST /openapi/v2/run/ai-app/{id}
- * 控制台 API 说明：https://www.runninghub.cn/call-api/api-detail/1986388299516411905?apiType=4
+ * 控制台 API 说明：https://www.runninghub.ai/call-api/api-detail/1986388299516411905?apiType=4
  *
  * ⚠️ 节点 ID 必须与控制台「调用 API」里显示的完全一致（JSON workflow 中的实际编号）。
  *   - 文本字段：nodeId='14'，fieldName='value'

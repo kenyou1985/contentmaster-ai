@@ -220,7 +220,7 @@ export const Layout: React.FC<LayoutProps> = ({
                     </a>
                   )}
                   {provider === 'runninghub' && (
-                    <a href="https://www.runninghub.cn/runninghub-api-doc-cn/" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 flex items-center gap-1">
+                    <a href="https://www.runninghub.ai/runninghub-api-doc-cn/" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 flex items-center gap-1">
                       RunningHub API 文檔 <ExternalLink size={10} />
                     </a>
                   )}

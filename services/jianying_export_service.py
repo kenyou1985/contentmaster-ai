@@ -302,8 +302,8 @@ def _download_file(url: str, dest_path: str, timeout: int = 120, max_retries: in
                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             }
             # 常见站点的特殊 headers
-            if 'runninghub.cn' in url.lower():
-                headers['Referer'] = 'https://www.runninghub.cn/'
+            if 'runninghub.ai' in url.lower() or 'runninghub.cn' in url.lower():
+                headers['Referer'] = 'https://www.runninghub.ai/'
                 timeout = max(timeout, 180)  # RunningHub 文件较大，增加超时
             elif 'yunwu.ai' in url.lower():
                 headers['Referer'] = 'https://yunwu.ai/'

@@ -103,8 +103,8 @@ export async function cacheImage(imageUrl: string): Promise<string> {
           'byteimg.com': 'https://jimeng.jianying.com/',
           'yunwu.ai': 'https://yunwu.ai/',
           'bytedance.com': 'https://jimeng.jianying.com/',
-          'cos.ap-beijing.myqcloud.com': 'https://www.runninghub.cn/',
-          'rh-images': 'https://www.runninghub.cn/',
+          'cos.ap-beijing.myqcloud.com': 'https://www.runninghub.ai/',
+          'rh-images': 'https://www.runninghub.ai/',
         };
         const hostname = new URL(u).hostname;
         const ref = Object.keys(referers).find(k => hostname.includes(k));
