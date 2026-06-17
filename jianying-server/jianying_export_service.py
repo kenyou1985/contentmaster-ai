@@ -20,7 +20,6 @@ import platform
 import tempfile
 import re
 import random
-import struct
 import typing
 from pathlib import Path
 from datetime import datetime
@@ -548,24 +547,149 @@ def _ffprobe_duration_us(path: str):
     return None
 
 
-def _probe_audio_duration(audio_path: str) -> typing.Optional[int]:
+def _process_audio_for_export(audio_path: str, silence_pad_ms: int = 50) -> bool:
     """
-    直接探测音频文件时长（微秒），不做任何处理/转码/追加静音。
-    返回 None 表示探测失败。
+    给音频文件末尾追加一段极小的静音缓冲（默认 50ms，可配置）。
+
+    设计目标：
+    - 解决剪映 5.9 按帧渲染时尾部 1-2 帧音频被截断的问题（30fps 时一帧 33.33ms，
+      60fps 时一帧 16.67ms；音频总时长不是整帧时长时，剪映会丢掉最后一帧的音频）
+    - 不做重采样、不变速、不淡入淡出、不做 silenceremove —— 音频主体原样
+    - 追加的静音缓冲尽量小（50ms），人耳几乎听不出，但足够让最后一帧音频完整渲染
+    - 用 ffmpeg 的 anullsrc 拼接一段纯静音到末尾，整体重写为 WAV
+
+    返回 True 表示处理成功，False 表示跳过处理（文件不存在、ffmpeg 不可用、时长过短等）。
+    失败时**不影响导出**，调用方应容忍失败（原音频仍可被剪映使用）。
     """
-    return _ffprobe_duration_us(audio_path)
+    import tempfile as _tempfile
+
+    if not os.path.isfile(audio_path):
+        return False
+
+    # 检查 ffmpeg 是否可用（5s 短超时，失败即跳过处理 —— 绝对不能阻塞导出主流程）
+    try:
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5, check=True)
+    except Exception:
+        print(f"[jianying_export] ffmpeg 不可用，跳过音频尾部静音垫追加", file=sys.stderr, flush=True)
+        return False
+
+    try:
+        # 探测原音频时长 + 采样率（决定我们要输出多长的静音）
+        probe_r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=sample_rate,channels",
+             "-of", "csv=p=0", audio_path],
+            capture_output=True, text=True, timeout=15
+        )
+        if probe_r.returncode != 0:
+            return False
+
+        # 解析 ffprobe 输出：第一行 format duration，第二行 stream sample_rate,channels
+        # 实际输出形如 "5.123456\n48000,2\n" 或 "48000,2\n"（取决于 ffprobe 版本）
+        lines = [ln.strip() for ln in probe_r.stdout.splitlines() if ln.strip()]
+        total_dur = None
+        sample_rate = 48000
+        channels = 2
+        for ln in lines:
+            if "," in ln and "." not in ln.split(",")[0]:
+                # "48000,2"
+                try:
+                    parts = ln.split(",")
+                    sample_rate = int(parts[0]) or 48000
+                    channels = int(parts[1]) or 2
+                except (ValueError, IndexError):
+                    pass
+            else:
+                # "5.123456"
+                try:
+                    total_dur = float(ln)
+                except ValueError:
+                    pass
+
+        if total_dur is None or total_dur < 0.1:
+            return False
+
+        # 极小缓冲：30-50ms 已足够覆盖一帧（30fps=33ms）。这里用配置值（默认 50ms）。
+        silence_sec = max(0.01, silence_pad_ms / 1000.0)
+        # 原音频不动，单纯在末尾追加 silence_sec 秒静音
+        target_dur = total_dur + silence_sec
+
+        temp_fd, temp_path = _tempfile.mkstemp(suffix='.wav')
+        os.close(temp_fd)
+
+        try:
+            # 简洁拼接：原音频 → anullsrc 静音。anullsrc 自动用前一个输入的音频参数，
+            # 所以不需要手动指定 sample_rate/channels，让 ffmpeg 自己协商。
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", audio_path,
+                "-f", "lavfi",
+                "-t", f"{silence_sec:.3f}",
+                "-i", "anullsrc",
+                "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[aout]",
+                "-map", "[aout]",
+                temp_path,
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+            if result.returncode == 0 and os.path.isfile(temp_path):
+                # 验证处理后时长 >= 原时长（允许 5ms 误差）
+                check_r = subprocess.run(
+                    ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                     "-of", "csv=p=0", temp_path],
+                    capture_output=True, text=True, timeout=15
+                )
+                if check_r.returncode == 0:
+                    try:
+                        processed_dur = float(check_r.stdout.strip())
+                        if processed_dur >= total_dur - 0.005:
+                            shutil.move(temp_path, audio_path)
+                            print(
+                                f"[jianying_export] 音频尾部静音垫: {os.path.basename(audio_path)} "
+                                f"原 {total_dur:.3f}s → {processed_dur:.3f}s (+{silence_pad_ms}ms)",
+                                file=sys.stderr, flush=True,
+                            )
+                            return True
+                    except (ValueError, OSError):
+                        pass
+
+            # 失败：清理临时文件
+            print(
+                f"[jianying_export] 音频尾部静音垫追加失败（不影响导出，使用原音频）: "
+                f"{result.stderr[:120] if result.stderr else '未知错误'}",
+                file=sys.stderr, flush=True,
+            )
+            return False
+        finally:
+            if os.path.isfile(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except Exception:
+                    pass
+
+    except Exception as e:
+        print(f"[jianying_export] 音频尾部静音垫异常（不影响导出，使用原音频）: {e}",
+              file=sys.stderr, flush=True)
+        return False
+
 
 
 def _mp4_box_duration(path: str) -> typing.Optional[int]:
-    """直接解析 MP4 文件的 moov>trak>mdia>mdhd box，返回时长微秒数。"""
+    """直接解析 MP4 文件的视频轨道 moov>trak>mdia>mdhd box，返回时长微秒数。
+
+    注意：只取视频轨道（hdlr.handler_type == "vide"），忽略音频轨道，
+    防止音频轨道时长（5s）覆盖视频轨道时长（9s）。
+    """
     try:
         with open(path, "rb") as f:
             data = f.read()
+
         moov_idx = data.find(b"moov")
         if moov_idx < 0:
             return None
         moov_size = struct.unpack(">I", data[moov_idx - 4 : moov_idx])[0]
         moov_data = data[moov_idx + 4 : moov_idx + moov_size]
+
         i = 0
         while i <= len(moov_data) - 8:
             s = struct.unpack(">I", moov_data[i : i + 4])[0]
@@ -573,8 +697,43 @@ def _mp4_box_duration(path: str) -> typing.Optional[int]:
             if s == 0 or s < 8:
                 i += 1
                 continue
+
             if t == "trak":
                 trak_data = moov_data[i + 8 : i + s]
+
+                # 检查 hdlr，确认是视频轨道
+                is_video_track = False
+                k_check = 0
+                while k_check <= len(trak_data) - 8:
+                    s_kc = struct.unpack(">I", trak_data[k_check : k_check + 4])[0]
+                    t_kc = trak_data[k_check + 4 : k_check + 8].decode("ascii", errors="?")
+                    if s_kc == 0 or s_kc < 8:
+                        k_check += 1
+                        continue
+                    if t_kc == "mdia":
+                        mdia_check = trak_data[k_check + 8 : k_check + s_kc]
+                        k2 = 0
+                        while k2 <= len(mdia_check) - 8:
+                            s_k2 = struct.unpack(">I", mdia_check[k2 : k2 + 4])[0]
+                            t_k2 = mdia_check[k2 + 4 : k2 + 8].decode("ascii", errors="?")
+                            if s_k2 == 0 or s_k2 < 8:
+                                k2 += 1
+                                continue
+                            if t_k2 == "hdlr":
+                                hdlr_data = mdia_check[k2 + 8 : k2 + s_k2]
+                                if len(hdlr_data) >= 12:
+                                    handler_type = hdlr_data[8:12]
+                                    if handler_type == b"vide":
+                                        is_video_track = True
+                                break
+                            k2 += s_k2
+                        break
+                    k_check += s_kc
+                if not is_video_track:
+                    i += s
+                    continue
+
+                # 在视频轨道中找 mdia>mdhd
                 j = 0
                 while j <= len(trak_data) - 8:
                     s2 = struct.unpack(">I", trak_data[j : j + 4])[0]
@@ -605,18 +764,18 @@ def _mp4_box_duration(path: str) -> typing.Optional[int]:
                             k += s3
                     j += s2
             i += s
-        return None
     except Exception:
-        return None
-
+        pass
+    return None
 
 def _ffprobe_video_meta(path: str):
     """返回 (duration_us, width, height)，失败则为 (None, 0, 0)。
 
     优先级：
-    1. stream.duration（部分 AI 生成视频用此字段）
-    2. format.duration（标准字段）
+    1. ffprobe stream.duration（部分 AI 视频用此字段）
+    2. ffprobe format.duration（标准字段）
     3. nb_read_frames / avg_frame_rate（metadata 损坏时的兜底）
+    4. _mp4_box_duration（只取视频轨道，防止音频轨道时长覆盖）
     """
     try:
         r = subprocess.run(
@@ -639,6 +798,10 @@ def _ffprobe_video_meta(path: str):
             timeout=90,
         )
         if r.returncode != 0:
+            # ffprobe 失败，尝试 MP4 box 解析
+            mp4_dur = _mp4_box_duration(path)
+            if mp4_dur:
+                return mp4_dur, 0, 0
             return None, 0, 0
         data = json.loads(r.stdout or "{}")
         st = (data.get("streams") or [{}])[0]
@@ -646,14 +809,12 @@ def _ffprobe_video_meta(path: str):
         w = int(st.get("width") or 0)
         h = int(st.get("height") or 0)
 
-        # 1) stream.duration（部分 AI 视频依赖此字段）
+        # 1) stream.duration
         d = float(st.get("duration") or 0)
-
         # 2) format.duration 兜底
         if d <= 0:
             d = float(fmt.get("duration") or 0)
-
-        # 3) nb_read_frames / avg_frame_rate（metadata 不完整时的兜底，如 LTX/Sora 生成视频）
+        # 3) nb_read_frames / avg_frame_rate 兜底
         if d <= 0:
             nb_frames_str = st.get("nb_read_frames")
             fps_str = st.get("avg_frame_rate")
@@ -668,14 +829,13 @@ def _ffprobe_video_meta(path: str):
                 except (ValueError, ZeroDivisionError):
                     pass
 
-        # 保存 ffprobe 最终计算结果，用于日志对比
         ffprobe_d = d
 
-        # 4) 直接解析 MP4 box（AI 视频如 LTX 的 format.duration 常损坏，用此值覆盖 ffprobe 结果）
+        # 4) MP4 box 解析：只取视频轨道，防止音频轨道时长覆盖
         mp4_dur_us = _mp4_box_duration(path)
         if mp4_dur_us and mp4_dur_us > 0:
             d = mp4_dur_us / 1_000_000
-            print(f"[ffprobe] duration via MP4 box parse: {d:.3f}s (overrides ffprobe={ffprobe_d:.3f}s)", file=sys.stderr)
+            print(f"[ffprobe] duration via MP4 box (video track): {d:.3f}s (overrides ffprobe={ffprobe_d:.3f}s)", file=sys.stderr)
 
         du = max(33_333, int(d * 1_000_000)) if d > 0 else None
         return du, w, h
@@ -1286,15 +1446,14 @@ def _build_lv59_main_script(
             shot_last_seg_dur.append(int(dur_us))
         else:
             # ── 视频对齐逻辑（按音频时长对齐）────────────────────────────────
-            # mat_d = 视频素材总时长（微秒），由 ffprobe 探测。
+            # mat_d = 视频素材总时长（微秒），由 ffprobe + MP4 box 探测。
             # slot_d = 当前镜头在时间线上占用的时长（微秒），由音频决定。
             #
             # 原则：视频对齐音频，不循环拼接。视频超长则裁剪，不足则调速拉长。
             #   1. mat_d >= slot_d：取前面 slot_d 秒（trim）
-            #   2. mat_d <  slot_d：调 speed 拉长（speed = mat_d / slot_d）
+            #   2. mat_d <  slot_d：调 speed 拉长（speed = mat_d / slot_d，范围 [0.1, 1.0]）
             #
-            mat_d = int(mat_duration) if mat_duration else int(dur_us)
-            mat_d = max(33_333, mat_d)
+            mat_d = max(33_333, int(mat_duration) if mat_duration else int(dur_us))
             slot_d = max(33_333, int(dur_us))
             vol = 0.0 if has_tts else 1.0
 
@@ -1313,9 +1472,7 @@ def _build_lv59_main_script(
                 shot_last_seg_idx.append(len(video_segments) - 1)
                 shot_last_seg_dur.append(slot_d)
             else:
-                # 情况 2：视频不够，调速拉长（不循环）
-                # speed > 1.0 表示加速（视频实际播放变快，时长缩短）
-                # 我们要拉长视频，所以 speed < 1.0
+                # 情况 2：视频不够，调速拉长（不循环，不重复）
                 spd = mat_d / slot_d
                 spd = max(0.1, min(spd, 1.0))   # 限制 speed 范围 [0.1, 1.0]
                 kb_kfs = _build_ken_burns_zoom(slot_d) if random_transitions or random_filters else None
@@ -1333,14 +1490,13 @@ def _build_lv59_main_script(
 
         apath = row.get("audio_abs")
         if apath and os.path.isfile(apath):
-            probe_adur = row.get("audio_duration_us")
-            if probe_adur and int(probe_adur) > 0:
-                adur = int(probe_adur)
+            # 直接探测原始音频时长，不做任何处理
+            orig_dur = _ffprobe_duration_us(apath)
+            if orig_dur and orig_dur > 0:
+                adur = int(orig_dur)
             else:
-                adur = int(dur_us)
+                adur = max(33_333, int(row.get("audio_duration_us", 0) or dur_us))
             adur = max(adur, int(dur_us))
-            # 音频时长直接使用 ffprobe 探测到的值，原样使用原始音频文件，100% 保留
-            # 素材时长（source_timerange.duration）和时间线时长（target_timerange.duration）完全对齐为音频真实时长
             aud_mat_id = _make_id()
             lm = uuid.uuid4().hex
             music_id = str(uuid.uuid4())
@@ -1351,7 +1507,7 @@ def _build_lv59_main_script(
                     "category_name": "local",
                     "check_flag": 1,
                     "copyright_limit_type": "none",
-                    "duration": adur,
+                    "duration": adur,  # ← 用处理后（含静音垫）的真实时长
                     "effect_id": "",
                     "formula_id": "",
                     "id": aud_mat_id,
@@ -1423,9 +1579,16 @@ def _build_lv59_main_script(
             audio_target_dur = use_src
             seg_end_us = start_us + audio_target_dur  # 片段在时间线上的绝对结束时间
 
-            # ── 不做任何音量 keyframe ────────────────────────────────
-            # 原始音频原样使用，音量全程 1.0，source_timerange.duration == target_timerange.duration == audio 真实时长
-            # 不追加静音垫，不做淡出，不做任何音频处理，确保尾音完整不被删减
+            # ── 不做交叉淡入淡出（防止尾音被截断感）───────────────────────
+            # 旧逻辑：200ms 交叉淡出 keyframe 将音量渐变为 0，听感上像音频被切断。
+            # 根本原因：fade-out 只是衰减音量，但 source_timerange.duration 仍指向完整音频，
+            #           剪映渲染时 keyframe volume=0 + source_timerange 没读完 = 尾音被截断。
+            # 正确做法：
+            #   1. 每段音频保持全音量（1.0），不做任何音量 keyframe
+            #   2. 音频文件末尾追加 50ms 静音垫（_process_audio_for_export），仅用于覆盖
+            #      剪映帧对齐的最后一帧（30fps ≈ 33ms），主体音频原样不动
+            #   3. 片段时间轴紧密衔接（target_timerange.start = 前段 start + duration）
+            #      自然形成段间过渡，无需 keyframe 控制
             audio_common_kfs: list = []  # 空列表 = 无音量 keyframe = 全程音量 1.0
 
             audio_segments.append(
@@ -1923,11 +2086,17 @@ def create_draft_on_mac(
     report_progress(5, f"开始处理 {total_shots} 个镜头...")
     print(f"[jianying_export] 开始处理 {total_shots} 个镜头...", file=sys.stderr, flush=True)
 
-    for i, shot in enumerate(shots):
-        # 报告每个镜头的进度（5% - 70%）
-        shot_progress = 5 + int((i / max(total_shots, 1)) * 65)
-        report_progress(shot_progress, f"处理镜头 {i+1}/{total_shots}...")
+    # ── 阶段 A：枚举所有 shot，整理下载计划 ───────────────────────────────────
+    # 把每个 shot 的视频/图片/音频 URL 收集成 (shot_idx, kind, url, dest_path, local_src) 列表
+    # 然后一次性用 ThreadPoolExecutor 并行下载，大幅缩短下载等待时间
+    download_plan: list[dict] = []
+    shot_meta: list[dict] = []  # 每个 shot 的元数据（不含媒体文件，下载后再填充 row）
+    timeline_cursor = 0
+    total_shots = len(shots)
+    report_progress(5, f"开始处理 {total_shots} 个镜头...")
+    print(f"[jianying_export] 开始处理 {total_shots} 个镜头...", file=sys.stderr, flush=True)
 
+    for i, shot in enumerate(shots):
         base_dur = int(float(shot.get("duration", 5)) * 1_000_000)
         start_us = timeline_cursor
 
@@ -1936,65 +2105,10 @@ def create_draft_on_mac(
         if vu and isinstance(vu, list) and len(vu) > 0:
             video_url = vu[-1]
 
-        use_video = False
-        local_video_path = None
-        if video_url and str(video_url).strip():
-            vname = _safe_filename(str(video_url))
-            if not re.search(r"\.(mp4|mov|webm|m4v)$", vname, re.I):
-                vname = f"{vname}.mp4" if "." not in vname else re.sub(r"[^.]+$", "mp4", vname)
-            local_video_path = os.path.join(draft_folder, "Resources", "video", vname)
-            local_src = local_path_map.get(str(video_url))
-            if _download_file(str(video_url), local_video_path, local_source_path=local_src):
-                use_video = True
-            else:
-                local_video_path = None
-
-        duration_us = base_dur
-        row: dict = {
-            "start_us": start_us,
-            "duration_us": duration_us,
-            "caption": (shot.get("caption") or "").strip(),
-            "audio_abs": None,
-            "audio_duration_us": None,
-        }
-
-        if use_video and local_video_path:
-            vabs = _safe_abs_for_jianying(local_video_path)
-            vd, vw, vh = _ffprobe_video_meta(vabs)
-            # ffprobe 失败时 fallback 到前端传入的 shot.duration（而非音频时长）
-            mat_dur = vd if vd else base_dur
-            if vd:
-                duration_us = vd
-            row["media_kind"] = "video"
-            row["video_abs"] = vabs
-            row["video_client_path"] = _material_path_for_client(vabs)
-            row["video_w"] = vw or width
-            row["video_h"] = vh or height
-            # 视频素材时长：强制使用 ffprobe 探测值（最终 fallback 到 shot.duration）
-            # 绝对不能 fallback 到 duration_us（那是镜头槽位时长，会被音频覆盖）
-            row["video_material_duration_us"] = mat_dur
-            row["duration_us"] = duration_us
-        else:
-            image_url = shot.get("imageUrl") or (shot.get("imageUrls", [None])[0] if shot.get("imageUrls") else None)
-            local_image_path = None
-            if image_url and str(image_url).strip():
-                img_filename = _safe_filename(str(image_url))
-                local_image_path = os.path.join(draft_folder, "Resources", "image", img_filename)
-                img_ok = _download_file(str(image_url), local_image_path, local_source_path=local_path_map.get(str(image_url)))
-                print(f"[jianying_export] 镜头{i} 图片: url={'有' if image_url else '无'} → 文件={img_filename} → 下载={'成功' if img_ok else '失败'} {'(' + str(image_url)[:80] + ')' if image_url else ''}", file=sys.stderr, flush=True)
-                if not img_ok:
-                    local_image_path = None
-            if not local_image_path:
-                local_image_path = _placeholder_shot_image_path(draft_folder, i, width, height)
-            img_abs = _safe_abs_for_jianying(local_image_path)
-            iw, ih = _read_image_dimensions(img_abs, width, height)
-            row["media_kind"] = "photo"
-            row["image_abs"] = img_abs
-            row["image_client_path"] = _material_path_for_client(img_abs)
-            row["image_w"] = iw
-            row["image_h"] = ih
-
+        # 默认走 image；如 video_url 有效则走 video
+        image_url = shot.get("imageUrl") or (shot.get("imageUrls", [None])[0] if shot.get("imageUrls") else None)
         audio_url = shot.get("audioUrl") or shot.get("voiceoverAudioUrl")
+
         client_audio_us = None
         for _k in ("audioDurationSec", "audio_duration_sec"):
             v = shot.get(_k)
@@ -2007,43 +2121,181 @@ def create_draft_on_mac(
                     pass
                 break
 
-        if audio_url and str(audio_url).strip():
-            audio_filename = _safe_filename(str(audio_url))
-            lap = os.path.join(draft_folder, "Resources", "audio", audio_filename)
-            local_src = local_path_map.get(str(audio_url))
-            ok = _download_file(str(audio_url), lap, local_source_path=local_src)
-            # 报告音频下载进度（每个音频 5%）
-            audio_progress = 10 + int((i / max(total_shots, 1)) * 60)
-            report_progress(audio_progress, f"下载音频 {i+1}/{total_shots}...")
-            print(f"[jianying_export] 镜头{i} 音频: url={'有' if audio_url else '无'} → 文件={audio_filename} → 下载={'成功' if ok else '失败'} {'(' + str(audio_url)[:80] + ')' if audio_url else ''}", file=sys.stderr, flush=True)
-            if ok:
-                row["audio_abs"] = _safe_abs_for_jianying(lap)
-                row["audio_client_path"] = _material_path_for_client(row["audio_abs"])
-                # 直接探测音频时长，不做任何 ffmpeg 处理/转码/追加静音
-                # 原始音频原样使用，100% 保留，不删减任何内容
-                probe_us = _probe_audio_duration(row["audio_abs"])
-                # 以文件实测为准；客户端 audioDurationSec 多为文案估算，取 max 会把时间线拉长得远超真实波形（见 pyJianYingDraft：片段时长应对齐素材）。
-                if probe_us:
-                    row["audio_duration_us"] = int(probe_us)
-                else:
-                    row["audio_duration_us"] = client_audio_us
-                # 有配音时：时间线镜头时长以音频为准（静态图 / 视频片段不再固定 5s）
-                ad = row.get("audio_duration_us")
-                if ad and int(ad) > 0:
-                    row["duration_us"] = int(ad)
+        meta = {
+            "index": i,
+            "shot": shot,  # 保留原始 shot 引用（用于 _build_lv59 阶段继续读 caption 等）
+            "start_us": start_us,
+            "base_dur": base_dur,
+            "video_url": str(video_url).strip() if video_url and str(video_url).strip() else None,
+            "image_url": str(image_url).strip() if image_url and str(image_url).strip() else None,
+            "audio_url": str(audio_url).strip() if audio_url and str(audio_url).strip() else None,
+            "client_audio_us": client_audio_us,
+        }
+
+        # 视频：仅当 image_url 缺失或明确给出 video 时走视频（保持原行为：video_url 优先于 image_url）
+        if meta["video_url"]:
+            vname = _safe_filename(meta["video_url"])
+            if not re.search(r"\.(mp4|mov|webm|m4v)$", vname, re.I):
+                vname = f"{vname}.mp4" if "." not in vname else re.sub(r"[^.]+$", "mp4", vname)
+            dest = os.path.join(draft_folder, "Resources", "video", vname)
+            download_plan.append({
+                "shot_idx": i, "kind": "video", "url": meta["video_url"], "dest": dest,
+                "local_src": local_path_map.get(meta["video_url"]),
+            })
+            meta["video_dest"] = dest
+
+        # 图片：仅在没有 video 时使用（与原逻辑一致）
+        if not meta["video_url"] and meta["image_url"]:
+            img_filename = _safe_filename(meta["image_url"])
+            dest = os.path.join(draft_folder, "Resources", "image", img_filename)
+            download_plan.append({
+                "shot_idx": i, "kind": "image", "url": meta["image_url"], "dest": dest,
+                "local_src": local_path_map.get(meta["image_url"]),
+            })
+            meta["image_dest"] = dest
+
+        # 音频
+        if meta["audio_url"]:
+            audio_filename = _safe_filename(meta["audio_url"])
+            dest = os.path.join(draft_folder, "Resources", "audio", audio_filename)
+            download_plan.append({
+                "shot_idx": i, "kind": "audio", "url": meta["audio_url"], "dest": dest,
+                "local_src": local_path_map.get(meta["audio_url"]),
+            })
+            meta["audio_dest"] = dest
+
+        shot_meta.append(meta)
+
+    # ── 阶段 B：并行下载所有媒体（ThreadPoolExecutor 8 worker）─────────────────
+    # 30 个 shot × 平均 2 个文件 = 60 个下载任务，串行 60×3s=180s，并行 8 worker 约 23s
+    _MAX_DOWNLOAD_WORKERS = 8
+    total_downloads = len(download_plan)
+
+    def _download_one(task: dict) -> dict:
+        """单个下载任务：返回带 ok 字段的结果。线程内调用，无共享状态。"""
+        ok = _download_file(task["url"], task["dest"], local_source_path=task.get("local_src"))
+        return {**task, "ok": ok}
+
+    download_results: list[dict] = []
+    if total_downloads > 0:
+        report_progress(8, f"开始并行下载 {total_downloads} 个媒体文件（{_MAX_DOWNLOAD_WORKERS} 并发）...")
+        print(f"[jianying_export] 并行下载 {total_downloads} 个媒体文件，{_MAX_DOWNLOAD_WORKERS} 并发...", file=sys.stderr, flush=True)
+        # 优先用 ThreadPoolExecutor；缺失时降级到顺序执行
+        try:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=_MAX_DOWNLOAD_WORKERS) as pool:
+                futures = {pool.submit(_download_one, t): t for t in download_plan}
+                completed = 0
+                for fut in as_completed(futures):
+                    res = fut.result()
+                    download_results.append(res)
+                    completed += 1
+                    # 下载阶段占总进度的 8% - 70%（62 个百分点）
+                    dl_progress = 8 + int((completed / max(total_downloads, 1)) * 62)
+                    report_progress(dl_progress, f"已下载 {completed}/{total_downloads} 媒体...")
+        except ImportError:
+            # 极老 Python 兼容：顺序下载
+            for t in download_plan:
+                download_results.append(_download_one(t))
+
+    # 把下载结果按 (shot_idx, kind) 索引起来，供阶段 C 查询
+    dl_by_shot: dict[tuple[int, str], dict] = {}
+    for r in download_results:
+        dl_by_shot[(r["shot_idx"], r["kind"])] = r
+    # 汇总下载结果（替代原顺序循环里逐 shot 打印的日志）
+    failed = [r for r in download_results if not r.get("ok")]
+    if failed:
+        for f in failed[:10]:  # 最多打印前 10 个失败项，避免刷屏
+            print(f"[jianying_export] 镜头{f['shot_idx']} {f['kind']} 下载失败: {f['url'][:80]}", file=sys.stderr, flush=True)
+    print(f"[jianying_export] 下载汇总: 总 {total_downloads} 个，成功 {total_downloads - len(failed)}，失败 {len(failed)}", file=sys.stderr, flush=True)
+
+    # ── 阶段 C：处理每个 shot（探测时长、追加音频静音垫、构造 row）────────────
+    prepared_shots: list[dict] = []
+    report_progress(72, "媒体下载完成，开始后处理...")
+    for i, meta in enumerate(shot_meta):
+        # 处理进度占 72% - 75%（探测和静音垫都很快）
+        proc_progress = 72 + int((i / max(total_shots, 1)) * 3)
+        report_progress(proc_progress, f"处理镜头 {i+1}/{total_shots}...")
+
+        base_dur = meta["base_dur"]
+        start_us = meta["start_us"]
+        duration_us = base_dur
+
+        row: dict = {
+            "start_us": start_us,
+            "duration_us": duration_us,
+            "caption": (meta["shot"].get("caption") or "").strip(),
+            "audio_abs": None,
+            "audio_duration_us": None,
+        }
+
+        # ---- 视频 ----
+        use_video = False
+        local_video_path = None
+        vres = dl_by_shot.get((i, "video"))
+        if vres and vres.get("ok"):
+            local_video_path = vres["dest"]
+            use_video = True
+        if use_video and local_video_path:
+            vabs = _safe_abs_for_jianying(local_video_path)
+            vd, vw, vh = _ffprobe_video_meta(vabs)
+            if vd:
+                duration_us = vd
+            row["media_kind"] = "video"
+            row["video_abs"] = vabs
+            row["video_client_path"] = _material_path_for_client(vabs)
+            row["video_w"] = vw or width
+            row["video_h"] = vh or height
+            row["video_material_duration_us"] = vd or duration_us
+            row["duration_us"] = duration_us
+        else:
+            # ---- 图片 ----
+            local_image_path = None
+            ires = dl_by_shot.get((i, "image"))
+            if ires and ires.get("ok"):
+                local_image_path = ires["dest"]
+            if not local_image_path:
+                local_image_path = _placeholder_shot_image_path(draft_folder, i, width, height)
+            img_abs = _safe_abs_for_jianying(local_image_path)
+            iw, ih = _read_image_dimensions(img_abs, width, height)
+            row["media_kind"] = "photo"
+            row["image_abs"] = img_abs
+            row["image_client_path"] = _material_path_for_client(img_abs)
+            row["image_w"] = iw
+            row["image_h"] = ih
+
+        # ---- 音频（追加 50ms 静音垫 + 探测真实时长）----
+        ares = dl_by_shot.get((i, "audio"))
+        if ares and ares.get("ok"):
+            lap = ares["dest"]
+            # 追加 50ms 尾部静音垫（解决剪映帧对齐截断）。失败时自动回退原音频。
+            _process_audio_for_export(lap, silence_pad_ms=50)
+            row["audio_abs"] = _safe_abs_for_jianying(lap)
+            row["audio_client_path"] = _material_path_for_client(row["audio_abs"])
+            # 音频时长在此阶段探测（包含 50ms 静音垫）。原音频主体不动。
+            probe_us = _ffprobe_duration_us(row["audio_abs"])
+            if probe_us:
+                row["audio_duration_us"] = int(probe_us)
             else:
-                # 下载失败但客户端提供了时长估算（如前端 TTS），以此作时长兜底
-                if client_audio_us and int(client_audio_us) > 0:
-                    row["audio_duration_us"] = int(client_audio_us)
-                    row["duration_us"] = int(client_audio_us)
+                row["audio_duration_us"] = meta["client_audio_us"]
+            # 有配音时：时间线镜头时长以音频为准（静态图 / 视频片段不再固定 5s）
+            ad = row.get("audio_duration_us")
+            if ad and int(ad) > 0:
+                row["duration_us"] = int(ad)
+        else:
+            # 下载失败但客户端提供了时长估算（如前端 TTS），以此作时长兜底
+            if meta["client_audio_us"] and int(meta["client_audio_us"]) > 0:
+                row["audio_duration_us"] = int(meta["client_audio_us"])
+                row["duration_us"] = int(meta["client_audio_us"])
 
         prepared_shots.append(row)
         timeline_cursor += row["duration_us"]
 
         # 及时清理 shot 对象中的大数据字段，释放内存
-        if image_url and str(image_url).startswith('data:'):
+        shot = meta["shot"]
+        if meta["image_url"] and str(meta["image_url"]).startswith('data:'):
             shot["imageUrl"] = ""  # 清理 base64 数据
-        if audio_url and str(audio_url).startswith('data:'):
+        if meta["audio_url"] and str(meta["audio_url"]).startswith('data:'):
             shot["audioUrl"] = ""  # 清理 base64 数据
             shot["voiceoverAudioUrl"] = ""
 
@@ -2056,13 +2308,13 @@ def create_draft_on_mac(
     for i, r in enumerate(prepared_shots):
         print(f"[jianying_export] 镜头{i} 汇总: audio_abs={r.get('audio_abs','无')} audio_dur_us={r.get('audio_duration_us','无')} timeline_dur_us={r.get('duration_us','无')}", file=sys.stderr, flush=True)
 
-    report_progress(72, "所有镜头处理完成，开始生成剪映 JSON...")
-    report_progress(78, "写入草稿 JSON 文件...")
+    report_progress(76, "所有镜头处理完成，开始生成剪映 JSON...")
+    report_progress(80, "写入草稿 JSON 文件...")
     print(f"[jianying_export] 所有镜头处理完成，共 {len(prepared_shots)} 个镜头，开始生成剪映 JSON...", file=sys.stderr, flush=True)
 
     total_duration = timeline_cursor
 
-    report_progress(82, "生成草稿内容...")
+    report_progress(84, "生成草稿内容...")
 
     lv59_script = _build_lv59_main_script(
         draft_id=draft_id,
