@@ -2080,6 +2080,8 @@ def create_draft_on_mac(
             return _safe_abs_for_jianying(local_abs_path)
 
     # ---- 下载资源，组装剪映 5.9 主脚本所需镜头行（绝对路径）----
+    # 关键：start_us 必须在阶段 C（后处理）算，那时每个 row 的 duration_us 才有正确值
+    # 这里只做：收集下载计划、收集 shot 元数据（不累积 start_us，避免重置为 0）
     prepared_shots: list[dict] = []
     timeline_cursor = 0
     total_shots = len(shots)
@@ -2091,14 +2093,9 @@ def create_draft_on_mac(
     # 然后一次性用 ThreadPoolExecutor 并行下载，大幅缩短下载等待时间
     download_plan: list[dict] = []
     shot_meta: list[dict] = []  # 每个 shot 的元数据（不含媒体文件，下载后再填充 row）
-    timeline_cursor = 0
-    total_shots = len(shots)
-    report_progress(5, f"开始处理 {total_shots} 个镜头...")
-    print(f"[jianying_export] 开始处理 {total_shots} 个镜头...", file=sys.stderr, flush=True)
 
     for i, shot in enumerate(shots):
         base_dur = int(float(shot.get("duration", 5)) * 1_000_000)
-        start_us = timeline_cursor
 
         vu = shot.get("videoUrls")
         video_url = shot.get("videoUrl") or shot.get("video_url")
@@ -2124,7 +2121,6 @@ def create_draft_on_mac(
         meta = {
             "index": i,
             "shot": shot,  # 保留原始 shot 引用（用于 _build_lv59 阶段继续读 caption 等）
-            "start_us": start_us,
             "base_dur": base_dur,
             "video_url": str(video_url).strip() if video_url and str(video_url).strip() else None,
             "image_url": str(image_url).strip() if image_url and str(image_url).strip() else None,
@@ -2211,6 +2207,9 @@ def create_draft_on_mac(
 
     # ── 阶段 C：处理每个 shot（探测时长、追加音频静音垫、构造 row）────────────
     prepared_shots: list[dict] = []
+    # ⚠️ 关键：timeline_cursor 必须在阶段 C 重新从 0 开始累积，
+    # 阶段 A 只做下载计划收集，不应预设 start_us
+    timeline_cursor = 0
     report_progress(72, "媒体下载完成，开始后处理...")
     for i, meta in enumerate(shot_meta):
         # 处理进度占 72% - 75%（探测和静音垫都很快）
@@ -2218,7 +2217,8 @@ def create_draft_on_mac(
         report_progress(proc_progress, f"处理镜头 {i+1}/{total_shots}...")
 
         base_dur = meta["base_dur"]
-        start_us = meta["start_us"]
+        # 正确累积 start_us：每个 shot 开始 = 上一个 shot 结束
+        start_us = timeline_cursor
         duration_us = base_dur
 
         row: dict = {
