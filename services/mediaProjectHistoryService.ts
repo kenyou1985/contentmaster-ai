@@ -10,9 +10,10 @@ import { resolveRunningHubOutputUrl } from './runninghubService';
 
 const STORAGE_KEY = 'contentmaster_media_projects_v1';
 const MAX_PROJECTS = 40;
-const MAX_JSON_CHARS = 5_500_000;
-/** 单条 data URL 上限；过小会导致 Gemini 等返回的大图整段被丢弃，历史/队列快照无缩略图 */
-export const MEDIA_HISTORY_MAX_DATA_URL_CHARS = 720_000;
+/** 移除 JSON 总体积硬限制，允许保存包含大量 base64 图片的完整分镜历史 */
+const MAX_JSON_CHARS = Infinity;
+/** 移除单条 data URL 上限，允许保存 GPT Image 2 等返回的大 base64 图片 */
+export const MEDIA_HISTORY_MAX_DATA_URL_CHARS = Infinity;
 const MAX_DATA_URL_CHARS = MEDIA_HISTORY_MAX_DATA_URL_CHARS;
 
 export interface MediaProjectRecord {
@@ -282,18 +283,22 @@ export function persistedShotToShot(s: PersistedShot): PersistedShot & {
   if (selImg === undefined || selImg < 0 || selImg >= imageCount) selImg = imageCount > 0 ? 0 : undefined;
 
   // 尝试为每张图片接上本地缓存（避免历史快照里 jimeng 403 签名过期后无图）
+  // 缓存失效时（页面刷新后 blob 已 revoke）：回退到原始 HTTP URL，保证历史恢复后有图可看
   const cachedImageUrls =
     imageUrls.length > 0
       ? imageUrls.map((u) => {
           if (u.startsWith('http://') || u.startsWith('https://')) {
-            return getCachedImageUrl(u) || undefined;
+            return getCachedImageUrl(u) || u;
           }
-          return undefined;
+          return u;
         })
       : undefined;
-  const hasImageCache = cachedImageUrls?.some(Boolean);
+  // 有效的缓存条目：blob:（blob 有效）或 http(s):（缓存失效但原始 URL 可用）
+  const isValidCached = (c: string) => /^blob:/i.test(c) || /^https?:\/\//i.test(c);
+  const hasImageCache = cachedImageUrls?.some(isValidCached);
+  // 取最后一张有效缓存图（append 模式下最右边 = 最近生成的）
   const firstCachedImage = hasImageCache
-    ? [...(cachedImageUrls || [])].reverse().find(Boolean)
+    ? [...(cachedImageUrls || [])].reverse().find(isValidCached)
     : undefined;
 
   const videoUrls =

@@ -431,22 +431,31 @@ function restoredShotsFromProject(shots: MediaProjectRecord['shots']): Shot[] {
   return normalizeRestoredShotsMediaUrls(raw).map(normalizeShotVoiceOver);
 }
 
-function firstPersistedShotPreviewImageUrl(project: MediaProjectRecord): string | undefined {
-  const sh0 = project.shots?.[0];
-  if (!sh0?.imageUrls?.length) return undefined;
-  const idx =
-    sh0.selectedImageIndex != null &&
-    sh0.selectedImageIndex >= 0 &&
-    sh0.selectedImageIndex < sh0.imageUrls.length
-      ? sh0.selectedImageIndex
-      : 0;
-  const u = sh0.imageUrls[idx] ?? sh0.imageUrls[0];
-  // 优先用缓存（避免 jimeng 签名过期后无法显示）
-  if (u && /^https?:\/\//i.test(u)) {
-    const cached = getCachedImageUrl(u);
-    if (cached) return cached;
+function firstPersistedShotOriginalImageUrl(project: MediaProjectRecord): string | undefined {
+  for (const sh of project.shots ?? []) {
+    if (sh?.imageUrls?.length) {
+      return sh.imageUrls[0];
+    }
   }
-  return normalizePersistedMediaUrl(u);
+  return undefined;
+}
+
+function firstPersistedShotPreviewImageUrl(project: MediaProjectRecord): string | undefined {
+  for (const sh of project.shots ?? []) {
+    if (sh?.imageUrls?.length) {
+      const idx = sh.selectedImageIndex != null && sh.selectedImageIndex >= 0 && sh.selectedImageIndex < sh.imageUrls.length
+        ? sh.selectedImageIndex : 0;
+      const u = sh.imageUrls[idx] ?? sh.imageUrls[0];
+      if (!u) continue;
+      if (/^https?:\/\//i.test(u)) {
+        const cached = getCachedImageUrl(u);
+        if (cached) return cached;
+        return u;
+      }
+      return u;
+    }
+  }
+  return undefined;
 }
 
 /** 从队列/一键成片任务快照中取第一镜预览图（大于 60×60 缩略图的展示尺寸，供右侧预览用） */
@@ -2307,7 +2316,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       return {
         timestamp: typeof p.updatedAt === 'number' ? p.updatedAt : p.createdAt ?? Date.now(),
         content: preview || scriptExcerpt || '（无摘要）',
-        metadata: { topic: topicLabel, mediaProjectId: p.id, thumbUrl, isUpdated },
+        metadata: { topic: topicLabel, mediaProjectId: p.id, thumbUrl, isUpdated, thumbUrlOriginal: firstPersistedShotOriginalImageUrl(p) },
       };
     });
     setHistorySelectorKind('media');

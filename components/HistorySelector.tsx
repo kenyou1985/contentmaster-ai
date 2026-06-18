@@ -127,7 +127,13 @@ export const HistorySelector: React.FC<HistorySelectorProps> = ({
                               alt=""
                               className="h-6 w-6 rounded object-cover shrink-0 border border-emerald-500/30"
                               onError={(e) => {
-                                (e.target as HTMLImageElement).style.display = 'none';
+                                const img = e.currentTarget as HTMLImageElement;
+                                const original = record.metadata?.thumbUrlOriginal as string | undefined;
+                                if (original && img.src !== original) {
+                                  img.src = original;
+                                } else {
+                                  img.style.display = 'none';
+                                }
                               }}
                             />
                           )}
