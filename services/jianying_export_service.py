@@ -1579,16 +1579,9 @@ def _build_lv59_main_script(
             audio_target_dur = use_src
             seg_end_us = start_us + audio_target_dur  # 片段在时间线上的绝对结束时间
 
-            # ── 不做交叉淡入淡出（防止尾音被截断感）───────────────────────
-            # 旧逻辑：200ms 交叉淡出 keyframe 将音量渐变为 0，听感上像音频被切断。
-            # 根本原因：fade-out 只是衰减音量，但 source_timerange.duration 仍指向完整音频，
-            #           剪映渲染时 keyframe volume=0 + source_timerange 没读完 = 尾音被截断。
-            # 正确做法：
-            #   1. 每段音频保持全音量（1.0），不做任何音量 keyframe
-            #   2. 音频文件末尾追加 50ms 静音垫（_process_audio_for_export），仅用于覆盖
-            #      剪映帧对齐的最后一帧（30fps ≈ 33ms），主体音频原样不动
-            #   3. 片段时间轴紧密衔接（target_timerange.start = 前段 start + duration）
-            #      自然形成段间过渡，无需 keyframe 控制
+            # ── 不做任何音量处理（尾音截断由音频原文件完整导出解决）──────────────
+            # 音频全程音量 1.0，不做淡入淡出、不做音量 keyframe。
+            # 音频文件原样导出（无静音垫、无转码），source_timerange 精确指向完整音频数据。
             audio_common_kfs: list = []  # 空列表 = 无音量 keyframe = 全程音量 1.0
 
             audio_segments.append(
@@ -2264,15 +2257,14 @@ def create_draft_on_mac(
             row["image_w"] = iw
             row["image_h"] = ih
 
-        # ---- 音频（追加 50ms 静音垫 + 探测真实时长）----
+        # ---- 音频（直接使用原文件，不做任何处理）----
         ares = dl_by_shot.get((i, "audio"))
         if ares and ares.get("ok"):
             lap = ares["dest"]
-            # 追加 50ms 尾部静音垫（解决剪映帧对齐截断）。失败时自动回退原音频。
-            _process_audio_for_export(lap, silence_pad_ms=50)
+            # 音频原文件直接导出，不追加静音垫、不做转码、不做任何处理。
+            # 时长通过 ffprobe 探测真实值（前端已通过 audioDurationExact 传递了估算值作为兜底）。
             row["audio_abs"] = _safe_abs_for_jianying(lap)
             row["audio_client_path"] = _material_path_for_client(row["audio_abs"])
-            # 音频时长在此阶段探测（包含 50ms 静音垫）。原音频主体不动。
             probe_us = _ffprobe_duration_us(row["audio_abs"])
             if probe_us:
                 row["audio_duration_us"] = int(probe_us)
