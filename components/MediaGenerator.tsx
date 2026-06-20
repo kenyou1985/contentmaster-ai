@@ -597,6 +597,13 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const imageGenPromisesRef = useRef<Map<string, Promise<boolean>>>(new Map());
   /** 取消信号：shotId → true 表示该任务已被用户取消（finally 块会清理） */
   const imageGenCancelledRef = useRef<Map<string, boolean>>(new Map());
+  /**
+   * 取消时立刻中断进行中的 fetch：shotId → AbortController
+   * 之前只用 imageGenCancelledRef 作 flag，需要等当前 fetch 周期结束才生效；
+   * 用这个 ref 取消时直接 controller.abort()，让 yunwu 同步接口能立刻返回，
+   * 避免"后端已扣费但前端等超时"的场景持续 4 分钟
+   */
+  const imageGenAbortRef = useRef<Map<string, AbortController>>(new Map());
   const [selectedImageModel, setSelectedImageModel] = useState('jimeng-5.0');
   const [selectedVideoModel, setSelectedVideoModel] = useState(VIDEO_MODELS[0].id);
   const [selectedImageRatio, setSelectedImageRatio] = useState('16:9'); // 默认横屏 16:9
@@ -1394,6 +1401,16 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             } catch (err: any) {
               const errMsg = String(err?.message || err);
               const isTransient = /503|429|HTTP 5\d\d|net::|Failed to fetch|ERR_CONNECTION/i.test(errMsg);
+              // 已扣费超时：明确告知用户云端已受理并扣费，避免误导
+              if (err?.code === 'TIMEOUT_AFTER_PAYMENT') {
+                appendTerminalLog('ImageGen', `镜头${num}: 云端响应超时（${err.elapsedMs ? Math.round(err.elapsedMs / 1000) + 's' : '-'}），未自动重试以避免重复扣费`);
+                updateShot(snap.id, { imageGenerating: false });
+                toast.error(
+                  `镜头${num}：云端响应超时，云雾任务大概率已扣费，请稍后查看「历史记录」或稍候重试。`,
+                  10000
+                );
+                return false;
+              }
               if (!isTransient || outerRetries === 0) {
                 appendTerminalLog('ImageGen', `镜头${num}: 生成失败 — ${errMsg}`);
                 updateShot(snap.id, { imageGenerating: false });
@@ -2751,6 +2768,12 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     // 正在生成中 → 取消当前生成
     if (imageGenPromisesRef.current.has(shot.id)) {
       imageGenCancelledRef.current.set(shot.id, true); // 标记取消，finally 会清理
+      // 立即 abort 进行中的 fetch（同步接口高峰期可能等 4 分钟才返回，abort 后秒返回）
+      const ctrl = imageGenAbortRef.current.get(shot.id);
+      if (ctrl) {
+        try { ctrl.abort(); } catch { /* ignore */ }
+        imageGenAbortRef.current.delete(shot.id);
+      }
       imageGenPromisesRef.current.delete(shot.id);
       appendTerminalLog('ImageGen', `镜头${shot.number}: 用户取消生成`);
       updateShot(shot.id, { imageGenerating: false });
@@ -2765,6 +2788,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     if (btn) btn.disabled = true;
     
     if (imageGenPromisesRef.current.has(shot.id)) return false;
+    // 为本次生图创建独立 AbortController：取消时由 imageGenAbortRef 直接 abort，立刻中断 fetch
+    const abortController = new AbortController();
+    imageGenAbortRef.current.set(shot.id, abortController);
     const promise = (async () => {
       const selectedModel = IMAGE_MODELS.find(m => m.id === selectedImageModel);
       // 每次 await 之前检查是否被取消
@@ -2996,8 +3022,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       quality: 'standard',
             ...charRefYunwu,
             // 注意：这些模型不支持 n 参数，所以不传
+            externalSignal: abortController.signal,
     };
-    
+
     const result = await generateImage(apiKey, options);
     if (checkCancelled()) return false;
 
@@ -3008,9 +3035,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             const urls = result.data.data.map((item: any) => item.url || item).filter(Boolean);
             newImageUrls.push(...urls);
     } else {
-            console.warn(`第 ${i + 1} 张图片生成失败:`, result.error);
+            console.warn(`第 ${i + 1} 张图片生成失败:`, result.error, 'code=', result.code);
           }
-          
+
           // 延迟避免API限流
           if (i < generateImageCount - 1) {
             await new Promise(resolve => setTimeout(resolve, 2000)); // 增加到2秒延迟
@@ -3026,8 +3053,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           quality: 'standard',
           ...charRefYunwu,
           // 注意：这些模型不支持 n 参数
+          externalSignal: abortController.signal,
         };
-        
+
         const result = await generateImage(apiKey, options);
 
         if (result.success) {
@@ -3054,9 +3082,17 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               quality: isGptImage2 ? 'medium' : 'standard',
               n: 1, // 每次只生成1张，通过多次调用来生成多张
               ...charRefYunwu,
+              externalSignal: abortController.signal,
             };
 
             let result = await generateImage(apiKey, options);
+            // gpt-image-2 已扣费超时：自动重试一次（避免单次网络抖动让用户白花钱）
+            if (!result.success && result.code === 'TIMEOUT_AFTER_PAYMENT' && i < generateImageCount - 1) {
+              appendTerminalLog('ImageGen', `镜头${shot.number}: 第 ${i + 1}/${generateImageCount} 张已扣费超时，自动重试一次`);
+              await new Promise((r) => setTimeout(r, 3000)); // 3s 后重试
+              if (checkCancelled()) return false;
+              result = await generateImage(apiKey, options);
+            }
             if (checkCancelled()) return false;
             if (result.success) {
               // 处理单张图片的情况
@@ -3072,9 +3108,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                 newImageUrls.push(...urls);
               }
             } else {
-              console.warn(`第 ${i + 1} 张图片生成失败:`, result.error);
+              console.warn(`第 ${i + 1} 张图片生成失败:`, result.error, 'code=', result.code, 'elapsed=', result.elapsedMs);
             }
-            
+
             // 延迟避免API限流
             if (i < generateImageCount - 1) {
               await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5秒延迟
@@ -3089,9 +3125,17 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             quality: isGptImage2 ? 'medium' : 'standard',
             n: 1,
             ...charRefYunwu,
+            externalSignal: abortController.signal,
           };
 
           let result = await generateImage(apiKey, options);
+          // gpt-image-2 已扣费超时：自动重试一次（避免单次网络抖动让用户白花钱）
+          if (!result.success && result.code === 'TIMEOUT_AFTER_PAYMENT') {
+            appendTerminalLog('ImageGen', `镜头${shot.number}: 已扣费超时，自动重试一次`);
+            await new Promise((r) => setTimeout(r, 3000)); // 3s 后重试
+            if (checkCancelled()) return false;
+            result = await generateImage(apiKey, options);
+          }
 
           if (result.success) {
             // 处理单张图片的情况
@@ -3162,12 +3206,27 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       }
     } catch (error: any) {
       updateShot(shot.id, { imageGenerating: false });
-      appendTerminalLog('ImageGen', `镜头${shot.number}: 异常 — ${error?.message || error}`);
+      // 透传诊断信息（attempt / elapsedMs / model / code），方便排查"已扣费但拿不到图"
+      const diag = {
+        message: error?.message,
+        code: error?.code,
+        elapsedMs: error?.elapsedMs,
+        model: error?.model || error?.options?.model,
+        attempt: error?.attempt,
+        name: error?.name,
+      };
+      appendTerminalLog(
+        'ImageGen',
+        `镜头${shot.number}: 异常 — ${error?.message || error} ` +
+          `[code=${error?.code || '-'} elapsed=${error?.elapsedMs ? Math.round(error.elapsedMs / 1000) + 's' : '-'} model=${diag.model || '-'}]`
+      );
+      console.error('[ImageGen] 失败诊断:', diag);
       // 抛出，让外层 toast 提示用户
       throw error;
     } finally {
       imageGenPromisesRef.current.delete(shot.id);
       imageGenCancelledRef.current.delete(shot.id);
+      imageGenAbortRef.current.delete(shot.id);
       const btn = document.querySelector(`[data-shot-id="${shot.id}"] .regenerate-btn`) as HTMLButtonElement | null;
       if (btn) { btn.disabled = false; btn.textContent = '重新繪圖'; }
     }
@@ -5613,7 +5672,15 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                         } catch (error: any) {
                           const msg = String(error?.message || '未知错误');
                           const isYunwuOverload = /503|429|net::|ERR_CONNECTION|Failed to fetch/i.test(msg);
-                          if (isYunwuOverload) {
+                          // 已扣费超时：明确告知用户云端已受理并扣费，避免误导
+                          if (error?.code === 'TIMEOUT_AFTER_PAYMENT') {
+                            const elapsedTxt = error?.elapsedMs ? `（已等待 ${Math.round(error.elapsedMs / 1000)}s）` : '';
+                            toast.error(
+                              `云端响应超时${elapsedTxt}，本次失败未自动重试以避免重复扣费。\n\n` +
+                              `云雾（yunwu）任务大概率已受理并扣费，请稍后到「历史记录」中查看，或稍候再点击「重新绘图」再次尝试。`,
+                              12000
+                            );
+                          } else if (isYunwuOverload) {
                             toast.error(
                               `yunwu.ai 后端临时过载（${msg}）\n\n` +
                               `已自动重试 3 次仍失败。可能 yunwu 正在限流或服务异常。\n` +

@@ -29,7 +29,7 @@ const COVER_IMAGE_MODELS: {
   {
     id: 'gpt-image-2-all',
     name: 'GPT Image 2（OpenAI）',
-    desc: '主用 gpt-image-2-all，备用 dall-e-3',
+    desc: '固定使用 gpt-image-2，失败不静默回退到其它模型',
   },
   {
     id: 'grok-imagine',

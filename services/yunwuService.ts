@@ -15,6 +15,13 @@ export interface ImageGenerationOptions {
   referenceMultimodalPreamble?: string;
   /** 有参考图时，角色名称（用于增强 chat/vision 端 IDENTITY LOCK 提示词） */
   characterName?: string;
+  /**
+   * 外部 abort signal：组件卸载 / 用户主动取消会立即终止请求；
+   * 区分于内部超时 abort（无此 signal 但 AbortError 时为已扣费场景，不重试避免重复扣费）
+   */
+  externalSignal?: AbortSignal;
+  /** 内部超时时长（毫秒）。同步接口高峰期可能需要 3~4 分钟，默认 240s */
+  timeoutMs?: number;
 }
 
 /**
@@ -575,6 +582,16 @@ export interface GenerationResult {
   error?: string;
   url?: string;
   taskId?: string;
+  /**
+   * 错误码（仅 success=false 时有）：
+   * - USER_CANCELLED：用户主动取消
+   * - TIMEOUT_AFTER_PAYMENT：内部超时（云端可能已扣费），未自动重试避免重复扣费
+   */
+  code?: 'USER_CANCELLED' | 'TIMEOUT_AFTER_PAYMENT' | string;
+  /** 失败时已等待的毫秒数（用于"云端响应超时"场景的诊断） */
+  elapsedMs?: number;
+  /** 失败时的模型 id（用于诊断） */
+  model?: string;
 }
 
 /**
@@ -632,15 +649,17 @@ async function fetchWithRetry(
   url: string,
   init: RequestInit,
   opts: {
-    /** 超时时间（毫秒） */
+    /** 超时时间（毫秒）。gpt-image-2 高峰期可能需要 3~4 分钟，默认 240s */
     timeoutMs?: number;
     /** 最大重试次数（含首次） */
     maxRetries?: number;
     /** 上下文标识（用于日志） */
     label?: string;
+    /** 外部 abort 信号（如组件卸载、用户主动取消），触发后立即终止所有重试 */
+    externalSignal?: AbortSignal;
   } = {}
 ): Promise<Response> {
-  const { timeoutMs = 120_000, maxRetries = 3, label = 'request' } = opts;
+  const { timeoutMs = 240_000, maxRetries = 3, label = 'request', externalSignal } = opts;
   const isRetryableStatus = (status: number) => status === 503 || status === 502 || status === 429 || status === 504;
   const isNetworkErr = (e: any) =>
     e?.name === 'TypeError' ||
@@ -654,11 +673,22 @@ async function fetchWithRetry(
 
   let lastErr: any = null;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    // 外部 signal 已触发：立即终止（用户主动取消 / 组件卸载场景）
+    if (externalSignal?.aborted) {
+      const err: any = new Error('请求已被用户取消');
+      err.name = 'AbortError';
+      err.code = 'USER_CANCELLED';
+      throw err;
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    // 串联外部信号：外部 abort 也会触发本次 fetch abort
+    const onExternalAbort = () => controller.abort();
+    if (externalSignal) externalSignal.addEventListener('abort', onExternalAbort, { once: true });
     try {
       const resp = await fetch(url, { ...init, signal: controller.signal });
       clearTimeout(timer);
+      if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
       if (resp.ok) return resp;
       // 不可重试：4xx（除 429）立即返回
       if (!isRetryableStatus(resp.status) && resp.status >= 400 && resp.status < 500) {
@@ -679,7 +709,15 @@ async function fetchWithRetry(
       return resp;
     } catch (e: any) {
       clearTimeout(timer);
+      if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
       lastErr = e;
+      // 外部 signal 触发：用户主动取消，不重试
+      if (externalSignal?.aborted) {
+        const err: any = new Error('请求已被用户取消');
+        err.name = 'AbortError';
+        err.code = 'USER_CANCELLED';
+        throw err;
+      }
       if (!isNetworkErr(e) || attempt >= maxRetries) {
         throw e;
       }
@@ -789,7 +827,11 @@ export const generateImage = async (
           },
           body: JSON.stringify(body),
         },
-        { label: `sora_image(${opts.model})` }
+        {
+          label: `sora_image(${opts.model})`,
+          externalSignal: opts.externalSignal,
+          timeoutMs: opts.timeoutMs,
+        }
       );
 
       if (!response.ok) {
@@ -884,7 +926,10 @@ export const generateImage = async (
       } catch (primaryErr: any) {
         console.warn('[YunwuService] 封面生图 Gemini 主模型失败，切换 gpt-image-2:', primaryErr?.message);
         try {
-          return await yunwuOpenAiImageOnce(apiKey, baseUrl, 'gpt-image-2', opts);
+          return await yunwuOpenAiImageOnce(apiKey, baseUrl, 'gpt-image-2', opts, {
+            externalSignal: opts.externalSignal,
+            timeoutMs: opts.timeoutMs,
+          });
         } catch (gptErr: any) {
           console.warn('[YunwuService] 封面生图 gpt-image-2 失败，切换 grok-imagine-image-pro:', gptErr?.message);
           return await yunwuGrokImageOnce(apiKey, baseUrl, 'grok-imagine-image-pro', opts);
@@ -899,26 +944,13 @@ export const generateImage = async (
       return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, modelName, opts);
     }
 
-    // gpt-image-2-all：主模型 gpt-image-2，有参考图时自动走 images/edits；失败则切换 dall-e-3
+    // gpt-image-2-all：固定只走 gpt-image-2（不静默回退到 dall-e-3 等其它模型，
+    // 避免 yunwu 后台出现用户未授权的模型调用记录）。失败时直接抛错，由调用方重试或更换模型。
     if (opts.model === 'gpt-image-2-all') {
-      const gptImagePrimary = 'gpt-image-2';
-      const gptImageFallback = 'dall-e-3';
-      try {
-        return await yunwuOpenAiImageOnce(apiKey, baseUrl, gptImagePrimary, opts);
-      } catch (primaryErr: any) {
-        console.warn(
-          '[YunwuService] gpt-image-2-all 主模型失败，切换备用:',
-          gptImagePrimary,
-          primaryErr?.message
-        );
-        // DALL-E 3 只支持 1024x1024, 1024x1792, 1792x1024，切到 dall-e-3 时必须转换 size
-        const fallbackOpts: ImageGenerationOptions = {
-          ...opts,
-          model: gptImageFallback,
-          size: convertSizeForDalle3(opts.size),
-        };
-        return await yunwuOpenAiImageOnce(apiKey, baseUrl, gptImageFallback, fallbackOpts);
-      }
+      return await yunwuOpenAiImageOnce(apiKey, baseUrl, 'gpt-image-2', opts, {
+        externalSignal: opts.externalSignal,
+        timeoutMs: opts.timeoutMs,
+      });
     }
 
     // grok-3-image / grok-4-image / grok-imagine：均走 chat/completions + vision 多段 content（云雾 images/generations 无参考图参数）
@@ -992,19 +1024,34 @@ async function yunwuOpenAiImageOnce(
   apiKey: string,
   baseUrl: string,
   modelId: string,
-  options: ImageGenerationOptions
+  options: ImageGenerationOptions,
+  retryOpts?: { externalSignal?: AbortSignal; timeoutMs?: number }
 ): Promise<GenerationResult> {
   const hasRef = options.referenceDataUrls && options.referenceDataUrls.length > 0;
+  const externalSignal = retryOpts?.externalSignal;
+  // 同步接口（images/generations、images/edits）的高峰期完成时间约 30~180s；
+  // 极端情况下（多参考图、复杂 prompt）可能逼近 4 分钟。默认 240s 避免误杀。
+  const REQUEST_TIMEOUT_MS = retryOpts?.timeoutMs ?? 240_000;
 
   // 503 / 网络错误可重试，服务器错误（5xx）/客户端错误（4xx）不重试
-  const isRetryable = (status: number) => status === 503 || status === 502 || status === 429;
+  const isRetryable = (status: number) => status === 503 || status === 502 || status === 429 || status === 504;
   const MAX_RETRIES = 3;
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    // 外部 signal 已触发（用户主动取消）：立即返回友好错误
+    if (externalSignal?.aborted) {
+      const err: any = new Error('请求已被用户取消');
+      err.name = 'AbortError';
+      err.code = 'USER_CANCELLED';
+      throw err;
+    }
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120_000);
-
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    // 串联外部 signal：组件卸载 / 主动取消会立刻 abort
+    const onExternalAbort = () => controller.abort();
+    if (externalSignal) externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    const attemptStart = Date.now();
     try {
       let response: Response;
 
@@ -1067,6 +1114,8 @@ async function yunwuOpenAiImageOnce(
       }
 
       clearTimeout(timeout);
+      if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
+      const elapsedMs = Date.now() - attemptStart;
 
       if (response.ok) {
         const data = await response.json();
@@ -1077,7 +1126,7 @@ async function yunwuOpenAiImageOnce(
         return { success: true, data, url: normalizedUrl };
       }
 
-      // 可重试错误：503/502/429
+      // 可重试错误：503/502/429/504
       if (isRetryable(response.status) && attempt < MAX_RETRIES - 1) {
         const delayMs = (attempt + 1) * 2000;
         console.warn(`[YunwuService] ${modelId} 尝试 ${attempt + 1} 失败 (HTTP ${response.status})，${delayMs}ms 后重试...`);
@@ -1092,6 +1141,32 @@ async function yunwuOpenAiImageOnce(
 
     } catch (err: any) {
       clearTimeout(timeout);
+      if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
+      const elapsedMs = Date.now() - attemptStart;
+
+      // 外部 signal 触发：用户主动取消
+      if (externalSignal?.aborted) {
+        const e: any = new Error('请求已被用户取消');
+        e.name = 'AbortError';
+        e.code = 'USER_CANCELLED';
+        throw e;
+      }
+
+      // AbortError 但无外部 signal 触发 → 大概率是内部 240s 超时
+      // 这种情况云端很可能已扣费（任务已受理），不要重试，避免重复扣费；明确提示用户
+      if (err?.name === 'AbortError' || /aborted without reason|signal is aborted/i.test(err?.message || '')) {
+        const timeoutErr: any = new Error(
+          `云端响应超时（已等待 ${Math.round(elapsedMs / 1000)}s）。` +
+          `云雾（yunwu）任务大概率已受理并扣费，请稍后到「历史记录」中查看，或点击「重新绘图」再次尝试。` +
+          `本次失败未自动重试，避免重复扣费。`
+        );
+        timeoutErr.name = 'TimeoutAbortError';
+        timeoutErr.code = 'TIMEOUT_AFTER_PAYMENT';
+        timeoutErr.elapsedMs = elapsedMs;
+        timeoutErr.model = modelId;
+        throw timeoutErr;
+      }
+
       const isNetworkErr =
         err.name === 'TypeError' || // fetch 网络错误（断网、域名解析失败等）
         err.message?.includes('network') ||
@@ -1208,7 +1283,11 @@ async function yunwuGrokImageOnce(
         },
         body: JSON.stringify(body),
       },
-      { label: `images/generations(${opts.model})` }
+      {
+        label: `images/generations(${opts.model})`,
+        externalSignal: opts.externalSignal,
+        timeoutMs: opts.timeoutMs,
+      }
     );
 
     if (!response.ok) {
@@ -1229,6 +1308,17 @@ async function yunwuGrokImageOnce(
     };
   } catch (error: any) {
     console.error('[YunwuService] 图片生成失败:', error);
+    // 透传 AbortError / 扩展错误码（USER_CANCELLED / TIMEOUT_AFTER_PAYMENT），
+    // 让上层（MediaGenerator）能区分是「用户主动取消」还是「已扣费超时」并采取不同策略
+    if (error?.code === 'USER_CANCELLED' || error?.code === 'TIMEOUT_AFTER_PAYMENT') {
+      return {
+        success: false,
+        error: error.message || '图片生成失败',
+        code: error.code,
+        elapsedMs: error.elapsedMs,
+        model: error.model,
+      };
+    }
     return {
       success: false,
       error: error.message || '图片生成失败',
