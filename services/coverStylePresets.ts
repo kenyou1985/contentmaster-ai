@@ -36,15 +36,9 @@ export const COVER_STYLE_PRESETS: CoverStylePreset[] = [
   },
   {
     id: 'pixel',
-    label: '像素风（Pixel Art）',
+    label: '像素复古风（Retro Pixel）',
     promptEn:
-      'Retro pixel art: crisp 8-bit/16-bit game aesthetic, limited palette, chunky pixels, nostalgic arcade poster.',
-  },
-  {
-    id: '3d',
-    label: '3D 建模（3D Modeling）',
-    promptEn:
-      '3D rendered look: smooth C4D-style modeling, soft studio lighting, clean materials, strong depth and volume.',
+      'Retro 8-bit/16-bit pixel art: limited color palette, chunky crisp pixels, pixelated character and props, nostalgic vintage video game aesthetic, storyboard frame composition, no anti-aliasing, dithering and scanline accents.',
   },
   {
     id: 'minimal_flat',
@@ -65,22 +59,58 @@ export const COVER_STYLE_PRESETS: CoverStylePreset[] = [
       '美式漫画风格，用浓重、清晰的黑色轮廓线勾勒人物和场景，线条富有粗细变化，增强画面的立体感与动感；色彩采用平涂与渐变结合的方式，既保留手绘的质感，又通过色彩层次突出画面重点；人物表情和动作极度夸张，强化情绪表达，强调戏剧冲突与个性，同时也借鉴了日式漫画对服饰、场景道具等细节的刻画方式，整体呈现出写实基底上的夸张幽默效果。画面中涉及的任何文字部分，必须使用简体中文，禁止出现英文或其他语言文字。',
   },
   {
-    id: 'beatrice_alemagna',
-    label: 'Beatrice Alemagna 风格',
+    id: 'colored_pencil',
+    label: '彩色铅笔手绘（Beatrice Alemagna）',
     promptEn:
-      '以彩色铅笔绘制，线条扭曲夸张纹理笨拙笔意，呈现Beatrice Alemagna风格，运用稚拙笔触，描绘出日常生活场景，乖张快意，张力另类，吐槽感，幽默趣味儿，全景，单色渐变背景。',
+      'Hand-drawn with colored pencils: twisted exaggerated lines, clumsy naive texture, childlike brushwork in Beatrice Alemagna style, depicting everyday life scenes, mischievous and irreverent, tension and quirky charm, humorous and sarcastic tone, panoramic composition, monochrome gradient background, full-frame storybook illustration.',
+  },
+  {
+    id: 'ink_line',
+    label: '手绘线稿（Ralph Steadman）',
+    promptEn:
+      'Hand-drawn ink line art, minimal and bold, expressive color-line contours, Ralph Steadman style, a big-eyed little girl subject, chaotic scribbled lines, grotesque and absurd, strong visual impact, rough aggressive brushwork, de-emphasized 3D, bright and lively palette, playful and humorous, masterwork composition, soul of an illustrator, solid purple background, storyboard frame.',
+  },
+  {
+    id: 'wet_plate',
+    label: '湿版火棉胶摄影（Wet Plate Collodion）',
+    promptEn:
+      'Wet plate collodion photography, 19th-century classical silver halide process, fine silver grain texture, natural edge vignetting, subtle scratches and patina, soft tones with high contrast, dreamy softened highlights, rich deep shadow gradation, cinematic quiet weight of time, shallow depth of field, storyboard frame.',
+  },
+  {
+    id: 'technicolor',
+    label: '特艺彩三色染印（3-Strip Technicolor）',
+    promptEn:
+      '3-strip Technicolor film, dye transfer print process, rich saturated but tasteful color, clear separation of three primary color layers, subtle edge chromatic misalignment in red/green/blue, naturally saturated transitions, dreamy coarse film grain, 1950s Hollywood golden-age cinema palette, storyboard frame composition.',
+  },
+  {
+    id: 'stylized_3d',
+    label: '风格化 3D 动画（Stylized 3D）',
+    promptEn:
+      'Stylized 3D animation, bold character design with strong silhouette, vibrant saturated colors, cinematic three-point lighting, dynamic storyboard frame composition, exaggerated proportions, Pixar-meets-cel-shaded aesthetic, clean render with subtle texture, dramatic depth and atmosphere.',
+  },
+  {
+    id: 'pixar',
+    label: '皮克斯动画风（Pixar）',
+    promptEn:
+      'Pixar animation style, highly detailed 3D character with subsurface scattering skin, realistic cinematic lighting, expressive emotional performance, rich color grading, cinematic storyboard frame composition, hero shot framing, depth of field, premium 3D render quality.',
+  },
+  {
+    id: 'ghibli',
+    label: '吉卜力动画风（Studio Ghibli）',
+    promptEn:
+      'Studio Ghibli animation style, hand-drawn aesthetic with watercolor softness, warm nostalgic color palette, detailed lush background, whimsical and heartwarming mood, storyboard frame composition, gentle natural lighting, Hayao Miyazaki signature atmosphere, cel animation texture.',
+  },
+  {
+    id: 'digital_paint',
+    label: '板绘动画风（Digital Painting）',
+    promptEn:
+      'Digital painting animation style, textured brushstrokes, vibrant high-saturation color scheme, dynamic composition, cinematic storyboard frame, painterly rendering with visible brushwork, modern animation cel aesthetic, energetic and polished.',
   },
   {
     id: 'minimalist',
     label: '极简风格（Minimalist）',
     promptEn:
       'Minimalist flat illustration, clean simple design, tidy composition, generous negative space, low detail, soft low-saturation palette, Morandi tones, unified color scheme, black outlines, simplified geometric shapes, smooth lines, refined premium look, modern internet-style illustration,',
-  },
-  {
-    id: 'historical_narrative',
-    label: '睡前历史人物（Historical Narrative）',
-    promptEn:
-      'Historical narrative illustration, storybook aesthetic, warm muted tones, atmospheric lighting, emotional depth, classical meets contemporary style, cinematic composition, soft gradients, gentle palette, elegant and contemplative mood.',
   },
 ];
 

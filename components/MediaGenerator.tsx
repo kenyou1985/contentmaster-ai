@@ -506,14 +506,16 @@ const VIDEO_MODELS = [
 // 图片比例配置
 // 注意：DALL-E 3 只支持 1024x1024, 1024x1792, 1792x1024
 // Sora Image 只支持三种比例：1:1, 2:3, 3:2
+// gpt-image-2 支持任意比例（云雾 API 走 size 字段 "WxH"，像素必须被 16 整除，比例区间 1:3 ~ 3:1）
+// 这里 width/height 是 gpt-image-2 标准 1k 输出像素（4k 时同比例放大到 3840 长边附近）
 const IMAGE_RATIOS = [
   { id: '1:1', name: '1:1 (正方形)', width: 1024, height: 1024, dallE3Supported: true, soraImageSupported: true, gptImage2Supported: true },
   { id: '2:3', name: '2:3 (竖屏)', width: 1024, height: 1536, dallE3Supported: false, soraImageSupported: true, gptImage2Supported: true },
   { id: '3:2', name: '3:2 (横屏)', width: 1536, height: 1024, dallE3Supported: false, soraImageSupported: true, gptImage2Supported: true },
-  { id: '16:9', name: '16:9 (横屏)', width: 1920, height: 1080, dallE3Supported: false, soraImageSupported: false, gptImage2Supported: false },
-  { id: '9:16', name: '9:16 (竖屏)', width: 1080, height: 1920, dallE3Supported: false, soraImageSupported: false, gptImage2Supported: false },
-  { id: '4:3', name: '4:3 (标准)', width: 1024, height: 768, dallE3Supported: false, soraImageSupported: false, gptImage2Supported: false },
-  { id: '3:4', name: '3:4 (竖屏)', width: 768, height: 1024, dallE3Supported: false, soraImageSupported: false, gptImage2Supported: false },
+  { id: '16:9', name: '16:9 (横屏)', width: 1536, height: 864, dallE3Supported: false, soraImageSupported: false, gptImage2Supported: true },
+  { id: '9:16', name: '9:16 (竖屏)', width: 864, height: 1536, dallE3Supported: false, soraImageSupported: false, gptImage2Supported: true },
+  { id: '4:3', name: '4:3 (标准)', width: 1024, height: 768, dallE3Supported: false, soraImageSupported: false, gptImage2Supported: true },
+  { id: '3:4', name: '3:4 (竖屏)', width: 768, height: 1024, dallE3Supported: false, soraImageSupported: false, gptImage2Supported: true },
   // DALL-E 3 专用比例
   { id: 'dall-e-3-portrait', name: 'DALL-E 3 竖屏 (1024x1792)', width: 1024, height: 1792, dallE3Supported: true, soraImageSupported: false, gptImage2Supported: false },
   { id: 'dall-e-3-landscape', name: 'DALL-E 3 横屏 (1792x1024)', width: 1792, height: 1024, dallE3Supported: true, soraImageSupported: false, gptImage2Supported: false },
@@ -2693,23 +2695,27 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   };
 
   // 获取适合模型的尺寸（DALL-E 3 和 Sora Image 有特殊限制）
+  // 返回值约定：
+  //   - gpt-image-2-all：返回 "WxH" 像素字符串（如 "1536x864"），云雾按 OpenAI images API 标准走 size 字段；
+  //     同时 yunwuService 内部会额外发 aspect_ratio 字段，向后兼容某些中转后端
+  //   - 其他模型保持旧行为：返回 "WxH" 像素
   const getImageSize = (model: string, ratioId: string): string => {
     const selectedRatio = IMAGE_RATIOS.find(r => r.id === ratioId);
     if (!selectedRatio) return '1024x1024';
 
-    // gpt-image-2 支持固定尺寸，根据比例映射
+    // gpt-image-2：返回 WxH 像素，yunwu 后端按 OpenAI 标准识别 size 字段
     if (model === 'gpt-image-2-all') {
       if (selectedRatio.gptImage2Supported) {
         return `${selectedRatio.width}x${selectedRatio.height}`;
-      } else {
-        const aspectRatio = selectedRatio.width / selectedRatio.height;
-        if (aspectRatio > 1) return '1536x1024';   // 横屏 → 3:2
-        if (aspectRatio < 1) return '1024x1536';   // 竖屏 → 2:3
-        return '1024x1024';                          // 正方形
       }
+      // 极少数不支持的比例：取宽高近似（兜底）
+      const aspectRatio = selectedRatio.width / selectedRatio.height;
+      if (aspectRatio > 1) return '1536x1024';
+      if (aspectRatio < 1) return '1024x1536';
+      return '1024x1024';
     }
 
-    // DALL-E 3 只支持特定尺寸
+    // DALL-E 3 只支持 1024x1024, 1024x1792, 1792x1024
     if (model === 'dall-e-3') {
       if (selectedRatio.dallE3Supported) {
         return `${selectedRatio.width}x${selectedRatio.height}`;

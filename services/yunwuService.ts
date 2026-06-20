@@ -17,6 +17,30 @@ export interface ImageGenerationOptions {
   characterName?: string;
 }
 
+/**
+ * 从 size 字段提取 "W:H" 比例字符串。
+ * 支持 "WxH" 像素（如 "1536x864"）和 "W:H" 比例（如 "16:9"）。
+ * gpt-image-2 在云雾 / OpenAI images API 中均支持此格式。
+ * 解析失败返回 undefined。
+ */
+function sizeToAspectRatio(size: string): string | undefined {
+  const s = size.trim();
+  // WxH 像素
+  const pixelMatch = s.match(/^(\d+)x(\d+)$/i);
+  if (pixelMatch) {
+    const w = parseInt(pixelMatch[1], 10);
+    const h = parseInt(pixelMatch[2], 10);
+    if (!w || !h) return undefined;
+    const g = (a: number, b: number) => (b === 0 ? a : g(b, a % b));
+    const d = g(w, h);
+    return `${w / d}:${h / d}`;
+  }
+  // W:H 比例
+  const ratioMatch = s.match(/^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/);
+  if (ratioMatch) return s;
+  return undefined;
+}
+
 async function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
@@ -575,16 +599,21 @@ const convertRatioToSoraFormat = (ratioId: string): string => {
 /**
  * 将 size 转换为 DALL-E 3 支持的尺寸
  * DALL-E 3 只支持: 1024x1024, 1024x1792, 1792x1024
- * @param size 原始尺寸（如 1920x1080, 1080x1920 等）
+ * @param size 原始尺寸（"WxH" 像素 或 "W:H" 比例字符串，例如 "1920x1080"、"16:9"）
  * @returns DALL-E 3 兼容的尺寸
  */
 function convertSizeForDalle3(size?: string): string {
   if (!size) return '1024x1024';
-  const [w, h] = size.split('x').map(Number);
-  if (!w || !h) return '1024x1024';
-  const aspectRatio = w / h;
-  // DALL-E 3 支持的宽高比: 1:1, ~0.57 (9:16/2:3), ~1.78 (16:9/3:2)
-  if (Math.abs(aspectRatio - 1) < 0.1) return '1024x1024';
+  const aspectRatioMatch = size.match(/^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/);
+  let aspectRatio = 1;
+  if (aspectRatioMatch) {
+    aspectRatio = parseFloat(aspectRatioMatch[1]) / parseFloat(aspectRatioMatch[2]);
+  } else {
+    const [w, h] = size.split('x').map(Number);
+    if (!w || !h) return '1024x1024';
+    aspectRatio = w / h;
+  }
+  // DALL-E 3 支持的宽高比: 1:1, ~0.57 (9:16/2:3), ~1.78 (16:9/3:2)  if (Math.abs(aspectRatio - 1) < 0.1) return '1024x1024';
   if (aspectRatio < 1) return '1024x1792'; // 竖屏
   return '1792x1024'; // 横屏
 }
@@ -993,7 +1022,12 @@ async function yunwuOpenAiImageOnce(
           for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
           formData.append('image', new Blob([arr], { type: mime }), 'reference.png');
         }
-        if (options.size) formData.append('size', options.size);
+        if (options.size) {
+          // gpt-image-2：size 是主字段；aspect_ratio 兼容某些专用后端
+          formData.append('size', options.size);
+          const aspectRatio = sizeToAspectRatio(options.size);
+          if (aspectRatio) formData.append('aspect_ratio', aspectRatio);
+        }
         if (options.quality) formData.append('quality', options.quality);
         if (options.n) formData.append('n', String(options.n));
 
@@ -1007,9 +1041,19 @@ async function yunwuOpenAiImageOnce(
         // images/generations 端点
         const endpoint = '/v1/images/generations';
         const body: Record<string, unknown> = { model: modelId, prompt: options.prompt };
-        if (options.size) body.size = options.size;
+        if (options.size) {
+          // gpt-image-2：size 是主字段（"WxH" 像素）；同时额外带 aspect_ratio 兼容字段
+          // 其它模型保持只发 size
+          body.size = options.size;
+          if (modelId === 'gpt-image-2') {
+            const aspectRatio = sizeToAspectRatio(options.size);
+            if (aspectRatio) body.aspect_ratio = aspectRatio;
+            console.log(`[YunwuService] gpt-image-2 请求 size=${options.size}, aspect_ratio=${aspectRatio}`);
+          }
+        }
         if (options.quality) body.quality = options.quality;
         if (options.n) body.n = options.n;
+        console.log(`[YunwuService] ${modelId} 请求 body:`, JSON.stringify(body).slice(0, 300));
 
         response = await fetch(`${baseUrl}${endpoint}`, {
           method: 'POST',
