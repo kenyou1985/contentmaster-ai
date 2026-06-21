@@ -78,11 +78,6 @@ export function getCachedImageUrl(imageUrl: string): string | null {
 }
 
 export async function cacheImage(imageUrl: string): Promise<string> {
-  // 只缓存 http(s) URL；data/blob 已内嵌无需再缓存
-  if (!imageUrl || typeof imageUrl !== 'string' || !/^https?:\/\//i.test(imageUrl)) {
-    return imageUrl;
-  }
-
   // 先检查是否已缓存
   const cachedUrl = getCachedImageUrl(imageUrl);
   if (cachedUrl) {
@@ -159,6 +154,32 @@ export async function cacheImage(imageUrl: string): Promise<string> {
     console.error('[ImageCache] 缓存图片失败:', error);
     return imageUrl;
   }
+}
+
+/** 并行缓存多个图片 URL，返回缓存后的 URL 映射 */
+export async function cacheImages(
+  avatarUrls: string[][],
+  bannerUrls: string[][]
+): Promise<{ avatarUrls: string[][]; bannerUrls: string[][] }> {
+  const allAvatarUrls = avatarUrls.map(v => v || []);
+  const allBannerUrls = bannerUrls.map(v => v || []);
+
+  const flatAvatars = allAvatarUrls.flat().filter(Boolean);
+  const flatBanners = allBannerUrls.flat().filter(Boolean);
+
+  const avatarResults = await Promise.all(flatAvatars.map(u => cacheImage(u)));
+  const bannerResults = await Promise.all(flatBanners.map(u => cacheImage(u)));
+
+  let idx = 0;
+  const cachedAvatars = allAvatarUrls.map(group =>
+    group.map(() => avatarResults[idx++] || '')
+  );
+  idx = 0;
+  const cachedBanners = allBannerUrls.map(group =>
+    group.map(() => bannerResults[idx++] || '')
+  );
+
+  return { avatarUrls: cachedAvatars, bannerUrls: cachedBanners };
 }
 
 function updateCacheMetadata(imageUrl: string, metadata: ImageCacheMetadata): void {
