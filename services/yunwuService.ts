@@ -437,9 +437,7 @@ function buildOpenAiVisionUserContent(
     }).join('\n');
 
     preamble = `CRITICAL: The following ${chars.length} character(s) appear in the attached reference image(s) IN ORDER:
-- Image 1 is "${chars[0]}" (${referenceDataUrls[0] ? 'provided' : 'missing'})
-${chars.length > 1 ? `- Image 2 is "${chars[1]}" (${referenceDataUrls[1] ? 'provided' : 'missing'})` : ''}
-${chars.length > 2 ? `- Image 3 is "${chars[2]}" (${referenceDataUrls[2] ? 'provided' : 'missing'})` : ''}
+${chars.map((char, idx) => `- Image ${idx + 1} is "${char}" (${referenceDataUrls[idx] ? 'provided' : 'missing'})`).join('\n')}
 
 IDENTITY LOCK (highest priority — overrides any generic wording in the brief):
 ${identityBlocks}

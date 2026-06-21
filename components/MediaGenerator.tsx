@@ -2855,14 +2855,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     if (selectedStyleObj && selectedStyleObj.prompt) {
       finalPrompt = `${finalPrompt}, ${selectedStyleObj.prompt}`;
     }
-    
+
     // 以「图片提示词」匹配角色名/别名；参考图随所有生图模型传递
     const matchedCharacters = detectCharactersInPrompt(shot.imagePrompt || '');
-    console.log('[MediaGenerator] matchedCharacters:', {
-      count: matchedCharacters.length,
-      names: matchedCharacters.map(c => c.name),
-      imageUrls: matchedCharacters.map(c => c.imageUrl?.slice(0, 50)),
-    });
 
     // 支持多角色参考图（最多3张，避免过多参考图导致API问题）
     const maxRefImages = 3;
@@ -2876,6 +2871,18 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           return bMax - aMax;
         }).slice(0, maxRefImages)
       : [];
+
+    // 当有多角色参考图时，在 prompt 文字里显式锚定角色与参考图的对应关系，
+    // 防止模型混淆不同角色的外观特征（尤其是 Yunwu/Grok 等不原生支持多图序号的模型）
+    if (allRefChars.length >= 2) {
+      const charImageBinding = allRefChars
+        .map((c, i) => `${c.name} → 参考图${i + 1}`)
+        .join('，');
+      const disambiguation = allRefChars.map((c, i) =>
+        `Reference image ${i + 1} = character "${c.name}" — reproduce this exact character's face, clothing, hair, and body proportions.`
+      ).join(' ');
+      finalPrompt = `【角色参考图绑定】${charImageBinding}。${disambiguation}\n\n${finalPrompt}`;
+    }
 
     console.log('[MediaGenerator] allRefChars:', {
       count: allRefChars.length,
