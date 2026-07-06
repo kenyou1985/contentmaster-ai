@@ -604,15 +604,19 @@ const segmentTextByShots = (text: string, targetShots: number, targetCharsPerSho
 
   const isEnglish = isEnglishText(cleaned);
 
-  // 人生副本赛道：强制30字/镜；其他赛道：动态计算
-  const useFixed30Char = targetCharsPerShot === 30;
-  const avgChars = useFixed30Char
-    ? 30
+  // 人生副本赛道：强制30字/镜
+  // 全赛道一键动画分镜：默认 30-50 字/镜（target=40）
+  // 其他情况：动态计算
+  const useFixedRange = typeof targetCharsPerShot === 'number';
+  const fixedMin = useFixedRange ? targetCharsPerShot! : 0;
+  const fixedMax = useFixedRange ? targetCharsPerShot! + 10 : 0;
+  const avgChars = useFixedRange
+    ? targetCharsPerShot!
     : isEnglish
       ? Math.max(350, Math.round(cleaned.length / targetShots))
       : Math.max(200, Math.round(cleaned.length / targetShots));
-  const minLen = useFixed30Char ? 15 : Math.round(avgChars * 0.8);
-  const maxLen = useFixed30Char ? 35 : Math.round(avgChars * 1.2);
+  const minLen = useFixedRange ? Math.max(20, fixedMin - 5) : Math.round(avgChars * 0.8);
+  const maxLen = useFixedRange ? fixedMax : Math.round(avgChars * 1.2);
 
   // 按句子分割
   const sentences = splitIntoSentences(cleaned);
@@ -2626,17 +2630,20 @@ Hard rules:
 
       // 【核心逻辑】动态计算分镜数量和每镜头目标字数
       // 人生副本赛道：约30字/镜（3000字原文≈100镜，上限100镜）
-      // 通用赛道中文：200-300字/镜头，英文：300-450字符/镜头
+      // 全赛道一键动画分镜统一：中文 30-50 字/镜头（约 40 字），英文 60-90 字符/镜头（约 75 字符）
+      // 这样能在 1500 字原文下产出约 30-50 个镜头，画面节奏更紧凑、信息密度更合适
+      const SHOT_CHAR_LIMIT_CN = 40;     // 中文目标：30-50 字的中位数
+      const SHOT_CHAR_LIMIT_EN = 75;     // 英文目标
       const targetCharsPerShot = isEnglishScript
-        ? 380
+        ? SHOT_CHAR_LIMIT_EN
         : isLifeDungeonTrack
           ? 30
-          : 250;
+          : SHOT_CHAR_LIMIT_CN;
       let estimatedShots = Math.ceil(scriptLength / targetCharsPerShot);
-      // 人生副本赛道80-100镜，通用赛道30-60镜
+      // 人生副本赛道80-100镜，全赛道一键动画分镜 30-100 镜（根据原文长度自然扩展）
       estimatedShots = isLifeDungeonTrack
         ? Math.max(80, Math.min(100, estimatedShots))
-        : Math.max(30, Math.min(60, estimatedShots));
+        : Math.max(30, Math.min(100, estimatedShots));
       // 重新计算每镜头字数（根据实际分镜数）
       const charsPerShot = Math.ceil(scriptLength / estimatedShots);
 
@@ -2650,7 +2657,13 @@ Hard rules:
       const isAnimeAestheticsStyle = storyboardStyleId === 'anime_aesthetics';
 
       // 【预切分原文】严格按照句子边界切分，保证完整性
-      const scriptSegments = segmentTextByShots(effectiveScript, estimatedShots, isLifeDungeonTrack ? 30 : undefined);
+      // 全赛道一键动画分镜：中文 30-50 字/镜，英文 60-90 字符/镜
+      const segmentTargetChars = isLifeDungeonTrack
+        ? 30
+        : isEnglishScript
+          ? SHOT_CHAR_LIMIT_EN
+          : SHOT_CHAR_LIMIT_CN;
+      const scriptSegments = segmentTextByShots(effectiveScript, estimatedShots, segmentTargetChars);
 
       // 构建每镜头的预切分文案提示
       const segmentsPrompt = scriptSegments
@@ -2689,21 +2702,21 @@ ${styleDirective}
 **【禁止】不要输出赛道分类描述。图片提示词只描述画面内容本身。**`
         : `${SCRIPT_MODE_SYSTEM}
 
-# 用户脚本（共 ${scriptLength} 字，${estimatedShots} 个镜头，每镜头约 ${charsPerShot} 字）
+# 用户脚本（共 ${scriptLength} 字，${estimatedShots} 个镜头，每镜头 30-50 字）
 
 **【核心逻辑 - 必须严格遵守】**
 1. 镜头数量：${estimatedShots} 个
-2. 每个镜头文案字数：约 ${charsPerShot} 字（允许±20%浮动）
-3. **镜头文案 = 上面预切分的原文段落，一字不差！禁止删减、压缩、扩写！**
+2. 每个镜头文案字数：**30-50 字**（严格控制在 30-50 字之间，不允许超出 50 字）
+3. **镜头文案 = 上面预切分的原文段落，一字不差！禁止删减、压缩、扩写！**原文 100% 完整覆盖，零删减零改编。
 
 ${segmentsPrompt}
 
 ## 输出格式
 
 镜头 1
-镜头文案:（直接使用上面的【镜头 1 原文段落】原文，一字不差）
-图片提示词:（根据镜头1原文推理画面描述，语言与原文一致）
-视频提示词:（运镜描述，语言与原文一致）
+镜头文案:（直接使用上面的【镜头 1 原文段落】原文，一字不差，30-50 字）
+图片提示词:（通用画面描述：根据镜头1原文推理具体的视觉场景、画面元素、色彩与构图；不使用任何特定人物名或品牌特征，描述通用人物形象即可，30-80 字中文）
+视频提示词:（**根据上面图片提示词推理生成**：以图片的首帧画面为基础，描述该画面中人物接下来的 2-5 秒动作、表情、运镜；严格使用下方"视频提示词四段式中文模板"，不得脱离图片凭空想象）
 景别:全景/中景/特写
 语音分镜:${isEnglishScript ? 'Narrator' : '旁白'}
 音效:环境音或无
@@ -2711,10 +2724,14 @@ ${segmentsPrompt}
 （按同样格式输出所有 ${estimatedShots} 个镜头...）
 
 ${styleDirective}
-${isEnglishScript 
+${isEnglishScript
   ? '**【语言一致性】英文原文的镜头文案用完整英文，图片/视频提示词用英文。**'
   : '**【语言一致性】中文原文的镜头文案用完整中文，图片/视频提示词用中文。**'
 }
+**【图片提示词通用化铁律 - 最高优先级】禁止在图片提示词中出现任何特定人物的姓名、品牌名、IP 形象（如「查理·芒格」「马云」「曾仕强」「中医大师」「新闻主播」等）；统一使用通用人物描述（如「年长智者」「冷静分析者」「都市职业女性」「沉思中的男性」「中产家庭成员」等）。目的是让图片提示词具备跨赛道通用性，避免品牌化、IP 化带来的版权与一致性风险。**
+**【视频提示词与图片提示词的对应铁律】视频提示词的首段必须基于"图片提示词"所描述的画面展开，明确提到图片中的关键元素（人物、场景、道具、构图），然后再说明该元素接下来如何运动/变化。绝不脱离图片凭空生成。严格使用下方视频提示词四段式中文模板：**
+> 全身镜头，单人角色，流畅自然人体动作，连贯不间断动态，全程五官身形统一不变，四肢比例稳定无肢体扭曲，符合人体骨骼运动规律，肌肉拉伸真实，头部转动自然手臂摆动真实步伐舒展，身体轻微自然晃动呼吸细微动态，面部表情与动作匹配，衣物随动作自然形变头发动态飘动真实布料褶皱跟随身体变化，24帧，柔和运动模糊，电影级柔光浅景深，超高细节，8K画质照片级写实。<基于图片首帧的剧情人物细分动作>，缓慢跟拍镜头，镜头跟随人物平稳移动，构图稳定，人物始终位于画面中心，画面时序连贯统一，全程不换脸身形不会忽大忽小，平滑帧间过渡，四肢添加自然动态模糊，身体移动伴随细微景深变化，阴影跟随人体柔和移动。<与图片同色系的光影氛围>。||最差画质，低清模糊，肢体扭曲变形，手指残缺，多出手臂，缺失腿部，躯干扭曲，五官变形，每帧人脸变化，人物身形忽大忽小，轮廓闪烁，衣物破损，头发无重力漂浮，机器人僵硬卡顿动作，身体抖动跳帧，画面重影，人物重复重叠，动作断裂不连贯，四肢僵硬无法弯曲，六指，缺指，肢体悬浮。
+
 **【标签一致性 - 关键】视频提示词标签必须严格使用"视频提示词"四个字，不得使用英文 Video prompts、不得使用其他语言的视频词汇（如 Video、ვიდიო、ვიდეო、ভিডিও、वीडियो 等），不得自创任何标签格式。图片提示词同理。**
 **【角色/场景信息标签 - 最高优先级】角色信息和场景信息的标题标签必须使用中文「角色信息」和「场景信息」，禁止使用英文 "Character Information"、"Scene Information" 等标签！格式示例：**
 \`\`\`
@@ -2727,7 +2744,7 @@ ${isEnglishScript
 [名称] xxx
 [描述] xxx
 \`\`\`
-**【最后镜头完整性 - 最高优先级】最后一个镜头（镜头${estimatedShots}）的文案必须完整包含原文最后一段的全部内容，禁止截断！如果最后一个镜头的文案很长（如300-400字），直接完整输出，不要为了"均衡分配"而截断！**
+**【最后镜头完整性 - 最高优先级】最后一个镜头（镜头${estimatedShots}）的文案必须完整包含原文最后一段的全部内容，禁止截断！**
 **【禁止】不要输出赛道分类描述。图片提示词只描述画面内容本身。**`;
 
       const appendChunk = (chunk: string) => {
