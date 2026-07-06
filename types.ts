@@ -47,13 +47,17 @@ export enum LifeDungeonSubModeId {
   LIFE_DUNGEON_CUSTOM = 'LIFE_DUNGEON_CUSTOM'
 }
 
-// News Commentary Sub-categories
+// News Commentary Sub-categories v3.0（覆盖9大赛道）
 export enum NewsSubModeId {
-  GEO_POLITICS = 'GEO_POLITICS',
-  GLOBAL_MARKETS = 'GLOBAL_MARKETS',
-  TECH_INDUSTRY = 'TECH_INDUSTRY',
-  SOCIAL_RISK = 'SOCIAL_RISK',
-  GREAT_POWER_GAME = 'GREAT_POWER_GAME'
+  GEO_POLITICS = 'GEO_POLITICS',          // 地缘冲突
+  TAIWAN_STRAIT = 'TAIWAN_STRAIT',      // 台海局势（岛内政治·新闻·人物）
+  INDO_PACIFIC = 'INDO_PACIFIC',         // 印太战略
+  MIDEAST_CONFLICT = 'MIDEAST_CONFLICT', // 中东冲突
+  FINANCE_CURRENCY = 'FINANCE_CURRENCY', // 金融货币战
+  TECH_BLOCKADE = 'TECH_BLOCKADE',       // 科技封锁与反制
+  WESTERN_SIEGE = 'WESTERN_SIEGE',       // 欧美产业围堵
+  GREAT_POWER_GAME = 'GREAT_POWER_GAME', // 大国政治角力
+  DOUYIN_HOT = 'DOUYIN_HOT',            // 抖音热点（国内社会热点）
 }
 
 // Life Dungeon Settings

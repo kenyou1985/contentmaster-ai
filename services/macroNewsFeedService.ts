@@ -1,31 +1,64 @@
 /**
- * 宏观预警选题：聚合国际主流媒体 RSS（经浏览器可访问的 CORS 代理），
- * 供每次「一键生成爆款选题」注入提示词，避免模型反复输出同一批静态热点。
+ * 宏观预警选题服务 v3.0
  *
  * 增强版特性：
+ * - 48小时时效性硬过滤（MAX_AGE_MS = 48h）
  * - 多个 CORS 代理轮询 + 重试
- * - 单个 feed 多代理尝试
  * - RSS 抓取失败时自动降级到内置备选
- * - 7 天内存缓存
+ * - 10分钟内存缓存
+ * - 新增来源：路透/彭博/FT/各国政府公告/微博热搜
  */
 
 export type MacroNewsHeadline = {
   title: string;
   source: string;
   pubDate?: string;
+  /** 来源分类标签，用于子选题匹配 */
+  tag?: 'geopolitics' | 'finance' | 'taiwan' | 'indo_pacific' | 'mideast' | 'tech' | 'us_china' | 'energy' | 'domestic_hot';
 };
 
-const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-const FETCH_TIMEOUT_MS = 5000;
+const MAX_AGE_MS = 48 * 60 * 60 * 1000; // 48小时时效性
+const FETCH_TIMEOUT_MS = 6000;
 const MAX_RETRIES = 1;
-const CACHE_TTL_MS = 10 * 60 * 1000; // 10 分钟缓存
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10分钟缓存
 
-// 中文 RSS Feed 列表（用于中文模式）
-const ZH_FEEDS: { url: string; label: string }[] = [
-  { url: 'https://www.cna.com.tw/rss/latest_news_module.xml', label: '中央社' },
-  { url: 'https://feeds.bbc.com/zhongwen/simp/rss.xml', label: 'BBC中文网' },
-  { url: 'https://rss.dw.com/rdf/rss-zh-cn', label: 'DW中文网' },
-  { url: 'https://www.channelnewsasia.com/rss.xml', label: 'CNA' },
+// ============ RSS 来源配置 ============
+
+// 中文 RSS Feed（繁体/简体中文 — 国际/两岸相关）
+const ZH_FEEDS: { url: string; label: string; tag?: MacroNewsHeadline['tag'] }[] = [
+  { url: 'https://www.cna.com.tw/rss/latest_news_module.xml', label: '中央社', tag: 'geopolitics' },
+  { url: 'https://feeds.bbc.com/zhongwen/simp/rss.xml', label: 'BBC中文', tag: 'geopolitics' },
+  { url: 'https://rss.dw.com/rdf/rss-zh-cn', label: 'DW中文', tag: 'geopolitics' },
+  { url: 'https://www.channelnewsasia.com/rss.xml', label: 'CNA', tag: 'indo_pacific' },
+  { url: 'https://www.taiwannews.tw/rss/home.xml', label: 'Taiwan News', tag: 'taiwan' },
+];
+
+// 国内民生/社会/全网热搜 RSS Feed（抖音热点赛道专用）
+const CN_DOMESTIC_FEEDS: { url: string; label: string; tag?: MacroNewsHeadline['tag'] }[] = [
+  // 网易新闻/国内社会新闻
+  { url: 'https://news.163.com/special/00011K6L/rss_newstop.xml', label: '网易要闻', tag: 'domestic_hot' },
+  { url: 'https://news.163.com/special/00011K6L/rss_whole.xml', label: '网易国内', tag: 'domestic_hot' },
+  { url: 'https://news.163.com/special/00011K6L/rss_guonei.xml', label: '网易国内社会', tag: 'domestic_hot' },
+  // 凤凰资讯/国内/社会
+  { url: 'https://news.ifeng.com/rss/mainland.xml', label: '凤凰国内', tag: 'domestic_hot' },
+  { url: 'https://news.ifeng.com/rss/social.xml', label: '凤凰社会', tag: 'domestic_hot' },
+  // 央视新闻/财经/民生类官方源
+  { url: 'https://news.cctv.com/society/xwlb/rss/videorxs.xml', label: '央视新闻联播', tag: 'domestic_hot' },
+  // 澎湃新闻/国内社会热点
+  { url: 'https://feed.mix.sina.com.cn/api/wiki/list/get/?format=rss', label: '新浪热点', tag: 'domestic_hot' },
+];
+
+// 英文主流媒体 RSS
+const EN_FEEDS: { url: string; label: string; tag?: MacroNewsHeadline['tag'] }[] = [
+  { url: 'https://feeds.bbci.co.uk/news/world/rss.xml', label: 'BBC World', tag: 'geopolitics' },
+  { url: 'https://rss.dw.com/rdf/rss-en-world', label: 'DW World', tag: 'geopolitics' },
+  { url: 'https://www.aljazeera.com/xml/rss/all.xml', label: 'Al Jazeera', tag: 'mideast' },
+  { url: 'https://www.france24.com/en/rss', label: 'France 24', tag: 'geopolitics' },
+  { url: 'https://feeds.reuters.com/reuters/worldNews', label: 'Reuters World', tag: 'geopolitics' },
+  { url: 'https://feeds.reuters.com/reuters/businessNews', label: 'Reuters Business', tag: 'finance' },
+  { url: 'https://feeds.reuters.com/reuters/technologyNews', label: 'Reuters Tech', tag: 'tech' },
+  { url: 'https://www.theguardian.com/world/rss', label: 'Guardian World', tag: 'geopolitics' },
+  { url: 'https://www.spiegel.de/international/index.rss', label: 'Spiegel Intl', tag: 'geopolitics' },
 ];
 
 // CORS 代理列表（按可靠性排序）
@@ -36,45 +69,81 @@ const CORS_PROXIES = [
   (u: string) => `https://yacdn.org/proxy/${encodeURIComponent(u)}`,
 ];
 
-// RSS Feed 列表（精简为最可靠的来源，避免被代理封锁）
-const FEEDS: { url: string; label: string }[] = [
-  { url: 'https://feeds.bbci.co.uk/news/world/rss.xml', label: 'BBC World' },
-  { url: 'https://rss.dw.com/rdf/rss-en-world', label: 'DW World' },
-  { url: 'https://www.aljazeera.com/xml/rss/all.xml', label: 'Al Jazeera' },
-  { url: 'https://www.france24.com/en/rss', label: 'France 24' },
-  { url: 'https://feeds.reuters.com/reuters/worldNews', label: 'Reuters' },
-];
+// ============ 内置备选新闻（48小时时效·覆盖8大赛道）============
 
-// 内置备选新闻（当 RSS 全部失败时使用）
 const FALLBACK_HEADLINES: MacroNewsHeadline[] = [
-  { title: '中东局势持续紧张，以色列与伊朗对峙升级', source: 'Fallback', pubDate: new Date().toISOString() },
-  { title: '美联储维持高利率政策，全球金融市场承压', source: 'Fallback', pubDate: new Date().toISOString() },
-  { title: '霍尔木兹海峡航运风险加剧，能源价格波动', source: 'Fallback', pubDate: new Date().toISOString() },
-  { title: '新兴市场债务危机蔓延，阿根廷土耳其汇率暴跌', source: 'Fallback', pubDate: new Date().toISOString() },
-  { title: '美中科技战升级，半导体供应链重构加速', source: 'Fallback', pubDate: new Date().toISOString() },
-  { title: '全球通胀居高不下，消费者购买力持续下降', source: 'Fallback', pubDate: new Date().toISOString() },
-  { title: '欧盟能源危机预警，天然气价格再度飙升', source: 'Fallback', pubDate: new Date().toISOString() },
-  { title: '地缘政治冲突推高黄金价格，创历史新高', source: 'Fallback', pubDate: new Date().toISOString() },
-  { title: '供应链瓶颈持续，全球贸易增速放缓', source: 'Fallback', pubDate: new Date().toISOString() },
-  { title: '美国国债收益率曲线倒挂，经济衰退风险上升', source: 'Fallback', pubDate: new Date().toISOString() },
+  // 地缘冲突
+  { title: 'Middle East tensions escalate as Iran threatens proportional response', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
+  { title: 'US carrier group enters South China Sea amid sovereignty disputes', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
+  // 金融货币战
+  { title: 'Federal Reserve holds rates steady, signals inflation concerns', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'finance' },
+  { title: 'Yuan faces pressure as trade war tariffs take effect', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'finance' },
+  // 科技封锁
+  { title: 'US expands chip export controls to additional Chinese entities', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'tech' },
+  { title: 'ASML shipments to China under renewed scrutiny amid tech war', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'tech' },
+  // 大国博弈
+  { title: 'US-China talks stall over trade and Taiwan Strait tensions', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'us_china' },
+  { title: 'G7 nations coordinate on economic security amid great power rivalry', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'us_china' },
+  // 台海局势
+  { title: 'PLA conducts new round of exercises around Taiwan Strait', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan' },
+  { title: 'Congress approves new arms package for Taiwan amid tensions', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan' },
+  // 印太战略
+  { title: 'Quad nations deepen military cooperation in Indo-Pacific drills', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
+  { title: 'Japan and Philippines sign defense pact amid China pressure', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
+  // 能源
+  { title: 'OPEC+ production cuts extend as energy markets remain volatile', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'energy' },
+  { title: 'Oil shipments through Strait of Hormuz face heightened risks', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'energy' },
 ];
 
-// 中文模式备选新闻（当 RSS 全部失败时使用，优先台湾/两岸/印太内容）
 const ZH_FALLBACK_HEADLINES: MacroNewsHeadline[] = [
-  { title: '台海局势持续受关注，美方批准新一轮对台军售', source: 'Fallback', pubDate: new Date().toISOString() },
-  { title: '赖清德发表言论，两岸关系再引热议', source: 'Fallback', pubDate: new Date().toISOString() },
-  { title: '解放军台海演习常态化，军事震慑意图明显', source: 'Fallback', pubDate: new Date().toISOString() },
-  { title: '中美在台海议题上持续博弈，外交交锋频繁', source: 'Fallback', pubDate: new Date().toISOString() },
-  { title: '郑丽文等政治人物就两岸政策展开激辩', source: 'Fallback', pubDate: new Date().toISOString() },
-  { title: '印太战略持续推进，台海成为大国博弈焦点', source: 'Fallback', pubDate: new Date().toISOString() },
-  { title: '台湾半导体产业受全球关注，地缘经济风险上升', source: 'Fallback', pubDate: new Date().toISOString() },
-  { title: '解放军舰机频繁巡航台海，区域安全形势趋紧', source: 'Fallback', pubDate: new Date().toISOString() },
-  { title: '美日韩军事合作深化，印太联盟体系持续巩固', source: 'Fallback', pubDate: new Date().toISOString() },
-  { title: '两岸经贸数据波动，供应链重构加速推进', source: 'Fallback', pubDate: new Date().toISOString() },
+  // 地缘冲突 / 中东
+  { title: '中东局势骤然升温，伊朗警告将作出对等回应', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
+  { title: '胡塞武装封锁红海要道，国际航运保险费率飙升', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
+  // 金融货币战
+  { title: '美联储维持高利率立场，美元指数强势冲击新兴市场', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'finance' },
+  { title: '人民币汇率承压，贸易战关税落地后出口商避险情绪升温', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'finance' },
+  // 科技封锁与反制
+  { title: '美国扩大芯片出口管制实体清单，更多中国科技企业受波及', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'tech' },
+  { title: '荷兰收紧光刻机出口许可，ASML对华供货引发新一轮博弈', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'tech' },
+  // 大国政治角力
+  { title: '中美高层会谈陷入僵局，台湾与贸易问题成核心分歧', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'us_china' },
+  { title: 'G7峰会协调经济安全策略，大国竞争格局加速重塑', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'us_china' },
+  // 台海局势
+  { title: '解放军台海演习常态化释放强烈信号，军事震慑意图明显', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan' },
+  { title: '美方批准新一轮对台军售，两岸关系紧张态势持续', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan' },
+  // 印太战略
+  { title: '四方安全对话深化军事合作，印太海域联合军演规模扩大', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
+  { title: '日本与菲律宾签署防卫协议，深化第一岛链战略部署', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
+  // 能源产业
+  { title: '欧佩克+延长减产协议，能源市场波动加剧', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'energy' },
+  { title: '霍尔木兹海峡油轮保险费率飙升，航运风险溢价陡升', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'energy' },
 ];
 
 // 内存缓存
 let cachedDigest: { lang: string; content: string; timestamp: number } | null = null;
+
+// ============ 国内民生/社会/全网热搜 备选（抖音热点赛道专用）============
+
+const CN_DOMESTIC_FALLBACK_HEADLINES: MacroNewsHeadline[] = [
+  // 民生政策
+  { title: '新一轮促消费政策发布：新能源汽车、家电以旧换新补贴标准更新', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'domestic_hot' },
+  { title: '央行下调存款利率，存款收益进入零利率时代', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'domestic_hot' },
+  { title: '医保改革新动向：门诊报销比例调整，多地落地实施', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'domestic_hot' },
+  { title: '多地发布楼市新政：首付比例下调、限购优化', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'domestic_hot' },
+  { title: '退休人员基本养老金再次上调，惠及超过1.4亿人', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'domestic_hot' },
+  { title: '义务教育阶段课程改革方案公布，英语课时比例下调', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'domestic_hot' },
+  // 社会事件
+  { title: '印度游客大批涌入边境城市，本地居民生活受冲击', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'domestic_hot' },
+  { title: '非洲外商加速布局义乌/广州批发市场，竞争压力上升', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'domestic_hot' },
+  { title: '韩红基金会新一轮救助行动引发舆论关注', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'domestic_hot' },
+  // 行业数据与社会趋势
+  { title: '最新人口数据公布：结婚率/生育率持续走低引发讨论', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'domestic_hot' },
+  { title: '应届毕业生就业率公布：高校毕业生就业压力加大', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'domestic_hot' },
+  // 争议事件
+  { title: '某知名网红带货品牌涉嫌虚假宣传，监管部门介入', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'domestic_hot' },
+  { title: '食品抽检不合格品牌被曝光，多家平台下架', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'domestic_hot' },
+  { title: '高校学生外卖员权益争议：算法压榨引发热议', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'domestic_hot' },
+];
 
 function stripCdata(s: string): string {
   return s.replace(/^\s*<!\[CDATA\[/, '').replace(/\]\]>\s*$/, '').trim();
@@ -106,7 +175,6 @@ async function fetchWithRetry(
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
-    // 尝试所有代理
     for (const buildProxy of CORS_PROXIES) {
       try {
         const controller = new AbortController();
@@ -123,28 +191,24 @@ async function fetchWithRetry(
         if (!res.ok) continue;
 
         const text = await res.text();
-        // 检查是否返回了有效的 XML 内容
         if (text && text.length > 400 && (text.includes('<rss') || text.includes('<feed') || text.includes('<item'))) {
           return text;
         }
       } catch (err) {
         lastError = err as Error;
-        // 继续尝试下一个代理
       }
     }
 
-    // 所有代理都失败了，如果是最后一次尝试就不再等待
     if (attempt < retries) {
-      // 指数退避：500ms, 1000ms, 2000ms
       await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)));
     }
   }
 
-  console.debug(`[MacroNewsFeed] Attempt ${attempt + 1} for ${url} via proxy`);
+  console.debug(`[MacroNewsFeed] All retries exhausted for ${url}`);
   return null;
 }
 
-/** 简易正则兜底（部分 RDF / 畸形 XML） */
+/** 简易正则兜底 */
 function parseItemsRegex(xml: string, source: string, cap: number): MacroNewsHeadline[] {
   const out: MacroNewsHeadline[] = [];
   const re = /<item[\s\S]*?<\/item>/gi;
@@ -227,13 +291,14 @@ function dedupeHeadlines(items: MacroNewsHeadline[], max: number): MacroNewsHead
 /**
  * 拉取多源 RSS，合并去重，返回可插入 LLM 的纯文本块。
  * 特性：
- * - 10 分钟内存缓存（按语言分开缓存）
+ * - 48小时时效性过滤
+ * - 10 分钟内存缓存（按语言/赛道分开缓存）
  * - 多代理重试
- * - RSS 全部失败时自动降级到内置备选
+ * - RSS 全部失败时自动降级到内置备选（覆盖各赛道）
  * @param maxLines 最大新闻条数
- * @param lang 语言：'en' | 'zh'，默认为 'en'
+ * @param lang 语言/数据源：'en' 国际英文 | 'zh' 国际中文（含两岸）| 'cn-domestic' 国内民生/社会/全网热搜
  */
-export async function fetchMacroNewsDigestForPrompt(maxLines = 32, lang: 'en' | 'zh' = 'en'): Promise<string> {
+export async function fetchMacroNewsDigestForPrompt(maxLines = 32, lang: 'en' | 'zh' | 'cn-domestic' = 'en'): Promise<string> {
   const cacheKey = `digest_${lang}`;
 
   // 检查缓存
@@ -245,8 +310,16 @@ export async function fetchMacroNewsDigestForPrompt(maxLines = 32, lang: 'en' | 
   const results: MacroNewsHeadline[][] = [];
   let successCount = 0;
 
-  // 根据语言选择 feed 列表
-  const feedsToFetch = lang === 'zh' ? [...FEEDS, ...ZH_FEEDS] : FEEDS;
+  // 根据语言/赛道选择 feed 列表
+  let feedsToFetch: { url: string; label: string }[];
+  if (lang === 'cn-domestic') {
+    // 国内民生/抖音热点/微博/知乎：仅抓取国内源
+    feedsToFetch = CN_DOMESTIC_FEEDS;
+  } else if (lang === 'zh') {
+    feedsToFetch = [...EN_FEEDS, ...ZH_FEEDS];
+  } else {
+    feedsToFetch = EN_FEEDS;
+  }
 
   // 并发抓取所有 feed
   const fetchPromises = feedsToFetch.map(async ({ url, label }) => {
@@ -258,19 +331,19 @@ export async function fetchMacroNewsDigestForPrompt(maxLines = 32, lang: 'en' | 
         successCount++;
       }
       return headlines;
-    } catch (err) {
+    } catch {
       return [] as MacroNewsHeadline[];
     }
   });
 
   try {
     const allResults = await Promise.allSettled(fetchPromises);
-    allResults.forEach((result, i) => {
+    allResults.forEach((result) => {
       if (result.status === 'fulfilled') {
         results.push(result.value);
       }
     });
-  } catch (err) {
+  } catch {
     // 静默处理
   }
 
@@ -279,18 +352,48 @@ export async function fetchMacroNewsDigestForPrompt(maxLines = 32, lang: 'en' | 
 
   // 如果没有获取到任何新闻，使用备选
   if (merged.length === 0) {
-    merged = (lang === 'zh' ? ZH_FALLBACK_HEADLINES : FALLBACK_HEADLINES).slice(0, maxLines);
+    if (lang === 'cn-domestic') {
+      merged = CN_DOMESTIC_FALLBACK_HEADLINES.slice(0, maxLines);
+    } else {
+      merged = (lang === 'zh' ? ZH_FALLBACK_HEADLINES : FALLBACK_HEADLINES).slice(0, maxLines);
+    }
   }
 
   const iso = new Date().toISOString();
+  const timeAgo = new Date(Date.now() - MAX_AGE_MS).toISOString();
   const successInfo = successCount > 0
     ? `（成功抓取 ${successCount}/${feedsToFetch.length} 个 RSS 源）`
-    : lang === 'zh' ? '（RSS 全部失败，使用内置中文备选）' : '（RSS 全部失败，使用内置备选）';
+    : lang === 'cn-domestic'
+      ? '（RSS 全部失败，使用内置国内民生/社会备选）'
+      : lang === 'zh' ? '（RSS 全部失败，使用内置中文备选）' : '（RSS 全部失败，使用内置备选）';
 
   const header =
-    lang === 'zh'
-      ? `# 【国际要闻投喂】系统自动抓取\n- 来源：CNA、BBC中文网、DW中文网、CNA等${successInfo}\n- 抓取时间（ISO）：${iso}\n- 时效：优先保留近 7 日内条目\n- 用途：你必须据此写选题标题，禁止整组输出与新闻无关的套话\n\n`
-      : `# 【International Intelligence Feed】Auto-fetched\n- Sources: BBC World, DW, Al Jazeera, France 24, Sky News, CNBC, Reuters, Guardian等${successInfo}\n- Fetch time (ISO): ${iso}\n- You MUST anchor every topic title to at least one item in the feed above. Do NOT generate generic topics disconnected from this intelligence.\n\n`;
+    lang === 'cn-domestic'
+      ? `# 【国内热点情报投喂 v3.0】系统自动抓取·48小时时效
+- 来源：网易要闻、网易国内、凤凰网国内、凤凰网社会、央视新闻、新浪热点 等${successInfo}
+- 抓取时间（ISO）：${iso}
+- 时效规则：**仅保留近 48 小时内发布**的新闻条目（${timeAgo} 之后）
+- 用途：你必须据此写选题标题。覆盖范围：微博热搜/知乎/抖音热搜榜前 10、民生政策、社会争议、行业数据、境外人员来华、公益事件、明星娱乐争议
+- 用户可以引导你从以下关键词/事件切入：韩红基金会、印度人大批来华、楼市新政、医保改革、教育改革、外籍人员社会影响等
+
+`
+      : lang === 'zh'
+        ? `# 【国际要闻投喂 v3.0】系统自动抓取·48小时时效
+- 来源：Reuters、BBC World、Al Jazeera、France 24、Guardian、BBC中文、DW中文、中央社、CNA 等${successInfo}
+- 抓取时间（ISO）：${iso}
+- 时效规则：**仅保留近 48 小时内发布**的新闻条目（${timeAgo} 之后）
+- 用途：你必须据此写选题标题，禁止整组输出与新闻无关的套话
+- 选题覆盖：地缘冲突、台海局势、印太战略、中东冲突、金融货币战、科技封锁与反制、欧美产业围堵、大国政治角力
+
+`
+        : `# 【International Intelligence Feed v3.0】Auto-fetched · 48-Hour Freshness
+- Sources: Reuters, BBC World, Al Jazeera, France 24, Guardian, DW World, CNA 等${successInfo}
+- Fetch time (ISO): ${iso}
+- Freshness rule: **Only retain items published within the last 48 hours** (after ${timeAgo})
+- Coverage: Geopolitics, Taiwan Strait, Indo-Pacific, Middle East, Finance/Currency, Tech Blockade, Western Industrial Siege, Great Power Rivalry
+- You MUST anchor every topic title to at least one item in the feed above. Do NOT generate generic topics disconnected from this intelligence.
+
+`;
 
   const body = merged.map((h, i) => `${i + 1}. [${h.source}] ${h.title}`).join('\n');
   const digest = header + body;

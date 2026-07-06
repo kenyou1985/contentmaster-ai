@@ -825,7 +825,7 @@ import {
   NewsSubModeId,
   LifeDungeonLength,
 } from '../types';
-import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, LIFE_DUNGEON_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT, YI_JING_SHORT_SCRIPT_PROMPT, HISTORICAL_FIGURE_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH, applyTopicCountToPrompt } from '../constants';
+import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, LIFE_DUNGEON_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT, YI_JING_SHORT_SCRIPT_PROMPT, HISTORICAL_FIGURE_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH, applyTopicCountToPrompt, NEWS_SHORT_SCRIPT_DOUYIN, NEWS_LONG_SCRIPT_DOUYIN } from '../constants';
 import { NicheSelector } from './NicheSelector';
 import { generateTopics, streamContentGeneration, initializeGemini, SEGMENT_RETRY_MAX, SEGMENT_RETRY_DELAY_MS } from '../services/geminiService';
 import { fetchMacroNewsDigestForPrompt } from '../services/macroNewsFeedService';
@@ -1000,6 +1000,56 @@ function ensureGreatPowerClosingZh(text: string): string {
   }
 
   return `${trimmed} 博弈从未停止。`;
+}
+
+/**
+ * 新闻热点·小美赛道收尾铁律：
+ * - 正文中若已经出现「咱们下期见」/「咱们下期继续拆」/「咱们下期继续聊」等收尾语，保留并清理尾部多余空白后返回
+ * - 若正文不完整收尾（无标点或被 maxChars 截断在句中），自动追加收尾语
+ * - 若正文末尾是不完整句子（最近 200 字内无任何句号/感叹号/问号），截到最近的完整句子再加收尾
+ */
+function ensureNewsShortClosing(text: string): string {
+  const trimmed = text.trimEnd();
+  // 模型常见的几种收尾语
+  const closingPhrases = [
+    /咱们下期见[。！]?\s*$/,
+    /咱们下期继续拆[。！]?\s*$/,
+    /咱们下期继续聊[。！]?\s*$/,
+    /我们下期见[。！]?\s*$/,
+  ];
+
+  // 1. 已有收尾语：清理+补全句号
+  for (const re of closingPhrases) {
+    if (re.test(trimmed)) {
+      const cleaned = trimmed.replace(/\s+$/, '');
+      // 若已「咱们下期见。」则直接返回；否则补全句号
+      if (/咱们下期见。$/.test(cleaned) || /咱们下期继续拆。$/.test(cleaned)) {
+        return cleaned;
+      }
+      return `${cleaned} 咱们下期见。`;
+    }
+  }
+
+  // 2. 末尾无标点 → 视为被截断，找最近 200 字内最近的完整句子边界
+  const lastChar = trimmed.slice(-1);
+  const hasTrailingPunct = /[。！？]/.test(lastChar);
+  if (!hasTrailingPunct) {
+    const searchWindow = trimmed.slice(Math.max(0, trimmed.length - 200));
+    const sentenceEnd = Math.max(
+      searchWindow.lastIndexOf('。'),
+      searchWindow.lastIndexOf('！'),
+      searchWindow.lastIndexOf('？'),
+    );
+    if (sentenceEnd > -1) {
+      // sentenceEnd 是相对 searchWindow 的偏移，需转回 trimmed 的绝对位置
+      const absoluteCutoff = Math.max(0, trimmed.length - 200) + sentenceEnd + 1;
+      const prefix = trimmed.slice(0, absoluteCutoff).trimEnd();
+      return `${prefix} 咱们下期见。`;
+    }
+  }
+
+  // 3. 末尾是完整句子但无收尾语 → 追加
+  return `${trimmed} 咱们下期见。`;
 }
 
 /**
@@ -1208,7 +1258,21 @@ type OneShotScriptPlan = {
   extraDirective: string;
 };
 
-function getOneShotScriptPlan(niche: NicheType): OneShotScriptPlan | null {
+function getOneShotScriptPlan(niche: NicheType, scriptLengthMode: 'LONG' | 'SHORT' = 'LONG'): OneShotScriptPlan | null {
+  // 新闻热点赛道：短视频 1000-1500 字，约 1200 字开始进入收尾（抖音主推）
+  if (niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'SHORT') {
+    return {
+      minChars: 1000,
+      maxChars: 1500,
+      targetLabel: '1000 - 1500（约 1200 字起收尾）',
+      extraDirective:
+        '主题方向必须偏新闻热点·国内民生/国际·抖音知识赛道。生成时直接输出最终一稿，禁止大纲/分段/合并。' +
+        '逻辑高度浓缩、论点精炼、节奏快、信息密度大。具备抖音精选内容特征的至少 2 项：获得感/惊喜感/表达力/感染力。' +
+        '**字数节奏**：约 1000 字起步，约 1200 字必须开始收尾；全篇控制在 1000-1500 字之间，不超过 1500 字。' +
+        '收尾必须在观点表达完整、句子有明确结论之后，再追加「咱们下期见。」，不要为了凑结尾而砍掉正在论证的论点。' +
+        '禁止废话、禁止长篇论证、禁止画面提示符、禁止前置说明、禁止二次润色。',
+    };
+  }
   switch (niche) {
     case NicheType.PSYCHOLOGY:
     case NicheType.PHILOSOPHY_WISDOM:
@@ -1259,44 +1323,82 @@ function getOneShotScriptPlan(niche: NicheType): OneShotScriptPlan | null {
   }
 }
 
-function buildOneShotLongScriptPrompt(basePrompt: string, topic: string, niche: NicheType): string {
-  const plan = getOneShotScriptPlan(niche);
+function buildOneShotLongScriptPrompt(
+  basePrompt: string,
+  topic: string,
+  niche: NicheType,
+  scriptLengthMode: 'LONG' | 'SHORT' = 'LONG',
+): string {
+  const plan = getOneShotScriptPlan(niche, scriptLengthMode);
   const seeded = basePrompt.replaceAll('{topic}', topic);
   if (!plan) return seeded;
   return `${seeded}\n\n【生成模式变更（最高优先级）】\n本次必须一次性直接输出最终完整成稿。\n- 禁止先列大纲再写正文\n- 禁止分段输出后再合并\n- 禁止输出“第1部分/第2部分/上篇/下篇/待续”等中间产物\n- 禁止生成后再做“去AI味清洗/洗稿/二次润色”思路\n- 必须在首次生成时就直接把 AI 味降下来，写成可直接发布的最终稿\n\n【篇幅硬要求】\n- 严格目标区间：${plan.targetLabel}\n- 最低不少于 ${plan.minChars} 字\n- 最高不超过 ${plan.maxChars} 字\n\n【风格总要求】\n${plan.extraDirective}\n\n【输出要求】\n- 只输出最终正文\n- 不要解释你的写法\n- 不要输出大纲、章节规划、创作说明、字数说明\n- 不要输出“以下是正文”“下面开始”等前置语`;}
 
-function clampOneShotLength(content: string, niche: NicheType): string {
-  const plan = getOneShotScriptPlan(niche);
+function clampOneShotLength(
+  content: string,
+  niche: NicheType,
+  scriptLengthMode: 'LONG' | 'SHORT' = 'LONG',
+): string {
+  const plan = getOneShotScriptPlan(niche, scriptLengthMode);
   if (!plan) return content.trim();
   let text = content.trim();
   if (text.length <= plan.maxChars) return text;
 
-  const truncated = text.slice(0, plan.maxChars);
-  const sentenceBreakCandidates = [
-    truncated.lastIndexOf('。'),
-    truncated.lastIndexOf('！'),
-    truncated.lastIndexOf('？'),
-    truncated.lastIndexOf('.'),
-    truncated.lastIndexOf('!'),
-    truncated.lastIndexOf('?'),
-    truncated.lastIndexOf('\n\n'),
-    truncated.lastIndexOf('\n'),
-  ];
-  const cutoff = Math.max(...sentenceBreakCandidates);
+  // 在 [0, maxChars] 区间内找最后一个完整句子边界（中英文标点 + 段落分隔）
+  const findSentenceCut = (slice: string): number =>
+    Math.max(
+      slice.lastIndexOf('。'),
+      slice.lastIndexOf('！'),
+      slice.lastIndexOf('？'),
+      slice.lastIndexOf('.'),
+      slice.lastIndexOf('!'),
+      slice.lastIndexOf('?'),
+      slice.lastIndexOf('\n\n'),
+      slice.lastIndexOf('\n'),
+    );
 
-  if (cutoff >= Math.max(plan.minChars - 1, 0)) {
+  let truncated = text.slice(0, plan.maxChars);
+  let cutoff = findSentenceCut(truncated);
+
+  // 兜底1：如果 maxChars 区间内没有任何句子边界，往前最多再扩 150 字继续找
+  if (cutoff < 0) {
+    const extended = text.slice(0, Math.min(text.length, plan.maxChars + 150));
+    const extCut = findSentenceCut(extended);
+    if (extCut >= Math.max(plan.minChars - 1, 0)) {
+      truncated = extended;
+      cutoff = extCut;
+    } else {
+      // 实在找不到：保留到 minChars 边界（截到中间也无大碍，下游 ensureNewsShortClosing 会再处理）
+      return truncated.trim();
+    }
+  }
+
+  // 兜底2：如果 cutoff 落在 minChars 之前（极端情况）：找 minChars ~ maxChars 之间的第一个句子边界
+  if (cutoff < Math.max(plan.minChars - 1, 0)) {
+    const searchRange = text.slice(Math.max(0, plan.minChars - 1), plan.maxChars);
+    const idxInRange = findSentenceCut(searchRange);
+    if (idxInRange > -1) {
+      cutoff = Math.max(0, plan.minChars - 1) + idxInRange;
+      truncated = text.slice(0, Math.min(text.length, plan.maxChars));
+    }
+  }
+
+  if (cutoff >= 0) {
     const ender = truncated[cutoff];
     const needsPunct = ender !== '。' && ender !== '！' && ender !== '？' && ender !== '.' && ender !== '!' && ender !== '?';
-    return `${truncated.slice(0, cutoff + 1).trim()}${needsPunct ? '。' : ''}`.trim();
+    return `${truncated.slice(0, cutoff + 1).trimEnd()}${needsPunct ? '。' : ''}`.trim();
   }
 
   return truncated.trim();
 }
 function shouldUseOneShotLongForm(niche: NicheType, scriptLengthMode: 'LONG' | 'SHORT'): boolean {
-  if (scriptLengthMode !== 'LONG') return false;
-  // 睡前历史人物需要 10000+ 字，超出单次输出上限，走分段并行 pipeline
+  // 新闻热点赛道：长短视频都走一次性直出（禁止分段并行+合并）
+  if (niche === NicheType.GENERAL_VIRAL) return true;
+  // 短视频一律走一次性直出（不分段），对齐抖音短脚本"一口气生成一稿完事"的需求
+  if (scriptLengthMode === 'SHORT') return true;
+  // 历史人物长脚本需要 10000+ 字，超出单次输出上限，走分段并行 pipeline
   if (niche === NicheType.HISTORICAL_FIGURE) return false;
-  return true; // 所有赛道（含人生副本）均走一次性直出
+  return true;
 }
 
 /**
@@ -1585,10 +1687,10 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   // Script length mode for TCM/Finance/Psychology
   const [scriptLengthMode, setScriptLengthMode] = useState<'LONG' | 'SHORT'>('LONG');
 
-  /** 策划选题条数：默认 5；预设 5/10/15/20 或自定义 1–50 */
-  const [planTopicCountPreset, setPlanTopicCountPreset] = useState<5 | 10 | 15 | 20>(5);
+  /** 策划选题条数：默认 10；预设 5/10/15/20 或自定义 1–50 */
+  const [planTopicCountPreset, setPlanTopicCountPreset] = useState<5 | 10 | 15 | 20>(10);
   const [planTopicCountIsCustom, setPlanTopicCountIsCustom] = useState(false);
-  const [planTopicCountCustomValue, setPlanTopicCountCustomValue] = useState('8');
+  const [planTopicCountCustomValue, setPlanTopicCountCustomValue] = useState('10');
 
   // Life Dungeon Settings
   const [lifeDungeonLength, setLifeDungeonLength] = useState<LifeDungeonLength>(LifeDungeonLength.SHORT);
@@ -2342,10 +2444,20 @@ Hard rules:
       niche === NicheType.GREAT_POWER_GAME;
 
     if (isRssNiche) {
-      toast.info('正在抓取国际 RSS 要闻（BBC / DW / Al Jazeera 等）…');
+      // 抖音热点赛道（国内民生/社会/全网热搜）：使用国内数据源
+      const isDouyinHot =
+        niche === NicheType.GENERAL_VIRAL && newsSubMode === NewsSubModeId.DOUYIN_HOT;
+      const rssLang: 'en' | 'zh' | 'cn-domestic' = isDouyinHot
+        ? 'cn-domestic'
+        : niche === NicheType.GREAT_POWER_GAME
+          ? (greatPowerLanguage === 'en' ? 'en' : 'zh')
+          : 'en';
+      toast.info(
+        isDouyinHot
+          ? '正在抓取国内热点（网易/凤凰/央视/新浪）…'
+          : '正在抓取国际 RSS 要闻（BBC / DW / Al Jazeera 等）…'
+      );
       try {
-        // 大国博弈赛道：根据语言模式选择 RSS 语言
-        const rssLang = niche === NicheType.GREAT_POWER_GAME ? greatPowerLanguage : 'en';
         const digest = await fetchMacroNewsDigestForPrompt(32, rssLang);
         // 存入 ref 供 UI 显示
         if (niche === NicheType.GENERAL_VIRAL) {
@@ -3115,7 +3227,7 @@ ${segmentSourceText}
     const basePrompt = isGreatPowerZh
       ? NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH
       : config?.scriptPromptTemplate || '';
-    const prompt = buildOneShotLongScriptPrompt(basePrompt, topic.title, niche);
+    const prompt = buildOneShotLongScriptPrompt(basePrompt, topic.title, niche, scriptLengthMode);
     const systemInstruction = isGreatPowerZh
       ? NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH
       : config?.systemInstruction || '';
@@ -3144,15 +3256,27 @@ ${segmentSourceText}
         undefined,
         {
           maxTokens:
-            niche === NicheType.HISTORICAL_FIGURE ? 98304 : 32768,
+            niche === NicheType.HISTORICAL_FIGURE
+              ? 98304
+              : scriptLengthMode === 'SHORT'
+                ? 4096
+                : 32768,
         }
       );
 
-      let content = clampOneShotLength(liveContent.trim(), niche);
+      let content = clampOneShotLength(liveContent.trim(), niche, scriptLengthMode);
       if (niche === NicheType.GREAT_POWER_GAME) {
         content = greatPowerLanguage === 'zh'
           ? ensureGreatPowerClosingZh(content.replace(/[A-Za-z]{4,}[\s\S]*$/g, '').trim() || content)
           : ensureGreatPowerClosing(content);
+      }
+      // 新闻热点赛道（含长/短视频）：强制保证结尾完整 + 「咱们下期见」收尾
+      if (niche === NicheType.GENERAL_VIRAL) {
+        content = ensureNewsShortClosing(content);
+      }
+      // 短视频模式（非新闻）：同样执行通用收尾注入
+      if (scriptLengthMode === 'SHORT' && niche !== NicheType.GENERAL_VIRAL && niche !== NicheType.GREAT_POWER_GAME) {
+        content = ensureNewsShortClosing(content);
       }
       if (!content) {
         toast.error('生成失败：返回内容为空');
@@ -4585,7 +4709,11 @@ ${segmentSourceText}
 
     if (shouldUseOneShotLongForm(niche, scriptLengthMode)) {
       if (selectedTopics.length !== 1) {
-        toast.warning('当前长视频赛道已改为一次性生成，请只勾选 1 个选题');
+        toast.warning(
+          scriptLengthMode === 'SHORT'
+            ? '短视频模式一次性直出，请只勾选 1 个选题'
+            : '当前长视频赛道已改为一次性生成，请只勾选 1 个选题'
+        );
         return;
       }
       await handleOneShotLongFormGenerate();
@@ -6109,7 +6237,14 @@ ${segmentSourceText}
         const subModeConfig = getCurrentSubModeConfig();
 
         if (subModeConfig && subModeConfig.scriptPromptTemplate) {
-            scriptTemplate = subModeConfig.scriptPromptTemplate;
+            // 新闻热点赛道：根据时长模式切换抖音短/长视频模板
+            if (niche === NicheType.GENERAL_VIRAL) {
+                scriptTemplate = scriptLengthMode === 'SHORT'
+                    ? NEWS_SHORT_SCRIPT_DOUYIN
+                    : NEWS_LONG_SCRIPT_DOUYIN;
+            } else {
+                scriptTemplate = subModeConfig.scriptPromptTemplate;
+            }
         } else if (niche === NicheType.PSYCHOLOGY) {
             scriptTemplate = scriptLengthMode === 'SHORT'
                 ? PSYCHOLOGY_SHORT_SCRIPT_PROMPT
@@ -7626,7 +7761,7 @@ ${segmentSourceText}
         )}
 
         {/* Script length selector for TCM/Finance */}
-        {(niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.HISTORICAL_FIGURE) && (
+        {(niche === NicheType.TCM_METAPHYSICS || niche === NicheType.FINANCE_CRYPTO || niche === NicheType.PSYCHOLOGY || niche === NicheType.PHILOSOPHY_WISDOM || niche === NicheType.EMOTION_TABOO || niche === NicheType.YI_JING_METAPHYSICS || niche === NicheType.HISTORICAL_FIGURE || niche === NicheType.GENERAL_VIRAL) && (
           <div className="mb-6 animate-in fade-in duration-300 bg-slate-800/30 p-4 rounded-xl border border-slate-700/50">
             <label className="text-xs font-bold text-emerald-400 flex items-center gap-1 mb-2">
               <Clock size={14} /> 脚本时长
@@ -7650,7 +7785,9 @@ ${segmentSourceText}
                     : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'
                 }`}
               >
-                短视频脚本（≤500字）
+                {niche === NicheType.GENERAL_VIRAL
+                  ? '抖音短视频脚本（≤1500字）'
+                  : '短视频脚本（≤500字）'}
               </button>
             </div>
             <p className="text-[10px] text-slate-500 mt-2">
@@ -7664,9 +7801,11 @@ ${segmentSourceText}
                       ? '长视频：一次性生成完整终稿，严格控制在 3000 - 6000。短视频：≤500字快讲。'
                       : niche === NicheType.HISTORICAL_FIGURE
                         ? '长视频：一次性生成完整终稿，严格控制在 1500 - 3000。短视频：≤500 字。'
-                        : niche === NicheType.FINANCE_CRYPTO || niche === NicheType.GENERAL_VIRAL || niche === NicheType.GREAT_POWER_GAME
+                        : niche === NicheType.FINANCE_CRYPTO || niche === NicheType.GREAT_POWER_GAME
                           ? '长视频：一次性生成完整终稿，严格控制在 3000 - 6000。短视频：≤500 字。'
-                          : niche === NicheType.TCM_METAPHYSICS
+                          : niche === NicheType.GENERAL_VIRAL
+                            ? '长视频：一次性完整终稿，严格控制在 7000 - 8500 字。抖音短视频：1000 - 1500 字，约 1200 字起收尾，为结尾预留缓冲，避免截断。'
+                            : niche === NicheType.TCM_METAPHYSICS
                             ? '长视频：一次性生成完整终稿，目标约 6000，实际控制成 5600 - 6400。短视频：≤500 字。'
                             : '短视频：在选题基础上详细展开，加入排比与总结排列，输出 500 字以内短视频文案。'}
             </p>
@@ -7793,7 +7932,7 @@ ${segmentSourceText}
                     </div>
                     <span className="text-sm text-emerald-400 font-medium">
                       {shouldUseOneShotLongForm(niche, scriptLengthMode)
-                        ? `已选 ${topics.filter(t => t.selected).length} 个（长视频请只选 1 个）`
+                        ? `已选 ${topics.filter(t => t.selected).length} 个（一次成稿只勾 1 个选题）`
                         : `已选 ${topics.filter(t => t.selected).length} 个`}
                     </span>
                 </div>
