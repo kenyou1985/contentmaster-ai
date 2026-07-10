@@ -453,10 +453,13 @@ export async function exportJianyingDraft(
   const returnZip = shouldUseJianyingZipDownload();
   onProgress?.(5, '准备导出...');
 
-  // 判断是否分批：Railway 模式且超过 20 个镜头（避免请求体过大）
-  const BATCH_THRESHOLD_SHOTS = 20;
+  // v9.5: 强制不分批：VITE_JIANYING_DISABLE_BATCH=true 时全部一次性导出
+  // 分批阈值从 20 提高到 100：Railway 单次请求体限制约 100MB，
+  // 42 镜头 base64 约 30-50MB，完全可一次上传（避免多 ZIP 需手动合并的麻烦）
+  const disableBatch = import.meta.env.VITE_JIANYING_DISABLE_BATCH === 'true';
+  const BATCH_THRESHOLD_SHOTS = disableBatch ? Infinity : 100;
   if (returnZip && options.shots.length > BATCH_THRESHOLD_SHOTS) {
-    console.log(`[JianyingExport] 镜头数 ${options.shots.length} > ${BATCH_THRESHOLD_SHOTS}，分批导出（每批最多16个镜头）`);
+    console.log(`[JianyingExport] 镜头数 ${options.shots.length} > ${BATCH_THRESHOLD_SHOTS}，分批导出（每批最多20个镜头）`);
     return await exportJianyingDraftInMultipleBatches(options, onProgress);
   }
 
@@ -523,7 +526,7 @@ export async function exportJianyingDraft(
     onProgress?.(15, `本地服务不可用 (${localCheckError || '超时'})，切换到 Railway...`);
   }
 
-  // ── Railway 异步模式 ──────────────��───────────
+  // ── Railway 异步模式 ─────────────────────────────
   if (hasRailwayConfig) {
     console.log('[JianyingExport] 提交到 Railway（异步）...');
     onProgress?.(15, 'Railway 任务提交中...');
@@ -534,7 +537,19 @@ export async function exportJianyingDraft(
     onProgress?.(20, 'Railway 异步失败，降级同步导出...');
   }
 
-  // ── 本地同步兜底 ──────────────────────────────
+  // ── 兜底（仅用于本地 dev）────────────────────────
+  // 线上 prod 无 Railway 配置时，localExportSync 走 /api/jianying 会 404
+  // 在此提前检测并给出明确错误提示，避免无限悬停
+  if (!isLocal && !forceLocal) {
+    const errMsg = !hasRailwayConfig
+      ? 'Railway 未配置：VITE_JIANYING_API_BASE 环境变量未设置或无效'
+      : `导出服务不可用（本地服务未启动，Railway 不可达）`;
+    console.error(`[JianyingExport] ❌ ${errMsg}`);
+    onProgress?.(-1, errMsg);
+    throw new Error(errMsg);
+  }
+
+  // 仅本地 dev 环境才走本地导出
   console.log('[JianyingExport] 使用本地同步导出...');
   onProgress?.(20, '本地同步导出中...');
   return await localExport(payload, base, options, onProgress);

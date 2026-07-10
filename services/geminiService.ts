@@ -107,6 +107,25 @@ async function retryOperation<T>(operation: () => Promise<T>, retries = 5, delay
       throw error;
     }
 
+    // v9.2：敏感词错误 - 直接抛出，让调用方重试时切换 prompt
+    // yunwu API 对「台湾/军事/政治」类 prompt 会触发 sensitive_words 错误
+    const isSensitiveWordError =
+      msg.includes('sensitive') ||
+      msg.includes('敏感词') ||
+      msg.includes('敏感词') ||
+      msg.includes('sensitive_words') ||
+      msg.includes('content_policy') ||
+      msg.includes('内容安全') ||
+      msg.includes('内容审核');
+
+    if (isSensitiveWordError) {
+      console.warn(`[Gemini Service] Sensitive words detected, failing fast for fallback. Error: ${msg}`);
+      // 携带元数据，让调用方能识别这是敏感词问题
+      const err: any = new Error(error.error?.message || error.message || 'sensitive_words');
+      err.isSensitiveWords = true;
+      throw err;
+    }
+
     if (retries > 0 && isRetryable) {
       console.warn(`[Gemini Service] Retrying API call... Attempts left: ${retries}. Waiting ${delay}ms. Error: ${msg}`);
       await wait(delay);
@@ -388,22 +407,36 @@ export const generateTopics = async (
   const modelName = options?.modelName;
   const parseTopics = (raw: string): string[] => {
     if (!raw) return [];
-    const lines = raw
+    // v9.3：先按行分割；如果只有 1-2 行（即 LLM 输出了聊天回复段落），再按句号/问号/感叹号拆分
+    let lines = raw
       .split('\n')
       .map(line => line.trim())
-      .filter(Boolean)
+      .filter(Boolean);
+
+    if (lines.length <= 2) {
+      // 把整段按句号/问号/感叹号/分号/换行拆
+      const sentences = raw.split(/[。！？!?\n；;]+/).map(s => s.trim()).filter(s => s.length > 0);
+      if (sentences.length > lines.length) {
+        lines = sentences;
+      }
+    }
+
+    const cleaned = lines
       .map(line => line
         .replace(/^\d+[\.、]\s*/, '')
         .replace(/^[-*•]\s*/, '')
-        .replace(/["']/g, '')
+        .replace(/^["']/, '')
+        .replace(/["']$/, '')
         .trim()
       )
-      .filter(line => line.length > 8);
+      .filter(line => line.length >= 8 && line.length <= 60)
+      // 排除明显是聊天/解释/请求的句子
+      .filter(line => !/^(我不能|我无法|抱歉|对不起|很抱歉|无法|不知道|无法确定|我需要|请提供|请输入|请告诉我|如果你想|以下是|以下是我|下面这些是|这些是一些|这是一些|下面是|I'm|I cannot|I can't|sorry|Sorry|as an AI|作为一个|作为AI|由于|因此|另外|此外|首先|然后|最后|根据|针对|通过|你好|您好)/i.test(line.trim()));
 
     // 去重并保留顺序（当次内去重）
     const unique: string[] = [];
     const seen = new Set<string>();
-    for (const t of lines) {
+    for (const t of cleaned) {
       if (!seen.has(t)) {
         seen.add(t);
         unique.push(t);
@@ -485,6 +518,15 @@ export const generateTopics = async (
       const content = response.choices?.[0]?.message?.content || "";
       if (content.trim()) return content;
     } catch (primaryErr) {
+      // v9.2：敏感词错误透传 - 不吞掉，直接抛出让 Generator 降级
+      const isSensitive = primaryErr?.isSensitiveWords ||
+        ((primaryErr?.message || JSON.stringify(primaryErr)).toLowerCase().includes('sensitive') &&
+         (primaryErr?.message || JSON.stringify(primaryErr)).includes('words'));
+      if (isSensitive) {
+        const err: any = new Error(primaryErr?.message || primaryErr?.error?.message || 'sensitive_words');
+        err.isSensitiveWords = true;
+        throw err;
+      }
       const shouldFallback = shouldSwitchToFallback(primaryErr);
       console.warn(`[Gemini Service] Primary Yunwu model failed (${primary}): ${primaryErr?.message || primaryErr}, should switch: ${shouldFallback}`);
       if (shouldFallback) {

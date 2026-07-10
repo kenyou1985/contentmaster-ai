@@ -43,7 +43,7 @@ interface ChannelGeneratorProps {
 }
 
 export const ChannelGenerator: React.FC<ChannelGeneratorProps> = ({ apiKey, provider, toast: externalToast }) => {
-  console.log('[ChannelGenerator] 组件初始化开始 - 入参检查:', { apiKey: apiKey?.slice(0, 10) + '...', provider });
+  console.log('[ChannelGenerator] 组件初始化开始 - 入参检查:', { apiKey: apiKey ? '***masked***' : 'undefined', provider });
   const internalToast = useToast();
   const toast = externalToast || internalToast;
 

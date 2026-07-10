@@ -1171,6 +1171,11 @@ function looksLikeViralTopicLine(raw: string): boolean {
   const line = sanitizeViralTopicLine(raw);
   if (!line) return false;
   if (line.length < 10 || line.length > 60) return false;
+  // v9.3 防御性回复黑名单（LLM 拒绝 / 解释 / 让用户输入关键词时）
+  if (/^(我不能|我无法|我无法直接|抱歉|对不起|很抱歉|无法|不知道|无法确定|我需要|请提供|请输入|请告诉我|如果你想|以下是|以下是我|以下这些是|这是一些|下面是|这些是一些|I'm|I cannot|I can't|sorry|Sorry|as an AI)/i.test(line)) return false;
+  // 多逗号/多句号（>2 个逗号+句号）= 段落
+  const punctCount = (line.match(/[，。；,;.]/g) || []).length;
+  if (punctCount > 2) return false;
   if (/^(国际要闻投喂|选题方向|标题格式|输出格式|角色定位|实时情报投喂|禁止|要求|说明|分析|总结|前言|结语|用户输入|workflow|task|role|profile)/i.test(line)) return false;
   if (/^[#\[【(（]/.test(line)) return false;
   if (/[。；;]/.test(line)) return false;
@@ -1403,6 +1408,40 @@ function shouldUseOneShotLongForm(niche: NicheType, scriptLengthMode: 'LONG' | '
   // 历史人物长脚本需要 10000+ 字，超出单次输出上限，走分段并行 pipeline
   if (niche === NicheType.HISTORICAL_FIGURE) return false;
   return true;
+}
+
+/** 一次性长文生成后处理：截断 + 收尾词注入/去重 */
+function applyOneShotPostProcessing(content: string, niche: NicheType, scriptLengthMode: 'LONG' | 'SHORT', greatPowerLanguage?: 'zh' | 'en'): string {
+  let text = clampOneShotLength(content.trim(), niche, scriptLengthMode);
+
+  if (niche === NicheType.GREAT_POWER_GAME) {
+    text = greatPowerLanguage === 'zh'
+      ? ensureGreatPowerClosingZh(text.replace(/[A-Za-z]{4,}[\s\S]*$/g, '').trim() || text)
+      : ensureGreatPowerClosing(text);
+  } else if (niche === NicheType.GENERAL_VIRAL || scriptLengthMode === 'SHORT') {
+    text = ensureNewsShortClosing(text);
+  } else {
+    // 其余一次性长文赛道（心理学/哲学/情感/易经命理/中医玄学/大国博弈/人生副本等）：注入通用收尾，去重
+    text = applyGenericVideoClosing(text);
+  }
+  return text;
+}
+
+/** 通用视频收尾：注入「咱们下期见」，且彻底去重（循环清除所有重复出现） */
+function applyGenericVideoClosing(text: string): string {
+  const base = text.trimEnd();
+  const REPEAT_CLOSING = /(?:咱们下期见|我们下期见|咱们下期继续聊|咱们下期继续拆)[。！？]*\s*/gi;
+
+  // 清除所有已存在的收尾语（循环清除直到没有，test()/replace() 会重置 lastIndex）
+  let cleaned = base;
+  let iters = 0;
+  while (REPEAT_CLOSING.test(cleaned) && iters < 50) {
+    cleaned = cleaned.replace(REPEAT_CLOSING, '');
+    iters++;
+  }
+  // 最后 trim 一次多余空白
+  cleaned = cleaned.replace(/\s+$/, '');
+  return cleaned ? `${cleaned} 咱们下期见。` : text;
 }
 
 /**
@@ -1844,6 +1883,9 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const [tcmPipelineLogs, setTcmPipelineLogs] = useState<string[]>([]);
   const [tcmMergedOutput, setTcmMergedOutput] = useState('');
   const [tcmPipelineBusy, setTcmPipelineBusy] = useState(false);
+  const [concurrentLongFormBusy, setConcurrentLongFormBusy] = useState(false);
+  const [concurrentLongFormProgress, setConcurrentLongFormProgress] = useState<Record<string, number>>({});
+  const [concurrentLongFormErrors, setConcurrentLongFormErrors] = useState<Record<string, string>>({});
   const [tcmAiDetection, setTcmAiDetection] = useState<AiDetectionResult | null>(null);
   const [tcmIsRunningAiDetection, setTcmIsRunningAiDetection] = useState(false);
   const [tcmIsPolishing, setTcmIsPolishing] = useState(false);
@@ -2118,7 +2160,13 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     if (niche === NicheType.PSYCHOLOGY) return null;
     if (niche === NicheType.PHILOSOPHY_WISDOM) return null;
     if (niche === NicheType.EMOTION_TABOO) return null;
-    if (niche === NicheType.GREAT_POWER_GAME) return null;
+    if (niche === NicheType.GREAT_POWER_GAME) {
+      // GREAT_POWER_GAME 使用 NEWS_SUB_MODES（如 TAIWAN_STRAIT / INDO_PACIFIC 等子赛道）
+      if (newsSubMode && NEWS_SUB_MODES[newsSubMode as keyof typeof NEWS_SUB_MODES]) {
+        return NEWS_SUB_MODES[newsSubMode as keyof typeof NEWS_SUB_MODES];
+      }
+      return null;
+    }
     if (niche === NicheType.HISTORICAL_FIGURE) return null;
     return null;
   };
@@ -2389,8 +2437,10 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       prompt += `\n\n【综合要求】其余选题可围绕人宠关系、宠物对人类心理的治愈作用等交叉主题。总计 ${n} 条选题须确保：猫主题≥${catMin}条、人类主题≥${humanMin}条。若任一类别不满足要求，整组结果作废重写。`;
     }
 
-    // 大国博弈选题：根据语言模式构建专属 prompt
-    if (niche === NicheType.GREAT_POWER_GAME) {
+    // 大国博弈选题（台海局势除外）：根据语言模式构建专属 prompt
+    // v9.4 注意：TAIWAN_STRAIT 子赛道已通过 subModeConfig 注入台湾专属 prompt，
+    // 不在此覆盖，避免输出地缘冲突选题
+    if (niche === NicheType.GREAT_POWER_GAME && newsSubMode !== NewsSubModeId.TAIWAN_STRAIT) {
       if (greatPowerLanguage === 'zh') {
         // 中文模式：完整中文选题 prompt（RSS digest 在下面追加）
         prompt = `【强制语言声明】本文档所有内容必须使用简体中文。选题标题必须是中文。每行一个标题。不要输出任何英文。
@@ -2462,14 +2512,24 @@ Hard rules:
           : '正在抓取国际 RSS 要闻（BBC / DW / Al Jazeera 等）…'
       );
       try {
-        const digest = await fetchMacroNewsDigestForPrompt(32, rssLang);
+        // v5.0: forceRefresh=true 确保每次生成都重新抓取最新热点（微博/抖音/今日热榜）
+        // 避免「昨天和今天输出一样」的问题
+        const digest = await fetchMacroNewsDigestForPrompt(32, rssLang, true);
         // 存入 ref 供 UI 显示
         if (niche === NicheType.GENERAL_VIRAL) {
           newsMacroNewsDigestRef.current = digest;
         } else if (niche === NicheType.GREAT_POWER_GAME) {
           // 大国博弈赛道：RSS 对齐规则根据语言模式动态构建
-          if (greatPowerLanguage === 'zh') {
-            // prompt 已经是完整中文 prompt，追加 RSS digest + 对齐规则
+          // v9.4 台海局势子赛道：注入台湾媒体 digest + 专属对齐规则
+          if (newsSubMode === NewsSubModeId.TAIWAN_STRAIT) {
+            toast.info('正在抓取台湾媒体 RSS 要闻…');
+            const twDigest = await fetchMacroNewsDigestForPrompt(32, 'zh', true);
+            const taiwanRules =
+              '\n\n【台海局势选题铁律·最高优先级】每条标题必须围绕「台湾岛内政治与社会动态」：赖清德/蔡英文/柯文哲等政治人物动态、立法机构冲突、抗议示威、两岸关系走向、岛内民生议题（能源/房价/薪资/健保）。禁止输出「伊朗」「以色列」「俄罗斯」「委内瑞拉」「西班牙」「南非」「尼日尔」等与台湾无关的国际地缘选题。禁止10条标题只围绕同一政治人物或同一事件。必须覆盖至少5条不同台湾新闻线索。' +
+              '\n【输出格式】只输出纯中文标题，每行一个，15–45 汉字，不要任何英文前缀/分类小标题/引号/Markdown。';
+            prompt = `${twDigest}\n\n---\n\n` + prompt + taiwanRules;
+          } else if (greatPowerLanguage === 'zh') {
+            // 地缘冲突中文 prompt：追加国际 RSS digest + 对齐规则
             const extraRules =
               '\n\n【选题对齐铁律·最高优先级】每条标题须与上方「国际要闻投喂」中至少一条新闻在主题上可对应；禁止10条标题只围绕同一条新闻换皮，须尽量覆盖至少5条不同新闻线索。' +
               '\n【博奕爆料风格·中文铁律】每条须含博奕内幕爆料人视角：数据说话、文件曝光、冷峻揭露。禁止写成通讯社导语。禁止"据报道""有分析认为""专家表示"。' +
@@ -2489,7 +2549,55 @@ Hard rules:
         }
         // 注入 digest 和额外规则（GENERAL_VIRAL 和 金融宏观预警）
         if (niche === NicheType.GENERAL_VIRAL) {
-          const extraRules = '\n\n【选题对齐铁律】每条标题须与上方「国际要闻投喂」中至少一条新闻在主题上可对应（小美辣评风格改写）；禁止10条标题只围绕同一条新闻换皮，须尽量覆盖不同地缘/市场线索。\n【标题党铁律】每条须含强钩子：悬念/反问/震撼词/第二人称刺痛至少其二；禁止写成通讯社导语或「……说明……」式说明体；单条建议22–48字，可用冒号或破折号断句，追求「一眼想点进去」。';
+          // 抖音热点 vs 其他新闻子赛道：措辞不同（抖音热点用「国内热点情报投喂」）
+          const isDouyinHot = newsSubMode === NewsSubModeId.DOUYIN_HOT;
+          const feedLabel = isDouyinHot ? '国内实时新闻热搜投喂' : '国际要闻投喂';
+          const extraRules = `\n\n【选题偏好铁律·用户指定·最高优先级】${isDouyinHot ? `**优先选题方向**（按权重排序，10 条必须按以下比例分配，否则视为不合格）：
+- ✅ 军事/台海/地缘 ≥3 条（军舰下水/军演/防长动向/武器列装/军事演练/防务政策/装备进展）
+- ✅ 政策解读 ≥3 条（国务院/部委新规/地方改革/房产调控/教育医疗改革/税收/医保社保）
+- ✅ 社会热点评论 ≥2 条（民生焦点/安全事故/群体性事件/舆论争议/社会不公/教育公平/食品安全）
+- ✅ 国家发展/重大工程 ≥2 条（基建狂魔/高铁地铁机场/深中通道/三峡/核电/航天/C919/福建舰/登月）
+- ⚠️ 限制类 ≤2 条：体育（国家队/亚冠/奥运可保留）/ 重大财经（企业并购/政策性金融）
+- ❌ 严格禁止类（用户明确排斥）：
+  * 演唱会/歌友会/巡演/音乐节/明星演出事故
+  * 明星塌房/八卦/私生活/情感纠葛（除非涉及违法）
+  * 网红/带货/直播翻车（董宇辉/李佳琦等商业事件）
+  * 娱乐真人秀/综艺爆料/影视花絮
+  * 房产/汽车品牌日常发布（除非重大变革）
+  * 单纯美食/旅游打卡/探店
+
+**反娱乐过滤示例**：
+- ❌ 「周杰伦南京演唱会连开 3 场，门票秒空 80 万张！」→ 用户已明确排斥演唱会类
+- ✅ 「晋江鞋厂大火 12 人遇难，国务院紧急挂牌督办！真相何在？」→ 社会热点类
+- ✅ 「台风巴威登陆倒计时！3 万人紧急撤离，停课停工清单」→ 灾害应急类
+- ✅ 「嫦娥七号发射窗口确定：月球南极水冰探测！3 国抢着合作」→ 国家发展类
+- ✅ 「新版医保目录落地：120 种新药进医保！这些病能省多少？」→ 政策解读类
+
+**军事类选题示例**：
+- 「福建舰第三次海试曝光：电磁弹射画面流出！引发热议」
+- 「日本组建宇宙作战集团，中方回应：持续关注区域安全」
+
+**政策解读类示例**：
+- 「国务院新规：外卖骑手社保终于落地！每月多交多少？」
+- 「延迟退休方案 2026 调整：80 后受影响最大？3 张表看清」
+
+**社会议题类示例**：
+- 「3.15 曝光：知名奶茶店过期原料！店员一句话刷屏」
+
+**明确反例（不要写这些）**：
+- ❌ 任何演唱会/明星巡演/歌友会相关
+- ❌ 任何明星塌房/八卦
+- ❌ 任何网红带货/直播翻车
+- ❌ 任何「奢侈品涨价」「网红景点打卡」「美食探店」` : '上方投喂是国际新闻，按地缘政治偏好：地缘冲突/军事/金融/制裁/能源/科技封锁类优先。'}
+
+**【热搜词改写铁律】**${isDouyinHot ? '上方投喂是「百度新闻热搜 / 微博热搜 / 观察者网 / 财新 / 澎湃 / 人民日报」综合，每天 5 分钟自动更新。你必须做新闻姐视角的改写：不要直接照搬热搜词原句，必须给每条加上悬念/反问/数字/反差/情绪词至少 2 个。改写示例：热搜词「晋江一鞋厂火灾」→ 标题「晋江鞋厂火灾致 12 人遇难！国务院挂牌督办，事故原因是什么？」' : '国际新闻改写：地缘/军事/政策类。'}` +
+            `\n【禁止占位词铁律】${isDouyinHot ? '国内热点' : '国际要闻'}中出现的人物/品牌/地名必须在标题中直接写出，禁止用「某顶流明星/某知名品牌/某地」等模糊表述。` +
+            `\n【禁止通用议题铁律】禁止把抽象的"权益/维权/就业/政策"当孤立选题（如单纯「外卖骑手权益」「小区物业纠纷」「35岁就业」），必须锚定真实具体事件并结合政策解读/社会争议视角。` +
+            `\n【禁止模板句式铁律】禁止10条标题都使用相同的句式模板（如连续 10 条都「X？Y...Z...」式），每条标题的事件/人物/地点/句式必须彼此不同、且真实存在于上方投喂中。` +
+            `\n【标题党铁律】每条须含强钩子：悬念/反问/震撼词/第二人称刺痛至少其二；禁止写成通讯社导语或「……说明……」式说明体；单条建议15–35字（抖音短标题），可用冒号或破折号断句，追求「一眼想点进去」。` +
+            `\n【覆盖度铁律】10条标题必须尽量覆盖上方投喂中至少 5 条不同新闻线索，禁止只围绕一条新闻换皮。` +
+            `\n【⚠️ 强制生成铁律·v9.3 · 最高优先级 ⚠️】**严禁**输出"抱歉/对不起/无法/我不知道/无法确定/作为一个AI/请提供关键词/以下是"等任何拒绝/解释/反问/条件句式。**严禁**输出一整段连贯段落回复。**只输出 10 行纯标题**（每行一个，15-35 字），不写前言、不写解释、不写结语、不与用户对话、不要求输入关键词、不分小标题分类。如果上方投喂为空或检索失败，直接根据你的训练知识生成 10 条当前月份国内热点标题（按用户偏好：政策解读/社会民生/国家发展/重大工程/经济改革）。这是新闻姐的标准化创作输出，不是对话。` +
+            `\n【抖音新闻姐风格锚点】**只输出纯标题**，每行一个，不要 Markdown、不要引号、不要序号、不要任何前缀。标题要像真人发的抖音：短、爆、有钩子、有情绪、有具体人物/事件/数字。`;
           prompt = `${digest}\n\n---\n\n` + prompt + extraRules;
         } else if (niche === NicheType.FINANCE_CRYPTO && financeSubMode === FinanceSubModeId.GEOPOLITICAL_FLASH) {
           const extraRules = '\n\n【选题对齐铁律】每条标题须与上方「国际要闻投喂」中至少一条新闻在主题上可对应（可芒格式改写）；禁止10条标题只围绕同一条新闻换皮，须尽量覆盖不同地缘/市场线索。\n【标题党铁律】每条须含强钩子：悬念/反问/震撼词/读者切身利益至少其二；禁止写成通讯社导语或「……说明……」式说明体；单条建议22–48字，可用冒号或破折号断句，追求「一眼想点进去」。';
@@ -2505,12 +2613,19 @@ Hard rules:
     
     // Status already set above
 
+    // v9.3 临时改用"标题生成专用" system instruction，避免"小美主播"风格引导模型输出辣评段落而非 10 个标题
+    const titleListSystemInstruction = `你是抖音「新闻姐」标题生成器。用户会给「百度新闻/微博/观察者网/财新/澎湃」等 RSS 热搜词列表。\n你的唯一任务：基于这些热搜词生成 10 条抖音风格的新闻标题。\n铁律：\n- 只输出 10 行纯标题，每行一个标题，不带任何前缀/序号/引号/分类/小标题/前言/结语/解释\n- 不要展开成段落\n- 不要对话（"我不能""请提供"等）\n- 不要分类小标题（如"政策类："、"军事类："）\n- 标题必须有具体人名/地名/品牌/数字\n- 标题 15-35 字，含钩子（悬念/反问/数字/反差/情绪词）\n- 严格按用户的选题偏好（政策解读/社会民生/国家发展/重大工程/经济改革/灾害应急）\n- 严格避开禁止类（演唱会/明星塌房/网红带货/娱乐八卦）\n\n只输出 10 行标题，禁止任何其他文字。`;
+
     try {
-      const rawTopics = await generateTopics(prompt, config.systemInstruction, {
+      // v9.3：用通用 system instruction（避免小美展开风格）传给 generateTopics
+      const topicSystemInstruction = (niche === NicheType.GENERAL_VIRAL || niche === NicheType.GREAT_POWER_GAME)
+        ? titleListSystemInstruction
+        : config.systemInstruction;
+      const rawTopics = await generateTopics(prompt, topicSystemInstruction, {
         topicCount: resolvedPlanTopicCount,
         avoidTopics: pastTopics,
       });
-      
+
       const normalizedRawTopics =
         niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'en'
           ? rawTopics
@@ -2581,6 +2696,51 @@ Hard rules:
     } catch (err: any) {
       console.error(err);
       const errorMsg = parseErrorMessage(err);
+      // v9.2：敏感词自动降级 - 移除 prompt 中的潜在敏感内容重试一次
+      // v9.2 敏感词检测（err.isSensitiveWords 透传 或 errorMsg 含敏感词关键词）
+      const isSensitive = err?.isSensitiveWords ||
+        (typeof errorMsg === 'string' && /敏感词|sensitive/i.test(errorMsg));
+      if (isSensitive && niche === NicheType.GENERAL_VIRAL && newsSubMode === NewsSubModeId.DOUYIN_HOT) {
+        toast.warning('检测到 API 敏感词审核，已切换到安全版选题生成...');
+        try {
+          // 安全版：去除全部实时热搜digest内容，只保留主题引导
+          // 把 macro news digest 替换为空白，移除"军事/政策/台海"类铁律
+          const safePrompt = prompt
+            // 移除 macro digest（第一条消息：百度新闻热搜 / 微博热搜等实时数据）
+            .replace(/\n?# 【国内实时新闻热搜投喂[\s\S]*?---\n\n/m, '\n')
+            // 移除军事/政治敏感措辞
+            .replace(/军事演练\/防务政策\/装备进展/g, '国家重大工程')
+            .replace(/军事\/防务动态/g, '国家发展')
+            .replace(/- ✅ \*\*军事\/防务动态[^*]+/g, '')
+            .replace(/军舰下水\/军演\/防务政策\/军工人事/g, '国家重大工程');
+          const safeRawTopics = await generateTopics(safePrompt, titleListSystemInstruction, {
+            topicCount: resolvedPlanTopicCount,
+            avoidTopics: pastTopics,
+          });
+          const safeFinal = safeRawTopics
+            .map((t) => sanitizeViralTopicLine(t))
+            .filter((t) => looksLikeViralTopicLine(t) || t.trim().length > 8)
+            .slice(0, resolvedPlanTopicCount);
+          if (safeFinal.length > 0) {
+            const newTopics: Topic[] = safeFinal.map((t, i) => ({
+              id: `topic-${i}`,
+              title: sanitizeViralTopicLine(t),
+              selected: true,
+            }));
+            setTopics(newTopics);
+            const key = niche + `:${newsSubMode}`;
+            recentTopicHistoryRef.current = {
+              ...recentTopicHistoryRef.current,
+              [key]: [...(recentTopicHistoryRef.current[key] ?? []).slice(-30), ...safeFinal]
+            };
+            setStatus(GenerationStatus.IDLE);
+            toast.success('安全版选题已生成');
+            return;
+          }
+        } catch (safeErr: any) {
+          console.error('[Generator] 安全版选题也失败', safeErr);
+        }
+      }
       toast.error(errorMsg);
       setStatus(GenerationStatus.ERROR);
     }
@@ -3281,20 +3441,7 @@ ${segmentSourceText}
         }
       );
 
-      let content = clampOneShotLength(liveContent.trim(), niche, scriptLengthMode);
-      if (niche === NicheType.GREAT_POWER_GAME) {
-        content = greatPowerLanguage === 'zh'
-          ? ensureGreatPowerClosingZh(content.replace(/[A-Za-z]{4,}[\s\S]*$/g, '').trim() || content)
-          : ensureGreatPowerClosing(content);
-      }
-      // 新闻热点赛道（含长/短视频）：强制保证结尾完整 + 「咱们下期见」收尾
-      if (niche === NicheType.GENERAL_VIRAL) {
-        content = ensureNewsShortClosing(content);
-      }
-      // 短视频模式（非新闻）：同样执行通用收尾注入
-      if (scriptLengthMode === 'SHORT' && niche !== NicheType.GENERAL_VIRAL && niche !== NicheType.GREAT_POWER_GAME) {
-        content = ensureNewsShortClosing(content);
-      }
+      const content = applyOneShotPostProcessing(liveContent, niche, scriptLengthMode, greatPowerLanguage);
       if (!content) {
         toast.error('生成失败：返回内容为空');
         setStatus(GenerationStatus.ERROR);
@@ -3340,6 +3487,140 @@ ${segmentSourceText}
       return false;
     }
   }, [topics, apiKey, provider, niche, toast, inputVal, getParallelHistorySubModeId, greatPowerLanguage]);
+
+  /** 多选题并发一次性长文生成 */
+  const handleConcurrentOneShotLongForm = useCallback(async () => {
+    const sel = topics.filter((t) => t.selected);
+    if (!sel.length) {
+      toast.warning('请先选择至少一个选题');
+      return;
+    }
+    if (!apiKey?.trim()) {
+      toast.error('请先配置 API Key');
+      return;
+    }
+    initializeGemini(apiKey, { provider });
+
+    const topicIds = sel.map((t) => t.id);
+    setConcurrentLongFormBusy(true);
+    setConcurrentLongFormProgress(Object.fromEntries(topicIds.map((id) => [id, 0])));
+    setConcurrentLongFormErrors(Object.fromEntries(topicIds.map((id) => [id, ''])));
+    setGeneratedContents(sel.map((t) => ({ topic: t.title, content: '' })));
+    setViewIndex(0);
+    setActiveIndices(new Set(sel.map((_, i) => i)));
+    setBatchProgress({ current: 0, total: sel.length, hint: `正在并发生成 ${sel.length} 个选题…` });
+
+    const totalSteps = sel.length;
+    const doneRef = { current: 0 };
+    const failedRef = { current: 0 };
+    const SAFETY_TIMEOUT_MS = 5 * 60 * 1000; // 5分钟安全超时
+
+    // 整体安全超时：防止 Promise.all 永久卡死
+    const safetyTimer = setTimeout(() => {
+      console.error('[Concurrent] Safety timeout triggered — forcing completion');
+      setConcurrentLongFormBusy(false);
+      setStatus(GenerationStatus.COMPLETED);
+      const done = doneRef.current;
+      const failed = failedRef.current;
+      toast.error(
+        failed > 0
+          ? `超时完成：${done}/${totalSteps} 个成功，${failed} 个失败`
+          : `超时完成：${done}/${totalSteps} 个选题`
+      );
+    }, SAFETY_TIMEOUT_MS);
+
+    try {
+      await Promise.all(
+        sel.map((topic, idx) =>
+          (async () => {
+            const topicId = topic.id;
+            const config = NICHES[niche];
+            const isGreatPowerZh = niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'zh';
+            const basePrompt = isGreatPowerZh
+              ? NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH
+              : config?.scriptPromptTemplate || '';
+            const prompt = buildOneShotLongScriptPrompt(basePrompt, topic.title, niche, scriptLengthMode);
+            const systemInstruction = isGreatPowerZh
+              ? NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH
+              : config?.systemInstruction || '';
+
+            try {
+              let liveContent = '';
+              setConcurrentLongFormProgress((prev) => ({ ...prev, [topicId]: 5 }));
+
+              await streamContentGeneration(
+                prompt,
+                systemInstruction,
+                (chunk) => {
+                  liveContent += chunk;
+                  setGeneratedContents((prev) => {
+                    const next = [...prev];
+                    next[idx] = { topic: topic.title, content: liveContent };
+                    return next;
+                  });
+                  const progress = Math.min(85, Math.floor((liveContent.length / (parallelTotalTargetChars * 1.5)) * 100));
+                  setConcurrentLongFormProgress((prev) => ({ ...prev, [topicId]: progress }));
+                },
+                undefined,
+                {
+                  maxTokens:
+                    niche === NicheType.HISTORICAL_FIGURE
+                      ? 98304
+                      : scriptLengthMode === 'SHORT'
+                        ? 4096
+                        : 32768,
+                }
+              );
+
+              const content = applyOneShotPostProcessing(liveContent, niche, scriptLengthMode, greatPowerLanguage);
+
+              setGeneratedContents((prev) => {
+                const next = [...prev];
+                next[idx] = { topic: topic.title, content };
+                return next;
+              });
+              setConcurrentLongFormProgress((prev) => ({ ...prev, [topicId]: 100 }));
+              setConcurrentLongFormErrors((prev) => ({ ...prev, [topicId]: '' }));
+
+              try {
+                const historyKey = getHistoryKeyForSubMode(niche, getParallelHistorySubModeId());
+                if (content.length > 200) {
+                  saveHistory('generator', historyKey, content, { topic: topic.title, input: inputVal });
+                }
+              } catch {
+                /* ignore */
+              }
+            } catch (e: any) {
+              setConcurrentLongFormErrors((prev) => ({ ...prev, [topicId]: e?.message || '生成失败' }));
+              setConcurrentLongFormProgress((prev) => ({ ...prev, [topicId]: -1 }));
+              failedRef.current++;
+            }
+
+            doneRef.current++;
+            setConcurrentLongFormProgress((prev) => {
+              const done = Object.values(prev).filter((v) => v === 100).length;
+              setBatchProgress({ current: done, total: totalSteps, hint: `已完成 ${done}/${totalSteps} 个选题` });
+              return prev;
+            });
+          })()
+        )
+      );
+
+      clearTimeout(safetyTimer);
+      setConcurrentLongFormBusy(false);
+      setStatus(GenerationStatus.COMPLETED);
+      toast.success(
+        failedRef.current > 0
+          ? `并发生成完成：${doneRef.current}/${totalSteps} 个，失败 ${failedRef.current} 个`
+          : `并发生成完成：${doneRef.current}/${totalSteps} 个选题`
+      );
+    } catch (outerErr: any) {
+      clearTimeout(safetyTimer);
+      setConcurrentLongFormBusy(false);
+      setStatus(GenerationStatus.ERROR);
+      toast.error(`并发生成异常中断：${outerErr?.message || outerErr}`);
+    }
+  }, [topics, apiKey, provider, niche, toast, inputVal, greatPowerLanguage, parallelTotalTargetChars, scriptLengthMode, getParallelHistorySubModeId]);
 
   const normalizeYiJingBody = useCallback((content: string): string => {
     if (!content || content.length < 400) return content;
@@ -8745,7 +9026,51 @@ ${segmentSourceText}
                   </div>
                 
                 {/* 批量生成进度条 */}
-                {batchProgress && (
+                {batchProgress && concurrentLongFormBusy && (
+                  <div className="mb-4 space-y-2">
+                    {/* 并发选题独立进度条 */}
+                    <div className="space-y-1.5">
+                      {topics.filter((t) => t.selected).map((topic) => {
+                        const prog = concurrentLongFormProgress[topic.id] ?? 0;
+                        const err = concurrentLongFormErrors[topic.id];
+                        const isFailed = prog === -1;
+                        const isDone = prog === 100;
+                        return (
+                          <div key={topic.id} className="flex items-center gap-2">
+                            <span className="text-[10px] text-slate-400 w-36 truncate flex-shrink-0" title={topic.title}>
+                              {topic.title.length > 22 ? `${topic.title.slice(0, 22)}…` : topic.title}
+                            </span>
+                            <div className="flex-1 h-1.5 bg-slate-800 rounded overflow-hidden">
+                              <div
+                                className={`h-full transition-all ${isFailed ? 'bg-red-500' : isDone ? 'bg-emerald-500' : 'bg-violet-500'}`}
+                                style={{ width: `${Math.max(0, prog)}%` }}
+                              />
+                            </div>
+                            <span className="text-[10px] w-10 text-right flex-shrink-0">
+                              {isFailed ? (
+                                <span className="text-red-400">失败</span>
+                              ) : isDone ? (
+                                <span className="text-emerald-400">完成</span>
+                              ) : (
+                                <span className="text-slate-500">{prog}%</span>
+                              )}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <ProgressBar
+                      current={batchProgress.current}
+                      total={batchProgress.total}
+                      label="整体进度"
+                      showPercentage={true}
+                      showCount={true}
+                      color="emerald"
+                      statusHint={batchProgress.hint}
+                    />
+                  </div>
+                )}
+                {batchProgress && !concurrentLongFormBusy && (
                   <div className="mb-4 p-4 bg-slate-800/50 rounded-lg border border-slate-700">
                     <ProgressBar
                       current={batchProgress.current}
@@ -8759,8 +9084,29 @@ ${segmentSourceText}
                   </div>
                 )}
                 
-                <div className="flex justify-end">
-                     <button 
+                <div className="flex justify-end gap-3">
+                    {/* 多选题并发一次性长文生成按钮（shouldUseOneShotLongForm 赛道多选时显示） */}
+                    {shouldUseOneShotLongForm(niche, scriptLengthMode) && topics.filter((t) => t.selected).length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => void handleConcurrentOneShotLongForm()}
+                        disabled={concurrentLongFormBusy || (status === GenerationStatus.WRITING || status === GenerationStatus.GENERATING) || yiJingPipelineBusy || tcmPipelineBusy}
+                        className="w-full md:w-auto px-8 py-4 bg-violet-600 hover:bg-violet-500 text-white font-bold rounded-xl shadow-lg shadow-violet-900/20 flex items-center justify-center gap-2 transition-all transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:transform-none"
+                      >
+                        {concurrentLongFormBusy ? (
+                          <>
+                            <Loader2 className="animate-spin" />
+                            并发生成中 {Object.values(concurrentLongFormProgress).filter((p) => p === 100).length}/{topics.filter((t) => t.selected).length}…
+                          </>
+                        ) : (
+                          <>
+                            <Rocket size={18} className="text-amber-200" />
+                            并发生成 {topics.filter((t) => t.selected).length} 个选题
+                          </>
+                        )}
+                      </button>
+                    )}
+                    <button
                         onClick={handleBatchGenerate}
                         disabled={(status === GenerationStatus.WRITING || status === GenerationStatus.GENERATING) || yiJingPipelineBusy || tcmPipelineBusy || (shouldUseOneShotLongForm(niche, scriptLengthMode) && topics.filter((t) => t.selected).length !== 1)}
                         className="w-full md:w-auto px-8 py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg shadow-emerald-900/20 flex items-center justify-center gap-2 transition-all transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:transform-none"
@@ -8772,10 +9118,12 @@ ${segmentSourceText}
                             </>
                         ) : (
                             <>
-                                <>
                                   <Rocket size={18} className="text-amber-200" />
-                                  啟動一次性長文生成
-                                </>
+                                  {shouldUseOneShotLongForm(niche, scriptLengthMode)
+                                    ? topics.filter((t) => t.selected).length === 1
+                                      ? '啟動一次性長文生成'
+                                      : '請選擇 1 個选题'
+                                    : '一次性生成'}
                             </>
                         )}
                     </button>
