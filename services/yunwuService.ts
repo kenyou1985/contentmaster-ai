@@ -1068,10 +1068,8 @@ async function yunwuOpenAiImageOnce(
           formData.append('image', new Blob([arr], { type: mime }), 'reference.png');
         }
         if (options.size) {
-          // gpt-image-2：size 是主字段；aspect_ratio 兼容某些专用后端
+          // gpt-image-2：只发 size；aspect_ratio 在 Yunwu 后端不被支持（会返回 400 Provider API error: Unknown parameter）
           formData.append('size', options.size);
-          const aspectRatio = sizeToAspectRatio(options.size);
-          if (aspectRatio) formData.append('aspect_ratio', aspectRatio);
         }
         if (options.quality) formData.append('quality', options.quality);
         if (options.n) formData.append('n', String(options.n));
@@ -1087,14 +1085,9 @@ async function yunwuOpenAiImageOnce(
         const endpoint = '/v1/images/generations';
         const body: Record<string, unknown> = { model: modelId, prompt: options.prompt };
         if (options.size) {
-          // gpt-image-2：size 是主字段（"WxH" 像素）；同时额外带 aspect_ratio 兼容字段
-          // 其它模型保持只发 size
+          // Yunwu 后端只支持 size 参数（"WxH" 像素），不支持 aspect_ratio（会 400 报错）
           body.size = options.size;
-          if (modelId === 'gpt-image-2') {
-            const aspectRatio = sizeToAspectRatio(options.size);
-            if (aspectRatio) body.aspect_ratio = aspectRatio;
-            console.log(`[YunwuService] gpt-image-2 请求 size=${options.size}, aspect_ratio=${aspectRatio}`);
-          }
+          console.log(`[YunwuService] ${modelId} 请求 size=${options.size}`);
         }
         if (options.quality) body.quality = options.quality;
         if (options.n) body.n = options.n;

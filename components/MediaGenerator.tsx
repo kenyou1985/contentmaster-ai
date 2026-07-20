@@ -2905,7 +2905,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     
     // 获取适合模型的尺寸
     const imageSize = getImageSize(selectedImageModel, selectedImageRatio);
-    
+
     try {
       let newImageUrls: string[] = [];
       
