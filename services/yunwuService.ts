@@ -736,15 +736,6 @@ export const generateImage = async (
   try {
     const baseUrl = 'https://yunwu.ai';
 
-    // 调试日志：打印传入的参考图信息
-    console.log('[YunwuService] generateImage 调用参数:', {
-      model: options.model,
-      prompt: options.prompt?.slice(0, 100),
-      referenceDataUrlsCount: options.referenceDataUrls?.length,
-      referenceDataUrls: options.referenceDataUrls?.map((u, i) => `${i}: ${u.slice(0, 50)}...`),
-      characterName: options.characterName,
-    });
-
     const opts: ImageGenerationOptions = {
       ...options,
       referenceDataUrls:
@@ -752,11 +743,6 @@ export const generateImage = async (
           ? await normalizeReferenceDataUrls(options.referenceDataUrls)
           : options.referenceDataUrls,
     };
-
-    console.log('[YunwuService] normalizeReferenceDataUrls 后:', {
-      referenceDataUrlsCount: opts.referenceDataUrls?.length,
-      referenceDataUrls: opts.referenceDataUrls?.map((u, i) => `${i}: ${u.slice(0, 50)}...`),
-    });
 
     if (
       (opts.model === 'grok-3-image' || opts.model === 'grok-4-image' || opts.model === 'grok-imagine') &&
@@ -1058,7 +1044,17 @@ async function yunwuOpenAiImageOnce(
         const endpoint = '/v1/images/edits';
         const formData = new FormData();
         formData.append('model', modelId);
-        formData.append('prompt', options.prompt || '');
+        // 在 prompt 中明确标注比例，确保模型正确理解尺寸需求
+        let finalPrompt = options.prompt || '';
+        if (options.size) {
+          const [w, h] = options.size.split('x').map(Number);
+          if (w && h) {
+            const g = (a: number, b: number) => (b === 0 ? a : g(b, a % b));
+            const d = g(w, h);
+            finalPrompt = `${finalPrompt}【宽高比 ${w / d}:${h / d}（宽${w}×高${h}）】`;
+          }
+        }
+        formData.append('prompt', finalPrompt);
         for (const refUrl of options.referenceDataUrls!) {
           const [meta, b64] = refUrl.split(',', 2);
           const mime = meta.match(/data:([^;]+)/)?.[1] || 'image/png';
@@ -1083,15 +1079,23 @@ async function yunwuOpenAiImageOnce(
       } else {
         // images/generations 端点
         const endpoint = '/v1/images/generations';
-        const body: Record<string, unknown> = { model: modelId, prompt: options.prompt };
+        let finalPrompt = options.prompt || '';
+        // 在 prompt 中明确标注比例，确保模型正确理解尺寸需求
+        if (options.size) {
+          const [w, h] = options.size.split('x').map(Number);
+          if (w && h) {
+            const g = (a: number, b: number) => (b === 0 ? a : g(b, a % b));
+            const d = g(w, h);
+            finalPrompt = `${finalPrompt}【宽高比 ${w / d}:${h / d}（宽${w}×高${h}）】`;
+          }
+        }
+        const body: Record<string, unknown> = { model: modelId, prompt: finalPrompt };
         if (options.size) {
           // Yunwu 后端只支持 size 参数（"WxH" 像素），不支持 aspect_ratio（会 400 报错）
           body.size = options.size;
-          console.log(`[YunwuService] ${modelId} 请求 size=${options.size}`);
         }
         if (options.quality) body.quality = options.quality;
         if (options.n) body.n = options.n;
-        console.log(`[YunwuService] ${modelId} 请求 body:`, JSON.stringify(body).slice(0, 300));
 
         response = await fetch(`${baseUrl}${endpoint}`, {
           method: 'POST',
