@@ -191,72 +191,135 @@ function parseCoverBundle(raw: string, coreTopic = ''): CoverBundle | null {
         copyFields.target_phrase_badge = `The Shocking Truth About ${core} Nobody Tells You`;
         copyFields.target_phrase_multi = `Why ${core} Actually Matters\nThe Hidden Pattern Nobody Talks About\nWhat Experts Just Confirmed`;
       } else {
-        // 用 coreTopic 而非 text（英文 prompt）提取中文事实
+        // 用 coreTopic 原文作为锚点，不做正则截断（避免把"阿根廷充满争议的"截在"的"字上）
+        // 截取核心观点前 24 字作为标题嵌入（超出截断，避免 SEO 标题过长）
+        const fullTopic = (coreTopic || '').trim() || '本期内容';
+        const topicShort = fullTopic.length > 24 ? fullTopic.slice(0, 24) : fullTopic;
+
+        // 兼容：如果 coreTopic 含换行/句号，取第一句精华（更适合做标题嵌入）
+        const firstClause = fullTopic
+          .split(/[。！？!?\n;；]+/)
+          .map(s => s.trim())
+          .filter(s => s.length >= 4)[0] || fullTopic;
+        const anchor = firstClause.length > 24 ? firstClause.slice(0, 24) : firstClause;
+
+        // 仍然提取中文实体用于 SEO 标签和叙事类型检测
         const zhFacts: string[] = [];
-        const zhNouns = coreTopic.match(/[\u4e00-\u9fff]{2,8}/g) || [];
-        if (zhNouns.length) zhFacts.push(...[...new Set(zhNouns)].slice(0, 6));
-        const zhNumbers = coreTopic.match(/\d+(?:\.\d+)?(?:年|岁|天|月|周|次|个|万|亿|%)?/g) || [];
+        const zhNouns = fullTopic.match(/[\u4e00-\u9fff]{2,}/g) || [];
+        if (zhNouns.length) zhFacts.push(...[...new Set(zhNouns)].slice(0, 8));
+        const zhNumbers = fullTopic.match(/\d+(?:\.\d+)?(?:年|岁|天|月|周|次|个|万|亿|%)?/g) || [];
         if (zhNumbers.length) zhFacts.push(...zhNumbers);
-        const zhAnchor = zhFacts[0] || coreTopic.slice(0, 8) || '本期内容';
+        const zhAnchor = zhFacts[0] || anchor.slice(0, 8) || '本期内容';
 
-        // 检测叙事类型，选对应模板
-        const topicLower = coreTopic.toLowerCase();
-        const isReversal = /从.*到|英雄.*公敌|逆袭|翻盘|崩塌|陨落|坠落|爆发|翻身|神话.*破灭|绝杀|封神|认错|逆风.*翻盘/i.test(coreTopic);
-        const isNumbers = /\d{4}|四年|三年|\d+年|世界杯|奥运|冠军/i.test(coreTopic);
-        const isSecret = /内部|潜规则|黑幕|隐瞒|真相|内幕|曝光|揭秘|没人.*说/i.test(coreTopic);
-        const isShocking = /震惊|震撼|吓人|可怕|99%|90%|竟然|居然|万万没想到/i.test(coreTopic);
+        // ========== SEO 热门标签：基于赛道推理，生成 5 个相关联标签 ==========
+        const topicStr = fullTopic.toLowerCase();
+        const isSports = /足球|篮球|世界杯|奥运|冠军|球员|球队|联赛|进球|得分|金牌|体育|阿根廷|梅西|c罗/i.test(topicStr);
+        const isTech = /ai|人工智能|手机|芯片|电脑|科技|互联网、软件|技术|数据|算法|openai|google|苹果/i.test(topicStr);
+        const isFinance = /股票|基金|比特币|加密|货币|经济|投资|理财|银行|金融|市场|房价|工资/i.test(topicStr);
+        const isEntertainment = /明星|电影|综艺|偶像|演唱会|韩流|流量|八卦|网红|塌房|粉丝|娱乐圈/i.test(topicStr);
+        const isPolitics = /政治|政府|国家|总统|选举|外交|战争|军事|俄罗斯|美国|中国|国际/i.test(topicStr);
+        const isEducation = /教育|学校|考试|学生|老师|高考|考研|留学|大学|学习|培训/i.test(topicStr);
+        const isHealth = /健康|减肥|养生|医院|医生|疾病|疫苗|病毒|身体|锻炼|睡眠/i.test(topicStr);
+        const isFood = /美食|餐厅|烹饪|食材|网红店|减肥|热量|健康/i.test(topicStr);
 
-        const badgeTemplates = [
-          `${zhAnchor}，到底发生了什么？`,
-          `关于${zhAnchor}，内部人员从不公开说的事`,
-          `${zhAnchor}，只是表象？真相比这更震撼`,
-          `看完${zhAnchor}，我才搞懂了这背后的逻辑`,
-          `${zhAnchor}——没人敢正面回答的真相`,
-        ];
-        const multiTemplates: string[] = [];
+        const tagPool: string[] = (() => {
+          if (isSports) return ['#体育内幕', '#足球争议', '#冠军故事', '#体育科普', '#冷知识', '#真相揭秘', '#历史回顾', '#人物传奇'];
+          if (isTech) return ['#科技前沿', '#ai趋势', '#技术解析', '#行业内幕', '#产品测评', '#数码科技', '#互联网观察', '#硬核知识'];
+          if (isFinance) return ['#财经真相', '#投资逻辑', '#经济解读', '#财富密码', '#理财干货', '#市场分析', '#商业内幕', '#财经科普'];
+          if (isEntertainment) return ['#娱乐圈', '#偶像故事', '#八卦爆料', '#粉丝必看', '#综艺解读', '#影视推荐', '#流量密码', '#明星内幕'];
+          if (isPolitics) return ['#国际关系', '#政治解读', '#历史真相', '#大国博弈', '#地缘政治', '#世界格局', '#历史科普', '#深度分析'];
+          if (isEducation) return ['#教育真相', '#学习方法', '#考试技巧', '#学霸养成', '#留学指南', '#职场干货', '#知识科普', '#成长故事'];
+          if (isHealth) return ['#健康科普', '#养生知识', '#医学真相', '#生活习惯', '#身体警报', '#科学养生', '#健康饮食', '#疾病预防'];
+          if (isFood) return ['#美食探店', '#烹饪技巧', '#食材知识', '#健康饮食', '#网红美食', '#减脂餐', '#食谱分享', '#美食测评'];
+          return ['#深度解析', '#真相揭秘', '#知识科普', '#冷知识', '#历史真相', '#热门话题', '#必看推荐', '#硬核内容'];
+        })();
+
+        // 合并：赛道标签（前3个）+ 话题实体词（后2个），共5个
+        const coreTags = tagPool.slice(0, 3);
+        const entityTags = zhFacts.slice(0, 3).map(f => `#${f}`);
+        const seoTags = [...coreTags, ...entityTags].sort(() => Math.random() - 0.5).slice(0, 5).join(' ');
+
+        // 检测叙事类型
+        const isReversal = /从.*到|英雄.*公敌|逆袭|翻盘|崩塌|陨落|坠落|爆发|翻身|神话.*破灭|绝杀|封神|认错|逆风.*翻盘|争议|黑幕|黑哨|假球|不公|不正/i.test(fullTopic);
+        const isNumbers = /\d{4}|四年|三年|\d+年|世界杯|奥运|冠军|第一|倒数|排名|进球|失球/i.test(fullTopic);
+        const isShocking = /震惊|震撼|吓人|可怕|99%|90%|竟然|居然|万万没想到|第一次|终于|不可思议/i.test(fullTopic);
+
+        // ========== 一句话靶点：从核心观点提炼金句（必须包含核心观点完整信息）==========
+        const badgeTemplates: string[] = [];
 
         if (isReversal) {
-          // 反转叙事专用：从神话到破灭 / 从英雄到公敌 / 逆袭翻盘
-          multiTemplates.push(
-            `从万人追捧到全网围攻\n${zhAnchor}的4年，经历了什么\n这才是被全网封杀的真正原因`,
-            `${zhAnchor}，神话破灭的那一刻\n所有人都在骂，但没人知道真相\n直到今天才被曝光`,
-            `当${zhAnchor}的那一刻\n全世界都震惊了\n背后的真相比想象更残酷`,
+          // 反转/争议类：保留完整核心观点 + 加入反思钩子
+          badgeTemplates.push(
+            `${anchor}——冠军光环下的另一面`,
+            `争议从未停止：${anchor}`,
+            `${anchor}，是神话还是谎言？`,
+            `${anchor}？重新审视这段历史`,
           );
         }
         if (isNumbers) {
-          // 数字/数据驱动：成绩单/年份/排名
-          multiTemplates.push(
-            `${zhFacts.filter(Boolean).join('、')}背后的数据\n比你想的更残酷\n这才是真实发生的事`,
-            `${isReversal ? '数据不会说谎：' : ''}从巅峰到谷底\n他只用了4年\n没有人是无辜的`,
+          // 数字/成绩驱动
+          badgeTemplates.push(
+            `${anchor}——数据会给出答案`,
+            `${anchor}：成绩背后的争议`,
+            `数字不会说谎：${anchor}`,
+            `${anchor}，含金量到底如何？`,
           );
         }
-        if (isSecret) {
-          // 揭秘/内幕类
+        if (isShocking) {
+          // 震惊/意外类
+          badgeTemplates.push(
+            `${anchor}？看完你会有新的答案`,
+            `没想到是这样：${anchor}`,
+            `${anchor}——颠覆你的认知`,
+          );
+        }
+        // 默认：直接引用核心观点作为钩子句
+        badgeTemplates.push(
+          `深度解析：${anchor}`,
+          `${anchor}，本期内容一次讲透`,
+          `关于「${anchor}」，你可能误会了`,
+          `重新理解：${anchor}`,
+        );
+
+        // ========== 多句靶点：基于核心观点延伸 2-3 句（必须包含核心观点完整信息）==========
+        const multiTemplates: string[] = [];
+
+        if (isReversal) {
+          // 反转叙事：从光环到争议
           multiTemplates.push(
-            `关于${zhAnchor}，官方从未正式回应的事\n知情人选择沉默的真正原因\n看完你会重新思考整个事件`,
-            `${zhAnchor}——被掩盖的真相\n内部人员的爆料\n比官方说法更震撼`,
+            `${anchor}\n有人说是传奇，有人说是笑话\n数据摆在眼前，为什么评价天差地别？\n本期还原完整真相`,
+            `${anchor}\n冠军光环下藏着多少质疑？\n支持者与反对者各执一词\n本期用数据说话`,
+          );
+        }
+        if (isNumbers) {
+          // 数字驱动：成绩单拆解
+          multiTemplates.push(
+            `${anchor}\n官方给出了答案，但民间质疑从未停止\n这些数字背后的故事你可能不知道\n本期一次讲透`,
+            `${anchor}\n为什么有人追捧，有人嗤之以鼻？\n数据面前，争议的根源是什么？\n本期深度拆解`,
           );
         }
         if (isShocking) {
           // 震惊类
           multiTemplates.push(
-            `${zhAnchor}？99% 的人都误解了\n看完这个视频你会恍然大悟\n这才是被忽视的关键`,
-            `你绝对想不到的${zhAnchor}\n背后的逻辑颠覆认知\n评论区比视频更精彩`,
+            `${anchor}\n这个真相很少有人愿意提起\n不是因为不重要，而是因为太颠覆\n今天我们把它说清楚`,
+            `${anchor}\n说出来你可能不信\n但事实就摆在历史记录里\n看完你会改变看法`,
           );
         }
-        // 默认兜底（任何类型都能用）
+        // 默认兜底：基于核心观点本身延伸
         if (multiTemplates.length < 3) {
           multiTemplates.push(
-            `为什么${zhAnchor}？\n背后的真实原因被掩盖了多久\n深度解析，一次讲透`,
-            `${zhAnchor}？你看到的可能只是假象\n真相恰恰相反\n这才是被忽视的关键`,
+            `${anchor}\n背后隐藏着不为人知的逻辑\n为什么有人支持，有人反对？\n本期深度拆解，一次讲透`,
+            `关于「${anchor}」，网上说法众说纷纭\n到底哪个版本才是真相？\n本期内容给你完整答案`,
+            `${anchor}\n本期内容带你重新审视这个话题\n争议背后的逻辑一次讲清\n欢迎评论区留下你的看法`,
           );
         }
 
-        copyFields.titles_warning = `⚠️ 关于${zhAnchor}，90% 的人都理解错了`;
-        copyFields.titles_anti_truth = `关于${zhAnchor}的真相，被掩盖了太久了`;
-        copyFields.titles_stop_doing = `千万别再误解${zhAnchor}了`;
-        copyFields.golden_description = `${zhAnchor} —— 深度拆解，3 分钟讲透底层原理与实战路径。订阅获取每周爆款拆解。`;
-        copyFields.seo_tags = zhFacts.slice(0, 12).map(f => `#${f}`).join(' ') || `#深度解析 #真相 #必须知道 #禁忌 #误区 #案例 #实战`;
+        // ========== SEO 标题库（必须包含完整核心观点）==========
+        copyFields.titles_warning = `⚠️ 关于「${anchor}」，你可能只知道一半`;
+        copyFields.titles_anti_truth = `「${anchor}」的真相，被人为掩盖了`;
+        copyFields.titles_stop_doing = `千万别再误解「${anchor}」了`;
+        copyFields.golden_description = `${anchor} —— 深度拆解，3 分钟讲透底层原理与实战路径。订阅获取每周爆款拆解。`;
+        copyFields.seo_tags = seoTags;
         copyFields.visual_emotion_lock = '开场紧张 → 中段释疑 → 结尾顿悟，情绪弧线由焦虑转为笃定。';
         copyFields.target_phrase_badge = badgeTemplates[Math.floor(Math.random() * badgeTemplates.length)];
         copyFields.target_phrase_multi = multiTemplates[Math.floor(Math.random() * multiTemplates.length)];
@@ -652,17 +715,15 @@ ${langRule}
 
     if (copyOnly) {
       // 简化模式：只生成 8 个文案字段（不要写 var_*_prompt_en）
-      const zhHookRule = `【靶点 Hook】target_phrase_badge：封面主标题，极限 Hook，从核心议题「${coreTopic.trim() || '（议题）'}」转化（禁止复制原文）。技法：① 反直觉反转（真相反转）② 身份/结果承诺（99%的人不知道）③ 禁忌窥探（被隐瞒的真相）④ 数字冲击（3个致命误区）⑤ 极端化（千万别这么做）。单句，6–20字，语气强。target_phrase_multi：2–3句多句 Hook，技法同上，与 badge 同主题分层展开，不要重复 badge，每句独立。`;
+      const zhHookRule = `【靶点 Hook】target_phrase_badge：封面主标题，极限 Hook，从核心议题「${coreTopic.trim()}」转化（禁止复制原文）。技法：① 反直觉反转（真相反转）② 身份/结果承诺（99%的人不知道）③ 禁忌窥探（被隐瞒的真相）④ 数字冲击（3个致命误区）⑤ 极端化（千万别这么做）。单句，6–20字，语气强。target_phrase_multi：2–3句多句 Hook，技法同上，与 badge 同主题分层展开，不要重复 badge，每句独立。`;
       const enHookRule = `[Hook] target_phrase_badge: one punchline Hook, transform from topic (do NOT copy verbatim). Techniques: ① counter-intuitive flip ② identity/commitment promise ③ forbidden truth ④ number shock ⑤ extreme. Single line, 6–12 words, punchy. target_phrase_multi: 2–3 Hook lines, same theme layered, do NOT repeat badge.`;
       const copyOnlySystem = `YouTube copy & SEO director for ${nicheName} niche.${selectedTemplate ? ` Template: ${selectedTemplate.icon} ${selectedTemplate.name}.` : ''}
-Output JSON only, no markdown. 8 keys: titles_warning, titles_anti_truth, titles_stop_doing, golden_description, seo_tags, visual_emotion_lock, target_phrase_badge, target_phrase_multi.
-titles_*: warning / anti-truth / stop-doing style, ≤60 chars each (${lang === 'en' ? 'English' : 'Simplified Chinese'}).
-golden_description: 2-line video intro. visual_emotion_lock: emotion arc description.
+Output STRICT JSON only. No explanations. No markdown. No code fences. Just raw JSON starting with { and ending with }. The JSON must contain exactly these 8 keys: titles_warning, titles_anti_truth, titles_stop_doing, golden_description, seo_tags, visual_emotion_lock, target_phrase_badge, target_phrase_multi.
 ${lang === 'en' ? enHookRule : zhHookRule}
 ${lang === 'en' ? 'All copy fields in English.' : '文案字段用简体中文；seo_tags 用中文词组标签。'}`;
 
       const copyOnlyUser = `## ${nicheName}\n${selectedTemplate ? `## Template: ${selectedTemplate.icon} ${selectedTemplate.name}\n` : ''}${profile ? `## Style DNA: ${profile.styleDna}\n\n` : ''}## 核心议题（视频在讲什么）
-${coreTopic.trim() ? coreTopic : '（未填写）请根据赛道自行生成高 CTR 主题。'}
+${coreTopic.trim()}
 
 Output JSON only. Do NOT output var_*_prompt_en fields.`;
 
@@ -757,7 +818,7 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
         titles_anti_truth: `The Truth About ${anchor} Nobody Tells You First`,
         titles_stop_doing: `Stop Doing This Before It\'s Too Late`,
         golden_description: `Deep analysis of "${topicFull}" — breaking down core principles and real-world applications in 3 minutes. Subscribe for weekly viral breakdowns.`,
-        seo_tags: `#${anchor.replace(/\s+/g, '')} #DeepDive #Explained #MustKnow #TruthRevealed #CriticalThinking #CaseStudy #Analysis #HowTo #ProTips #LessonsLearned #MistakesToAvoid`,
+        seo_tags: `#${anchor.replace(/\s+/g, '')} #DeepDive #Explained #MustKnow #TruthRevealed #CriticalThinking #Analysis #HowTo #ProTips`,
         visual_emotion_lock: 'Start with shock → resolve in middle → confirmation at end. Anxiety to certainty.',
         target_phrase_badge: badgeTemplates[Math.floor(Math.random() * badgeTemplates.length)],
         target_phrase_multi: multiTemplates[Math.floor(Math.random() * multiTemplates.length)],
@@ -794,7 +855,10 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
       titles_anti_truth: `关于${anchor}的真相，被掩盖了太久了`,
       titles_stop_doing: `千万别再误解${anchor}了`,
       golden_description: `${topicFull} —— 深度拆解，3 分钟讲透底层原理与实战路径。订阅获取每周爆款拆解。`,
-      seo_tags: facts.slice(0, 12).map(f => `#${f}`).join(' ') || `#深度解析 #真相 #必须知道 #禁忌 #误区 #案例 #实战 #原理 #避坑 #进阶 #复盘 #干货`,
+      seo_tags: [
+        '#深度解析', '#真相揭秘', '#知识科普', '#冷知识', '#历史真相',
+        ...(facts.slice(0, 3).map(f => `#${f}`)),
+      ].slice(0, 5).join(' '),
       visual_emotion_lock: '开场紧张 → 中段释疑 → 结尾顿悟，情绪弧线由焦虑转为笃定。',
       target_phrase_badge: zhBadgeTemplates[badgeIdx],
       target_phrase_multi: zhMultiTemplates[multiIdx],
@@ -808,6 +872,10 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
     }
     if (niche === null && !selectedTemplateId) {
       toast.error('请先选择赛道或封面模板');
+      return;
+    }
+    if (!coreTopic.trim()) {
+      toast.error('请先填写「核心议题」，赛道检测与文案生成均依赖此字段');
       return;
     }
     if (provider === 'runninghub') {
@@ -1402,7 +1470,7 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
                   <div className="text-xs text-slate-500 mb-2">系统锁定视觉情绪</div>
                   <p className="text-sm text-slate-200">{live.visual_emotion_lock}</p>
                 </div>
-                <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4 relative">
+                <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4 relative min-w-0">
                   <button
                     type="button"
                     onClick={() => copy('badge', live.target_phrase_badge)}
@@ -1423,10 +1491,10 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
                       }))
                     }
                     rows={1}
-                    className="w-full text-lg font-bold text-emerald-400 tracking-tight break-words bg-transparent border border-transparent hover:border-slate-700 focus:border-emerald-500/60 focus:outline-none rounded-md p-1 -m-1 pr-10 resize-none leading-snug transition-colors"
+                    className="w-full text-lg font-bold bg-gradient-to-r from-pink-400 to-violet-400 text-transparent bg-clip-text tracking-tight break-words bg-transparent border border-transparent hover:border-slate-700 focus:border-pink-500/60 focus:outline-none rounded-md p-1 -m-1 pr-10 resize-none leading-snug transition-colors"
                   />
                 </div>
-                <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4 relative min-w-0 overflow-hidden">
+                <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4 relative min-w-0">
                   <button
                     type="button"
                     onClick={() => copy('multi', live.target_phrase_multi)}
@@ -1446,9 +1514,9 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
                         target_phrase_multi: e.target.value,
                       }))
                     }
-                    rows={3}
+                    rows={Math.max(3, (live.target_phrase_multi?.match(/\n/g) || []).length + 1)}
                     placeholder="（本批 JSON 未包含该字段，请点击上方「生成」重新拉取。）"
-                    className="w-full text-sm font-semibold text-slate-200 bg-slate-950/60 border border-slate-800 hover:border-slate-700 focus:border-emerald-500/60 focus:outline-none rounded-md p-2 pr-10 resize-y leading-relaxed transition-colors"
+                    className="w-full text-sm font-semibold bg-gradient-to-r from-cyan-400 to-blue-400 text-transparent bg-clip-text bg-slate-950/60 border border-slate-800 hover:border-slate-700 focus:border-cyan-500/60 focus:outline-none rounded-md p-2 pr-10 resize-none leading-relaxed transition-colors"
                   />
                   <p className="text-[10px] text-slate-500 mt-2 pr-10">
                     提示：编辑后已实时同步到 VAR 提示词与出图；如需重新生成 VAR，请点「生成高转化文案」。
