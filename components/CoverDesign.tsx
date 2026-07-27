@@ -9,8 +9,9 @@ import {
   getCoverReferenceMultimodalPreamble,
 } from '../services/coverDesignProfiles';
 import { COVER_STYLE_PRESETS } from '../services/coverStylePresets';
+import { COVER_TEMPLATES, getCoverTemplate } from '../services/coverTemplatePresets';
 import { useToast } from './Toast';
-import { Copy, Check, Loader2, Upload, Sparkles, Image as ImageIcon, X, Download } from 'lucide-react';
+import { Copy, Check, Loader2, Upload, Sparkles, Image as ImageIcon, X, Download, Edit3 } from 'lucide-react';
 
 const MAX_REFERENCE_IMAGES = 12;
 
@@ -82,34 +83,243 @@ export interface CoverBundle {
   var_a: string;
   var_b: string;
   var_c: string;
+  var_d: string;
+  var_e: string;
+  var_f: string;
 }
 
-function parseCoverBundle(raw: string): CoverBundle | null {
+function parseCoverBundle(raw: string, coreTopic = ''): CoverBundle | null {
+  if (!raw) return null;
   const t = raw.trim();
-  const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const body = fence ? fence[1].trim() : t;
-  const s = body.indexOf('{');
-  const e = body.lastIndexOf('}');
-  if (s === -1 || e <= s) return null;
-  try {
-    const o = JSON.parse(body.slice(s, e + 1)) as Record<string, string>;
-    return {
-      titles_warning: o.titles_warning || o.warning || '',
-      titles_anti_truth: o.titles_anti_truth || o.anti_truth || '',
-      titles_stop_doing: o.titles_stop_doing || o.stop_doing || '',
-      golden_description: o.golden_description || o.description || '',
-      seo_tags: o.seo_tags || o.seo_tags_csv || '',
-      visual_emotion_lock: o.visual_emotion_lock || o.emotion_lock || '',
-      target_phrase_badge: o.target_phrase_badge || o.badge || '',
-      target_phrase_multi:
-        o.target_phrase_multi || o.target_phrase_long || o.multi_hook || '',
-      var_a: o.var_a_prompt_en || o.var_a || '',
-      var_b: o.var_b_prompt_en || o.var_b || '',
-      var_c: o.var_c_prompt_en || o.var_c || '',
+  // 1) 优先抽取 markdown 代码块中的 JSON
+  const fences = Array.from(t.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi));
+  const bodies: string[] = fences.map((m) => m[1].trim());
+  // 2) 兜底：直接尝试整段
+  bodies.push(t);
+
+  for (const body of bodies) {
+    if (!body) continue;
+    const s = body.indexOf('{');
+    const e = body.lastIndexOf('}');
+    if (s === -1 || e <= s) continue;
+
+    // 2a) 整段先解析（最常见）
+    let o: any = null;
+    try {
+      o = JSON.parse(body.slice(s, e + 1));
+    } catch {
+      // 2b) 尝试 repair：去掉 JSON 中的注释、转义错误的换行/控制字符
+      const slice = body.slice(s, e + 1);
+      const repaired = (() => {
+        try {
+          return JSON.parse(
+            slice
+              // 去掉 /* */ 与 // 注释
+              .replace(/\/\*[\s\S]*?\*\//g, '')
+              .replace(/(^|[^:\\])\/\/.*$/gm, '$1')
+              // 把裸换行符（不在引号内）替换为 \n
+              .replace(/[\u0000-\u0008\u000B-\u001F]/g, ' ')
+          );
+        } catch {
+          return null;
+        }
+      })();
+      if (repaired && typeof repaired === 'object') o = repaired;
+    }
+
+    if (!o || typeof o !== 'object') continue;
+    const r = o as Record<string, unknown>;
+
+    const str = (k: string, ...alts: string[]): string => {
+      for (const key of [k, ...alts]) {
+        const v = r[key];
+        if (typeof v === 'string' && v.trim()) return v.trim();
+        if (typeof v === 'number') return String(v);
+      }
+      return '';
     };
-  } catch {
-    return null;
+
+    // 文案类（非 var_*）字段
+    const copyFields = {
+      titles_warning: str('titles_warning', 'warning'),
+      titles_anti_truth: str('titles_anti_truth', 'anti_truth'),
+      titles_stop_doing: str('titles_stop_doing', 'stop_doing'),
+      golden_description: str('golden_description', 'description'),
+      seo_tags: str('seo_tags', 'seo_tags_csv'),
+      visual_emotion_lock: str('visual_emotion_lock', 'emotion_lock'),
+      target_phrase_badge: str('target_phrase_badge', 'badge'),
+      target_phrase_multi: str('target_phrase_multi', 'target_phrase_long', 'multi_hook'),
+    };
+
+    // var 字段：每个独立读取（同时兼容字母和数字后缀格式）
+    const NUM_MAP: Record<string, string> = { a: '1', b: '2', c: '3', d: '4', e: '5', f: '6' };
+    const directVar = (suffix: 'a' | 'b' | 'c' | 'd' | 'e' | 'f') => {
+      const n = NUM_MAP[suffix];
+      return str(`var_${suffix}_prompt_en`, `var_${suffix}_prompt`, `var_${suffix}`,
+        `var_${n}_prompt_en`, `var_${n}_prompt`, `var_${n}`);
+    };
+    const vars_ = {
+      a: directVar('a'),
+      b: directVar('b'),
+      c: directVar('c'),
+      d: directVar('d'),
+      e: directVar('e'),
+      f: directVar('f'),
+    };
+
+    // 退化兜底：var_prompt_en 单字段
+    const fallbackVar = str('var_prompt_en', 'prompt_en');
+
+    // ── 从 var_prompt_en 提取关键事实来填充空白的 copy 字段 ──
+    // 当 copyOnly 模式下模型返回了 var_prompt_en 而非 8 个文案字段时触发
+    if (fallbackVar && Object.values(copyFields).every(v => !v)) {
+      const text = fallbackVar;
+
+      // 用 coreTopic 而非 fallbackVar（英文 prompt）检测语言，保证中文议题生成中文文案
+      const lang = detectTopicLang(coreTopic);
+      if (lang === 'en') {
+        // 从 coreTopic 提取关键词，而非英文 prompt
+        const properNouns = coreTopic.match(/[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*/g) || [];
+        const numbers = coreTopic.match(/\d+(?:\.\d+)?(?:\s*(?:year|month|day|hour|minute|second|percent|%))?/gi) || [];
+        const core = properNouns[0] || numbers[0] || 'this topic';
+        copyFields.titles_warning = `⚠️ What 90% Get Wrong About ${core}`;
+        copyFields.titles_anti_truth = `The Truth About ${core} Nobody Tells You First`;
+        copyFields.titles_stop_doing = `Stop Doing This Before It's Too Late`;
+        copyFields.golden_description = `Deep analysis breaking down "${text.slice(0, 100)}..." — core principles and real-world applications in 3 minutes. Subscribe for weekly breakdowns.`;
+        copyFields.seo_tags = `#${core.replace(/\s+/g, '')} #DeepDive #Explained #MustKnow #TruthRevealed #CriticalThinking #Analysis #HowTo #ProTips`;
+        copyFields.visual_emotion_lock = 'Start with shock → resolve in middle → confirmation at end. Anxiety to certainty.';
+        copyFields.target_phrase_badge = `The Shocking Truth About ${core} Nobody Tells You`;
+        copyFields.target_phrase_multi = `Why ${core} Actually Matters\nThe Hidden Pattern Nobody Talks About\nWhat Experts Just Confirmed`;
+      } else {
+        // 用 coreTopic 而非 text（英文 prompt）提取中文事实
+        const zhFacts: string[] = [];
+        const zhNouns = coreTopic.match(/[\u4e00-\u9fff]{2,8}/g) || [];
+        if (zhNouns.length) zhFacts.push(...[...new Set(zhNouns)].slice(0, 6));
+        const zhNumbers = coreTopic.match(/\d+(?:\.\d+)?(?:年|岁|天|月|周|次|个|万|亿|%)?/g) || [];
+        if (zhNumbers.length) zhFacts.push(...zhNumbers);
+        const zhAnchor = zhFacts[0] || coreTopic.slice(0, 8) || '本期内容';
+
+        // 检测叙事类型，选对应模板
+        const topicLower = coreTopic.toLowerCase();
+        const isReversal = /从.*到|英雄.*公敌|逆袭|翻盘|崩塌|陨落|坠落|爆发|翻身|神话.*破灭|绝杀|封神|认错|逆风.*翻盘/i.test(coreTopic);
+        const isNumbers = /\d{4}|四年|三年|\d+年|世界杯|奥运|冠军/i.test(coreTopic);
+        const isSecret = /内部|潜规则|黑幕|隐瞒|真相|内幕|曝光|揭秘|没人.*说/i.test(coreTopic);
+        const isShocking = /震惊|震撼|吓人|可怕|99%|90%|竟然|居然|万万没想到/i.test(coreTopic);
+
+        const badgeTemplates = [
+          `${zhAnchor}，到底发生了什么？`,
+          `关于${zhAnchor}，内部人员从不公开说的事`,
+          `${zhAnchor}，只是表象？真相比这更震撼`,
+          `看完${zhAnchor}，我才搞懂了这背后的逻辑`,
+          `${zhAnchor}——没人敢正面回答的真相`,
+        ];
+        const multiTemplates: string[] = [];
+
+        if (isReversal) {
+          // 反转叙事专用：从神话到破灭 / 从英雄到公敌 / 逆袭翻盘
+          multiTemplates.push(
+            `从万人追捧到全网围攻\n${zhAnchor}的4年，经历了什么\n这才是被全网封杀的真正原因`,
+            `${zhAnchor}，神话破灭的那一刻\n所有人都在骂，但没人知道真相\n直到今天才被曝光`,
+            `当${zhAnchor}的那一刻\n全世界都震惊了\n背后的真相比想象更残酷`,
+          );
+        }
+        if (isNumbers) {
+          // 数字/数据驱动：成绩单/年份/排名
+          multiTemplates.push(
+            `${zhFacts.filter(Boolean).join('、')}背后的数据\n比你想的更残酷\n这才是真实发生的事`,
+            `${isReversal ? '数据不会说谎：' : ''}从巅峰到谷底\n他只用了4年\n没有人是无辜的`,
+          );
+        }
+        if (isSecret) {
+          // 揭秘/内幕类
+          multiTemplates.push(
+            `关于${zhAnchor}，官方从未正式回应的事\n知情人选择沉默的真正原因\n看完你会重新思考整个事件`,
+            `${zhAnchor}——被掩盖的真相\n内部人员的爆料\n比官方说法更震撼`,
+          );
+        }
+        if (isShocking) {
+          // 震惊类
+          multiTemplates.push(
+            `${zhAnchor}？99% 的人都误解了\n看完这个视频你会恍然大悟\n这才是被忽视的关键`,
+            `你绝对想不到的${zhAnchor}\n背后的逻辑颠覆认知\n评论区比视频更精彩`,
+          );
+        }
+        // 默认兜底（任何类型都能用）
+        if (multiTemplates.length < 3) {
+          multiTemplates.push(
+            `为什么${zhAnchor}？\n背后的真实原因被掩盖了多久\n深度解析，一次讲透`,
+            `${zhAnchor}？你看到的可能只是假象\n真相恰恰相反\n这才是被忽视的关键`,
+          );
+        }
+
+        copyFields.titles_warning = `⚠️ 关于${zhAnchor}，90% 的人都理解错了`;
+        copyFields.titles_anti_truth = `关于${zhAnchor}的真相，被掩盖了太久了`;
+        copyFields.titles_stop_doing = `千万别再误解${zhAnchor}了`;
+        copyFields.golden_description = `${zhAnchor} —— 深度拆解，3 分钟讲透底层原理与实战路径。订阅获取每周爆款拆解。`;
+        copyFields.seo_tags = zhFacts.slice(0, 12).map(f => `#${f}`).join(' ') || `#深度解析 #真相 #必须知道 #禁忌 #误区 #案例 #实战`;
+        copyFields.visual_emotion_lock = '开场紧张 → 中段释疑 → 结尾顿悟，情绪弧线由焦虑转为笃定。';
+        copyFields.target_phrase_badge = badgeTemplates[Math.floor(Math.random() * badgeTemplates.length)];
+        copyFields.target_phrase_multi = multiTemplates[Math.floor(Math.random() * multiTemplates.length)];
+      }
+    }
+
+    // 质量门禁：必须至少 1 个 var 相关字段非空
+    // 接受任意形式：var_prompt_en / var_a_prompt_en / prompt_en / var_a 等
+    const filledCopy = Object.values(copyFields).filter(Boolean).length;
+    const filledVars = Object.values(vars_).filter(Boolean).length;
+
+    // 命中条件：至少有 1 个文案字段 OR 至少有 1 个 var 字段 OR 有 fallback var
+    // 这让 copyOnly 路径（只有文案、无 var_*）也能命中
+    if (filledVars < 1 && !fallbackVar && filledCopy < 1) continue;
+
+    // 退化兜底：仅 fallbackVar 有内容（6 个 var 全空）→ 复制到 A~F
+    if (fallbackVar && filledVars < 1) {
+      vars_.a = vars_.b = vars_.c = vars_.d = vars_.e = vars_.f = fallbackVar;
+    }
+    // 退化兜底：仅 A 有内容、其他 5 个空 → 复制到 B~F
+    else if (vars_.a && filledVars === 1) {
+      vars_.b = vars_.c = vars_.d = vars_.e = vars_.f = vars_.a;
+    }
+    // 极端兜底：完全不是 JSON，但 raw 字符串有明显 portrait/prompt 内容（"YouTube thumbnail"/"portrait"/"thumbnail"），
+    // 提取最长一段作为 A，其他由本地变体派生
+    else if (
+      filledVars < 1 &&
+      !fallbackVar &&
+      /(YouTube thumbnail|thumbnail|portrait|prompt)/i.test(raw) &&
+      raw.length > 50
+    ) {
+      const portraitLine = raw
+        .split(/\n+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 30 && /[A-Za-z]/.test(s))
+        .sort((a, b) => b.length - a.length)[0] || raw.trim();
+      const base = portraitLine.length > 400 ? portraitLine.slice(0, 400) : portraitLine;
+      const suffixA = '';
+      const suffixB = ' Alternative minimalist composition: ultra-clean background, single subject, rule-of-thirds placement, soft editorial lighting, one dominant accent color, bold display typography in corner, premium magazine feel.';
+      const suffixC = ' High-contrast close-up variant: intense expression, hard rim light, oversaturated red-vs-blue color clash, oversized typography overlapping subject, gritty film-grain texture.';
+      const suffixD = ' Vertical split variant: top half main cinematic scene, bottom half a stat/data card panel, vertical beam splits both halves, oversized stat number below.';
+      const suffixE = ' Infographic variant: central giant number or shield, subject silhouette behind it, top horizontal Hook text band, side card with 3 short stats, flat-design vector accents.';
+      const suffixF = ' Portrait + giant banner variant: subject half-body close-up, oversized name/title banner across frame, corner badge with role/program name, dramatic cinematic lighting.';
+      vars_.a = base + suffixA;
+      vars_.b = base + suffixB;
+      vars_.c = base + suffixC;
+      vars_.d = base + suffixD;
+      vars_.e = base + suffixE;
+      vars_.f = base + suffixF;
+    }
+
+    return {
+      ...copyFields,
+      var_a: vars_.a,
+      var_b: vars_.b,
+      var_c: vars_.c,
+      var_d: vars_.d,
+      var_e: vars_.e,
+      var_f: vars_.f,
+    };
   }
+
+  return null;
 }
 
 function detectTopicLang(text: string): 'en' | 'zh' {
@@ -222,22 +432,53 @@ export const CoverDesign: React.FC<CoverDesignProps> = ({
   const [rawOut, setRawOut] = useState('');
   const [bundle, setBundle] = useState<CoverBundle | null>(null);
   const [loadingText, setLoadingText] = useState(false);
-  const [schemeUrls, setSchemeUrls] = useState<Record<'A' | 'B' | 'C', string | null>>({
+  const [schemeUrls, setSchemeUrls] = useState<Record<'A' | 'B' | 'C' | 'D' | 'E' | 'F', string | null>>({
     A: null,
     B: null,
     C: null,
+    D: null,
+    E: null,
+    F: null,
   });
-  const [schemeLoading, setSchemeLoading] = useState<Record<'A' | 'B' | 'C', boolean>>({
+  const [schemeLoading, setSchemeLoading] = useState<Record<'A' | 'B' | 'C' | 'D' | 'E' | 'F', boolean>>({
     A: false,
     B: false,
     C: false,
+    D: false,
+    E: false,
+    F: false,
   });
   const [copied, setCopied] = useState<string | null>(null);
   const [coverAspect, setCoverAspect] = useState<CoverAspectId>('16:9');
   /** 出图时采用一句话或多句极限靶点 */
   const [coverHookSource, setCoverHookSource] = useState<'one' | 'multi'>('one');
-  const [coverStyleId, setCoverStyleId] = useState<string>('minimal_flat');
-  const [coverImageModel, setCoverImageModel] = useState<CoverImageModelId>('gemini-flash');
+  const [coverStyleId, setCoverStyleId] = useState<string>('realistic');
+  const [coverImageModel, setCoverImageModel] = useState<CoverImageModelId>('gpt-image-2-all');
+  /** 封面模板（可选·与赛道正交的第二层风格锁定） */
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('cover_template_id');
+    } catch {
+      return null;
+    }
+  });
+  useEffect(() => {
+    try {
+      if (selectedTemplateId) localStorage.setItem('cover_template_id', selectedTemplateId);
+      else localStorage.removeItem('cover_template_id');
+    } catch {
+      /* ignore */
+    }
+  }, [selectedTemplateId]);
+  /** 用户编辑后的 bundle（用户对靶点文案等的修改；优先于 bundle 渲染） */
+  const [editedBundle, setEditedBundle] = useState<CoverBundle | null>(null);
+  /** bundle 更新时同步初始化 editedBundle */
+  useEffect(() => {
+    setEditedBundle(bundle);
+  }, [bundle]);
+  /** 渲染使用的活跃 bundle：用户编辑优先 */
+  const live = editedBundle ?? bundle;
+  const selectedTemplate = getCoverTemplate(selectedTemplateId);
 
   /** 与 refPreviews 同步，避免在 setState updater 里启动异步（Strict Mode 会双次调用 updater 导致重复追加） */
   const refPreviewsRef = useRef<RefImageItem[]>([]);
@@ -330,7 +571,7 @@ export const CoverDesign: React.FC<CoverDesignProps> = ({
     [toast]
   );
 
-  const buildPrompts = useCallback(() => {
+  const buildPrompts = useCallback((copyOnly = false) => {
     if (niche === null) {
       return { system: '', user: '' };
     }
@@ -352,13 +593,12 @@ export const CoverDesign: React.FC<CoverDesignProps> = ({
 
     const imageTextRule =
       lang === 'en'
-        ? '【画面内文字·最高优先级】三条 var_*_prompt_en 用英文撰写（供文生图模型阅读），每条都必须包含明确指令：画面上所有可见文字（主标题、副标、角标、装饰字等）必须为英文，不得出现中文或其它文字（用户原文专有名词除外）。'
-        : '【画面内文字·最高优先级】三条 var_*_prompt_en 用英文撰写（供文生图模型阅读），每条都必须包含明确指令：画面上所有可见中文（主标题、副标、角标、印章字、小字等）须为**繁体中文（Traditional Chinese）**字形呈现；语义可与 target_phrase_badge / target_phrase_multi 的简体草稿一致，但字形须繁体；不得出现英文或其它外文（用户明确给出的品牌拉丁缩写除外）。';
+        ? '【画面内文字·最高优先级】六条 var_*_prompt_en 用英文撰写（供文生图模型阅读），每条都必须包含明确指令：画面上所有可见文字（主标题、副标、角标、装饰字等）必须为英文，不得出现中文或其它文字（用户原文专有名词除外）。'
+        : '【画面内文字·最高优先级】六条 var_*_prompt_en 用英文撰写（供文生图模型阅读），每条都必须包含明确指令：画面上所有可见中文（主标题、副标、角标、印章字、小字等）须为**繁体中文（Traditional Chinese）**字形呈现；语义可与 target_phrase_badge / target_phrase_multi 的简体草稿一致，但字形须繁体；不得出现英文或其它外文（用户明确给出的品牌拉丁缩写除外）。';
 
     const hookRule =
-      '【一句话靶点】须填写 target_phrase_badge（单句极限 Hook）。\n【多句靶点】须填写 target_phrase_multi：共 2–3 句，风格参考本页「SEO 标题库 & 长尾标签库」：信息密度高，可含数字、禁忌/悬念、身份指向、结果承诺、搜索长尾组合；与 target_phrase_badge 同一主题但分层展开，供封面副标题/条带/小字使用。\n【主标题铁律】三条 var_*_prompt_en 须把 target_phrase_badge 的语义做成画面最醒目、最大字号主标题；若构图需要副文案，可融入 target_phrase_multi 中的句子且不矛盾。';
+      '【一句话靶点】须填写 target_phrase_badge（单句极限 Hook）。\n【多句靶点】须填写 target_phrase_multi：共 2–3 句，风格参考本页「SEO 标题库 & 长尾标签库」：信息密度高，可含数字、禁忌/悬念、身份指向、结果承诺、搜索长尾组合；与 target_phrase_badge 同一主题但分层展开，供封面副标题/条带/小字使用。\n【主标题铁律】六条 var_*_prompt_en 须把 target_phrase_badge 的语义做成画面最醒目、最大字号主标题；若构图需要副文案，可融入 target_phrase_multi 中的句子且不矛盾。';
 
-    const aspectRule = `【画幅】界面当前选定的缩略图比例为 **${aspectOpt.label}（${aspectOpt.id}）**。三条 var_* 英文提示词须按该比例描述构图与留白；开头请使用 "YouTube thumbnail, ${aspectOpt.id} aspect ratio"（或等价英文），禁止默认写 16:9，除非当前选择就是 16:9。`;
 
     const crossNicheBan =
       niche === NicheType.HISTORICAL_FIGURE
@@ -372,46 +612,202 @@ export const CoverDesign: React.FC<CoverDesignProps> = ({
           : `\n\n⚠️ 参考图已锁定（${refPreviews.length} 张）：var_*_prompt_en 须忠实描述参考图中实际出现的人物、服饰、道具、场景与画风；禁止编造图中不存在的动物（尤其禁止无故加入狗/宠物），禁止混入其它赛道的代表元素。`
         : '';
 
-    const system = `你是 YouTube 高转化缩略图与标题总监，熟悉 ${nicheName} 赛道视觉包装。
+    const templateBlock = selectedTemplate
+      ? `\n\n【封面模板锁定】用户已选模板：${selectedTemplate.icon} ${selectedTemplate.name}\n模板风格 DNA：${selectedTemplate.styleDna}\nA 方案构图方向：${selectedTemplate.schemeAHint}\nB 方案构图方向：${selectedTemplate.schemeBHint}\nC 方案构图方向：${selectedTemplate.schemeCHint}\nD 方案构图方向：${selectedTemplate.schemeDHint}\nE 方案构图方向：${selectedTemplate.schemeEHint}\nF 方案构图方向：${selectedTemplate.schemeFHint}\n所有 6 条 var_*_prompt_en 须严格遵循此模板的视觉风格（颜色、构图、字体、情绪）以及上述 A~F 的方案差异化（不要把同一个画面改改色调就交差）。`
+      : '';
+
+    const system = `你是 YouTube 高转化缩略图与标题总监，熟悉 ${nicheName} 赛道视觉包装。${selectedTemplate ? `同时你正在使用 ${selectedTemplate.icon} ${selectedTemplate.name} 模板。` : ''}
 只输出一个 JSON 对象，禁止 Markdown 代码块、禁止前言后记。
-JSON 的键必须完全一致（字符串值）：titles_warning, titles_anti_truth, titles_stop_doing, golden_description, seo_tags, visual_emotion_lock, target_phrase_badge, target_phrase_multi, var_a_prompt_en, var_b_prompt_en, var_c_prompt_en。
+JSON 的键必须完全一致（字符串值，15 个完整字段）：titles_warning, titles_anti_truth, titles_stop_doing, golden_description, seo_tags, visual_emotion_lock, target_phrase_badge, target_phrase_multi, var_a_prompt_en, var_b_prompt_en, var_c_prompt_en, var_d_prompt_en, var_e_prompt_en, var_f_prompt_en。
+【禁止漏字段、禁止合并、禁止省略 var_*_prompt_en 的 a/b/c/d/e/f 后缀。】如果只输出 var_prompt_en 这种单字段视为格式错误。
 titles_* 为「60 字内极简标题」风格的三类：THE WARNING / THE ANTI-TRUTH / THE STOP DOING（各一条，${lang === 'en' ? '英文' : '中文'}）。
 golden_description 为黄金两行视频简介。${seoTagsRule}
 visual_emotion_lock 描述画面情绪弧线。target_phrase_badge 为封面一句话极限靶点（${lang === 'en' ? '英文 Hook 短语' : '中文单句 Hook，可简体'}）。target_phrase_multi 为 2–3 句多句靶点（${lang === 'en' ? '英文' : '中文'}），写法参考爆款 SEO 标题与长尾标签组合。
-var_*_prompt_en 每条 80–180 词，用英文撰写（供文生图），须包含：构图、光线、配色、字体排版、点击率元素（箭头/高亮框等）。
-${aspectRule}
+var_a/b/c_prompt_en 对应 A/B/C 三个差异化构图方向，var_d_prompt_en 对应 D（纵向分屏），var_e_prompt_en 对应 E（信息图 / 数据牌），var_f_prompt_en 对应 F（人像/主角 + 大字横幅）。每条 80–180 词，用英文撰写（供文生图），须包含：构图、光线、配色、字体排版、点击率元素（箭头/高亮框等）。
+【关键·必须 6 条全部输出】每个 var_*_prompt_en 必须独立写出，绝不允许：
+- 用 "var_prompt_en" / "var_a_prompt_en" 这种无后缀或合并字段
+- 只输出 1 条或 2 条然后省略剩余
+- 6 条内容必须彼此差异（A 与 B 不能只是调色版本）
+否则前端会判定格式错误并丢弃本次输出。
 ${hookRule}
 ${imageTextRule}
-${crossNicheBan}${refSystemNote}
+${crossNicheBan}${templateBlock}${refSystemNote}
 ${langRule}`;
 
-    const user = `## 赛道：${nicheName}
-## 风格 DNA
-${profile.styleDna}
-
-## A/B/C 方案方向（写入对应 var 提示词）
-- 方案 A（场景沉浸）：${profile.schemeAHint}
-- 方案 B（极简底）：${profile.schemeBHint}
-- 方案 C（高反差特写）：${profile.schemeCHint}
+    const user = `${nicheName ? `## 赛道：${nicheName}\n` : ''}${selectedTemplate ? `## 封面模板：${selectedTemplate.icon} ${selectedTemplate.name}\n模板风格 DNA：${selectedTemplate.styleDna}\n\n` : ''}${profile ? `## 风格 DNA（赛道）\n${profile.styleDna}\n\n` : ''}## 6 个差异化方案方向（写入对应 var_*_prompt_en）
+- 方案 A（场景沉浸）：${selectedTemplate?.schemeAHint ?? profile?.schemeAHint ?? '通用极简构图'}
+- 方案 B（极简底）：${selectedTemplate?.schemeBHint ?? profile?.schemeBHint ?? '通用极简构图'}
+- 方案 C（高反差特写）：${selectedTemplate?.schemeCHint ?? profile?.schemeCHint ?? '通用极简构图'}
+- 方案 D（纵向分屏）：${selectedTemplate?.schemeDHint ?? '上下分屏：上半部主体画面，下半部数据牌 / 信息条，中线光束分割'}
+- 方案 E（信息图 / 数据牌）：${selectedTemplate?.schemeEHint ?? '信息图风格：中央巨型数据 / 数字 / 徽章 + 主体剪影 + Hook 字横压顶部'}
+- 方案 F（人像 + 大字横幅）：${selectedTemplate?.schemeFHint ?? '主角半身特写 + 巨型姓名/称呼横幅 + 角标职位/节目名'}
 
 ## 核心议题（视频在讲什么）
-${coreTopic || '（未填写，请根据赛道生成占位级示例，并提醒用户补充）'}
+${coreTopic.trim() ? coreTopic : '（未填写）请自行根据赛道 / 模板生成一个高 CTR 占位主题（例如：豪门夜战 · 七号回归后连续三轮 0:2 被吊打的真相），整段 prompt 仍要严格输出 JSON，禁止在 JSON 之外补充任何提示文字。'}
 
 ## 语言（文案类字段）
 ${langRule}
 
-请严格输出 JSON。`;
+请严格输出 JSON，每个 var_*_prompt_en 必须明确按其方案（A~F）的构图写，不能只是色调变体。`;
+
+    if (copyOnly) {
+      // 简化模式：只生成 8 个文案字段（不要写 var_*_prompt_en）
+      const zhHookRule = `【靶点 Hook】target_phrase_badge：封面主标题，极限 Hook，从核心议题「${coreTopic.trim() || '（议题）'}」转化（禁止复制原文）。技法：① 反直觉反转（真相反转）② 身份/结果承诺（99%的人不知道）③ 禁忌窥探（被隐瞒的真相）④ 数字冲击（3个致命误区）⑤ 极端化（千万别这么做）。单句，6–20字，语气强。target_phrase_multi：2–3句多句 Hook，技法同上，与 badge 同主题分层展开，不要重复 badge，每句独立。`;
+      const enHookRule = `[Hook] target_phrase_badge: one punchline Hook, transform from topic (do NOT copy verbatim). Techniques: ① counter-intuitive flip ② identity/commitment promise ③ forbidden truth ④ number shock ⑤ extreme. Single line, 6–12 words, punchy. target_phrase_multi: 2–3 Hook lines, same theme layered, do NOT repeat badge.`;
+      const copyOnlySystem = `YouTube copy & SEO director for ${nicheName} niche.${selectedTemplate ? ` Template: ${selectedTemplate.icon} ${selectedTemplate.name}.` : ''}
+Output JSON only, no markdown. 8 keys: titles_warning, titles_anti_truth, titles_stop_doing, golden_description, seo_tags, visual_emotion_lock, target_phrase_badge, target_phrase_multi.
+titles_*: warning / anti-truth / stop-doing style, ≤60 chars each (${lang === 'en' ? 'English' : 'Simplified Chinese'}).
+golden_description: 2-line video intro. visual_emotion_lock: emotion arc description.
+${lang === 'en' ? enHookRule : zhHookRule}
+${lang === 'en' ? 'All copy fields in English.' : '文案字段用简体中文；seo_tags 用中文词组标签。'}`;
+
+      const copyOnlyUser = `## ${nicheName}\n${selectedTemplate ? `## Template: ${selectedTemplate.icon} ${selectedTemplate.name}\n` : ''}${profile ? `## Style DNA: ${profile.styleDna}\n\n` : ''}## 核心议题（视频在讲什么）
+${coreTopic.trim() ? coreTopic : '（未填写）请根据赛道自行生成高 CTR 主题。'}
+
+Output JSON only. Do NOT output var_*_prompt_en fields.`;
+
+      return { system: copyOnlySystem, user: copyOnlyUser };
+    }
 
     return { system, user };
-  }, [niche, coreTopic, refLocked, refPreviews.length, coverAspect]);
+  }, [niche, coreTopic, refLocked, refPreviews.length, coverAspect, selectedTemplate]);
 
-  const runGenerateBundle = async () => {
+  /**
+   * 本地兜底：6 个差异化 var prompt 模板（基于赛道 + 模板 + 核心议题）
+   */
+  const buildLocalVarPrompts = useCallback((): Record<'a'|'b'|'c'|'d'|'e'|'f', string> => {
+    const aspectOpt =
+      COVER_ASPECT_OPTIONS.find((o) => o.id === coverAspect) ?? COVER_ASPECT_OPTIONS[0];
+    const ar = aspectOpt.id;
+    const topic = coreTopic.trim() || 'this video core topic';
+    const tpl = selectedTemplate;
+    const dna = (tpl?.styleDna || '').slice(0, 120);
+    const a = `YouTube thumbnail. Scheme A — immersive cinematic scene about "${topic.slice(0, 40)}". Wide cinematic composition with main subject front-center, dramatic ${dna || "high-contrast"} lighting, dominant complementary color palette, bold headline at top in sans-serif heavy weight, click-rate elements like glowing highlight ring or arrow pointing to subject, sharp focus, high detail, photorealistic.`;
+    const b = `YouTube thumbnail. Scheme B — minimal base about "${topic.slice(0, 40)}". Ultra-clean background with single gradient, subject placed off-center rule-of-thirds, soft ${dna || "editorial"} lighting, monochrome accent + one pop color, large display typography bottom-left, subtle glow halo, no clutter, premium magazine layout.`;
+    const c = `YouTube thumbnail. Scheme C — high-contrast close-up of "${topic.slice(0, 40)}". Tight crop on subject face/upper body, intense expression, hard rim light, ${dna || "saturation-boosted"} color clash (red vs blue), oversized typography overlapping subject, arrow + circled emphasis, gritty film-grain texture, photorealistic.`;
+    const d = `YouTube thumbnail. Scheme D — vertical split about "${topic.slice(0, 40)}". Top half shows main cinematic scene, bottom half shows a stat panel / data card; vertical light beam splits the two halves. High-contrast palette, bold number or stat in lower half, sans-serif heavy numerals, clean infographic typography.`;
+    const e = `YouTube thumbnail. Scheme E — infographic / data card for "${topic.slice(0, 40)}". Center-stage giant number or badge with subject silhouette behind it, top horizontal Hook text band, side info card with 3 short stats, ${dna || 'flat-design'} vector accents, clean modern infographic.`;
+    const f = `YouTube thumbnail. Scheme F — portrait + huge banner for "${topic.slice(0, 40)}". Subject half-body close-up, giant name/title banner stretching across frame, corner badge with role/program name, ${dna || "premium"} dramatic lighting, type dominates composition, photorealistic subject.`;
+    return { a, b, c, d, e, f };
+  }, [coreTopic, coverAspect, selectedTemplate]);
+
+  /**
+   * 本地启发式兜底：8 个文案字段（基于核心议题）
+   * 策略：从议题提取关键事实锚点，用「事实+反转/悬念」结构生成 Hook（非关键词+套语）
+   */
+  const buildLocalCopyPrompts = useCallback(() => {
+    const tRaw = coreTopic.trim();
+    const lang = detectTopicLang(coreTopic);
+
+    // ── 提取关键事实锚点 ──
+    function extractFacts(text: string): string[] {
+      const facts: string[] = [];
+
+      // 中文：提取专有名词（人名/地名/机构名/事件名，2-8字汉字词组）
+      const properNouns = text.match(/[\u4e00-\u9fff]{2,8}(?:队|杯|赛|国|王|帝|王|神|星|王|皇|协|会|团|联|赛|运|赛|联|盟|机构|公司|组织|党|派|集团|企业|组织)/g);
+      if (properNouns) facts.push(...properNouns);
+
+      // 数字 + 单位/年份（2026、4年、3分钟等）
+      const numbers = text.match(/\d+(?:\.\d+)?(?:年|岁|天|月|周|次|个|人|万|亿|%|分|秒)?/g);
+      if (numbers) facts.push(...numbers);
+
+      // 含数字的词组（四年、世界杯、2026世界杯）
+      const numPhrases = text.match(/[\u4e00-\u9fff\d]{3,12}/g);
+      if (numPhrases) facts.push(...numPhrases);
+
+      // 具体动作词（夺冠/被围攻/沉默/反转/逆袭/坠落/爆发/认错）
+      const actionPhrases = text.match(/[\u4e00-\u9fff]{2,6}(?:夺冠|围攻|沉默|反转|逆袭|坠落|爆发|认错|逆风|翻盘|封神|崩塌|陨落|觉醒|突破|翻车|暴雷)/g);
+      if (actionPhrases) facts.push(...actionPhrases);
+
+      // 完整高价值短语（从…到…结构）
+      const arcPhrases = text.match(/从[\u4e00-\u9fff]{1,6}到[\u4e00-\u9fff]{1,6}/g);
+      if (arcPhrases) facts.push(...arcPhrases);
+
+      return [...new Set(facts)].slice(0, 8);
+    }
+
+    // 英文：提取关键词
+    function extractEnKeywords(text: string): string[] {
+      const stop = ['the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'as', 'into', 'through', 'during', 'before', 'after', 'about', 'and', 'but', 'or', 'not', 'this', 'that', 'these', 'those', 'it', 'its', 'what', 'which', 'who', 'whom', 'how', 'why'];
+      const words = text.split(/\s+/).filter(w => w.length > 3 && !stop.includes(w.toLowerCase()));
+      return [...new Set(words)].slice(0, 6);
+    }
+
+    const facts = lang === 'en' ? extractEnKeywords(tRaw) : extractFacts(tRaw);
+    // 选最有信息量的锚点：优先选含数字或动作的，其次选专有名词
+    const anchor = facts.find(f => /^\d|年|岁|次|夺冠|围攻|沉默|反转|逆袭|坠落|爆发|封神|崩塌|陨落/.test(f))
+                || facts[0]
+                || (lang === 'en' ? 'this topic' : '本期内容');
+    const topicFull = tRaw || (lang === 'en' ? 'this video' : '本期视频');
+
+    if (lang === 'en') {
+      const badgeTemplates = [
+        `The Shocking Truth About ${anchor} Nobody Tells You`,
+        `Why ${anchor} Is More Important Than You Think`,
+        `The Real Reason Behind ${anchor}`,
+        `What 99% Get Wrong About ${anchor}`,
+      ];
+      const multiTemplates = [
+        `Why ${anchor} Actually Matters in 2026\nThe Hidden Pattern Nobody Talks About\nWhat Experts Just Confirmed`,
+        `The Truth About ${anchor} They Don\'t Want You to Know\nWhy This Changes Everything\nWhat You Need to Understand Now`,
+        `How ${anchor} Became the Biggest Story of the Year\nThe Facts They\'re Hiding From You\nWhy This Matters More Than You Realize`,
+      ];
+      return {
+        titles_warning: `⚠️ What 90% Get Wrong About ${anchor}`,
+        titles_anti_truth: `The Truth About ${anchor} Nobody Tells You First`,
+        titles_stop_doing: `Stop Doing This Before It\'s Too Late`,
+        golden_description: `Deep analysis of "${topicFull}" — breaking down core principles and real-world applications in 3 minutes. Subscribe for weekly viral breakdowns.`,
+        seo_tags: `#${anchor.replace(/\s+/g, '')} #DeepDive #Explained #MustKnow #TruthRevealed #CriticalThinking #CaseStudy #Analysis #HowTo #ProTips #LessonsLearned #MistakesToAvoid`,
+        visual_emotion_lock: 'Start with shock → resolve in middle → confirmation at end. Anxiety to certainty.',
+        target_phrase_badge: badgeTemplates[Math.floor(Math.random() * badgeTemplates.length)],
+        target_phrase_multi: multiTemplates[Math.floor(Math.random() * multiTemplates.length)],
+      };
+    }
+
+    // ── 中文 Hook 模板库：基于事实锚点 × 5 种技法 ──
+    const zhBadgeTemplates = [
+      // 技法① 数字冲击（锚点含数字时首选）
+      `${anchor}，到底发生了什么？`,
+      // 技法② 禁忌/窥探感
+      `关于${anchor}，内部人员从不公开说的事`,
+      // 技法③ 反直觉反转（锚点是动作/变化词时首选）
+      `${anchor}，只是表象？真相比这更震撼`,
+      // 技法④ 身份/结果承诺
+      `看完${anchor}，我才搞懂了这背后的逻辑`,
+      // 技法⑤ 极端化悬念
+      `${anchor}——没人敢正面回答的真相`,
+    ];
+    const zhMultiTemplates = [
+      // 悬念递进
+      `为什么${anchor}？\n背后的真实原因被掩盖了多久\n深度解析，一次讲透`,
+      // 禁忌窥探
+      `关于${anchor}，官方从未正式回应的事\n知情人选择沉默的真正原因\n看完你会重新思考整个事件`,
+      // 反直觉反转
+      `${anchor}？你看到的可能只是假象\n真相恰恰相反\n这才是被忽视的关键`,
+    ];
+
+    const badgeIdx = Math.floor(Math.random() * zhBadgeTemplates.length);
+    const multiIdx = Math.floor(Math.random() * zhMultiTemplates.length);
+
+    return {
+      titles_warning: `⚠️ 关于${anchor}，90% 的人都理解错了`,
+      titles_anti_truth: `关于${anchor}的真相，被掩盖了太久了`,
+      titles_stop_doing: `千万别再误解${anchor}了`,
+      golden_description: `${topicFull} —— 深度拆解，3 分钟讲透底层原理与实战路径。订阅获取每周爆款拆解。`,
+      seo_tags: facts.slice(0, 12).map(f => `#${f}`).join(' ') || `#深度解析 #真相 #必须知道 #禁忌 #误区 #案例 #实战 #原理 #避坑 #进阶 #复盘 #干货`,
+      visual_emotion_lock: '开场紧张 → 中段释疑 → 结尾顿悟，情绪弧线由焦虑转为笃定。',
+      target_phrase_badge: zhBadgeTemplates[badgeIdx],
+      target_phrase_multi: zhMultiTemplates[multiIdx],
+    };
+  }, [coreTopic]);
+
+  const runGenerateBundle = async (copyOnly = false) => {
     if (!apiKey.trim()) {
       toast.error('请先配置 API Key');
       return;
     }
-    if (niche === null) {
-      toast.error('请先选择赛道');
+    if (niche === null && !selectedTemplateId) {
+      toast.error('请先选择赛道或封面模板');
       return;
     }
     if (provider === 'runninghub') {
@@ -420,57 +816,223 @@ ${langRule}
     }
     setLoadingText(true);
     setRawOut('');
-    setBundle(null);
-    const { system, user } = buildPrompts();
-    let acc = '';
+    const existing = bundle;
+    if (!copyOnly) setBundle(null);
+
+    const { system, user } = buildPrompts(copyOnly);
     const refForJson =
       refLocked && refPreviews.length > 0
         ? refPreviews.map((x) => x.dataUrl)
         : undefined;
+    const baseOpts = {
+      temperature: copyOnly ? 0.6 : 0.7,
+      referenceDataUrls: refForJson,
+      referenceMultimodalPreamble: refForJson?.length
+        ? getCoverReferenceMultimodalPreamble(niche)
+        : undefined,
+    };
+
+    /**
+     * 安全流：即使模型没输出 JSON 也返回原始文本（用于单字段 prompt）
+     */
+    const safeStream = async (sys: string, usr: string, maxTokens = 1024): Promise<string> => {
+      let acc = '';
+      try {
+        await streamContentGeneration(
+          usr,
+          sys,
+          (chunk) => {
+            acc += chunk;
+            setRawOut((prev) => prev + chunk);
+          },
+          undefined,
+          { ...baseOpts, temperature: 0.7, maxTokens }
+        );
+      } catch (err: any) {
+        // 单轮失败不致命：返回空字符串，由调用方做兜底
+        console.error('[CoverDesign] 单轮生成失败:', err?.message || err);
+      }
+      return acc;
+    };
+
     try {
-      await streamContentGeneration(
-        user,
-        system,
-        (chunk) => {
-          acc += chunk;
-          setRawOut(acc);
-        },
-        undefined,
-        {
-          temperature: 0.75,
-          maxTokens: 8192,
-          referenceDataUrls: refForJson,
-          referenceMultimodalPreamble: refForJson?.length
-            ? getCoverReferenceMultimodalPreamble(niche)
-            : undefined,
+      // ========== copyOnly 模式：直接单次请求 8 字段 JSON ==========
+      if (copyOnly) {
+        let acc = '';
+        try {
+          await streamContentGeneration(
+            user,
+            system,
+            (chunk) => {
+              acc += chunk;
+              setRawOut(acc);
+            },
+            undefined,
+            { ...baseOpts, maxTokens: 4096 }
+          );
+        } catch (err: any) {
+          console.error('[CoverDesign] copyOnly 流失败:', err?.message || err);
         }
+        let parsed = parseCoverBundle(acc, coreTopic);
+
+        // 兜底：本地启发式生成 8 个字段
+        if (!parsed) {
+          console.warn('[CoverDesign] copyOnly 解析失败,使用本地启发式兜底。原始输出:', acc);
+        }
+        const localCopy = buildLocalCopyPrompts();
+        const localVars = buildLocalVarPrompts();
+        // existing 为空时退化为 localCopy + 本地兜底 VAR（保证用户至少有内容）
+        const ex = existing || {};
+        const merged = {
+          titles_warning: '',
+          titles_anti_truth: '',
+          titles_stop_doing: '',
+          golden_description: '',
+          seo_tags: '',
+          visual_emotion_lock: '',
+          target_phrase_badge: '',
+          target_phrase_multi: '',
+          var_a: '',
+          var_b: '',
+          var_c: '',
+          var_d: '',
+          var_e: '',
+          var_f: '',
+          ...ex,
+          titles_warning: parsed?.titles_warning || localCopy.titles_warning,
+          titles_anti_truth: parsed?.titles_anti_truth || localCopy.titles_anti_truth,
+          titles_stop_doing: parsed?.titles_stop_doing || localCopy.titles_stop_doing,
+          golden_description: parsed?.golden_description || localCopy.golden_description,
+          seo_tags: parsed?.seo_tags || localCopy.seo_tags,
+          visual_emotion_lock: parsed?.visual_emotion_lock || localCopy.visual_emotion_lock,
+          target_phrase_badge: parsed?.target_phrase_badge || localCopy.target_phrase_badge,
+          target_phrase_multi: parsed?.target_phrase_multi || localCopy.target_phrase_multi,
+          var_a: ex.var_a || localVars.a,
+          var_b: ex.var_b || localVars.b,
+          var_c: ex.var_c || localVars.c,
+          var_d: ex.var_d || localVars.d,
+          var_e: ex.var_e || localVars.e,
+          var_f: ex.var_f || localVars.f,
+        };
+        setBundle(merged);
+        const filledCopy = [
+          merged.titles_warning, merged.titles_anti_truth, merged.titles_stop_doing,
+          merged.golden_description, merged.seo_tags, merged.visual_emotion_lock,
+          merged.target_phrase_badge, merged.target_phrase_multi,
+        ].filter(Boolean).length;
+        if (parsed && filledCopy >= 4) {
+          toast.success('文案已补全');
+        } else if (parsed && filledCopy > 0) {
+          toast.warning(`文案补全不完整（${filledCopy}/8），已用本地启发式填充`);
+        } else {
+          toast.warning(`LLM 未响应或解析失败，已用本地启发式填充文案（${filledCopy}/8）`);
+        }
+        return;
+      }
+
+      // ========== 完整模式：分阶段生成 ==========
+      // Step 1：6 个 var 并行请求（每个独立 prompt，不要求 JSON，只输出纯文本）
+      setRawOut('▶ Step 1/2：并行生成 6 个 VAR 提示词...\n\n');
+      const { system: varSystem, user: varUser } = buildPrompts(false);
+      const schemeKeys: Array<'A' | 'B' | 'C' | 'D' | 'E' | 'F'> = ['A', 'B', 'C', 'D', 'E', 'F'];
+      const varResults = await Promise.all(
+        schemeKeys.map(async (key) => {
+          const singleSystem = `${varSystem}\n\n【本次唯一任务】只输出方案 ${key} 的一段 80–180 词英文文生图 prompt。\n- 禁止 JSON、禁止 Markdown 代码块、禁止前言后记。\n- 直接输出纯英文段落，不要再写方案 B/C/D/E/F 的内容。`;
+          const singleUser = `${varUser}\n\n【聚焦方案 ${key}】请只输出方案 ${key} 的英文 prompt 段落，不要重复方案方向列表。`;
+          const text = await safeStream(singleSystem, singleUser, 1024);
+          return { key, text: text.trim() };
+        })
       );
-      const parsed = parseCoverBundle(acc);
-      if (parsed) {
-        setBundle(parsed);
-        toast.success('文案与 A/B/C 指令已生成');
+      const localFallback = buildLocalVarPrompts();
+      const vars: Record<'a' | 'b' | 'c' | 'd' | 'e' | 'f', string> = {
+        a: varResults[0].text || localFallback.a,
+        b: varResults[1].text || localFallback.b,
+        c: varResults[2].text || localFallback.c,
+        d: varResults[3].text || localFallback.d,
+        e: varResults[4].text || localFallback.e,
+        f: varResults[5].text || localFallback.f,
+      };
+
+      // Step 2：单次请求 8 个文案字段（强制 JSON，但降级容忍）
+      setRawOut((prev) => prev + '\n\n▶ Step 2/2：生成文案 / SEO / 靶点...\n\n');
+      const copySystem = buildPrompts(true).system;
+      const copyUser = buildPrompts(true).user;
+      let copyAcc = '';
+      try {
+        await streamContentGeneration(
+          copyUser,
+          copySystem,
+          (chunk) => {
+            copyAcc += chunk;
+            setRawOut((prev) => prev + chunk);
+          },
+          undefined,
+          { ...baseOpts, maxTokens: 4096 }
+        );
+      } catch (err: any) {
+        console.error('[CoverDesign] 文案生成失败:', err?.message || err);
+      }
+      const copyParsed = parseCoverBundle(copyAcc, coreTopic);
+
+      const localCopy = buildLocalCopyPrompts();
+      const bundleOut: CoverBundle = {
+        titles_warning: copyParsed?.titles_warning || localCopy.titles_warning,
+        titles_anti_truth: copyParsed?.titles_anti_truth || localCopy.titles_anti_truth,
+        titles_stop_doing: copyParsed?.titles_stop_doing || localCopy.titles_stop_doing,
+        golden_description: copyParsed?.golden_description || localCopy.golden_description,
+        seo_tags: copyParsed?.seo_tags || localCopy.seo_tags,
+        visual_emotion_lock: copyParsed?.visual_emotion_lock || localCopy.visual_emotion_lock,
+        target_phrase_badge: copyParsed?.target_phrase_badge || localCopy.target_phrase_badge,
+        target_phrase_multi: copyParsed?.target_phrase_multi || localCopy.target_phrase_multi,
+        var_a: vars.a,
+        var_b: vars.b,
+        var_c: vars.c,
+        var_d: vars.d,
+        var_e: vars.e,
+        var_f: vars.f,
+      };
+      setBundle(bundleOut);
+
+      const filledCopy = [
+        bundleOut.titles_warning, bundleOut.titles_anti_truth, bundleOut.titles_stop_doing,
+        bundleOut.golden_description, bundleOut.seo_tags, bundleOut.visual_emotion_lock,
+        bundleOut.target_phrase_badge, bundleOut.target_phrase_multi,
+      ].filter(Boolean).length;
+      const uniqVars = new Set(
+        [vars.a, vars.b, vars.c, vars.d, vars.e, vars.f].map((v) => (v || '').trim()).filter(Boolean)
+      );
+      const allVarsFromLLM = varResults.every((r) => r.text.trim().length > 0);
+      if (filledCopy >= 4 && uniqVars.size >= 3) {
+        toast.success('文案与 A~F 矩阵指令已生成');
+      } else if (!allVarsFromLLM) {
+        toast.warning(`部分 VAR 由本地模板兜底（${varResults.filter((r) => !r.text.trim()).length}/6 个失败）`);
+      } else if (filledCopy < 4) {
+        toast.warning(`文案字段补全 ${filledCopy}/8，部分由本地启发式兜底`);
       } else {
-        toast.error('无法解析 JSON，请查看原始输出或重试');
+        toast.warning('生成完成，但差异化方案不足，请手动微调');
       }
     } catch (err: any) {
+      console.error('[CoverDesign] runGenerateBundle 异常:', err);
       toast.error(err?.message || '生成失败');
     } finally {
       setLoadingText(false);
     }
   };
-
-  const runSchemeImage = async (key: 'A' | 'B' | 'C') => {
+  const runSchemeImage = async (key: 'A' | 'B' | 'C' | 'D' | 'E' | 'F') => {
     if (!canYunwuImage) {
       toast.error('缩略图生成需 Yunwu（sk-）Key，请在设置中配置');
       return;
     }
-    const prompt =
-      key === 'A' ? bundle?.var_a : key === 'B' ? bundle?.var_b : bundle?.var_c;
+    const varKey = (`var_${key.toLowerCase()}` as 'var_a' | 'var_b' | 'var_c' | 'var_d' | 'var_e' | 'var_f');
+    const prompt = live[varKey];
     if (!prompt?.trim()) {
-      toast.error('请先生成 A/B/C 指令');
+      toast.error(`请先生成 ${key} 指令（点击上方「生成高转化文案」）`);
       return;
     }
-    if (coverHookSource === 'multi' && !bundle?.target_phrase_multi?.trim()) {
+    /** 优先用用户编辑后的靶点文案（实时同步） */
+    const liveBadge = (editedBundle?.target_phrase_badge ?? bundle?.target_phrase_badge ?? '').trim();
+    const liveMulti = (editedBundle?.target_phrase_multi ?? bundle?.target_phrase_multi ?? '').trim();
+    if (coverHookSource === 'multi' && !liveMulti) {
       toast.error('多句极限靶点为空，请重新生成文案，或改选「一句话极限靶点」');
       return;
     }
@@ -481,21 +1043,21 @@ ${langRule}
       topicLang === 'zh'
         ? '\n\nMandatory: all Chinese characters on the thumbnail (titles, subtitles, stamps, badges) must be in Traditional Chinese (繁體中文) script only; no simplified Chinese forms. No English except user-provided proper nouns if any.'
         : '\n\nMandatory: all on-image text must be English only; no Chinese or other scripts on the thumbnail.';
-    const useMulti =
-      coverHookSource === 'multi' && bundle?.target_phrase_multi?.trim();
-    const hookOne = bundle?.target_phrase_badge?.trim() || '';
-    const hookMulti = bundle?.target_phrase_multi?.trim() || '';
+    const useMulti = coverHookSource === 'multi' && liveMulti;
     const hookEnforcement = useMulti
       ? topicLang === 'zh'
-        ? `\n\nLayered thumbnail copy (render all Chinese on-image text in Traditional Chinese 繁體):\n${hookMulti}\nUse the strongest line as the largest dominant title; place remaining 1–2 sentences as secondary strips or subtitles without clutter.`
-        : `\n\nLayered thumbnail copy from multi-sentence hook:\n${hookMulti}\nUse the strongest line as the largest dominant title; place remaining 1–2 sentences as secondary strips or subtitles without clutter.`
-      : hookOne
-        ? `\n\nThe largest, most dominant title text on the thumbnail must express this hook meaning: "${hookOne}".`
+        ? `\n\nLayered thumbnail copy (render all Chinese on-image text in Traditional Chinese 繁體):\n${liveMulti}\nUse the strongest line as the largest dominant title; place remaining 1–2 sentences as secondary strips or subtitles without clutter.`
+        : `\n\nLayered thumbnail copy from multi-sentence hook:\n${liveMulti}\nUse the strongest line as the largest dominant title; place remaining 1–2 sentences as secondary strips or subtitles without clutter.`
+      : liveBadge
+        ? `\n\nThe largest, most dominant title text on the thumbnail must express this hook meaning: "${liveBadge}".`
         : '';
     const stylePreset =
       COVER_STYLE_PRESETS.find((s) => s.id === coverStyleId) ??
       COVER_STYLE_PRESETS.find((s) => s.id === 'minimal_flat')!;
     const styleEnforcement = `\n\nVisual style preset (must match): ${stylePreset.promptEn}`;
+    const templateEnforcement = selectedTemplate
+      ? `\n\nLocked cover template (must match): ${selectedTemplate.icon} ${selectedTemplate.name} — ${selectedTemplate.styleDna}`
+      : '';
 
     setSchemeLoading((m) => ({ ...m, [key]: true }));
     try {
@@ -506,7 +1068,7 @@ ${langRule}
       };
       const res = await generateImage(apiKey, {
         model: modelMap[coverImageModel],
-        prompt: `${prompt}\n\nYouTube thumbnail, ${aspectOpt.id} aspect ratio, bold readable main title, high CTR composition.${styleEnforcement}${hookEnforcement}${imageTextEnforcement}`,
+        prompt: `${prompt}\n\nYouTube thumbnail, ${aspectOpt.id} aspect ratio, bold readable main title, high CTR composition.${styleEnforcement}${templateEnforcement}${hookEnforcement}${imageTextEnforcement}`,
         size: aspectOpt.size,
         quality: 'high',
         referenceDataUrls:
@@ -529,7 +1091,7 @@ ${langRule}
 
   const profile = niche !== null ? getCoverNicheProfile(niche) : null;
 
-  const onDownloadScheme = async (key: 'A' | 'B' | 'C', src: string) => {
+  const onDownloadScheme = async (key: 'A' | 'B' | 'C' | 'D' | 'E' | 'F', src: string) => {
     try {
       await downloadCoverImage(src, `cover-scheme-${key}-${coverAspect}-${Date.now()}.png`);
       toast.success('已开始下载');
@@ -559,7 +1121,10 @@ ${langRule}
               <button
                 key={id}
                 type="button"
-                onClick={() => setNiche(id)}
+                onClick={() => {
+                  setNiche(id);
+                  setSelectedTemplateId(null); // 与模板互斥
+                }}
                 className={`px-3 py-1.5 rounded-lg text-sm border transition-all flex items-center gap-1.5 ${
                   on
                     ? 'bg-emerald-600 text-white border-emerald-500 shadow-lg shadow-emerald-500/20'
@@ -572,8 +1137,63 @@ ${langRule}
             );
           })}
         </div>
-        {niche === null && (
-          <p className="text-xs text-amber-500/90">请选择一个赛道后再生成文案；上传参考图时也会弹出快捷选择。</p>
+        {niche === null && !selectedTemplate && (
+          <p className="text-xs text-amber-500/90">
+            请选择赛道或封面模板后再生成文案；上传参考图时也会弹出快捷选择（赛道和模板互斥，只能选其一）。
+          </p>
+        )}
+      </div>
+
+      {/* 封面模板（可选·与赛道正交的第二层风格锁定） */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-500 font-mono uppercase tracking-wider">
+            封面模板（可选）
+          </span>
+          {selectedTemplate && (
+            <button
+              type="button"
+              onClick={() => setSelectedTemplateId(null)}
+              className="text-[10px] text-slate-500 hover:text-rose-400 transition-colors"
+            >
+              清除模板
+            </button>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {COVER_TEMPLATES.map((t) => {
+            const on = selectedTemplateId === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                title={t.desc}
+                onClick={() => {
+                  setSelectedTemplateId(on ? null : t.id);
+                  if (!on) setNiche(null); // 与赛道互斥
+                }}
+                className={`px-3 py-1.5 rounded-lg text-sm border transition-all flex items-center gap-1.5 ${
+                  on
+                    ? 'bg-amber-600 text-white border-amber-500 shadow-lg shadow-amber-500/20'
+                    : 'bg-slate-900/60 text-slate-400 border-slate-700 hover:border-slate-600'
+                }`}
+              >
+                <span>{t.icon}</span>
+                <span className="max-w-[140px] truncate">{t.name}</span>
+              </button>
+            );
+          })}
+        </div>
+        {selectedTemplate && (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-300/90 flex items-start gap-2">
+            <span className="shrink-0 mt-0.5">已锁定模板：</span>
+            <span>
+              <b className="text-amber-200">
+                {selectedTemplate.icon} {selectedTemplate.name}
+              </b>
+              <span className="text-slate-400"> · 风格 DNA 已注入 → 生成文案 / 出图</span>
+            </span>
+          </div>
         )}
       </div>
 
@@ -665,7 +1285,7 @@ ${langRule}
 
       <button
         type="button"
-        disabled={loadingText || niche === null}
+        disabled={loadingText || (niche === null && !selectedTemplateId)}
         onClick={runGenerateBundle}
         className="w-full py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold text-sm shadow-lg shadow-emerald-900/30 flex items-center justify-center gap-2"
       >
@@ -676,6 +1296,31 @@ ${langRule}
         )}
         生成高转化文案与 A/B/C 矩阵指令
       </button>
+
+      {bundle && (() => {
+        const emptyCopy = [
+          bundle.titles_warning,
+          bundle.titles_anti_truth,
+          bundle.titles_stop_doing,
+          bundle.golden_description,
+          bundle.seo_tags,
+          bundle.visual_emotion_lock,
+          bundle.target_phrase_badge,
+          bundle.target_phrase_multi,
+        ].filter((v) => !v || !v.trim()).length;
+        if (emptyCopy < 5) return null;
+        return (
+          <button
+            type="button"
+            disabled={loadingText}
+            onClick={() => runGenerateBundle(true)}
+            className="w-full py-2.5 rounded-xl bg-amber-600/30 hover:bg-amber-600/50 border border-amber-500/40 disabled:opacity-50 text-amber-200 font-semibold text-sm flex items-center justify-center gap-2"
+          >
+            {loadingText ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+            📝 补全标题 / SEO / 靶点文案（针对 VAR 单独生成）
+          </button>
+        );
+      })()}
 
       {!bundle && rawOut && (
         <pre className="text-xs text-slate-500 whitespace-pre-wrap break-words max-h-48 overflow-y-auto border border-slate-800 rounded-lg p-3 bg-slate-950/60">
@@ -697,110 +1342,147 @@ ${langRule}
                 <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 space-y-2 relative">
                   <button
                     type="button"
-                    onClick={() => copy('tw', bundle.titles_warning)}
+                    onClick={() => copy('tw', live.titles_warning)}
                     className="absolute top-3 right-3 p-1.5 rounded-md bg-slate-800 text-slate-400 hover:text-emerald-400 z-10"
                   >
                     {copied === 'tw' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                   </button>
                   <div className="text-xs text-slate-500 pr-10">THE WARNING</div>
-                  <p className="text-sm text-slate-200 pr-10">{bundle.titles_warning}</p>
+                  <p className="text-sm text-slate-200 pr-10">{live.titles_warning}</p>
                 </div>
                 <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 space-y-2 relative">
                   <button
                     type="button"
-                    onClick={() => copy('tat', bundle.titles_anti_truth)}
+                    onClick={() => copy('tat', live.titles_anti_truth)}
                     className="absolute top-3 right-3 p-1.5 rounded-md bg-slate-800 text-slate-400 hover:text-emerald-400 z-10"
                   >
                     {copied === 'tat' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                   </button>
                   <div className="text-xs text-slate-500 pr-10">THE ANTI-TRUTH</div>
-                  <p className="text-sm text-slate-200 pr-10">{bundle.titles_anti_truth}</p>
+                  <p className="text-sm text-slate-200 pr-10">{live.titles_anti_truth}</p>
                 </div>
                 <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 space-y-2 relative">
                   <button
                     type="button"
-                    onClick={() => copy('tsd', bundle.titles_stop_doing)}
+                    onClick={() => copy('tsd', live.titles_stop_doing)}
                     className="absolute top-3 right-3 p-1.5 rounded-md bg-slate-800 text-slate-400 hover:text-emerald-400 z-10"
                   >
                     {copied === 'tsd' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                   </button>
                   <div className="text-xs text-slate-500 pr-10">THE STOP DOING</div>
-                  <p className="text-sm text-slate-200 pr-10">{bundle.titles_stop_doing}</p>
+                  <p className="text-sm text-slate-200 pr-10">{live.titles_stop_doing}</p>
                 </div>
                 <div className="rounded-xl border border-emerald-900/40 bg-emerald-950/20 p-4 relative">
                   <button
                     type="button"
-                    onClick={() => copy('gd', bundle.golden_description)}
+                    onClick={() => copy('gd', live.golden_description)}
                     className="absolute top-3 right-3 p-1.5 rounded-md bg-slate-800 text-slate-400 hover:text-emerald-400"
                   >
                     {copied === 'gd' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                   </button>
                   <div className="text-xs text-emerald-500/80 mb-2">黄金两行描述</div>
-                  <p className="text-sm text-slate-200 pr-10">{bundle.golden_description}</p>
+                  <p className="text-sm text-slate-200 pr-10">{live.golden_description}</p>
                 </div>
                 <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 relative min-w-0 overflow-hidden">
                   <button
                     type="button"
-                    onClick={() => copy('tags', formatSeoTagsForDisplay(bundle.seo_tags))}
+                    onClick={() => copy('tags', formatSeoTagsForDisplay(live.seo_tags))}
                     className="absolute top-3 right-3 p-1.5 rounded-md bg-slate-800 text-slate-400 hover:text-emerald-400 z-10"
                   >
                     {copied === 'tags' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                   </button>
                   <div className="text-xs text-slate-500 mb-2 pr-10">SEO 热门标签</div>
                   <p className="text-sm text-slate-300 break-words [overflow-wrap:anywhere] whitespace-pre-wrap pr-10 max-w-full">
-                    {formatSeoTagsForDisplay(bundle.seo_tags)}
+                    {formatSeoTagsForDisplay(live.seo_tags)}
                   </p>
                 </div>
               </div>
               <div className="space-y-4 min-w-0">
                 <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
                   <div className="text-xs text-slate-500 mb-2">系统锁定视觉情绪</div>
-                  <p className="text-sm text-slate-200">{bundle.visual_emotion_lock}</p>
+                  <p className="text-sm text-slate-200">{live.visual_emotion_lock}</p>
                 </div>
                 <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4 relative">
                   <button
                     type="button"
-                    onClick={() => copy('badge', bundle.target_phrase_badge)}
+                    onClick={() => copy('badge', live.target_phrase_badge)}
                     className="absolute top-3 right-3 p-1.5 rounded-md bg-slate-800 text-slate-400 hover:text-emerald-400"
                   >
                     {copied === 'badge' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                   </button>
-                  <div className="text-xs text-slate-500 mb-2 pr-10">一句话极限靶点</div>
-                  <p className="text-lg font-bold text-emerald-400 tracking-tight break-words pr-10">
-                    {bundle.target_phrase_badge}
-                  </p>
+                  <div className="flex items-center gap-2 text-xs text-slate-500 mb-2 pr-10">
+                    <Edit3 className="w-3 h-3" />
+                    <span>一句话极限靶点（可编辑）</span>
+                  </div>
+                  <textarea
+                    value={live.target_phrase_badge}
+                    onChange={(e) =>
+                      setEditedBundle((p) => ({
+                        ...(p ?? bundle!),
+                        target_phrase_badge: e.target.value,
+                      }))
+                    }
+                    rows={1}
+                    className="w-full text-lg font-bold text-emerald-400 tracking-tight break-words bg-transparent border border-transparent hover:border-slate-700 focus:border-emerald-500/60 focus:outline-none rounded-md p-1 -m-1 pr-10 resize-none leading-snug transition-colors"
+                  />
                 </div>
                 <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4 relative min-w-0 overflow-hidden">
                   <button
                     type="button"
-                    onClick={() => copy('multi', bundle.target_phrase_multi)}
+                    onClick={() => copy('multi', live.target_phrase_multi)}
                     className="absolute top-3 right-3 p-1.5 rounded-md bg-slate-800 text-slate-400 hover:text-emerald-400 z-10"
                   >
                     {copied === 'multi' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                   </button>
-                  <div className="text-xs text-slate-500 mb-2 pr-10">多句极限靶点（2–3 句 · SEO/长尾风格）</div>
-                  {bundle.target_phrase_multi?.trim() ? (
-                    <div className="space-y-2 pr-10">
-                      {splitMultiHookLines(bundle.target_phrase_multi).map((line, i) => (
-                        <p
-                          key={i}
-                          className="text-sm font-semibold break-words [overflow-wrap:anywhere] leading-relaxed"
-                          style={{ color: MULTI_HOOK_LINE_HEX[i % MULTI_HOOK_LINE_HEX.length] }}
-                        >
-                          {line}
-                        </p>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-sm text-slate-500 pr-10">
-                      （本批 JSON 未包含该字段，请点击上方「生成」重新拉取。）
-                    </p>
-                  )}
+                  <div className="flex items-center gap-2 text-xs text-slate-500 mb-2 pr-10">
+                    <Edit3 className="w-3 h-3" />
+                    <span>多句极限靶点·2–3 句（可编辑 · SEO/长尾风格）</span>
+                  </div>
+                  <textarea
+                    value={live.target_phrase_multi}
+                    onChange={(e) =>
+                      setEditedBundle((p) => ({
+                        ...(p ?? bundle!),
+                        target_phrase_multi: e.target.value,
+                      }))
+                    }
+                    rows={3}
+                    placeholder="（本批 JSON 未包含该字段，请点击上方「生成」重新拉取。）"
+                    className="w-full text-sm font-semibold text-slate-200 bg-slate-950/60 border border-slate-800 hover:border-slate-700 focus:border-emerald-500/60 focus:outline-none rounded-md p-2 pr-10 resize-y leading-relaxed transition-colors"
+                  />
+                  <p className="text-[10px] text-slate-500 mt-2 pr-10">
+                    提示：编辑后已实时同步到 VAR 提示词与出图；如需重新生成 VAR，请点「生成高转化文案」。
+                  </p>
                 </div>
-                {(['var_a', 'var_b', 'var_c'] as const).map((k, i) => {
-                  const label = ['VAR A · 场景构图', 'VAR B · 极简白底', 'VAR C · 高反差特写'][i];
-                  const border = ['border-l-red-500', 'border-l-white', 'border-l-blue-500'][i];
-                  const val = bundle[k];
+                {(['var_a', 'var_b', 'var_c', 'var_d', 'var_e', 'var_f'] as const).map((k, i) => {
+                  const labels = [
+                    'VAR A · 场景构图',
+                    'VAR B · 极简底',
+                    'VAR C · 高反差特写',
+                    'VAR D · 纵向分屏',
+                    'VAR E · 信息图 / 数据牌',
+                    'VAR F · 人像 + 大字横幅',
+                  ];
+                  const descs = [
+                    '场景沉浸 / Sport-Scene / Hero-Intro',
+                    '极简主色块 / 巨型字 / 角标',
+                    '高反差人物 / 道具 / 面部特写',
+                    '上下分屏：上半部主体画面，下半部数据牌',
+                    '中央巨型数据 / 数字徽章 + 主体剪影',
+                    '主角半身特写 + 姓名横幅 + 角标职位',
+                  ];
+                  const borders = [
+                    'border-l-red-500',
+                    'border-l-emerald-500',
+                    'border-l-blue-500',
+                    'border-l-purple-500',
+                    'border-l-yellow-500',
+                    'border-l-cyan-500',
+                  ];
+                  const label = labels[i];
+                  const desc = descs[i];
+                  const border = borders[i];
+                  const val = live[k];
                   return (
                     <div
                       key={k}
@@ -809,12 +1491,27 @@ ${langRule}
                       <button
                         type="button"
                         onClick={() => copy(k, val)}
-                        className="absolute top-3 right-3 p-1.5 rounded-md bg-slate-800 text-slate-400 hover:text-emerald-400"
+                        className="absolute top-3 right-3 p-1.5 rounded-md bg-slate-800 text-slate-400 hover:text-emerald-400 z-10"
                       >
                         {copied === k ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                       </button>
-                      <div className="text-xs text-slate-500 mb-2">{label}</div>
-                      <p className="text-xs text-slate-400 whitespace-pre-wrap pr-10 leading-relaxed">{val}</p>
+                      <div className="flex items-center gap-2 text-xs text-slate-500 mb-2 pr-10">
+                        <Edit3 className="w-3 h-3" />
+                        <span>{label}（可编辑）</span>
+                      </div>
+                      <div className="text-[10px] text-slate-600 mb-2 pr-10">{desc}</div>
+                      <textarea
+                        value={val}
+                        onChange={(e) =>
+                          setEditedBundle((p) => ({
+                            ...(p ?? bundle!),
+                            [k]: e.target.value,
+                          }))
+                        }
+                        rows={6}
+                        placeholder={`（${label.split(' · ')[1] || label} 提示词，点击上方「生成」）`}
+                        className="w-full text-xs text-slate-300 bg-slate-950/60 border border-slate-800 hover:border-slate-700 focus:border-emerald-500/60 focus:outline-none rounded-md p-2 pr-10 resize-y leading-relaxed font-mono transition-colors placeholder:text-slate-600"
+                      />
                     </div>
                   );
                 })}
@@ -884,7 +1581,7 @@ ${langRule}
                 </button>
                 <button
                   type="button"
-                  disabled={!bundle.target_phrase_multi?.trim()}
+                  disabled={!live.target_phrase_multi?.trim()}
                   onClick={() => setCoverHookSource('multi')}
                   className={`px-2.5 py-1 rounded-md text-xs font-medium border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
                     coverHookSource === 'multi'
@@ -916,12 +1613,15 @@ ${langRule}
                 ))}
               </select>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 min-w-0">
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 min-w-0">
               {(
                 [
                   { k: 'A' as const, title: '方案 A：场景沉浸', bar: 'bg-red-500' },
-                  { k: 'B' as const, title: '方案 B：极简/单色底', bar: 'bg-slate-200' },
+                  { k: 'B' as const, title: '方案 B：极简/单色底', bar: 'bg-emerald-400' },
                   { k: 'C' as const, title: '方案 C：高反差/特写', bar: 'bg-blue-500' },
+                  { k: 'D' as const, title: '方案 D：纵向分屏', bar: 'bg-purple-500' },
+                  { k: 'E' as const, title: '方案 E：信息图/数据牌', bar: 'bg-yellow-500' },
+                  { k: 'F' as const, title: '方案 F：人像+横幅', bar: 'bg-cyan-500' },
                 ] as const
               ).map(({ k, title, bar }) => {
                 const ratioClass =
@@ -990,36 +1690,63 @@ ${langRule}
             onClick={(e) => e.stopPropagation()}
           >
             <h3 id="cover-niche-modal-title" className="text-base font-semibold text-slate-100">
-              请选择参考图对应的赛道
+              请选择参考图对应的风格（赛道 / 模板 二选一）
             </h3>
             <p className="text-xs text-slate-400 leading-relaxed">
-              不同赛道的封面 DNA、参考图说明与禁忌不同（例如非治愈赛道不会默认强调宠物）。上传参考图后请先选定垂类。
+              不同垂类与不同模板的封面 DNA 不同；上传参考图后请先选定其中一个。
             </p>
-            <div className="flex flex-wrap gap-2">
-              {COVER_NICHE_ORDER.map((id) => {
-                const n = NICHES[id];
-                return (
+
+            <div className="space-y-2">
+              <div className="text-xs text-emerald-400/80">赛道（10 个）</div>
+              <div className="flex flex-wrap gap-2">
+                {COVER_NICHE_ORDER.map((id) => {
+                  const n = NICHES[id];
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => {
+                        setNiche(id);
+                        setSelectedTemplateId(null);
+                        setNicheModalOpen(false);
+                      }}
+                      className="px-3 py-1.5 rounded-lg text-sm border border-slate-600 bg-slate-800/80 text-slate-200 hover:border-emerald-500/50 hover:bg-emerald-950/40 transition-colors flex items-center gap-1.5"
+                    >
+                      <span>{n.icon}</span>
+                      <span className="max-w-[140px] truncate">{n.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-xs text-amber-400/80">封面模板（5 个）</div>
+              <div className="flex flex-wrap gap-2">
+                {COVER_TEMPLATES.map((t) => (
                   <button
-                    key={id}
+                    key={t.id}
                     type="button"
                     onClick={() => {
-                      setNiche(id);
+                      setSelectedTemplateId(t.id);
+                      setNiche(null);
                       setNicheModalOpen(false);
                     }}
-                    className="px-3 py-1.5 rounded-lg text-sm border border-slate-600 bg-slate-800/80 text-slate-200 hover:border-emerald-500/50 hover:bg-emerald-950/40 transition-colors flex items-center gap-1.5"
+                    className="px-3 py-1.5 rounded-lg text-sm border border-slate-600 bg-slate-800/80 text-slate-200 hover:border-amber-500/50 hover:bg-amber-950/30 transition-colors flex items-center gap-1.5"
                   >
-                    <span>{n.icon}</span>
-                    <span className="max-w-[140px] truncate">{n.name}</span>
+                    <span>{t.icon}</span>
+                    <span className="max-w-[140px] truncate">{t.name}</span>
                   </button>
-                );
-              })}
+                ))}
+              </div>
             </div>
+
             <button
               type="button"
               onClick={() => setNicheModalOpen(false)}
               className="text-xs text-slate-500 hover:text-slate-300"
             >
-              稍后再选（可关闭弹窗后在上方手动选择赛道）
+              稍后再选（可关闭弹窗后在上方手动选择）
             </button>
           </div>
         </div>

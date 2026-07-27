@@ -928,7 +928,7 @@ export const generateImage = async (
       return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, modelName, opts);
     }
 
-    // gpt-image-2-all：固定只走 gpt-image-2（不静默回退到 dall-e-3 等其它模型，
+    // gpt-image-2-all：固定只走 gpt-image-2（不静默回退到其它模型，
     // 避免 yunwu 后台出现用户未授权的模型调用记录）。失败时直接抛错，由调用方重试或更换模型。
     if (opts.model === 'gpt-image-2-all') {
       return await yunwuOpenAiImageOnce(apiKey, baseUrl, 'gpt-image-2', opts, {
@@ -1017,9 +1017,9 @@ async function yunwuOpenAiImageOnce(
   // 极端情况下（多参考图、复杂 prompt）可能逼近 4 分钟。默认 240s 避免误杀。
   const REQUEST_TIMEOUT_MS = retryOpts?.timeoutMs ?? 240_000;
 
-  // 503 / 网络错误可重试，服务器错误（5xx）/客户端错误（4xx）不重试
+  // 503 / 网络错误 / 上游饱和可重试
   const isRetryable = (status: number) => status === 503 || status === 502 || status === 429 || status === 504;
-  const MAX_RETRIES = 3;
+  const MAX_RETRIES = 6;
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -1123,15 +1123,22 @@ async function yunwuOpenAiImageOnce(
 
       // 可重试错误：503/502/429/504
       if (isRetryable(response.status) && attempt < MAX_RETRIES - 1) {
-        const delayMs = (attempt + 1) * 2000;
+        const delayMs = Math.min(2000 * Math.pow(2, attempt), 30_000);
         console.warn(`[YunwuService] ${modelId} 尝试 ${attempt + 1} 失败 (HTTP ${response.status})，${delayMs}ms 后重试...`);
         await new Promise((r) => setTimeout(r, delayMs));
         continue;
       }
 
-      // 不可重试或已达最大重试次数
+      // 不可重试或已达最大重试次数：解析错误体，判断是否"上游饱和"（可继续在模型层切换重试）
       const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
       const errorMessage = errorData.error?.message || `HTTP ${response.status}: ${response.statusText}`;
+      const isUpstreamSaturated = /上游.*负载|负载.*饱和|upstream.*busy|upstream.*saturated/i.test(errorMessage);
+      if (isUpstreamSaturated && attempt < MAX_RETRIES - 1) {
+        const delayMs = Math.min(3000 * Math.pow(2, attempt), 45_000);
+        console.warn(`[YunwuService] ${modelId} 上游饱和 (${errorMessage.slice(0, 60)})，${delayMs}ms 后重试...`);
+        await new Promise((r) => setTimeout(r, delayMs));
+        continue;
+      }
       throw new Error(errorMessage);
 
     } catch (err: any) {
@@ -1171,7 +1178,7 @@ async function yunwuOpenAiImageOnce(
 
       // 网络错误可重试
       if (isNetworkErr && attempt < MAX_RETRIES - 1) {
-        const delayMs = (attempt + 1) * 2000;
+        const delayMs = Math.min(2000 * Math.pow(2, attempt), 30_000);
         console.warn(`[YunwuService] ${modelId} 网络错误 (${err.message?.slice(0, 80)}), ${delayMs}ms 后重试...`);
         await new Promise((r) => setTimeout(r, delayMs));
         continue;
