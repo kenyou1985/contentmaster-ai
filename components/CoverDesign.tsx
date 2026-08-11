@@ -744,12 +744,12 @@ target_phrase_badge（封面主标题·一句话极限靶点）：
 - ✅ 正确示范："2028 先开战的，是卢秀燕背后这一招"
 
 target_phrase_multi（多句极限靶点·2–3 句）：
-- **每句必须是完整句子**（带主谓宾/问号/感叹号），**严禁输出关键词列表**
-- 2–3 句，每句用 \\n 隔开；与 badge 同主题但分层展开（不重复 badge 的句式）
-- 写"为什么 X 会发生/为什么 X 重要/谁在背后/下一步会怎样"的角度展开
-- ❌ 错误示范："卢秀燕\\n赖清德\\n中华民国"（每行一个词）
-- ✅ 正确示范："卢秀燕盯 2028 早已不是新闻\\n但这次初选谁在背后捅刀，才是看点\\n国民党下一步会怎么走？"（每句完整、递进）
-- ⚠️ **禁用代词铁律**：多句靶点每句中**必须出现核心议题里的人物全名**（如"郑丽文"、"卢秀燕"），**严禁用"她/他/它/此人/该人/有人"等代词替代**；若核心议题含人名，每句都要有该人名出现
+- **每句必须是完整句子**，2–3 句用 \\n 隔开；与 badge 同主题但分层展开
+- **句式节奏**：第一句陈述事件背景+反问；第二句递进反差/结果；第三句预判/悬念收尾；**禁止三句全是反问句**
+- **人名出现规则**：人物全名（如"郑丽文"、"卢秀燕"）仅在第一句出现一次；第二/三句用"这/接下来/各方/此后"替代，**禁止人名重复出现**
+- ❌ 错误示范（全反问）："郑丽文为什么要这么做？\\n为什么她会这样做？\\n为什么没有人阻止？"
+- ❌ 错误示范（人名重复）："郑丽文为什么向日方献支票\\n郑丽文的动机是什么\\n郑丽文下一步会怎样"
+- ✅ 正确示范："郑丽文在731纪念日向日方献百万支票，为什么会被解读为政治表态？\\n面对广西洪灾却反应冷淡，巨大反差背后藏着什么逻辑？\\n若舆论持续围攻，她的政治形象会不会直接失分？"
 
 seo_tags（封面 SEO 长尾标签库）：
 - 必须输出 8–10 个标签，**用空格分隔**，每个标签**必须以 # 开头**
@@ -879,19 +879,19 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
       // 1) 含动作词的子句优先（开战/暗刀/捅/盯/锁/翻/塌/暴/反/逆/冲/爆/撕/掀/打）
       const actionRegex = /([^，,。；;\n]{2,20}(?:开战|暗刀|捅刀|捅|盯上|锁死|翻盘|塌|暴跌|暴雷|反转|逆袭|冲|爆|撕|掀|打脸|封锁|围堵|制裁|决战|抢先|先开|对决|开战|宣战|清算|摊牌|背刺|翻脸|反水|倒戈|背叛|下架|退场|开战|撕裂|崩盘|暴跌))/;
       const actionMatch = text.match(actionRegex);
-      if (actionMatch) return actionMatch[1].trim();
+      if (actionMatch) return actionMatch[1].replace(/[？?。！！]+$/, "").trim();
 
       // 2) 含反问/疑问的子句
       const qMatch = text.match(/([^，,。；;\n]{4,30}[？?])/);
-      if (qMatch) return qMatch[1].trim();
+      if (qMatch) return qMatch[1].replace(/[？?。！！]+$/, "").trim();
 
       // 3) 含"X：Y"或"X——Y"结构的冒号后部分
       const colonMatch = text.match(/[：:]([^，,。；;\n]{4,30})/);
-      if (colonMatch) return colonMatch[1].trim();
+      if (colonMatch) return colonMatch[1].replace(/[？?。！！]+$/, "").trim();
 
       // 4) 否则返回核心观点第一句精华
       const firstClause = text.split(/[。！？!?\n;；]+/).map(s => s.trim()).filter(s => s.length >= 4)[0] || text;
-      return firstClause.slice(0, 24);
+      return firstClause.slice(0, 24).replace(/[？?。！！]+$/, "");
     }
 
     const coreClause = extractCoreClause(topicFull);
@@ -912,52 +912,75 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
     ];
 
     // ── 提取人物全名（2–3 字汉姓，用于多句靶点强制出现）──
+    // ── 提取人物全名（2–3 字汉姓，用于多句靶点强制出现）──
+    // 策略：扫描姓氏出现位置，取其后 1–2 个汉字（避免被英文/数字打断）
+    // ── 提取人物全名（2–3 字汉姓，用于多句靶点强制出现）──
+    // 策略：姓氏 + 合法人名用字（常见名用字白名单）
+    // ── 提取人物全名（2–3 字汉姓，用于多句靶点强制出现）──
+    // 策略：姓氏 + 合法人名用字（常见名用字白名单）
+    // ── 提取人物全名（2–3 字汉姓，用于多句靶点强制出现）──
+    // 策略：宽松正则提 2-3 字汉词，强力黑名单过滤，去重后按长度降序
     function extractPersonNames(text: string): string[] {
-      // 姓氏黑名单过滤：常见词组（非人名）
-      const nameBlacklist = new Set([
-        // 地名/国名
-        '日本', '广西', '中国', '美国', '欧洲', '亚洲', '非洲', '各国', '全球',
-        // 常见虚词/助词开头（防止截断）
-        '为何', '如何', '何为', '因何', '怎样', '怎么', '怎么样',
-        // 新闻热词
-        '百万', '千万', '亿元', '支票', '洪灾', '地震', '台风', '无动于衷',
-        '高调', '低调', '沉默', '表态', '回应', '宣布', '纪念日',
-        '731', '背后', '这次', '这期', '官方', '事实上',
-        // 常见句式开头
-        '这是', '这是', '什么是', '所谓', '其实', '实际上',
-        '为什么', '到底', '究竟', '终于', '竟然', '居然',
-        '因此', '因为', '所以', '而是', '但是', '如果', '假如', '虽然', '然而', '然后', '最后',
-        // 政治相关通用词
-        '无动', '受困', '受难', '灾情', '灾民',
-        // 截断词（姓氏后紧跟常见助词/虚词）
-        '为什', '怎样', '怎么', '为何', '如何', '怎么', '何人',
-        '为', '在', '的', '是', '了', '和', '与', '对', '把', '被',
-        '于衷', // 「无动于衷」截断产物，非人名
-      ]);
-      // 常见姓氏列表（取前 20 高频姓氏，覆盖率高）
-      const surnameSet = new Set('王李张刘陈杨黄赵吴周徐孙马朱胡郭林何高梁罗郑谢宋唐许韩冯邓曹彭曾肖田董袁潘于蒋蔡余杜叶程苏魏吕丁任沈余姚姜邱侯尹万段雷钱汤黎陶贺顾毛郝龚邵赖苏邹巫卢柯孔廖严向钱江史欧阳司马诸葛梅西'.split(''));
-      // 提 2–3 字汉词：避免截断问题（郑丽文为 = 4字，截断了；赖清德强 = 4字也截断）
-      const candidates = text.match(/[\u4e00-\u9fff]{2,3}/g) || [];
-      return candidates
-        .filter(c => !nameBlacklist.has(c))
-        .filter(c => surnameSet.has(c[0])) // 首字必须是姓氏
-        .filter((c, i, arr) => arr.indexOf(c) === i); // 去重
+      const surnameSet = new Set('王李张刘陈杨黄赵吴周徐孙马朱胡郭林何高梁罗郑谢宋唐许韩冯邓曹彭曾肖田董袁潘于蒋蔡余杜叶程苏魏吕丁任沈余姚姜邱侯尹万段雷钱汤黎陶贺顾毛郝龚邵赖苏邹巫卢柯孔廖严向钱江史欧阳司马诸葛'.split(''));
+      // 强力黑名单：常见地名/虚词/截断词
+      const blacklist = new Set(['日本','广西','中国','美国','欧洲','亚洲','非洲','各国','全球','国内','国外','中央','731','纪念日','无动于衷','高调','低调','沉默','表态','回应','宣布','背后','官方','事实上','这是','什么是','所谓','其实','实际上','为什么','到底','究竟','终于','竟然','居然','因此','因为','所以','而是','但是','如果','假如','虽然','然而','然后','最后','百万','千万','亿元','支票','洪灾','地震','台风','暴雷','暴跌','暴动','受困','受难','灾情','灾民','遇难','救援','捐款','捐赠','为何','如何','何为','因何','怎样','怎么样','这是','什么','为什','怎样','怎么','何人','为何','如何','于衷','无动','的得','的是','了的','在地','在对','在被','再次','次打','打破','破纪','纪录','呼吁','声明','宣称','表示','指出','强调','公开','曝光','揭露','开始','进行','发生','出现','看来','梅西宣','罗再次','王毅紧','何深意']);
+      // 姓氏后紧跟的单字符黑名单（常见助词/介词/代词）
+      const afterSurnameChars = new Set('为在的得地了和与对对把被在有从到在和但或而而且');
+      // 匹配 2-3 字连续汉字词组
+      const results: string[] = [];
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (!surnameSet.has(ch)) continue;
+        // 取其后第 1 个汉字字符（不跳过非汉字）
+        let j = i + 1;
+        while (j < text.length && !/[\u4e00-\u9fff]/.test(text[j])) j++;
+        const rest1 = text[j];
+        if (!rest1) continue;
+        const name2 = ch + rest1;
+        // 2 字名：第 2 字必须是合法名用字（不能在黑名单中）
+        if (!blacklist.has(name2) && !afterSurnameChars.has(rest1)) {
+          results.push(name2);
+          // 尝试 3 字名
+          let k = j + 1;
+          while (k < text.length && !/[\u4e00-\u9fff]/.test(text[k])) k++;
+          const rest2 = text[k];
+          if (rest2 && !blacklist.has(name2 + rest2)) {
+            results.push(name2 + rest2);
+          }
+        }
+      }
+      // 去重 + 按长度降序（优先 3 字名）
+      return [...new Set(results)].sort((a, b) => b.length - a.length);
     }
-
     const personNames = extractPersonNames(topicFull);
     // 用第一个人名（如有），否则用 mainSubject
     const primaryName = personNames[0] || mainSubject;
 
-    // ── 多句极限靶点（每句完整句子 + 递进展开 + 必须含人物全名）──
+    // ── 多句极限靶点（人名仅首句出现，句式陈述/反问混合）──
+    // 策略：句1 = 人名 + 从 topicFull 提取的人名后动作片段；句2/3 基于 topicFull 其他内容
+    // 1) 提取 topicFull 中人名后的动作片段（避免句1中人名重复出现）
+    const nameIdx = topicFull.indexOf(primaryName);
+    const afterName = nameIdx >= 0 ? topicFull.slice(nameIdx + primaryName.length).trim() : topicFull.trim();
+    // 去除 leading 标点/助词
+    const actionPart = afterName.replace(/^[，、：:;；的得地在了有]/, '').replace(/[？?。！!]$/, '').trim();
+    // 句1 人名 + 动作片段（若 coreClause 已含人名则不重复；去除所有中文问号避免双问号）
+    const cleanCore = (coreClause || '').replace(/[？?]+$/, '').replace(/[？?]/g, '');
+    const sentence1 = actionPart.length > 0 && cleanCore.length > primaryName.length + 2
+      ? `${primaryName}${actionPart.replace(/[？?]/g, '')}`
+      : `${primaryName}${cleanCore}`;
+    // 句2/3 用 topicFull 中与人名+句1不同的内容片段
+    const nonNamePart = topicFull.replace(primaryName, '').replace(/^[，、：:;；]/, '').trim();
+    const seg2 = nonNamePart.slice(0, Math.min(nonNamePart.length, 20));
+
     const zhMultiTemplates = [
-      // ① 直接引用 coreClause 展开三层（人物全名在句中）
-      `${coreClause}\n${primaryName}在关键时刻的选择说明了什么？\n背后真相本期一次讲透`,
-      // ② 禁忌窥探（围绕人物行为展开）
-      `${topicFull.includes('为什么') ? topicFull.split('为什么')[0] : primaryName + '的行为'}背后，藏着什么算计？\n${primaryName}为什么在这个时机高调行事？\n看完全貌你会重新判断这件事`,
-      // ③ 反直觉反转
-      `${primaryName}？表面看是政治操作\n但真正的原因藏在更深的逻辑里\n这期内容一次讲透`,
-      // ④ 直接展开核心观点（保留原句 + 人名出现）
-      `${topicFull.slice(0, Math.min(topicFull.length, 32))}\n看完你会懂，${primaryName}这次操作背后的底层逻辑\n评论区留下你的看法`,
+      // ① 事件背景 + 反问 + 动机追问
+      `${sentence1}，\n为什么会被外界解读为政治表态？\n这背后到底藏着什么动机？`,
+      // ② 反差递进（陈述 + 反问 + 结果预判）
+      `${sentence1}，\n而面对另一边却反应冷淡，\n这种强烈反差说明了什么？`,
+      // ③ 结果预判（陈述 + 反问 + 悬念收尾）
+      `${sentence1}，\n各方反应越来越强烈，\n接下来的局势会不会直接失分？`,
+      // ④ 混合节奏（陈述 + 反问 + 结论）
+      `${sentence1}，\n舆论开始出现两极分化，\n这场操作到底是算计还是失误？`,
     ];
 
     // ── SEO 长尾标签（热搜词 + 长尾 + 赛道大类）──
@@ -1657,9 +1680,15 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
                         target_phrase_multi: e.target.value,
                       }))
                     }
-                    rows={Math.max(3, (live.target_phrase_multi?.match(/\n/g) || []).length + 1)}
+                    rows={3}
                     placeholder="（本批 JSON 未包含该字段，请点击上方「生成」重新拉取。）"
-                    className="w-full text-sm font-semibold bg-gradient-to-r from-cyan-400 to-blue-400 text-transparent bg-clip-text bg-slate-950/60 border border-slate-800 hover:border-slate-700 focus:border-cyan-500/60 focus:outline-none rounded-md p-2 pr-10 resize-none leading-relaxed transition-colors"
+                    className="w-full text-sm font-semibold bg-gradient-to-r from-cyan-400 to-blue-400 text-transparent bg-clip-text bg-slate-950/60 border border-slate-800 hover:border-slate-700 focus:border-cyan-500/60 focus:outline-none rounded-md p-2 pr-10 leading-relaxed transition-colors overflow-hidden"
+                    style={{ resize: 'none', overflow: 'hidden', minHeight: 'unset' }}
+                    onInput={(e) => {
+                      const el = e.currentTarget;
+                      el.style.height = 'auto';
+                      el.style.height = el.scrollHeight + 'px';
+                    }}
                   />
                   <p className="text-[10px] text-slate-500 mt-2 pr-10">
                     提示：编辑后已实时同步到 VAR 提示词与出图；如需重新生成 VAR，请点「生成高转化文案」。
