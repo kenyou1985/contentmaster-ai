@@ -1,5 +1,5 @@
 /**
- * 一键配音页：与一键成片镜头配音共用 RunningHub TTS + 可选云雾 gpt-5.4-mini 口播优化
+ * 一键配音页：与一键成片镜头配音共用 RunningHub TTS + 可选云雾 gpt-5.6-luna 口播优化
  *
  * 音频处理说明：
  * RunningHub TTS 输出的原始音频通过 Web Audio API 解码后直接重新编码为 WAV，
@@ -180,8 +180,8 @@ export async function runOneClickTts(
     const hasStyle = !!(opts?.trackPersona?.trim() || opts?.customHint?.trim());
     log(
       hasStyle
-        ? '口播润色：云雾 gpt-5.4-mini（赛道人设 + 自定义补充）…'
-        : '口播润色：云雾 gpt-5.4-mini（默认朗读友好化）…'
+        ? '口播润色：云雾 gpt-5.6-luna（赛道人设 + 自定义补充）…'
+        : '口播润色：云雾 gpt-5.6-luna（默认朗读友好化）…'
     );
     if (opts?.trackPersona?.trim() || opts?.customHint?.trim()) {
       text = await polishTextForTtsSpeechWithStyle(yunwu, text, {

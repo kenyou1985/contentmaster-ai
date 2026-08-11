@@ -747,7 +747,7 @@ export const OneClickDubbing: React.FC<OneClickDubbingProps> = ({
             </div>
             {!apiKey.trim() && !skipLlm && (
               <p className="text-[11px] text-amber-500/90 leading-relaxed">
-                未配置云雾 API Key（设置面板）时无法进行 gpt-5.4-mini 优化；可勾选「跳过优化」直接合成。
+                未配置云雾 API Key（设置面板）时无法进行 gpt-5.6-luna 优化；可勾选「跳过优化」直接合成。
               </p>
             )}
             <p className="text-[11px] text-slate-500 leading-relaxed">

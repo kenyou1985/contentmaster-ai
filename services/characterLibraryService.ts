@@ -210,10 +210,10 @@ export function detectCharactersInPrompt(prompt: string): Character[] {
   const characters = getAllCharacters();
   const matched: Character[] = [];
 
-  console.debug('[CharacterLibrary] detectCharactersInPrompt:', {
-    prompt: prompt.slice(0, 100),
-    characterCount: characters.length,
-  });
+  // 仅在有匹配时输出最终结果
+  if (matched.length > 0) {
+    console.debug('[CharacterLibrary] 匹配到角色:', matched.map(c => c.name).join(', '));
+  }
 
   // 将提示词转换为小写以便匹配
   const lowerPrompt = prompt.toLowerCase();
@@ -221,7 +221,6 @@ export function detectCharactersInPrompt(prompt: string): Character[] {
   for (const char of characters) {
     // 检查主名字
     if (lowerPrompt.includes(char.name.toLowerCase())) {
-      console.debug('[CharacterLibrary] 匹配成功（主名字）:', char.name);
       matched.push(char);
       continue;
     }
@@ -232,13 +231,11 @@ export function detectCharactersInPrompt(prompt: string): Character[] {
         lowerPrompt.includes(alias.toLowerCase())
       );
       if (hasAlias) {
-        console.debug('[CharacterLibrary] 匹配成功（别名）:', char.name, char.aliases);
         matched.push(char);
       }
     }
   }
 
-  console.debug('[CharacterLibrary] detectCharactersInPrompt 结果:', matched.map(c => c.name));
   return matched;
 }
 

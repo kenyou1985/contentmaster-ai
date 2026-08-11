@@ -135,7 +135,7 @@ const App: React.FC = () => {
     }
   }, [apiKey, provider]);
 
-  const baseUrl = 'https://yunwu.ai';
+  const baseUrl = 'https://api.openlux.ai';
 
   // 检查是否为独立任务查看窗口
   const isTaskViewer = new URLSearchParams(window.location.search).has('queueTaskView');

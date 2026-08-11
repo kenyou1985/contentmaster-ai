@@ -160,7 +160,7 @@ export const Layout: React.FC<LayoutProps> = ({
                     onChange={(e) => setProvider(e.target.value as ApiProvider)}
                     className="w-full bg-slate-900/50 border border-slate-700/60 rounded-md px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20"
                   >
-                    <option value="yunwu">Yunwu.ai（sk- 開頭）</option>
+                    <option value="yunwu">OpenLux.ai（sk- 開頭）</option>
                     <option value="google">Google Gemini（AIza 開頭）</option>
                     <option value="runninghub">RunningHub（開源模型）</option>
                   </select>
@@ -171,7 +171,7 @@ export const Layout: React.FC<LayoutProps> = ({
                     <Settings size={12} /> API Key
                     {isYunwuKey && (
                       <span className="ml-2 bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded text-[10px] flex items-center gap-1 border border-emerald-500/30">
-                        <Zap size={8} fill="currentColor" /> Yunwu Auto-Config
+                        <Zap size={8} fill="currentColor" /> OpenLux Auto-Config
                       </span>
                     )}
                     {isGoogleKey && (
@@ -210,8 +210,8 @@ export const Layout: React.FC<LayoutProps> = ({
               <div className="flex-1 flex flex-col items-end gap-3 justify-end">
                 <div className="text-xs text-slate-500 flex justify-end gap-4 flex-wrap">
                   {provider === 'yunwu' && (
-                    <a href="https://yunwu.apifox.cn/" target="_blank" rel="noreferrer" className="text-emerald-400 hover:text-emerald-300 flex items-center gap-1">
-                      Yunwu API 文檔 <ExternalLink size={10} />
+                    <a href="https://doc.openlux.ai" target="_blank" rel="noreferrer" className="text-emerald-400 hover:text-emerald-300 flex items-center gap-1">
+                      OpenLux API 文檔 <ExternalLink size={10} />
                     </a>
                   )}
                   {provider === 'google' && (

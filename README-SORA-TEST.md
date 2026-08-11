@@ -1,17 +1,17 @@
 # Sora 视频生成 API 测试方案
 
-## 📋 测试目的
+## 测试目的
 
-在集成到代码之前，先测试 yunwu.ai Sora 视频生成 API 的配置是否正确，确保能够成功生成视频。
+在集成到代码之前，先测试 OpenLux AI Sora 视频生成 API 的配置是否正确，确保能够成功生成视频。
 
-## 🛠️ 测试工具
+## 测试工具
 
 提供了两种测试方式：
 
 ### 方式 1: 浏览器测试（推荐）
 
 1. 打开 `test-sora-video.html` 文件（直接在浏览器中打开）
-2. 填写你的 yunwu.ai API Key
+2. 填写你的 OpenLux AI API Key
 3. 选择测试模式：
    - **文生视频 (Text-to-Video)**：直接根据提示词生成视频
    - **图生视频 (Image-to-Video)**：基于图片生成视频
@@ -23,19 +23,19 @@
 
 1. 确保 Node.js 版本 >= 18（支持内置 fetch）
 2. 打开 `test-sora-video.js` 文件
-3. 将 `YOUR_API_KEY_HERE` 替换为你的 yunwu.ai API Key
+3. 将 `YOUR_API_KEY_HERE` 替换为你的 OpenLux AI API Key
 4. 运行命令：
    ```bash
    node test-sora-video.js
    ```
 
-## 📝 API 接口说明
+## API 接口说明
 
-根据 [yunwu.apifox.cn](https://yunwu.apifox.cn/) 文档，Sora 视频生成使用以下接口：
+根据 [doc.openlux.ai](https://doc.openlux.ai) 文档，Sora 视频生成使用以下接口：
 
 ### 接口地址
 ```
-POST https://yunwu.ai/v1/video/create
+POST https://api.openlux.ai/v1/video/create
 ```
 
 ### 请求头
@@ -93,7 +93,7 @@ Authorization: Bearer YOUR_API_KEY
 }
 ```
 
-## 🔍 常见错误及解决方案
+## 常见错误及解决方案
 
 ### 1. "当前分组上游负载已饱和"
 - **原因**：服务器负载过高
@@ -107,7 +107,7 @@ Authorization: Bearer YOUR_API_KEY
   - 账户余额不足
   - 模型需要特殊权限或白名单
 - **解决方案**：
-  - 联系 yunwu.ai 客服确认模型可用性和账户权限
+  - 联系 OpenLux AI 客服确认模型可用性和账户权限
   - 检查账户余额
 
 ### 3. HTTP 400 错误
@@ -123,7 +123,7 @@ Authorization: Bearer YOUR_API_KEY
   - 检查 API Key 是否正确
   - 检查 Authorization 头格式是否正确
 
-## 📊 测试检查清单
+## 测试检查清单
 
 - [ ] API Key 配置正确
 - [ ] 文生视频测试成功
@@ -132,7 +132,7 @@ Authorization: Bearer YOUR_API_KEY
 - [ ] 如果返回 task_id，能够查询任务状态
 - [ ] 能够获取视频 URL
 
-## 🎯 测试成功后
+## 测试成功后
 
 如果测试成功，说明：
 1. API Key 配置正确
@@ -145,12 +145,12 @@ Authorization: Bearer YOUR_API_KEY
 2. 检查代码中的参数是否与测试时一致
 3. 如果测试时遇到"负载已饱和"错误，这是正常的，可以稍后重试
 
-## 📚 参考文档
+## 参考文档
 
-- [yunwu.apifox.cn](https://yunwu.apifox.cn/) - yunwu.ai API 文档
+- [doc.openlux.ai](https://doc.openlux.ai) - OpenLux AI API 文档
 - Sora 视频生成相关接口文档
 
-## 💡 提示
+## 提示
 
 1. **图生视频模式**：需要提供公开可访问的图片 URL，不能是本地文件路径
 2. **任务 ID**：如果 API 返回了 task_id，说明是异步任务，需要使用轮询接口查询任务状态

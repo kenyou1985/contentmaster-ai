@@ -36,6 +36,17 @@ const ZH_FEEDS: { url: string; label: string; tag?: MacroNewsHeadline['tag'] }[]
   { url: 'https://www.taiwannews.tw/rss/home.xml', label: 'Taiwan News', tag: 'taiwan' },
 ];
 
+// 台湾本地新闻 RSS（台海局势子赛道专用）
+const TAIWAN_FEEDS: { url: string; label: string; tag: MacroNewsHeadline['tag'] }[] = [
+  { url: 'https://udn.com/rss/realtime?ch=tw_legislative', label: '联合报-立法院', tag: 'taiwan' },
+  { url: 'https://udn.com/rss/realtime?ch=tw_election', label: '联合报-选举', tag: 'taiwan' },
+  { url: 'https://www.setn.com/rss/realtime.aspx?CategoryName=Politics', label: '三立新闻-政治', tag: 'taiwan' },
+  { url: 'https://www.ltn.com.tw/rss/politics.xml', label: '自由时报-政治', tag: 'taiwan' },
+  { url: 'https://www.chinatimes.com/rss/politics.xml', label: '中时新闻-政治', tag: 'taiwan' },
+  { url: 'https://news.tvbs.com.tw/rss/politics.xml', label: 'TVBS新闻-政治', tag: 'taiwan' },
+  { url: 'https://www.cna.com.tw/rss/focus.xml', label: '中央社-焦点', tag: 'taiwan' },
+];
+
 // 国内民生/社会/全网热搜 RSS Feed（抖音热点赛道专用）
 // v5.0+：多源 + RSSHub 镜像兜底（用户国内浏览器访问 RSSHub 实例通常比直接访问 CORS 代理更稳）
 // 重点：优先选择「有具体事件、热点争议」的源（如澎湃新闻、知乎热议、36氪热议等）
@@ -110,6 +121,91 @@ const EN_FEEDS: { url: string; label: string; tag?: MacroNewsHeadline['tag'] }[]
   { url: 'https://www.theguardian.com/world/rss', label: 'Guardian World', tag: 'geopolitics' },
   { url: 'https://www.spiegel.de/international/index.rss', label: 'Spiegel Intl', tag: 'geopolitics' },
 ];
+
+// ============ 子赛道 → RSS tag 映射（v10.0）============
+// 用途：每个 NEWS_SUB_MODE 关联一个或多个 RSS tag，生成选题时只取匹配 tag 的新闻
+// 保证中东冲突只取中东相关新闻、金融货币战只取金融相关新闻，等等
+const SUB_MODE_TAG_MAP: Record<string, MacroNewsHeadline['tag'][]> = {
+  // 地缘冲突（中东/俄乌/欧洲战场合并）
+  GEO_POLITICS: ['mideast', 'geopolitics'],
+  // 印太战略：Quad/AUKUS/南海/日韩印澳
+  INDO_PACIFIC: ['indo_pacific', 'geopolitics'],
+  // 中东冲突：加沙/伊朗/以色列/胡塞/OPEC
+  MIDEAST_CONFLICT: ['mideast', 'energy'],
+  // 金融货币战：美联储/美元/汇率/金砖/债务
+  FINANCE_CURRENCY: ['finance'],
+  // 科技封锁：芯片/AI/稀土/TikTok
+  TECH_BLOCKADE: ['tech', 'us_china'],
+  // 欧美产业围堵：关税/供应链/碳关税
+  WESTERN_SIEGE: ['finance', 'geopolitics'],
+  // 大国政治角力：G20/外交/联合国/峰会
+  GREAT_POWER_GAME: ['geopolitics', 'us_china'],
+};
+
+function getSubModeTags(subMode?: string): MacroNewsHeadline['tag'][] | undefined {
+  if (!subMode) return undefined;
+  return SUB_MODE_TAG_MAP[subMode];
+}
+
+/**
+ * 按 tag 过滤 feeds。RSS feed 没有 tag 时（fallback/通用源）始终保留，避免拿不到任何数据
+ */
+function filterFeedsByTags(
+  feeds: { url: string; label: string; tag?: MacroNewsHeadline['tag'] }[],
+  tags: MacroNewsHeadline['tag'][]
+): typeof feeds {
+  // 至少保留一个没有 tag 的通用源作 fallback（Al Jazeera 等综合性源）
+  const untagged = feeds.filter((f) => !f.tag);
+  const taggedMatching = feeds.filter((f) => f.tag && tags.includes(f.tag));
+  // 合并去重（URL 相同只保留一份）
+  const seen = new Set<string>();
+  const out: typeof feeds = [];
+  for (const f of [...taggedMatching, ...untagged]) {
+    if (!seen.has(f.url)) {
+      seen.add(f.url);
+      out.push(f);
+    }
+  }
+  return out.length > 0 ? out : feeds;
+}
+
+/** 把 subMode id 翻译成人类可读的中文赛道名（用于 prompt 头部提示） */
+export function subModeName(subMode?: string): string {
+  switch (subMode) {
+    case 'GEO_POLITICS': return '地缘冲突';
+    case 'TAIWAN_STRAIT': return '台海局势';
+    case 'INDO_PACIFIC': return '印太战略';
+    case 'MIDEAST_CONFLICT': return '中东冲突与能源博弈';
+    case 'FINANCE_CURRENCY': return '金融货币战与经济博弈';
+    case 'TECH_BLOCKADE': return '科技封锁与反制';
+    case 'WESTERN_SIEGE': return '欧美产业围堵与供应链重构';
+    case 'GREAT_POWER_GAME': return '大国政治角力与权力重组';
+    case 'DOUYIN_HOT': return '国内民生/抖音热点';
+    default: return '国际新闻（通用）';
+  }
+}
+
+/** 给 LLM 的子赛道具体覆盖范围提示，避免模型跨赛道选题 */
+function subModeCoverageLine(subMode?: string): string {
+  switch (subMode) {
+    case 'GEO_POLITICS':
+      return '||- 本赛道覆盖：中东战火、东欧冲突（俄乌）、南海争端、北约东扩、伊朗以色列对峙、胡塞武装、红海危机、叙利亚/伊拉克乱局、欧洲战场最新进展';
+    case 'INDO_PACIFIC':
+      return '||- 本赛道覆盖：美日印澳四方安全对话（Quad）、AUKUS 核潜艇协议、南海军事化、菲律宾/越南海洋争端、美韩同盟强化、日本防卫预算、印度边境对峙、中美海上博弈';
+    case 'MIDEAST_CONFLICT':
+      return '||- 本赛道**仅**覆盖：加沙战争最新进展、伊朗核协议僵局、胡塞武装封锁红海、以色列与黎巴嫩边境冲突、沙特与伊朗和解、叙利亚/伊拉克乱局、OPEC+ 能源政策\n||- **禁止输出**：俄乌战争、欧洲政治、台海、印太、美元汇率、AI 芯片等非中东议题';
+    case 'FINANCE_CURRENCY':
+      return '||- 本赛道**仅**覆盖：美联储利率决策、美元霸权动摇、人民币汇率波动、SWIFT 制裁、金砖国家本币结算、加密货币监管、全球债务危机、黄金价格、美元美债收益率异动\n||- **禁止输出**：军事冲突、台海、印太、加沙、芯片、AI 等非金融议题';
+    case 'TECH_BLOCKADE':
+      return '||- 本赛道**仅**覆盖：美国芯片出口管制升级、荷兰 ASML 光刻机断供、中国半导体自主突围、华为最新动态、AI 芯片竞争、量子计算竞赛、稀土出口管制、TikTok 算法之争、科技冷战\n||- **禁止输出**：中东战火、俄乌、台海、汇率、关税等非科技议题';
+    case 'WESTERN_SIEGE':
+      return '||- 本赛道**仅**覆盖：美国《通胀削减法案》引发的贸易摩擦、欧盟碳关税、供应链友岸外包、电动汽车关税战、锂电池产业链、稀土供应链联盟、去全球化、关税壁垒\n||- **禁止输出**：军事冲突、中东、汇率、芯片 AI 等非产业议题';
+    case 'GREAT_POWER_GAME':
+      return '||- 本赛道**仅**覆盖：中美高层外交博弈、G20/APEC 峰会、俄乌战争幕后谈判、联合国投票博弈、中东代理人战争、朝鲜半岛博弈、金砖扩员、全球治理重塑\n||- **禁止输出**：单点科技/单点金融/单点军事新闻（应聚焦大国关系、外交博弈）';
+    default:
+      return '';
+  }
+}
 
 // CORS 代理列表（按可靠性排序）
 const CORS_PROXIES = [
@@ -400,7 +496,7 @@ async function fetchWithRetry(
     }
   }
 
-  console.debug(`[MacroNewsFeed] All retries exhausted for ${url}`);
+  // 静默返回，不打印日志
   return null;
 }
 
@@ -833,10 +929,11 @@ async function fetchWeiboHotNoCors(): Promise<MacroNewsHeadline[]> {
  */
 export async function fetchMacroNewsDigestForPrompt(
   maxLines = 32,
-  lang: 'en' | 'zh' | 'cn-domestic' = 'en',
-  forceRefresh: boolean = false
+  lang: 'en' | 'zh' | 'cn-domestic' | 'taiwan' = 'en',
+  forceRefresh: boolean = false,
+  subMode?: string
 ): Promise<string> {
-  const cacheKey = `digest_${lang}`;
+  const cacheKey = `digest_${lang}_${subMode || 'all'}`;
   const bucket = getUtcTimeBucket();
 
   // v5.0 缓存检查：仅在 forceRefresh=false 且 时间桶未变 且 TTL 内复用
@@ -855,14 +952,24 @@ export async function fetchMacroNewsDigestForPrompt(
   const results: MacroNewsHeadline[][] = [];
 
   // 根据语言/赛道选择 feed 列表
-  let feedsToFetch: { url: string; label: string }[];
+  let feedsToFetch: { url: string; label: string; tag?: MacroNewsHeadline['tag'] }[];
   if (lang === 'cn-domestic') {
     // 国内民生/抖音热点/微博/知乎：仅抓取国内源
     feedsToFetch = CN_DOMESTIC_FEEDS;
   } else if (lang === 'zh') {
     feedsToFetch = [...EN_FEEDS, ...ZH_FEEDS];
+  } else if (lang === 'taiwan') {
+    // 台海局势子赛道：抓取台湾本地新闻源
+    feedsToFetch = TAIWAN_FEEDS;
   } else {
     feedsToFetch = EN_FEEDS;
+  }
+
+  // v10.0: 按子赛道 tag 过滤——保证选题严格匹配赛道
+  const subModeTags = getSubModeTags(subMode);
+  if (subModeTags && (lang === 'en' || lang === 'zh')) {
+    feedsToFetch = filterFeedsByTags(feedsToFetch, subModeTags);
+    console.debug(`[MacroNewsFeed] subMode=${subMode} 过滤 feeds → ${feedsToFetch.length} 个`);
   }
 
   // 并发抓取所有 feed
@@ -1036,14 +1143,15 @@ ${rssInfo}${hotInfo}
 |- 抓取时间（UTC ISO）：${iso}
 |- 时间桶（UTC）：${utcBucket}（跨小时自动失效重新抓取）
 |- 时效规则：**优先最近 48 小时热门**（${time48hAgo} 后），同时保留 7 天内持续发酵事件（${time7dAgo} 后）
-|- 用途：你必须据此写选题标题。优先选择持续发酵、热度上升的热门事件，覆盖范围：地缘冲突、台海局势、印太战略、中东冲突、金融货币战、科技封锁与反制、欧美产业围堵、大国政治角力
+|- 当前子赛道：**${subModeName(subMode)}**（已按赛道标签过滤）— 你必须据此写选题标题，所有标题都必须围绕该赛道主题，**禁止**输出与该赛道无关的国际新闻。
+${subModeCoverageLine(subMode)}
 `
         : `# 【International Intelligence Feed v5.0】Auto-fetched · UTC hour bucket · Force refresh every generation
 |- Sources: Reuters, BBC World, Al Jazeera, Guardian, DW World, CNA 等${rssInfo}
 |- Fetch time (UTC ISO): ${iso}
 |- Time bucket (UTC): ${utcBucket} (auto-invalidate every hour, ensures freshest data per generation)
 |- Freshness rule: **Prioritize last 48 hours** (after ${time48hAgo}); also retain events trending within 7 days (after ${time7dAgo})
-|- Coverage: Geopolitics, Taiwan Strait, Indo-Pacific, Middle East, Finance/Currency, Tech Blockade, Western Industrial Siege, Great Power Rivalry
+|- Current sub-track: **${subModeName(subMode)}** (already filtered by track tag) — all topic titles MUST focus on this sub-track. Strictly forbid any off-topic international news.\n${subModeCoverageLine(subMode)}
 |- You MUST anchor every topic title to at least one item in the feed above. Prioritize sustained-trending, rising-heat events over stable background noise.
 
 `;

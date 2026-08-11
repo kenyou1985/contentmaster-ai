@@ -3016,7 +3016,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           throw new Error(errorMsg);
         }
       } else {
-        // 原有的yunwu.ai模型处理逻辑
+        // 原有的 OpenLux AI 模型处理逻辑
         // sora-image、grok-3-image、grok-4-image 使用 chat/completions，不支持 n 参数，需要多次调用来生成多张图片
         const chatCompletionsModels = ['sora-image', 'grok-3-image', 'grok-4-image'];
       if (chatCompletionsModels.includes(selectedImageModel) && generateImageCount > 1) {
@@ -3564,7 +3564,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
   /**
    * 输入/输出：镜头文案/语音分镜 → 写入 voiceAudioUrl；仅 opts.playAfter===true 时自动播放（默认不播）
-   * 配置云雾 Key 时默认先经 gpt-5.4-mini 口播润色，与一键配音面板共用 RunningHub TTS。
+   * 配置云雾 Key 时默认先经 gpt-5.6-luna 口播润色，与一键配音面板共用 RunningHub TTS。
    */
   const synthesizeVoiceForShot = async (
     shot: Shot,
@@ -3606,7 +3606,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
     let text = sourcePreview;
     if (!opts?.skipLlmPolish && apiKey?.trim()) {
-      appendTerminalLog('Voice', `镜头${shot.number}: 使用 gpt-5.4-mini 优化口播…`);
+      appendTerminalLog('Voice', `镜头${shot.number}: 使用 gpt-5.6-luna 优化口播…`);
       try {
         if (opts?.trackPersona?.trim() || opts?.customHint?.trim()) {
           text = await polishTextForTtsSpeechWithStyle(apiKey, text, {
@@ -4181,7 +4181,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         }
       );
       
-      // 对 GPT Image 2 使用最大 20 并发 + 500ms 间隔，避免 yunwu.ai 后端限流报错
+      // 对 GPT Image 2 使用最大 20 并发 + 500ms 间隔，避免 api.openlux.ai 后端限流报错
       // 其他模型（z-image-turbo、sora_image、grok 等）也加上 200ms 错开，进一步降低 503/429 概率
     const isGptImage2 = selectedImageModel === 'gpt-image-2-all';
     const concurrency = isGptImage2 ? 20 : runningHubConcurrency;
@@ -5689,9 +5689,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                             );
                           } else if (isYunwuOverload) {
                             toast.error(
-                              `yunwu.ai 后端临时过载（${msg}）\n\n` +
-                              `已自动重试 3 次仍失败。可能 yunwu 正在限流或服务异常。\n` +
-                              `请稍候 1-2 分钟后重试，或联系 yunwu 客服确认。`,
+                              `api.openlux.ai 后端临时过载（${msg}）\n\n` +
+                              `已自动重试 3 次仍失败。可能 OpenLux 正在限流或服务异常。\n` +
+                              `请稍候 1-2 分钟后重试，或联系 OpenLux 客服确认。`,
                               10000
                             );
                           } else {

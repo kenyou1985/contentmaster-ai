@@ -964,11 +964,12 @@ export async function polishTextForAntiAi(
 
       // 优先使用调用者传入的 maxTokens（已在 Tools.tsx 中用 calcMaxTokens 精确计算）
       // 若未传入，则使用基于输入长度的保守默认值
-      const [modelNameFromArgs, existingOptions] = modelArgs as [string | undefined, { maxTokens?: number; [key: string]: unknown } | undefined];
+      const [modelNameFromArgs, existingOptions] = (modelArgs as unknown) as [string | undefined, { maxTokens?: number; } | undefined];
       const callerMaxTokens = existingOptions?.maxTokens;
       const dynamicMaxTokens = Math.ceil(originalLen * 1.5) + 512;
       const effectiveMaxTokens = callerMaxTokens ?? dynamicMaxTokens;
-      const mergedOptions = { ...existingOptions, maxTokens: effectiveMaxTokens };
+      const mergedOptions: { maxTokens?: number } = existingOptions ? { ...existingOptions } : {};
+      mergedOptions.maxTokens = effectiveMaxTokens;
 
       await streamContentGeneration(
         currentPrompt,

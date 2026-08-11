@@ -178,11 +178,11 @@
 <body>
   <div class="container">
     <h1>🎬 Sora 视频生成 API 测试工具</h1>
-    <p class="subtitle">测试 yunwu.ai Sora 视频生成接口配置</p>
+    <p class="subtitle">测试 OpenLux AI Sora 视频生成接口配置</p>
     
     <div class="info-box">
       <strong>📝 使用说明：</strong>
-      1. 填写你的 yunwu.ai API Key<br>
+      1. 填写你的 OpenLux AI API Key<br>
       2. 选择测试模式（文生视频或图生视频）<br>
       3. 填写必要的参数<br>
       4. 点击"开始测试"按钮
@@ -191,7 +191,7 @@
     <form id="testForm">
       <div class="form-group">
         <label for="apiKey">API Key *</label>
-        <input type="text" id="apiKey" placeholder="输入你的 yunwu.ai API Key" required>
+        <input type="text" id="apiKey" placeholder="输入你的 OpenLux AI API Key" required>
       </div>
       
       <div class="form-group">
@@ -256,7 +256,7 @@
   </div>
   
   <script>
-    const BASE_URL = 'https://yunwu.ai';
+    const BASE_URL = 'https://api.openlux.ai';
     
     // 切换测试模式时显示/隐藏图片 URL 输入框
     document.getElementById('testMode').addEventListener('change', function(e) {

@@ -305,8 +305,8 @@ def _download_file(url: str, dest_path: str, timeout: int = 120, max_retries: in
             if 'runninghub.ai' in url.lower() or 'runninghub.cn' in url.lower():
                 headers['Referer'] = 'https://www.runninghub.ai/'
                 timeout = max(timeout, 180)  # RunningHub 文件较大，增加超时
-            elif 'yunwu.ai' in url.lower():
-                headers['Referer'] = 'https://yunwu.ai/'
+            elif 'api.openlux.ai' in url.lower() or 'openlux.ai' in url.lower():
+                headers['Referer'] = 'https://api.openlux.ai/'
             elif 'jianying' in url.lower():
                 headers['Referer'] = 'https://lv.ulikecom.com/'
 

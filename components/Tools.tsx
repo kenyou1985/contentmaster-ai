@@ -389,7 +389,7 @@ export const Tools: React.FC<ToolsProps> = ({ apiKey, provider, toast: externalT
   const [rewriteLengthMode, setRewriteLengthMode] = useState<'strict' | 'balanced' | 'expressive'>('balanced');
 
   /** 深度洗稿 / 深度扩写（含同面板 5 段流）：Yunwu OpenAI 兼容流式主备模型 */
-  const DEEP_REWRITE_STREAM_PRIMARY = 'gpt-5.4-mini';
+  const DEEP_REWRITE_STREAM_PRIMARY = 'gpt-5.6-luna';
   const DEEP_REWRITE_STREAM_FALLBACK = 'gemini-3-flash-preview';
   const buildDeepRewriteStreamOptions = (maxTokens: number): StreamContentOptions => ({
     fallbackModelOnStall: DEEP_REWRITE_STREAM_FALLBACK,
@@ -3937,7 +3937,7 @@ ${copiedTextLength >= originalLength * 0.95 ? '\n⚠️⚠️⚠️ 原文已搬
             .trim();
           setPainPointText(cleaned);
         },
-        'gpt-5.4-mini',
+        'gpt-5.6-luna',
         { temperature: 0.3, maxTokens: 1024 }
       );
       appendTerminal(`[痛点分析] 分析完成`);
@@ -5169,7 +5169,7 @@ ${channelNameLang === 'zh' ? '- 必须为中文、清晰、专业、10个中文�
         (chunk) => {
           result += chunk;
         },
-        'gpt-5.4-mini',
+        'gpt-5.6-luna',
         { temperature: 0.7 }
       );
 

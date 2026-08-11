@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenLux API 诊断工具 v2</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 1000px; margin: 0 auto; padding: 20px; background: #1a1a2e; color: #eee; }
+    h1 { color: #00d4ff; }
+    h2 { color: #ffaa00; margin-top: 30px; }
+    .test-section { background: #16213e; padding: 20px; border-radius: 10px; margin: 20px 0; }
+    .test-result { background: #0f3460; padding: 15px; border-radius: 5px; margin: 10px 0; font-family: monospace; }
+    .success { border-left: 4px solid #00ff88; }
+    .error { border-left: 4px solid #ff4444; }
+    .warning { border-left: 4px solid #ffaa00; }
+    .info { border-left: 4px solid #00d4ff; }
+    input { width: 100%; padding: 10px; margin: 10px 0; background: #0f3460; border: 1px solid #333; color: #fff; border-radius: 5px; box-sizing: border-box; }
+    button { background: #00d4ff; color: #000; padding: 12px 24px; border: none; border-radius: 5px; cursor: pointer; margin: 5px; font-weight: bold; }
+    button:hover { background: #00a8cc; }
+    button:disabled { background: #555; cursor: not-allowed; }
+    pre { background: #0a0a15; padding: 15px; border-radius: 5px; overflow-x: auto; font-size: 12px; max-height: 400px; }
+    .note { background: #2d1f0f; padding: 10px; border-radius: 5px; margin: 10px 0; border-left: 4px solid #ffaa00; }
+    img { max-width: 300px; border-radius: 5px; margin: 10px 0; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  </style>
+</head>
+<body>
+  <h1>OpenLux AI API 诊断工具 v2</h1>
+  
+  <div class="note">
+    <strong>重要说明：</strong> GPT Image 2 默认返回 <code>b64_json</code>（base64 编码），不是 URL！
+    如需 URL 格式，请设置 <code>response_format: "url"</code>。
+  </div>
+
+  <div class="test-section">
+    <h2>1. 配置信息</h2>
+    <div class="grid">
+      <input type="text" id="apiKey" placeholder="输入你的 OpenLux API Key (sk- 开头)">
+      <input type="text" id="baseUrl" value="https://api.openlux.ai" placeholder="API Base URL">
+    </div>
+    <button onclick="runAllTests()">运行所有测试</button>
+  </div>
+
+  <div class="test-section">
+    <h2>2. API 连接性测试</h2>
+    <button onclick="testConnection()">测试 API 连接</button>
+    <div id="connectionResult" class="test-result"></div>
+  </div>
+
+  <div class="test-section">
+    <h2>3. GPT Image 2 - 文生图测试</h2>
+    <p>端点: POST /v1/images/generations | 模型: gpt-image-2</p>
+    <input type="text" id="gptPrompt" value="A beautiful sunset over the ocean with dolphins jumping" placeholder="图片提示词">
+    <div class="grid">
+      <input type="text" id="gptSize" value="1024x1024" placeholder="尺寸 (如 1024x1024)">
+      <select id="gptQuality" style="padding: 10px; background: #0f3460; color: #fff; border: 1px solid #333; border-radius: 5px;">
+        <option value="low">Low (快速)</option>
+        <option value="medium" selected>Medium (平衡)</option>
+        <option value="high">High (高质量)</option>
+      </select>
+    </div>
+    <div class="grid">
+      <select id="gptFormat" style="padding: 10px; background: #0f3460; color: #fff; border: 1px solid #333; border-radius: 5px;">
+        <option value="auto">自动检测 (默认)</option>
+        <option value="url">强制 URL 格式</option>
+        <option value="b64_json">强制 Base64 格式</option>
+      </select>
+    </div>
+    <button onclick="testGptImage2()">测试 GPT Image 2</button>
+    <div id="gptImageResult" class="test-result"></div>
+  </div>
+
+  <div class="test-section">
+    <h2>4. GPT Image 2 - 图生图测试 (带参考图)</h2>
+    <p>端点: POST /v1/images/edits | 模型: gpt-image-2</p>
+    <input type="text" id="editPrompt" value="Change the background to a starry night sky" placeholder="编辑提示词">
+    <input type="text" id="editImageUrl" value="https://picsum.photos/512/512" placeholder="参考图 URL">
+    <button onclick="testGptImage2Edit()">测试图生图 (编辑)</button>
+    <div id="gptEditResult" class="test-result"></div>
+  </div>
+
+  <div class="test-section">
+    <h2>5. Gemini 3.1 Flash Image 测试</h2>
+    <p>端点: POST /v1beta/models/gemini-3.1-flash-image-preview:generateContent</p>
+    <input type="text" id="geminiPrompt" value="A futuristic city at night with neon lights" placeholder="图片提示词">
+    <div class="grid">
+      <select id="geminiRatio" style="padding: 10px; background: #0f3460; color: #fff; border: 1px solid #333; border-radius: 5px;">
+        <option value="1:1">1:1 (正方形)</option>
+        <option value="16:9" selected>16:9 (横屏)</option>
+        <option value="9:16">9:16 (竖屏)</option>
+      </select>
+      <select id="geminiSize" style="padding: 10px; background: #0f3460; color: #fff; border: 1px solid #333; border-radius: 5px;">
+        <option value="512">512 (低)</option>
+        <option value="1K" selected>1K (中)</option>
+        <option value="2K">2K (高)</option>
+        <option value="4K">4K (超高)</option>
+      </select>
+    </div>
+    <button onclick="testGeminiImage()">测试 Gemini 图片生成</button>
+    <div id="geminiResult" class="test-result"></div>
+  </div>
+
+  <div class="test-section">
+    <h2>6. OpenAI 兼容格式测试</h2>
+    <p>使用 OpenAI 兼容的 /v1/images/generations 端点测试 Gemini</p>
+    <button onclick="testGeminiOpenAIFormat()">测试 Gemini (OpenAI格式)</button>
+    <div id="geminiOpenAIResult" class="test-result"></div>
+  </div>
+
+  <script>
+    function getConfig() {
+      return {
+        apiKey: document.getElementById('apiKey').value.trim(),
+        baseUrl: document.getElementById('baseUrl').value.trim().replace(/\/$/, '')
+      };
+    }
+
+    function log(elementId, type, title, message, data = null) {
+      const el = document.getElementById(elementId);
+      let content = `<strong>${title}</strong>\n\n${message}`;
+      if (data) {
+        content += '\n\n--- 响应数据 ---\n';
+        content += JSON.stringify(data, null, 2);
+      }
+      el.className = 'test-result ' + type;
+      el.innerHTML = '<pre>' + content + '</pre>';
+    }
+
+    async function testConnection() {
+      const { apiKey, baseUrl } = getConfig();
+      if (!apiKey) {
+        log('connectionResult', 'error', '错误', '请输入 API Key');
+        return;
+      }
+
+      log('connectionResult', 'warning', '测试中...', '正在连接 ' + baseUrl + ' ...');
+
+      try {
+        // 测试根路径
+        const startTime = Date.now();
+        const response = await fetch(baseUrl, {
+          method: 'GET',
+          headers: { 'Authorization': `Bearer ${apiKey}` }
+        });
+        const latency = Date.now() - startTime;
+
+        let result = await response.text().catch(() => '无法读取响应');
+        log('connectionResult', response.ok ? 'success' : 'error',
+          `连接测试结果 (${latency}ms)`,
+          `状态: ${response.status}\n` +
+          `状态文本: ${response.statusText}\n` +
+          `响应: ${result.slice(0, 500)}`
+        );
+      } catch (error) {
+        log('connectionResult', 'error', '连接失败', `错误: ${error.message}`);
+      }
+    }
+
+    async function testGptImage2() {
+      const { apiKey, baseUrl } = getConfig();
+      const prompt = document.getElementById('gptPrompt').value.trim();
+      const size = document.getElementById('gptSize').value.trim() || '1024x1024';
+      const quality = document.getElementById('gptQuality').value;
+      const format = document.getElementById('gptFormat').value;
+
+      if (!apiKey || !prompt) {
+        log('gptImageResult', 'error', '错误', '请输入 API Key 和提示词');
+        return;
+      }
+
+      log('gptImageResult', 'warning', '测试中...', `正在测试 GPT Image 2...\n尺寸: ${size}\n质量: ${quality}\n格式: ${format}`);
+
+      try {
+        const body = {
+          model: 'gpt-image-2',
+          prompt: prompt,
+          size: size,
+          quality: quality,
+          n: 1
+        };
+
+        // 处理响应格式
+        if (format === 'url') {
+          body.response_format = 'url';
+        } else if (format === 'b64_json') {
+          body.response_format = 'b64_json';
+        }
+        // 'auto' 不设置，让服务器决定
+
+        const startTime = Date.now();
+        const response = await fetch(`${baseUrl}/v1/images/generations`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify(body)
+        });
+        const latency = Date.now() - startTime;
+
+        const data = await response.json();
+        
+        if (response.ok) {
+          const firstImage = data.data?.[0];
+          const hasUrl = !!firstImage?.url;
+          const hasB64 = !!firstImage?.b64_json;
+          const imageSize = firstImage?.b64_json ? (firstImage.b64_json.length / 1024).toFixed(2) + ' KB' : 'N/A';
+
+          let resultMsg = `✓ GPT Image 2 测试成功! (${latency}ms)\n`;
+          resultMsg += `状态: ${response.status}\n`;
+          resultMsg += `图片数量: ${data.data?.length || 0}\n`;
+          resultMsg += `返回格式: ${hasUrl ? 'URL' : 'Base64'}\n`;
+          if (hasB64) resultMsg += `Base64 大小: ${imageSize}\n`;
+
+          log('gptImageResult', 'success', 'GPT Image 2 结果', resultMsg, data);
+          
+          // 显示图片
+          if (hasUrl && firstImage.url) {
+            document.getElementById('gptImageResult').innerHTML += `<br><img src="${firstImage.url}" alt="Generated Image">`;
+          } else if (hasB64) {
+            const imgUrl = `data:image/png;base64,${firstImage.b64_json}`;
+            document.getElementById('gptImageResult').innerHTML += `<br><img src="${imgUrl}" alt="Generated Image">`;
+          }
+        } else {
+          log('gptImageResult', 'error', 'GPT Image 2 失败',
+            `状态: ${response.status}\n` +
+            `错误: ${data.error?.message || JSON.stringify(data)}`, data);
+        }
+      } catch (error) {
+        log('gptImageResult', 'error', '请求失败', `错误: ${error.message}`);
+      }
+    }
+
+    async function testGptImage2Edit() {
+      const { apiKey, baseUrl } = getConfig();
+      const prompt = document.getElementById('editPrompt').value.trim();
+      const imageUrl = document.getElementById('editImageUrl').value.trim();
+
+      if (!apiKey || !prompt || !imageUrl) {
+        log('gptEditResult', 'error', '错误', '请输入 API Key、提示词和参考图 URL');
+        return;
+      }
+
+      log('gptEditResult', 'warning', '测试中...', '正在测试图生图 (images/edits)...');
+
+      try {
+        // 先下载参考图
+        const imageResponse = await fetch(imageUrl);
+        const imageBlob = await imageResponse.blob();
+
+        const formData = new FormData();
+        formData.append('model', 'gpt-image-2');
+        formData.append('prompt', prompt);
+        formData.append('image', imageBlob, 'reference.png');
+
+        const startTime = Date.now();
+        const response = await fetch(`${baseUrl}/v1/images/edits`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: formData
+        });
+        const latency = Date.now() - startTime;
+
+        const data = await response.json();
+        
+        if (response.ok) {
+          const firstImage = data.data?.[0];
+          let resultMsg = `✓ 图生图测试成功! (${latency}ms)\n`;
+          resultMsg += `状态: ${response.status}\n`;
+          resultMsg += `图片数量: ${data.data?.length || 0}\n`;
+
+          log('gptEditResult', 'success', '图生图结果', resultMsg, data);
+          
+          if (firstImage?.url) {
+            document.getElementById('gptEditResult').innerHTML += `<br><img src="${firstImage.url}" alt="Edited Image">`;
+          } else if (firstImage?.b64_json) {
+            const imgUrl = `data:image/png;base64,${firstImage.b64_json}`;
+            document.getElementById('gptEditResult').innerHTML += `<br><img src="${imgUrl}" alt="Edited Image">`;
+          }
+        } else {
+          log('gptEditResult', 'error', '图生图失败',
+            `状态: ${response.status}\n` +
+            `错误: ${data.error?.message || JSON.stringify(data)}`, data);
+        }
+      } catch (error) {
+        log('gptEditResult', 'error', '请求失败', `错误: ${error.message}`);
+      }
+    }
+
+    async function testGeminiImage() {
+      const { apiKey, baseUrl } = getConfig();
+      const prompt = document.getElementById('geminiPrompt').value.trim();
+      const aspectRatio = document.getElementById('geminiRatio').value;
+      const imageSize = document.getElementById('geminiSize').value;
+
+      if (!apiKey || !prompt) {
+        log('geminiResult', 'error', '错误', '请输入 API Key 和提示词');
+        return;
+      }
+
+      log('geminiResult', 'warning', '测试中...', `正在测试 Gemini 图片生成...\n比例: ${aspectRatio}\n尺寸: ${imageSize}`);
+
+      try {
+        const model = 'gemini-3.1-flash-image-preview';
+        const body = {
+          contents: [{
+            parts: [{ text: prompt }]
+          }],
+          generationConfig: {
+            responseModalities: ['TEXT', 'IMAGE'],
+            imageConfig: {
+              aspectRatio: aspectRatio,
+              imageSize: imageSize
+            }
+          }
+        };
+
+        const startTime = Date.now();
+        const response = await fetch(`${baseUrl}/v1beta/models/${model}:generateContent`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify(body)
+        });
+        const latency = Date.now() - startTime;
+
+        const data = await response.json();
+        
+        if (response.ok) {
+          // 检查是否有图片
+          const parts = data.candidates?.[0]?.content?.parts || [];
+          const imagePart = parts.find(p => p.inlineData);
+          const textPart = parts.filter(p => p.text).map(p => p.text).join('');
+
+          let resultMsg = `✓ Gemini 图片生成测试成功! (${latency}ms)\n`;
+          resultMsg += `状态: ${response.status}\n`;
+          
+          if (imagePart) {
+            const imgData = imagePart.inlineData;
+            const imgSize = (imgData.data.length / 1024).toFixed(2) + ' KB';
+            resultMsg += `图片格式: ${imgData.mimeType}\n`;
+            resultMsg += `图片大小: ${imgSize}\n`;
+            log('geminiResult', 'success', 'Gemini 结果', resultMsg, data);
+            
+            const imgUrl = `data:${imgData.mimeType};base64,${imgData.data}`;
+            document.getElementById('geminiResult').innerHTML += `<br><img src="${imgUrl}" alt="Generated Image">`;
+          } else {
+            resultMsg += `无图片返回\n`;
+            resultMsg += `文本响应: ${textPart || '无'}`;
+            log('geminiResult', 'warning', 'Gemini 结果 (无图片)', resultMsg, data);
+          }
+        } else {
+          log('geminiResult', 'error', 'Gemini 失败',
+            `状态: ${response.status}\n` +
+            `错误: ${data.error?.message || JSON.stringify(data)}`, data);
+        }
+      } catch (error) {
+        log('geminiResult', 'error', '请求失败', `错误: ${error.message}`);
+      }
+    }
+
+    async function testGeminiOpenAIFormat() {
+      const { apiKey, baseUrl } = getConfig();
+      const prompt = document.getElementById('geminiPrompt').value.trim();
+
+      if (!apiKey || !prompt) {
+        log('geminiOpenAIResult', 'error', '错误', '请输入 API Key 和提示词');
+        return;
+      }
+
+      log('geminiOpenAIResult', 'warning', '测试中...', '尝试使用 OpenAI 兼容格式调用 Gemini...');
+
+      try {
+        // 使用 /v1/images/generations 端点但模型名是 Gemini
+        const body = {
+          model: 'gemini-3.1-flash-image-preview',
+          prompt: prompt,
+          size: '1024x1024'
+        };
+
+        const startTime = Date.now();
+        const response = await fetch(`${baseUrl}/v1/images/generations`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify(body)
+        });
+        const latency = Date.now() - startTime;
+
+        const data = await response.json();
+        
+        if (response.ok) {
+          log('geminiOpenAIResult', 'success', 
+            `OpenAI格式 Gemini 测试成功! (${latency}ms)`,
+            `状态: ${response.status}\n` +
+            `图片数量: ${data.data?.length || 0}`, data);
+        } else {
+          log('geminiOpenAIResult', 'error',
+            `OpenAI格式失败 (${latency}ms)`,
+            `状态: ${response.status}\n` +
+            `错误: ${data.error?.message || JSON.stringify(data)}\n\n` +
+            `提示: OpenLux 可能不支持这种格式，请使用原生 generateContent 端点`, data);
+        }
+      } catch (error) {
+        log('geminiOpenAIResult', 'error', '请求失败', `错误: ${error.message}`);
+      }
+    }
+
+    async function runAllTests() {
+      await testConnection();
+      await new Promise(r => setTimeout(r, 500));
+      await testGptImage2();
+      await new Promise(r => setTimeout(r, 1000));
+      await testGeminiImage();
+    }
+  </script>
+</body>
+</html>

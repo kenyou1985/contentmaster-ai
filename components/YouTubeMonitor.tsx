@@ -744,7 +744,11 @@ export const YouTubeMonitor: React.FC = () => {
         void saveVideoSnapshot(v);
       }
     } catch (e) {
-      console.warn(`[YTMonitor] 抓取频道 ${channelId} 失败:`, e);
+      // 网络错误静默处理，不打印日志避免污染控制台
+      const msg = (e as Error)?.message || String(e);
+      if (!msg.toLowerCase().includes('failed to fetch') && !msg.toLowerCase().includes('network') && !msg.toLowerCase().includes('fetch')) {
+        console.debug(`[YTMonitor] 抓取频道 ${channelId} 失败:`, e);
+      }
     } finally {
       setLoadingChannels(prev => {
         const next = new Set(prev);
@@ -1592,7 +1596,7 @@ export const YouTubeMonitor: React.FC = () => {
             .trim();
           setPainPointsResult(cleaned);
         },
-        'gpt-5.4-mini',
+        'gpt-5.6-luna',
         { temperature: 0.3, maxTokens: 1024 }
       );
     } catch (e) {

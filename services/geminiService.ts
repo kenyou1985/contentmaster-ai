@@ -1,16 +1,18 @@
 // Yunwu AI API Service - Using OpenAI compatible format
-// Based on Python implementation: https://yunwu.ai/v1/chat/completions
+// Based on Python implementation: https://api.openlux.ai/v1/chat/completions
 
-const YUNWU_BASE_URL = "https://yunwu.ai";
+const YUNWU_BASE_URL = "https://api.openlux.ai";
 const GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com";
+/** Yunwu 主力模型（已验证稳定可用） */
 const DEFAULT_YUNWU_MODEL = "gpt-5.4-mini";
-const GOOGLE_PRIMARY_MODEL = "gpt-5.4-mini";
+/** Google 主力模型 */
+const GOOGLE_PRIMARY_MODEL = "gemini-2.0-flash";
 const GOOGLE_FALLBACK_MODEL = "gemini-3.1-pro-preview";
 
 /** 流式输出在首段文本出现前的最长等待；超时后 Yunwu 会改用备用模型重试一次 */
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = 120_000;
 /** Yunwu OpenAI 兼容通道上的备用模型（主模型排队/首包过慢时使用） */
-export const STREAM_FALLBACK_MODEL_OPENAI = "gpt-5.4-mini";
+export const STREAM_FALLBACK_MODEL_OPENAI = "gpt-5.6-luna";
 
 const STREAM_FIRST_CHUNK_STALL = "STREAM_FIRST_CHUNK_STALL";
 const GOOGLE_GENERATION_STALL = "GOOGLE_GENERATION_STALL";
@@ -37,6 +39,8 @@ export type StreamContentOptions = {
   /** 有参考图时，多模态首条英文说明；不传则用通用锚定（不预设狗/宠物） */
   referenceMultimodalPreamble?: string;
 };
+
+export type StreamModelArgs = Parameters<typeof streamContentGeneration>;
 
 type Provider = 'yunwu' | 'google';
 
@@ -496,7 +500,7 @@ export const generateTopics = async (
   };
 
   const shouldSwitchToFallback = (err: any): boolean => {
-    return isQuotaError(err) || isTimeoutError(err);
+    return isQuotaError(err) || isTimeoutError(err) || (err?.message || String(err)).toLowerCase().includes('failed to fetch');
   };
 
   const requestOnce = async (inputPrompt: string, isRetry = false): Promise<string> => {
@@ -534,10 +538,10 @@ export const generateTopics = async (
       }
     }
 
-    // 备用模型：gpt-5.4-mini
+    // 备用模型：gpt-5.4-mini (备用)
     const prevModel = model;
     model = fallback;
-    console.warn(`[Gemini Service] Trying fallback model: ${fallback}`);
+    console.debug(`[Gemini Service] Trying fallback model: ${fallback}`);
     try {
       const response = await retryOperation(
         () => callYunwuAPI(inputPrompt, systemInstruction, 0.9, 4096, false, 45000),
@@ -545,7 +549,7 @@ export const generateTopics = async (
       );
       const content = response.choices?.[0]?.message?.content || "";
       if (content.trim()) {
-        console.warn(`[Gemini Service] Fallback model success!`);
+        console.debug(`[Gemini Service] Fallback model success!`);
         return content;
       }
     } catch (fallbackErr) {
@@ -603,6 +607,133 @@ export const generateTopics = async (
     }
     throw error;
   }
+};
+
+/** 流式选题生成器：每解析出一条选题立即通过 onTopic 回调显示，逐条输出避免长时间等待。
+ *  @param prompt 选题 prompt
+ *  @param systemInstruction 系统指令
+ *  @param options 生成选项
+ *  @param onTopic 每解析出一条选题时调用（显示用）
+ *  @param onComplete 所有选题生成完毕时调用，传入完整列表
+ */
+export const generateTopicsStreaming = async (
+  prompt: string,
+  systemInstruction: string,
+  options: GenerateTopicsOptions & {
+    onTopic?: (topic: string) => void;
+    onComplete?: (topics: string[]) => void;
+  }
+): Promise<string[]> => {
+  const topicCount = Math.min(50, Math.max(1, Math.floor(options?.topicCount ?? 5)));
+  const avoidTopics = options?.avoidTopics ?? [];
+
+  // 用于判断是否与历史选题重复
+  const isSimilarToHistory = (topic: string): boolean => {
+    if (!avoidTopics.length) return false;
+    const extractCoreWords = (s: string): string[] => {
+      return s
+        .replace(/[^\u4e00-\u9fffA-Za-z0-9]/g, ' ')
+        .split(/\s+/)
+        .filter(w => w.length >= 2)
+        .map(w => w.toLowerCase());
+    };
+    const words = new Set(extractCoreWords(topic));
+    if (words.size < 3) return false;
+    for (const h of avoidTopics) {
+      const hw = extractCoreWords(h);
+      if (!hw.length) continue;
+      const shared = hw.filter(w => words.has(w.toLowerCase()));
+      const ratio = shared.length / Math.max(hw.length, words.size);
+      if (ratio > 0.45) return true;
+    }
+    return false;
+  };
+
+  const seen = new Set<string>();
+  const allTopics: string[] = [];
+
+  const tryParseLine = (rawLine: string): string | null => {
+    const line = rawLine
+      .replace(/^\d+[\.、]\s*/, '')
+      .replace(/^[-*•]\s*/, '')
+      .replace(/^["']/, '')
+      .replace(/["']$/, '')
+      .trim();
+
+    if (line.length < 8 || line.length > 80) return null;
+    if (/^(我不能|我无法|抱歉|对不起|很抱歉|无法|不知道|无法确定|我需要|请提供|请输入|请告诉我|如果你想|以下是|以下是我|下面这些是|这些是|下面是|I'm|I cannot|I can't|sorry|Sorry|as an AI|作为一个|作为AI|由于|因此|另外|此外|首先|然后|最后|根据|针对|通过|你好|您好)/i.test(line)) return null;
+    return line;
+  };
+
+  const onChunk = (chunk: string) => {
+    // 先按行分割
+    const lines = chunk
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean);
+
+    for (const rawLine of lines) {
+      const parsed = tryParseLine(rawLine);
+      if (parsed) {
+        if (!seen.has(parsed)) {
+          seen.add(parsed);
+          if (!isSimilarToHistory(parsed)) {
+            allTopics.push(parsed);
+            options?.onTopic?.(parsed);
+            continue;
+          }
+        }
+        continue;
+      }
+      // 行解析失败（可能是段落）：尝试按句号/问号/感叹号拆分
+      const sentences = rawLine.split(/[。！？!?\n；;]+/).map(s => s.trim()).filter(s => s.length > 0);
+      for (const s of sentences) {
+        const parsedS = tryParseLine(s);
+        if (parsedS && !seen.has(parsedS) && !isSimilarToHistory(parsedS)) {
+          seen.add(parsedS);
+          allTopics.push(parsedS);
+          options?.onTopic?.(parsedS);
+        }
+      }
+    }
+  };
+
+  return new Promise<string[]>((resolve, reject) => {
+    let settled = false;
+    const finish = (topics: string[]) => {
+      if (settled) return;
+      settled = true;
+      const final = topics.slice(0, topicCount);
+      options?.onComplete?.(final);
+      resolve(final);
+    };
+
+    streamContentGeneration(
+      prompt,
+      systemInstruction,
+      onChunk,
+      options?.modelName,
+      {
+        temperature: 0.7,
+        maxTokens: 8192,
+        firstChunkTimeoutMs: 120000,
+        idleTimeoutMs: 60000,
+      }
+    ).then(() => {
+      console.log(`[generateTopicsStreaming] 流完成，共解析 ${allTopics.length} 条选题`);
+      finish(allTopics);
+    }).catch((err: any) => {
+      console.warn(`[generateTopicsStreaming] 流错误: ${err?.message || err}, 已解析 ${allTopics.length} 条`);
+      if (settled) return;
+      // 如果流结束但已有选题，返回已有的
+      if (allTopics.length > 0) {
+        finish(allTopics);
+      } else {
+        // 抛出原始错误，让调用方决定是否兜底重试
+        reject(err);
+      }
+    });
+  });
 };
 
 async function streamYunwuOpenAIOnce(
@@ -812,8 +943,7 @@ export const streamContentGeneration = async (
   modelName?: string,
   options?: StreamContentOptions
 ) => {
-  return retryOperation(async () => {
-    try {
+  try {
       if (!apiKey) {
         if (typeof window !== "undefined" && window.localStorage) {
           const storedKey = window.localStorage.getItem("GEMINI_API_KEY");
@@ -996,7 +1126,7 @@ export const streamContentGeneration = async (
           console.warn(
             `[Gemini Service] Yunwu 主模型无可用渠道 (${primaryModel})，立即切换备用模型: ${fallbackOpenAI}`
           );
-          await wait(2000);
+          await wait(1000);
           try {
             await streamWithRetry(
               fallbackOpenAI,
@@ -1016,7 +1146,7 @@ export const streamContentGeneration = async (
           console.warn(
             `[Gemini Service] Yunwu 主模型失败 (${primaryModel})，错误: ${err?.message || err}，切换备用模型: ${fallbackOpenAI}`
           );
-          await wait(3000);
+          await wait(1000);
           try {
             await streamWithRetry(
               fallbackOpenAI,
@@ -1055,6 +1185,5 @@ export const streamContentGeneration = async (
         );
       }
       throw error;
-    }
-  });
+  }
 };

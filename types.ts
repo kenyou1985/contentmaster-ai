@@ -78,6 +78,8 @@ export interface SubModeConfig {
   prompt: string;
   scriptPromptTemplate?: string;
   continuePromptTemplate?: string;
+  /** 选题生成时使用的 system instruction，若不提供则使用赛道默认 */
+  systemInstruction?: string;
 }
 
 export interface Topic {

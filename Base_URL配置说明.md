@@ -1,15 +1,14 @@
-# 🌐 Base URL 配置说明
+# API 配置说明
 
 ## 当前默认配置
 
-系统默认使用：**`https://yunwu.ai`**
+系统默认使用：**`https://api.openlux.ai`**
 
 ## Base URL 选项
 
-### 1. Yunwu AI（推荐）
-- **主选项**: `https://yunwu.ai`
-- **备选选项**: `https://api.yunwu.ai`
-- **说明**: 系统会自动尝试这两个 URL，优先使用主选项
+### 1. OpenLux AI（推荐）
+- **主选项**: `https://api.openlux.ai`
+- **说明**: 系统会自动使用此 URL 作为 API 端点
 
 ### 2. Google 官方 API
 - **URL**: `https://generativelanguage.googleapis.com`
@@ -18,8 +17,7 @@
 ## 自动检测规则
 
 1. **如果 API Key 以 `sk-` 开头**：
-   - 自动使用 `https://yunwu.ai`
-   - 验证时会自动尝试 `https://api.yunwu.ai` 作为备选
+   - 自动使用 `https://api.openlux.ai`
 
 2. **如果 API Key 以 `AIza` 开头**：
    - 使用 Google 官方 API
@@ -39,29 +37,28 @@
 ### 方法 2: 使用环境变量
 在项目根目录创建 `.env.local` 文件：
 ```env
-VITE_GEMINI_BASE_URL=https://yunwu.ai
+VITE_GEMINI_BASE_URL=https://api.openlux.ai
 ```
 
 ### 方法 3: 在代码中修改
 编辑 `App.tsx` 文件，修改默认值：
 ```typescript
-return storedUrl || envBaseUrl || 'https://yunwu.ai';
+return storedUrl || envBaseUrl || 'https://api.openlux.ai';
 ```
 
 ## 验证机制
 
 系统在验证 API Key 时会：
-1. 首先尝试 `https://yunwu.ai`
-2. 如果失败，自动尝试 `https://api.yunwu.ai`
-3. 对每个 URL 尝试不同的模型：
-   - `gemini-2.0-flash-exp`（优先）
-   - `gemini-3-pro-preview-thinking`（备选）
+1. 使用 `https://api.openlux.ai`
+2. 对每个 URL 尝试不同的模型：
+   - `gpt-5.6-luna`（优先）
+   - `gpt-5.4-mini`（备选）
 
 ## 常见问题
 
 ### Q: 应该使用哪个 Base URL？
 **A**: 
-- 如果使用 Yunwu AI（`sk-` 开头的 Key）：使用 `https://yunwu.ai` 或 `https://api.yunwu.ai`
+- 如果使用 OpenLux AI：使用 `https://api.openlux.ai`
 - 如果使用 Google 官方 API：使用 `https://generativelanguage.googleapis.com`
 
 ### Q: 验证失败怎么办？

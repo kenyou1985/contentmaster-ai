@@ -186,7 +186,7 @@ export function openAiImageDataItemToUrl(item: unknown): string | undefined {
 }
 
 /** 提交 TTS 前口播润色（与项目内其它 Yunwu 轻量任务一致） */
-export const YUNWU_TTS_POLISH_MODEL = 'gpt-5.4-mini';
+export const YUNWU_TTS_POLISH_MODEL = 'gpt-5.6-luna';
 
 function stripLeadingTrailingCodeFence(s: string): string {
   let t = s.trim();
@@ -238,7 +238,7 @@ async function runTtsPolishChat(
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 55_000);
   try {
-    const res = await fetch('https://yunwu.ai/v1/chat/completions', {
+    const res = await fetch('https://api.openlux.ai/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -265,7 +265,7 @@ async function runTtsPolishChat(
     const out = stripThinkTags(stripLeadingTrailingCodeFence(content).trim());
     return out.length >= 2 ? out : fallback;
   } catch (e) {
-    console.warn('[YunwuService] TTS polish request failed, using raw text:', e);
+    console.warn('[OpenLuxService] TTS polish request failed, using raw text:', e);
     return fallback;
   } finally {
     clearTimeout(timer);
@@ -286,9 +286,9 @@ export async function polishTextForTtsSpeech(apiKey: string, rawText: string): P
 }
 
 /**
- * 在默认口播润色规则上叠加「赛道人设」与/或用户自定义说明（仍用 gpt-5.4-mini）。
- * 二者皆空时等价于 {@link polishTextForTtsSpeech}。
- */
+   * 在默认口播润色规则上叠加「赛道人设」与/或用户自定义说明（仍用 gpt-5.6-luna）。
+   * 二者皆空时等价于 {@link polishTextForTtsSpeech}。
+   */
 export async function polishTextForTtsSpeechWithStyle(
   apiKey: string,
   rawText: string,
@@ -336,7 +336,7 @@ export async function normalizeReferenceDataUrls(urls: string[]): Promise<string
       const blob = await res.blob();
       out.push(await blobToDataUrl(blob));
     } catch (e) {
-      console.error('[YunwuService] 参考图加载失败:', raw.slice(0, 96), e);
+      console.error('[OpenLuxService] 参考图加载失败:', raw.slice(0, 96), e);
       throw new Error('无法加载参考图，请使用本地上传或确保图片链接可访问（含 blob / 跨域）');
     }
   }
@@ -418,7 +418,7 @@ function buildOpenAiVisionUserContent(
 ): string | Array<{ type: string; text?: string; image_url?: { url: string } }> {
   if (!referenceDataUrls?.length) return text;
 
-  console.log('[YunwuService] buildOpenAiVisionUserContent:', {
+  console.debug('[OpenLuxService] buildOpenAiVisionUserContent:', {
     text: text.slice(0, 100),
     refCount: referenceDataUrls.length,
     characterName,
@@ -550,7 +550,7 @@ async function yunwuGeminiNativeImageOnce(
   const data = await response.json();
   const imageUrls = extractUrlsFromGeminiImageResponse(data);
   if (imageUrls.length === 0) {
-    console.error('[YunwuService] Gemini 图片响应无可用图:', geminiModelId, data);
+    console.error('[OpenLuxService] Gemini 图片响应无可用图:', geminiModelId, data);
     throw new Error('无法从响应中提取图片，请检查响应格式');
   }
   return {
@@ -700,7 +700,7 @@ async function fetchWithRetry(
         const baseDelay = retryAfterSec > 0 ? retryAfterSec * 1000 : 2000 * Math.pow(2, attempt - 1);
         const jitter = Math.random() * 2000;
         const wait = baseDelay + jitter;
-        console.warn(`[YunwuService] ${label} HTTP ${resp.status}，${Math.round(wait)}ms 后重试 (${attempt}/${maxRetries - 1})`);
+        console.warn(`[OpenLuxService] ${label} HTTP ${resp.status}，${Math.round(wait)}ms 后重试 (${attempt}/${maxRetries - 1})`);
         await new Promise((r) => setTimeout(r, wait));
         continue;
       }
@@ -722,7 +722,7 @@ async function fetchWithRetry(
       const baseDelay = 2000 * Math.pow(2, attempt - 1);
       const jitter = Math.random() * 2000;
       const wait = baseDelay + jitter;
-      console.warn(`[YunwuService] ${label} 网络错误 (${e?.message?.slice(0, 80) || e})，${Math.round(wait)}ms 后重试 (${attempt}/${maxRetries - 1})`);
+      console.warn(`[OpenLuxService] ${label} 网络错误 (${e?.message?.slice(0, 80) || e})，${Math.round(wait)}ms 后重试 (${attempt}/${maxRetries - 1})`);
       await new Promise((r) => setTimeout(r, wait));
     }
   }
@@ -734,7 +734,7 @@ export const generateImage = async (
   options: ImageGenerationOptions
 ): Promise<GenerationResult> => {
   try {
-    const baseUrl = 'https://yunwu.ai';
+    const baseUrl = 'https://api.openlux.ai';
 
     const opts: ImageGenerationOptions = {
       ...options,
@@ -824,7 +824,7 @@ export const generateImage = async (
 
         // 检查是否是"模型不可用"的错误
         if (errorMessage.includes('No available channels') || errorMessage.includes('not available')) {
-          throw new Error(`模型 "${opts.model}" 在当前账户中不可用。\n\n可能原因：\n1. 该模型需要特殊权限或白名单\n2. 该模型暂未在您的账户中启用\n3. 当前账户余额不足或配额已用完\n\n建议：\n- 联系 yunwu.ai 客服确认模型可用性和账户权限\n- 或尝试使用其他视频生成模型`);
+          throw new Error(`模型 "${opts.model}" 在当前账户中不可用。\n\n可能原因：\n1. 该模型需要特殊权限或白名单\n2. 该模型暂未在您的账户中启用\n3. 当前账户余额不足或配额已用完\n\n建议：\n- 联系 OpenLux 客服确认模型可用性和账户权限\n- 或尝试使用其他视频生成模型`);
         }
 
         throw new Error(errorMessage);
@@ -899,7 +899,7 @@ export const generateImage = async (
       }
       
       // 如果还是没找到，返回错误
-      console.error('[YunwuService] sora_image 响应数据:', data);
+      console.error('[OpenLuxService] sora_image 响应数据:', data);
       throw new Error('无法从响应中提取图片URL，请检查响应格式');
     }
 
@@ -908,14 +908,14 @@ export const generateImage = async (
       try {
         return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, COVER_GEMINI_PRIMARY, opts);
       } catch (primaryErr: any) {
-        console.warn('[YunwuService] 封面生图 Gemini 主模型失败，切换 gpt-image-2:', primaryErr?.message);
+        console.warn('[OpenLuxService] 封面生图 Gemini 主模型失败，切换 gpt-image-2:', primaryErr?.message);
         try {
           return await yunwuOpenAiImageOnce(apiKey, baseUrl, 'gpt-image-2', opts, {
             externalSignal: opts.externalSignal,
             timeoutMs: opts.timeoutMs,
           });
         } catch (gptErr: any) {
-          console.warn('[YunwuService] 封面生图 gpt-image-2 失败，切换 grok-imagine-image-pro:', gptErr?.message);
+          console.warn('[OpenLuxService] 封面生图 gpt-image-2 失败，切换 grok-imagine-image-pro:', gptErr?.message);
           return await yunwuGrokImageOnce(apiKey, baseUrl, 'grok-imagine-image-pro', opts);
         }
       }
@@ -983,7 +983,7 @@ export const generateImage = async (
             throw new Error(err.error?.message || err.message || `HTTP ${response.status}`);
           }
           const data = await response.json();
-          console.log(`[YunwuService] ${opts.model} 响应:`, JSON.stringify(data).slice(0, 2000));
+          console.debug(`[OpenLuxService] ${opts.model} 响应:`);
           const clean = parseGrokChatImageResults(data);
           if (clean.length > 0) {
             const first = clean[0];
@@ -994,13 +994,13 @@ export const generateImage = async (
             };
           }
           lastGrokErr = new Error('无法从响应中提取图片URL');
-          console.warn(`[YunwuService] ${opts.model} 第 ${attempt + 1} 次未解析到图片`);
+          console.debug(`[OpenLuxService] ${opts.model} 第 ${attempt + 1} 次未解析到图片`);
         } catch (e: any) {
           lastGrokErr = e instanceof Error ? e : new Error(String(e?.message || e));
-          console.warn(`[YunwuService] ${opts.model} 第 ${attempt + 1} 次请求失败:`, lastGrokErr.message);
+          console.warn(`[OpenLuxService] ${opts.model} 第 ${attempt + 1} 次请求失败:`, lastGrokErr.message);
         }
       }
-      console.error(`[YunwuService] ${opts.model} 多次尝试后仍失败`, lastGrokErr);
+      console.error(`[OpenLuxService] ${opts.model} 多次尝试后仍失败`, lastGrokErr);
       throw lastGrokErr || new Error('Grok 生图失败');
     }
 
@@ -1124,7 +1124,7 @@ async function yunwuOpenAiImageOnce(
       // 可重试错误：503/502/429/504
       if (isRetryable(response.status) && attempt < MAX_RETRIES - 1) {
         const delayMs = Math.min(2000 * Math.pow(2, attempt), 30_000);
-        console.warn(`[YunwuService] ${modelId} 尝试 ${attempt + 1} 失败 (HTTP ${response.status})，${delayMs}ms 后重试...`);
+        console.warn(`[OpenLuxService] ${modelId} 尝试 ${attempt + 1} 失败 (HTTP ${response.status})，${delayMs}ms 后重试...`);
         await new Promise((r) => setTimeout(r, delayMs));
         continue;
       }
@@ -1135,7 +1135,7 @@ async function yunwuOpenAiImageOnce(
       const isUpstreamSaturated = /上游.*负载|负载.*饱和|upstream.*busy|upstream.*saturated/i.test(errorMessage);
       if (isUpstreamSaturated && attempt < MAX_RETRIES - 1) {
         const delayMs = Math.min(3000 * Math.pow(2, attempt), 45_000);
-        console.warn(`[YunwuService] ${modelId} 上游饱和 (${errorMessage.slice(0, 60)})，${delayMs}ms 后重试...`);
+        console.warn(`[OpenLuxService] ${modelId} 上游饱和 (${errorMessage.slice(0, 60)})，${delayMs}ms 后重试...`);
         await new Promise((r) => setTimeout(r, delayMs));
         continue;
       }
@@ -1179,7 +1179,7 @@ async function yunwuOpenAiImageOnce(
       // 网络错误可重试
       if (isNetworkErr && attempt < MAX_RETRIES - 1) {
         const delayMs = Math.min(2000 * Math.pow(2, attempt), 30_000);
-        console.warn(`[YunwuService] ${modelId} 网络错误 (${err.message?.slice(0, 80)}), ${delayMs}ms 后重试...`);
+        console.warn(`[OpenLuxService] ${modelId} 网络错误 (${err.message?.slice(0, 80)}), ${delayMs}ms 后重试...`);
         await new Promise((r) => setTimeout(r, delayMs));
         continue;
       }
@@ -1241,7 +1241,7 @@ async function yunwuGrokImageOnce(
         throw new Error(err.error?.message || err.message || `HTTP ${response.status}`);
       }
       const data = await response.json();
-      console.log(`[YunwuService] ${modelId} 响应:`, JSON.stringify(data).slice(0, 2000));
+      console.debug(`[OpenLuxService] ${modelId} 响应:`);
       const clean = parseGrokChatImageResults(data);
       if (clean.length > 0) {
         const first = clean[0];
@@ -1252,13 +1252,13 @@ async function yunwuGrokImageOnce(
         };
       }
       lastGrokErr = new Error('无法从响应中提取图片URL');
-      console.warn(`[YunwuService] ${modelId} 第 ${attempt + 1} 次未解析到图片`);
+      console.debug(`[OpenLuxService] ${modelId} 第 ${attempt + 1} 次未解析到图片`);
     } catch (e: any) {
       lastGrokErr = e instanceof Error ? e : new Error(String(e?.message || e));
-      console.warn(`[YunwuService] ${modelId} 第 ${attempt + 1} 次请求失败:`, lastGrokErr.message);
+      console.warn(`[OpenLuxService] ${modelId} 第 ${attempt + 1} 次请求失败:`, lastGrokErr.message);
     }
   }
-  console.error(`[YunwuService] ${modelId} 多次尝试后仍失败`, lastGrokErr);
+  console.error(`[OpenLuxService] ${modelId} 多次尝试后仍失败`, lastGrokErr);
   throw lastGrokErr || new Error(`${modelId} 生图失败`);
 }
 
@@ -1309,7 +1309,7 @@ async function yunwuGrokImageOnce(
       url: normalizedUrl,
     };
   } catch (error: any) {
-    console.error('[YunwuService] 图片生成失败:', error);
+    console.error('[OpenLuxService] 图片生成失败:', error);
     // 透传 AbortError / 扩展错误码（USER_CANCELLED / TIMEOUT_AFTER_PAYMENT），
     // 让上层（MediaGenerator）能区分是「用户主动取消」还是「已扣费超时」并采取不同策略
     if (error?.code === 'USER_CANCELLED' || error?.code === 'TIMEOUT_AFTER_PAYMENT') {
@@ -1342,7 +1342,7 @@ export const generateVideo = async (
   options: VideoGenerationOptions
 ): Promise<GenerationResult> => {
   try {
-    const baseUrl = 'https://yunwu.ai';
+    const baseUrl = 'https://api.openlux.ai';
     
     // 只支持 Sora 系列模型
     const supportedModels = ['sora-2', 'sora-2-pro', 'sora-2-all'];
@@ -1440,7 +1440,7 @@ export const generateVideo = async (
           errorMessage.includes('not available') ||
           errorMessage.includes('不可用') ||
           errorMessage.includes('未启用')) {
-        throw new Error(`模型 "${options.model}" 在当前账户中不可用。\n\n可能原因：\n1. 该模型需要特殊权限或白名单\n2. 该模型暂未在您的账户中启用\n3. 当前账户余额不足或配额已用完\n\n建议：\n- 联系 yunwu.ai 客服确认模型可用性和账户权限`);
+        throw new Error(`模型 "${options.model}" 在当前账户中不可用。\n\n可能原因：\n1. 该模型需要特殊权限或白名单\n2. 该模型暂未在您的账户中启用\n3. 当前账户余额不足或配额已用完\n\n建议：\n- 联系 OpenLux 客服确认模型可用性和账户权限`);
       }
       
       // 检查是否是服务器负载饱和的错误
@@ -1468,7 +1468,7 @@ export const generateVideo = async (
       taskId: data.id || data.task_id || data.taskId,
     };
   } catch (error: any) {
-    console.error('[YunwuService] 视频生成失败:', error);
+    console.error('[OpenLuxService] 视频生成失败:', error);
     
     // 如果错误信息已经包含详细说明（可能原因、建议等），直接返回
     if (error.message && (error.message.includes('可能原因：') || error.message.includes('建议：') || error.message.includes('服务器暂时繁忙'))) {
@@ -1502,7 +1502,7 @@ export const checkTaskStatus = async (
   taskId: string
 ): Promise<GenerationResult> => {
   try {
-    const baseUrl = 'https://yunwu.ai';
+    const baseUrl = 'https://api.openlux.ai';
     const endpoint = `/v1/tasks/${taskId}`;
     
     const response = await fetch(`${baseUrl}${endpoint}`, {
@@ -1524,7 +1524,7 @@ export const checkTaskStatus = async (
       url: data.url || data.result?.url,
     };
   } catch (error: any) {
-    console.error('[YunwuService] 查询任务状态失败:', error);
+    console.error('[OpenLuxService] 查询任务状态失败:', error);
     return {
       success: false,
       error: error.message || '查询任务状态失败',

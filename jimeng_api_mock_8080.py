@@ -297,7 +297,7 @@ if __name__ == '__main__':
     print("="*60)
     print("\n说明:")
     print("  - 此服务使用SESSION_ID调用真实即梦API生成图片")
-    print("  - 只使用即梦自己的API，不使用其他API（如yunwu.ai）")
+    print("  - 只使用即梦自己的API，不使用其他API（如 api.openlux.ai）")
     print("  - 需要在请求头中提供: Authorization: Bearer <SESSION_ID>")
     print("  - 需要配置真实的即梦API地址（环境变量 JIMENG_REAL_API_URL）")
     print("="*60)

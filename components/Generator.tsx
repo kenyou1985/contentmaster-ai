@@ -831,8 +831,8 @@ import {
 } from '../types';
 import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, LIFE_DUNGEON_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT, YI_JING_SHORT_SCRIPT_PROMPT, HISTORICAL_FIGURE_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH, applyTopicCountToPrompt, NEWS_SHORT_SCRIPT_DOUYIN, NEWS_LONG_SCRIPT_DOUYIN } from '../constants';
 import { NicheSelector } from './NicheSelector';
-import { generateTopics, streamContentGeneration, initializeGemini, SEGMENT_RETRY_MAX, SEGMENT_RETRY_DELAY_MS } from '../services/geminiService';
-import { fetchMacroNewsDigestForPrompt } from '../services/macroNewsFeedService';
+import { generateTopics, generateTopicsStreaming, streamContentGeneration, initializeGemini, SEGMENT_RETRY_MAX, SEGMENT_RETRY_DELAY_MS } from '../services/geminiService';
+import { fetchMacroNewsDigestForPrompt, subModeName } from '../services/macroNewsFeedService';
 import { fetchPsychologyDigestForPrompt } from '../services/psychologyFeedService';
 import { needsParagraphNormalization, normalizeDenseChineseParagraphs } from '../services/textFormat';
 import { detectAiFeatures, type AiDetectionResult, type NicheTypeForScoring } from '../services/aiDetectionService';
@@ -1014,7 +1014,7 @@ function ensureGreatPowerClosingZh(text: string): string {
  */
 function ensureNewsShortClosing(text: string): string {
   const trimmed = text.trimEnd();
-  // 模型常见的几种收尾语
+  // 模型常见的几种收尾语（统一大小写）
   const closingPhrases = [
     /咱们下期见[。！]?\s*$/,
     /咱们下期继续拆[。！]?\s*$/,
@@ -1026,11 +1026,8 @@ function ensureNewsShortClosing(text: string): string {
   for (const re of closingPhrases) {
     if (re.test(trimmed)) {
       const cleaned = trimmed.replace(/\s+$/, '');
-      // 若已「咱们下期见。」则直接返回；否则补全句号
-      if (/咱们下期见。$/.test(cleaned) || /咱们下期继续拆。$/.test(cleaned)) {
-        return cleaned;
-      }
-      return `${cleaned} 咱们下期见。`;
+      // 不管有无句号都视为已有收尾，直接返回（不追加！）
+      return cleaned;
     }
   }
 
@@ -1045,7 +1042,6 @@ function ensureNewsShortClosing(text: string): string {
       searchWindow.lastIndexOf('？'),
     );
     if (sentenceEnd > -1) {
-      // sentenceEnd 是相对 searchWindow 的偏移，需转回 trimmed 的绝对位置
       const absoluteCutoff = Math.max(0, trimmed.length - 200) + sentenceEnd + 1;
       const prefix = trimmed.slice(0, absoluteCutoff).trimEnd();
       return `${prefix} 咱们下期见。`;
@@ -1267,7 +1263,7 @@ type OneShotScriptPlan = {
   extraDirective: string;
 };
 
-function getOneShotScriptPlan(niche: NicheType, scriptLengthMode: 'LONG' | 'SHORT' = 'LONG'): OneShotScriptPlan | null {
+function getOneShotScriptPlan(niche: NicheType, scriptLengthMode: 'LONG' | 'SHORT' = 'LONG', customMinChars?: number | null): OneShotScriptPlan | null {
   // 新闻热点赛道：短视频 1000-1500 字，约 1200 字开始进入收尾（抖音主推）
   if (niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'SHORT') {
     return {
@@ -1279,6 +1275,26 @@ function getOneShotScriptPlan(niche: NicheType, scriptLengthMode: 'LONG' | 'SHOR
         '逻辑高度浓缩、论点精炼、节奏快、信息密度大。具备抖音精选内容特征的至少 2 项：获得感/惊喜感/表达力/感染力。' +
         '**字数节奏**：约 1000 字起步，约 1200 字必须开始收尾；全篇控制在 1000-1500 字之间，不超过 1500 字。' +
         '收尾必须在观点表达完整、句子有明确结论之后，再追加「咱们下期见。」，不要为了凑结尾而砍掉正在论证的论点。' +
+        '禁止废话、禁止长篇论证、禁止画面提示符、禁止前置说明、禁止二次润色。',
+    };
+  }
+  // 新闻热点赛道长视频：默认 2500-3200 字，支持自定义（硬下限 2300 字）
+  if (niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG') {
+    const minChars = Math.max(customMinChars ?? 2500, 2300);
+    const maxChars = Math.max(minChars + 200, 3200);
+    const wordCountNote = customMinChars ? `（自定义：≥${customMinChars}字）` : '';
+    return {
+      minChars,
+      maxChars,
+      targetLabel: `${minChars} - ${maxChars} 字${wordCountNote}`,
+      extraDirective:
+        '主题方向必须偏新闻热点·国内民生/国际·抖音知识赛道。生成时直接输出最终一稿，禁止大纲/分段/合并。' +
+        '逻辑高度浓缩、论点精炼、节奏快、信息密度大。具备抖音精选内容特征的至少 2 项：获得感/惊喜感/表达力/感染力。' +
+        `**字数节奏·铁律**：全文不得少于 ${minChars} 字，也不得超过 ${maxChars} 字。` +
+        `**收尾铁律**：正文写到 ${minChars + 200} 字以后（即 ${minChars + 200}–${maxChars} 字区间）才允许进入收尾段；` +
+        `正文未达 ${minChars + 200} 字前，**严格禁止**写任何收尾语（评论引导、点赞、下期见等）。` +
+        '**防偷懒铁律**：不要在 2000 字前就提前收尾；不要为了凑结尾砍掉正在论证的论点；' +
+        '第二/三/四步每一个论点都要展开写透，至少 600 字以上；可以加入具体的人物名字、数字、时间节点、场景描写拉长正文。' +
         '禁止废话、禁止长篇论证、禁止画面提示符、禁止前置说明、禁止二次润色。',
     };
   }
@@ -1337,18 +1353,53 @@ function buildOneShotLongScriptPrompt(
   topic: string,
   niche: NicheType,
   scriptLengthMode: 'LONG' | 'SHORT' = 'LONG',
+  customMinChars?: number | null,
 ): string {
-  const plan = getOneShotScriptPlan(niche, scriptLengthMode);
+  const plan = getOneShotScriptPlan(niche, scriptLengthMode, customMinChars);
   const seeded = basePrompt.replaceAll('{topic}', topic);
   if (!plan) return seeded;
   return `${seeded}\n\n【生成模式变更（最高优先级）】\n本次必须一次性直接输出最终完整成稿。\n- 禁止先列大纲再写正文\n- 禁止分段输出后再合并\n- 禁止输出“第1部分/第2部分/上篇/下篇/待续”等中间产物\n- 禁止生成后再做“去AI味清洗/洗稿/二次润色”思路\n- 必须在首次生成时就直接把 AI 味降下来，写成可直接发布的最终稿\n\n【篇幅硬要求】\n- 严格目标区间：${plan.targetLabel}\n- 最低不少于 ${plan.minChars} 字\n- 最高不超过 ${plan.maxChars} 字\n\n【风格总要求】\n${plan.extraDirective}\n\n【输出要求】\n- 只输出最终正文\n- 不要解释你的写法\n- 不要输出大纲、章节规划、创作说明、字数说明\n- 不要输出“以下是正文”“下面开始”等前置语`;}
+
+/**
+ * 续写补齐字数提示词：当一次性生成字数不足时，自动调用此 prompt 让模型继续往下写
+ * 严禁重复前面的内容，只接在末尾续写
+ */
+function buildContinueToTargetCharsPrompt(
+  currentText: string,
+  topic: string,
+  niche: NicheType,
+  targetChars: number,
+): string {
+  const currentLen = currentText.length;
+  const need = targetChars - currentLen;
+  const tailAnchor = currentText.slice(-200);
+  return `你刚才的初稿因字数不足被中止。现要求你**续写接龙**：
+
+【选题】${topic}
+【当前总字数】${currentLen} 字
+【目标字数】${targetChars} 字（最少还要再写 ${need} 字）
+【已写末尾（仅作上下文锚点，不要重复这些内容）】\n...\n${tailAnchor}
+
+【续写铁律·最高优先级】
+1. **绝对不要**重复或改写上面已出现过的句子、段落、案例。
+2. **绝对不要**写「接下来」「下面继续」等过渡句，直接从新的论点/案例/场景切入。
+3. 必须接在已写完的内容后面自然衔接，承接上一段最后一个论点的思路继续深挖。
+4. 续写 ${need} 字左右，写到 ${targetChars} 字附近为止。
+5. 续写完成后，**必须**以「咱们下期见。」结尾（这是终稿，结尾只出现这一次）。
+6. 续写时仍须遵循：香香人设、口语化、多维度词汇、全文不重复段落。
+7. 续写完成后立即停笔，绝不输出「咱们下期见。」以外的任何收尾相关文字。
+
+【输出格式】
+直接输出要续写的内容（不要写"以下是续写"等前缀），写完「咱们下期见。」即停。`;
+}
 
 function clampOneShotLength(
   content: string,
   niche: NicheType,
   scriptLengthMode: 'LONG' | 'SHORT' = 'LONG',
+  customMinChars?: number | null,
 ): string {
-  const plan = getOneShotScriptPlan(niche, scriptLengthMode);
+  const plan = getOneShotScriptPlan(niche, scriptLengthMode, customMinChars);
   if (!plan) return content.trim();
   let text = content.trim();
   if (text.length <= plan.maxChars) return text;
@@ -1411,8 +1462,8 @@ function shouldUseOneShotLongForm(niche: NicheType, scriptLengthMode: 'LONG' | '
 }
 
 /** 一次性长文生成后处理：截断 + 收尾词注入/去重 */
-function applyOneShotPostProcessing(content: string, niche: NicheType, scriptLengthMode: 'LONG' | 'SHORT', greatPowerLanguage?: 'zh' | 'en'): string {
-  let text = clampOneShotLength(content.trim(), niche, scriptLengthMode);
+function applyOneShotPostProcessing(content: string, niche: NicheType, scriptLengthMode: 'LONG' | 'SHORT', greatPowerLanguage?: 'zh' | 'en', customMinChars?: number | null): string {
+  let text = clampOneShotLength(content.trim(), niche, scriptLengthMode, customMinChars);
 
   if (niche === NicheType.GREAT_POWER_GAME) {
     text = greatPowerLanguage === 'zh'
@@ -1729,6 +1780,10 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   
   // Script length mode for TCM/Finance/Psychology
   const [scriptLengthMode, setScriptLengthMode] = useState<'LONG' | 'SHORT'>('LONG');
+
+  /** 自定义脚本字数（全局选项）；null = 使用默认，数字 = 自定义字数下限 */
+  const [scriptWordCountMin, setScriptWordCountMin] = useState<number | null>(null);
+  const [scriptWordCountCustom, setScriptWordCountCustom] = useState('2000');
 
   /** 策划选题条数：默认 10；预设 5/10/15/20 或自定义 1–50 */
   const [planTopicCountPreset, setPlanTopicCountPreset] = useState<5 | 10 | 15 | 20>(10);
@@ -2050,7 +2105,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
   // 处理子模式切换（不带自动弹窗）
   const handleSubModeChange = (nicheType: NicheType, submodeId: string, setFunc: (id: any) => void) => {
-    console.log('[Generator] 切换子模式:', { nicheType, submodeId });
+    console.debug('[Generator] 切换子模式:', { nicheType, submodeId });
     // 直接切换，不自动弹窗
     setFunc(submodeId);
     setInputVal('');
@@ -2512,9 +2567,8 @@ Hard rules:
           : '正在抓取国际 RSS 要闻（BBC / DW / Al Jazeera 等）…'
       );
       try {
-        // v5.0: forceRefresh=true 确保每次生成都重新抓取最新热点（微博/抖音/今日热榜）
-        // 避免「昨天和今天输出一样」的问题
-        const digest = await fetchMacroNewsDigestForPrompt(32, rssLang, true);
+        // v10.0: 传入 subMode 让 RSS 按赛道 tag 过滤，保证中东冲突只取中东相关新闻、金融货币战只取金融相关新闻
+        const digest = await fetchMacroNewsDigestForPrompt(32, rssLang, true, newsSubMode);
         // 存入 ref 供 UI 显示
         if (niche === NicheType.GENERAL_VIRAL) {
           newsMacroNewsDigestRef.current = digest;
@@ -2523,10 +2577,18 @@ Hard rules:
           // v9.4 台海局势子赛道：注入台湾媒体 digest + 专属对齐规则
           if (newsSubMode === NewsSubModeId.TAIWAN_STRAIT) {
             toast.info('正在抓取台湾媒体 RSS 要闻…');
-            const twDigest = await fetchMacroNewsDigestForPrompt(32, 'zh', true);
+            const twDigest = await fetchMacroNewsDigestForPrompt(32, 'taiwan', true);
             const taiwanRules =
-              '\n\n【台海局势选题铁律·最高优先级】每条标题必须围绕「台湾岛内政治与社会动态」：赖清德/蔡英文/柯文哲等政治人物动态、立法机构冲突、抗议示威、两岸关系走向、岛内民生议题（能源/房价/薪资/健保）。禁止输出「伊朗」「以色列」「俄罗斯」「委内瑞拉」「西班牙」「南非」「尼日尔」等与台湾无关的国际地缘选题。禁止10条标题只围绕同一政治人物或同一事件。必须覆盖至少5条不同台湾新闻线索。' +
-              '\n【输出格式】只输出纯中文标题，每行一个，15–45 汉字，不要任何英文前缀/分类小标题/引号/Markdown。';
+              '\n\n【台湾地区政治选题铁律·最高优先级】\n' +
+              '**比例铁律（必须严格遵守）**：\n' +
+              '- 10 条选题中 **≥7 条必须是台湾岛内政治**（蓝绿恶斗/议会冲突/选举厮杀/弊案/食安/民生/党内派系/蓝白合与裂等）\n' +
+              '- 10 条选题中 **≤3 条是对外议题**（两岸/台美/台日，但必须从台湾岛内政治视角切入，如"赖清德回应""卢秀燕表态""郑丽文批评"等）\n' +
+              '\n**禁止跑偏**：\n' +
+              '- 禁止输出伊朗/俄罗斯/乌克兰/中东/南海等与台湾无关的国际新闻\n' +
+              '- 禁止输出中美博弈/G7峰会/四方对话等大国政治角力内容\n' +
+              '- 禁止变成纯军事台海博弈赛道（应聚焦台湾内部政治反应）\n' +
+              '\n**多样性铁律**：10 条标题至少覆盖 6 个不同政治人物，4 种以上事件类型，禁止 10 条都围绕同一人物。\n' +
+              '\n【输出格式】只输出纯中文标题，每行一个，22–40 汉字，不要任何英文前缀/分类小标题/引号/Markdown。';
             prompt = `${twDigest}\n\n---\n\n` + prompt + taiwanRules;
           } else if (greatPowerLanguage === 'zh') {
             // 地缘冲突中文 prompt：追加国际 RSS digest + 对齐规则
@@ -2596,6 +2658,9 @@ Hard rules:
             `\n【禁止模板句式铁律】禁止10条标题都使用相同的句式模板（如连续 10 条都「X？Y...Z...」式），每条标题的事件/人物/地点/句式必须彼此不同、且真实存在于上方投喂中。` +
             `\n【标题党铁律】每条须含强钩子：悬念/反问/震撼词/第二人称刺痛至少其二；禁止写成通讯社导语或「……说明……」式说明体；单条建议15–35字（抖音短标题），可用冒号或破折号断句，追求「一眼想点进去」。` +
             `\n【覆盖度铁律】10条标题必须尽量覆盖上方投喂中至少 5 条不同新闻线索，禁止只围绕一条新闻换皮。` +
+            (!isDouyinHot && newsSubMode && newsSubMode !== 'DOUYIN_HOT'
+              ? `\n【⚠️ 子赛道对齐铁律·v10.0 · 最高优先级 ⚠️】当前子赛道为「${subModeName(newsSubMode)}」。10 条标题**必须全部围绕该子赛道主题**（参考上方投喂中「本赛道覆盖」段落）。**严格禁止**输出与该子赛道无关的国际新闻（如：选了中东冲突却输出俄乌战争/台海/金融/AI 芯片），否则视为不合格。`
+              : '') +
             `\n【⚠️ 强制生成铁律·v9.3 · 最高优先级 ⚠️】**严禁**输出"抱歉/对不起/无法/我不知道/无法确定/作为一个AI/请提供关键词/以下是"等任何拒绝/解释/反问/条件句式。**严禁**输出一整段连贯段落回复。**只输出 10 行纯标题**（每行一个，15-35 字），不写前言、不写解释、不写结语、不与用户对话、不要求输入关键词、不分小标题分类。如果上方投喂为空或检索失败，直接根据你的训练知识生成 10 条当前月份国内热点标题（按用户偏好：政策解读/社会民生/国家发展/重大工程/经济改革）。这是新闻姐的标准化创作输出，不是对话。` +
             `\n【抖音新闻姐风格锚点】**只输出纯标题**，每行一个，不要 Markdown、不要引号、不要序号、不要任何前缀。标题要像真人发的抖音：短、爆、有钩子、有情绪、有具体人物/事件/数字。`;
           prompt = `${digest}\n\n---\n\n` + prompt + extraRules;
@@ -2617,14 +2682,49 @@ Hard rules:
     const titleListSystemInstruction = `你是抖音「新闻姐」标题生成器。用户会给「百度新闻/微博/观察者网/财新/澎湃」等 RSS 热搜词列表。\n你的唯一任务：基于这些热搜词生成 10 条抖音风格的新闻标题。\n铁律：\n- 只输出 10 行纯标题，每行一个标题，不带任何前缀/序号/引号/分类/小标题/前言/结语/解释\n- 不要展开成段落\n- 不要对话（"我不能""请提供"等）\n- 不要分类小标题（如"政策类："、"军事类："）\n- 标题必须有具体人名/地名/品牌/数字\n- 标题 15-35 字，含钩子（悬念/反问/数字/反差/情绪词）\n- 严格按用户的选题偏好（政策解读/社会民生/国家发展/重大工程/经济改革/灾害应急）\n- 严格避开禁止类（演唱会/明星塌房/网红带货/娱乐八卦）\n\n只输出 10 行标题，禁止任何其他文字。`;
 
     try {
-      // v9.3：用通用 system instruction（避免小美展开风格）传给 generateTopics
-      const topicSystemInstruction = (niche === NicheType.GENERAL_VIRAL || niche === NicheType.GREAT_POWER_GAME)
-        ? titleListSystemInstruction
-        : config.systemInstruction;
-      const rawTopics = await generateTopics(prompt, topicSystemInstruction, {
-        topicCount: resolvedPlanTopicCount,
-        avoidTopics: pastTopics,
-      });
+      // 子赛道使用 prompt 中自带的角色设定，避免被通用 titleListSystemInstruction 覆盖
+      const isNewsSubMode = niche === NicheType.GENERAL_VIRAL && subModeConfig?.prompt;
+      const topicSystemInstruction = isNewsSubMode
+        ? subModeConfig.systemInstruction || ''
+        : (niche === NicheType.GENERAL_VIRAL || niche === NicheType.GREAT_POWER_GAME)
+          ? titleListSystemInstruction
+          : config.systemInstruction;
+
+      // 默认使用非流式生成（非流式稳定可靠，避免 gpt-5.4-mini 的 STREAM_IDLE_TIMEOUT 问题）
+      let rawTopics: string[] = [];
+      try {
+        rawTopics = await generateTopics(prompt, topicSystemInstruction, {
+          topicCount: resolvedPlanTopicCount,
+          avoidTopics: pastTopics,
+        });
+      } catch (primaryErr: any) {
+        console.warn('[Generator] 非流式选题失败，尝试流式回退:', primaryErr?.message || primaryErr);
+        try {
+          // 流式回退：逐条显示，但不稳定（STREAM_IDLE_TIMEOUT 问题）
+          const pendingTopics: string[] = [];
+          const seenSet = new Set<string>();
+          rawTopics = await generateTopicsStreaming(prompt, topicSystemInstruction, {
+            topicCount: resolvedPlanTopicCount,
+            avoidTopics: pastTopics,
+            onTopic: (topic: string) => {
+              if (seenSet.has(topic)) return;
+              seenSet.add(topic);
+              pendingTopics.push(topic);
+              const newTopicItem: Topic = {
+                id: `topic-streaming-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                title: topic,
+                selected: true,
+              };
+              setTopics(prev => [...prev, newTopicItem]);
+            },
+          });
+        } catch (streamingErr: any) {
+          console.error('[Generator] 流式选题回退也失败:', streamingErr);
+          throw new Error('选题生成失败，请稍后重试');
+        }
+      }
+
+      console.log('[Generator] 选题生成完成', { rawTopicsCount: rawTopics.length });
 
       const normalizedRawTopics =
         niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'en'
@@ -2921,7 +3021,7 @@ ${isEnglishScript
         }
       };
 
-      const model = 'gpt-5.4-mini';
+      const model = 'gpt-5.6-luna';
 
       console.log(`[Storyboard] 启动，模型=${model}，预计 ${estimatedShots} 个镜头`);
       toast.info(`正在生成分镜（${estimatedShots} 个镜头）…`);
@@ -3401,10 +3501,15 @@ ${segmentSourceText}
     const topic = sel[0];
     const config = NICHES[niche];
     const isGreatPowerZh = niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'zh';
+    // 新闻热点赛道：按 scriptLengthMode 选择短/长视频脚本模板（香香人设）
+    const newsBasePrompt =
+      niche === NicheType.GENERAL_VIRAL
+        ? scriptLengthMode === 'SHORT' ? NEWS_SHORT_SCRIPT_DOUYIN : NEWS_LONG_SCRIPT_DOUYIN
+        : '';
     const basePrompt = isGreatPowerZh
       ? NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH
-      : config?.scriptPromptTemplate || '';
-    const prompt = buildOneShotLongScriptPrompt(basePrompt, topic.title, niche, scriptLengthMode);
+      : newsBasePrompt || config?.scriptPromptTemplate || '';
+    const prompt = buildOneShotLongScriptPrompt(basePrompt, topic.title, niche, scriptLengthMode, scriptWordCountMin);
     const systemInstruction = isGreatPowerZh
       ? NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH
       : config?.systemInstruction || '';
@@ -3423,7 +3528,10 @@ ${segmentSourceText}
           setYiJingMergedOutput(liveContent);
           setTcmMergedOutput(liveContent);
           const visibleChars = liveContent.trim().length;
-          progressValue = Math.min(92, Math.max(progressValue + Math.max(1, Math.floor(chunk.length / 120)), Math.min(92, 10 + Math.floor(visibleChars / 45))));
+          // 渐进式进度：根据字符数估算当前进度，最高 92%（剩余 8% 留给收尾处理）
+          const charBasedProgress = Math.min(92, 10 + Math.floor(visibleChars / 45));
+          const incrementalProgress = Math.max(1, Math.floor(chunk.length / 120));
+          progressValue = Math.min(92, Math.max(progressValue + incrementalProgress, charBasedProgress));
           setBatchProgress({
             current: progressValue,
             total: 100,
@@ -3438,10 +3546,57 @@ ${segmentSourceText}
               : scriptLengthMode === 'SHORT'
                 ? 4096
                 : 32768,
+          // 长文场景：流式空闲超时从默认 180s 缩短到 60s，避免卡死
+          idleTimeoutMs: 60000,
+          firstChunkTimeoutMs: 90000,
         }
       );
 
-      const content = applyOneShotPostProcessing(liveContent, niche, scriptLengthMode, greatPowerLanguage);
+      // 流结束后立即推进进度条到 95%
+      setBatchProgress({ current: 95, total: 100, hint: '正文生成完成，正在整理最终文案…' });
+
+      let content = applyOneShotPostProcessing(liveContent, niche, scriptLengthMode, greatPowerLanguage, scriptWordCountMin);
+
+      // 字数校准：长文不足 minChars 时，自动续写补齐
+      if (niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG' && content) {
+        const plan = getOneShotScriptPlan(niche, scriptLengthMode, scriptWordCountMin);
+        const minRequired = plan?.minChars ?? 2500;
+        let currentText = content;
+        let rounds = 0;
+        const maxRounds = 2;  // 最多续写 2 轮
+        while (currentText.length < minRequired && rounds < maxRounds) {
+          rounds++;
+          const charsNeeded = minRequired - currentText.length;
+          setBatchProgress({
+            current: 95 + rounds,
+            total: 100,
+            hint: `字数不足 ${minRequired} 字（当前 ${currentText.length} 字），自动续写补齐…`,
+          });
+          try {
+            const continuePrompt = buildContinueToTargetCharsPrompt(
+              currentText,
+              topic.title,
+              niche,
+              minRequired,
+            );
+            let appended = '';
+            await streamContentGeneration(
+              continuePrompt,
+              systemInstruction,
+              (chunk) => { appended += chunk; },
+              undefined,
+              { maxTokens: 16384, idleTimeoutMs: 60000, firstChunkTimeoutMs: 60000 },
+            );
+            const newText = currentText + appended;
+            currentText = applyOneShotPostProcessing(newText, niche, scriptLengthMode, greatPowerLanguage, scriptWordCountMin);
+          } catch (e) {
+            console.warn('[Generator] 续写失败，停止补齐:', e);
+            break;
+          }
+        }
+        content = currentText;
+      }
+
       if (!content) {
         toast.error('生成失败：返回内容为空');
         setStatus(GenerationStatus.ERROR);
@@ -3450,7 +3605,7 @@ ${segmentSourceText}
         return false;
       }
 
-      setBatchProgress({ current: 96, total: 100, hint: '正在整理最终文案并执行字数校准…' });
+      setBatchProgress({ current: 98, total: 100, hint: '正在整理最终文案并执行字数校准…' });
       setGeneratedContents([{ topic: topic.title, content }]);
       setYiJingMergedOutput(content);
       setTcmMergedOutput(content);
@@ -3536,10 +3691,15 @@ ${segmentSourceText}
             const topicId = topic.id;
             const config = NICHES[niche];
             const isGreatPowerZh = niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'zh';
+            // 新闻热点赛道：按 scriptLengthMode 选择短/长视频脚本模板（香香人设）
+            const newsBasePrompt =
+              niche === NicheType.GENERAL_VIRAL
+                ? scriptLengthMode === 'SHORT' ? NEWS_SHORT_SCRIPT_DOUYIN : NEWS_LONG_SCRIPT_DOUYIN
+                : '';
             const basePrompt = isGreatPowerZh
               ? NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH
-              : config?.scriptPromptTemplate || '';
-            const prompt = buildOneShotLongScriptPrompt(basePrompt, topic.title, niche, scriptLengthMode);
+              : newsBasePrompt || config?.scriptPromptTemplate || '';
+            const prompt = buildOneShotLongScriptPrompt(basePrompt, topic.title, niche, scriptLengthMode, scriptWordCountMin);
             const systemInstruction = isGreatPowerZh
               ? NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH
               : config?.systemInstruction || '';
@@ -3572,7 +3732,7 @@ ${segmentSourceText}
                 }
               );
 
-              const content = applyOneShotPostProcessing(liveContent, niche, scriptLengthMode, greatPowerLanguage);
+              const content = applyOneShotPostProcessing(liveContent, niche, scriptLengthMode, greatPowerLanguage, scriptWordCountMin);
 
               setGeneratedContents((prev) => {
                 const next = [...prev];
@@ -8102,11 +8262,46 @@ ${segmentSourceText}
                         : niche === NicheType.FINANCE_CRYPTO || niche === NicheType.GREAT_POWER_GAME
                           ? '长视频：一次性生成完整终稿，严格控制在 3000 - 6000。短视频：≤500 字。'
                           : niche === NicheType.GENERAL_VIRAL
-                            ? '长视频：一次性完整终稿，严格控制在 7000 - 8500 字。抖音短视频：1000 - 1500 字，约 1200 字起收尾，为结尾预留缓冲，避免截断。'
+                            ? scriptLengthMode === 'SHORT'
+                              ? '抖音短视频：1000 - 1500 字，约 1200 字起收尾。'
+                              : '长视频完整终稿：2400 - 3000 字（硬上限 3200），默认 ≥2000 字开始收尾。'
                             : niche === NicheType.TCM_METAPHYSICS
                             ? '长视频：一次性生成完整终稿，目标约 6000，实际控制成 5600 - 6400。短视频：≤500 字。'
                             : '短视频：在选题基础上详细展开，加入排比与总结排列，输出 500 字以内短视频文案。'}
             </p>
+
+            {/* 自定义脚本字数选项（截图2需求：全局自定义，默认 >500） */}
+            {niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG' && (
+              <div className="mt-3 flex items-center gap-2">
+                <label className="flex items-center gap-1.5 text-[10px] text-cyan-400 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={scriptWordCountMin !== null}
+                    onChange={(e) => setScriptWordCountMin(e.target.checked ? 500 : null)}
+                    className="w-3 h-3 accent-cyan-400"
+                  />
+                  自定义字数（最低500字）
+                </label>
+                {scriptWordCountMin !== null && (
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      value={scriptWordCountCustom}
+                      onChange={(e) => {
+                        const v = parseInt(e.target.value, 10);
+                        setScriptWordCountCustom(e.target.value);
+                        if (!isNaN(v) && v >= 500) setScriptWordCountMin(v);
+                      }}
+                      min={500}
+                      max={10000}
+                      className="w-16 px-2 py-0.5 bg-slate-900 border border-cyan-500/50 rounded text-[10px] text-cyan-300 text-center focus:outline-none focus:border-cyan-400"
+                      placeholder="2000"
+                    />
+                    <span className="text-[10px] text-slate-500">字以上</span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 

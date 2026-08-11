@@ -1,6 +1,6 @@
 """
 即梦API Mock服务器 - 自动配置版本
-自动从网站localStorage读取yunwu.ai API Key（如果可用）
+自动从网站localStorage读取 api.openlux.ai API Key（如果可用）
 或使用环境变量配置
 """
 from flask import Flask, request, jsonify
@@ -19,10 +19,10 @@ CORS(app)  # 允许跨域请求
 FORWARD_TO_REAL_API = os.getenv('FORWARD_TO_REAL_API', 'false').lower() == 'true'
 # 真实即梦API地址（如果启用转发模式）
 REAL_API_BASE_URL = os.getenv('REAL_API_BASE_URL', 'http://localhost:5100')
-# 是否使用yunwu.ai生成真实图片（默认启用）
+# 是否使用 api.openlux.ai 生成真实图片（默认启用）
 USE_REAL_GENERATION = os.getenv('USE_REAL_GENERATION', 'true').lower() == 'true'
-# yunwu.ai API Key（优先从环境变量读取，也可以从请求中获取）
-YUNWU_API_KEY = os.getenv('YUNWU_API_KEY', '')
+    # OpenLux AI API Key（优先从环境变量读取，也可以从请求中获取）
+OPENLUX_API_KEY = os.getenv('OPENLUX_API_KEY', '')
 # ==================================================
 
 # 存储从请求中获取的API Key（用于支持动态配置）
@@ -41,9 +41,9 @@ def generate_mock_image_url(prompt, index, width, height):
     timestamp = int(time.time())
     return f"https://picsum.photos/{width}/{height}?random={timestamp}_{index}"
 
-def generate_real_image_via_yunwu(prompt, width, height, api_key=None):
+def generate_real_image_via_openlux(prompt, width, height, api_key=None):
     """
-    使用yunwu.ai API生成真实图片
+    使用 api.openlux.ai API生成真实图片
     返回图片URL或base64数据
     """
     if not USE_REAL_GENERATION:
@@ -54,9 +54,9 @@ def generate_real_image_via_yunwu(prompt, width, height, api_key=None):
         return None
     
     try:
-        # 使用yunwu.ai的图片生成API
+        # 使用 api.openlux.ai 的图片生成API
         # 尝试使用sora-image模型（支持中文提示词）
-        url = "https://yunwu.ai/v1/chat/completions"
+        url = "https://api.openlux.ai/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
@@ -85,7 +85,7 @@ def generate_real_image_via_yunwu(prompt, width, height, api_key=None):
             "temperature": 0.7
         }
         
-        print(f"[真实生成] 调用yunwu.ai API生成图片...")
+        print(f"[真实生成] 调用 api.openlux.ai API生成图片...")
         response = requests.post(url, headers=headers, json=payload, timeout=60)
         
         if response.status_code == 200:
@@ -116,7 +116,7 @@ def generate_real_image_via_yunwu(prompt, width, height, api_key=None):
                 return content
         else:
             error_text = response.text[:200]
-            print(f"[真实生成] yunwu.ai API返回错误: {response.status_code}, {error_text}")
+            print(f"[真实生成] api.openlux.ai API返回错误: {response.status_code}, {error_text}")
                 
     except Exception as e:
         print(f"[真实生成] 生成失败: {str(e)}")
@@ -164,7 +164,7 @@ def forward_to_real_api(prompt, num_images, width, height, session_id):
 def generate_images():
     """
     模拟即梦API的图片生成接口
-    支持从请求中获取yunwu.ai API Key（通过X-Yunwu-API-Key头）
+    支持从请求中获取 OpenLux AI API Key（通过X-OpenLux-API-Key头）
     """
     try:
         # 获取请求数据
@@ -178,11 +178,11 @@ def generate_images():
         auth_header = request.headers.get('Authorization', '')
         session_id = auth_header.replace('Bearer ', '') if auth_header.startswith('Bearer ') else ''
         
-        # 尝试从请求头获取yunwu.ai API Key（如果网站传递了）
-        yunwu_api_key_from_request = request.headers.get('X-Yunwu-API-Key', '')
-        if yunwu_api_key_from_request and session_id:
-            dynamic_api_keys[session_id] = yunwu_api_key_from_request
-            print(f"[配置] 从请求中获取yunwu.ai API Key: {yunwu_api_key_from_request[:10]}...")
+        # 尝试从请求头获取 api.openlux.ai API Key（如果网站传递了）
+        openlux_api_key_from_request = request.headers.get('X-OpenLux-API-Key', '')
+        if openlux_api_key_from_request and session_id:
+            dynamic_api_keys[session_id] = openlux_api_key_from_request
+            print(f"[配置] 从请求中获取 api.openlux.ai API Key: {openlux_api_key_from_request[:10]}...")
         
         print(f"\n{'='*60}")
         print(f"[Mock API] 收到生成请求")
@@ -205,15 +205,15 @@ def generate_images():
                 print(f"{'='*60}\n")
                 return jsonify(real_result), 200
         
-        # 优先级2: 使用yunwu.ai生成真实图片
+        # 优先级2: 使用 api.openlux.ai 生成真实图片
         api_key = get_api_key_for_request(session_id)
         if USE_REAL_GENERATION and api_key:
-            print(f"[真实生成] 使用yunwu.ai API生成真实图片...")
+            print(f"[真实生成] 使用 api.openlux.ai API生成真实图片...")
             image_urls = []
             success_count = 0
             
             for i in range(num_images):
-                image_url = generate_real_image_via_yunwu(prompt, width, height, api_key)
+                image_url = generate_real_image_via_openlux(prompt, width, height, api_key)
                 if image_url:
                     image_urls.append({"url": image_url})
                     success_count += 1
@@ -236,13 +236,13 @@ def generate_images():
                     "real_generation": True
                 }), 200
         elif USE_REAL_GENERATION:
-            print(f"[真实生成] 未配置yunwu.ai API Key，跳过真实生成")
+            print(f"[真实生成] 未配置 api.openlux.ai API Key，跳过真实生成")
         
         # 优先级3: Mock模式（占位图片）
         print(f"[Mock模式] 使用占位图片")
         print(f"[提示] 要生成真实图片，请:")
         print(f"  1. 设置环境变量: YUNWU_API_KEY=<您的API Key>")
-        print(f"  2. 或者在网站中配置yunwu.ai API Key（网站会自动传递）")
+        print(f"  2. 或者在网站中配置 api.openlux.ai API Key（网站会自动传递）")
         
         # 模拟生成延迟
         delay = random.uniform(1, 3)
@@ -265,7 +265,7 @@ def generate_images():
             "status": "success",
             "message": f"成功生成 {num_images} 张图片（Mock模式：占位图片）",
             "mock_mode": True,
-            "note": "这是Mock模式返回的占位图片。要生成真实图片，请配置yunwu.ai API Key。"
+            "note": "这是Mock模式返回的占位图片。要生成真实图片，请配置 api.openlux.ai API Key。"
         }), 200
         
     except Exception as e:
@@ -288,7 +288,7 @@ def health():
         "forward_mode": FORWARD_TO_REAL_API,
         "real_generation": USE_REAL_GENERATION and has_api_key,
         "real_api_url": REAL_API_BASE_URL if FORWARD_TO_REAL_API else None,
-        "has_yunwu_key": has_api_key
+        "has_openlux_key": has_api_key
     }), 200
 
 @app.route('/', methods=['GET'])
@@ -304,12 +304,12 @@ def index():
         "modes": {
             "mock": "返回占位图片（默认，如果未配置API Key）",
             "forward": "转发到真实即梦API（需设置环境变量）",
-            "real_generation": "使用yunwu.ai生成真实图片（默认启用，需配置YUNWU_API_KEY）"
+            "real_generation": "使用 api.openlux.ai 生成真实图片（默认启用，需配置OPENLUX_API_KEY）"
         },
         "usage": "使用jm.py脚本连接此服务器进行测试",
         "config": {
             "real_generation": "USE_REAL_GENERATION=true (默认启用)",
-            "yunwu_api_key": "YUNWU_API_KEY=<您的API Key> 或通过网站自动传递",
+            "openlux_api_key": "OPENLUX_API_KEY=<您的API Key> 或通过网站自动传递",
             "forward_mode": "FORWARD_TO_REAL_API=true",
             "real_api_url": "REAL_API_BASE_URL=<真实API地址>"
         }
@@ -327,10 +327,10 @@ if __name__ == '__main__':
     print(f"真实生成: {'启用' if USE_REAL_GENERATION else '禁用'}")
     if USE_REAL_GENERATION:
         if YUNWU_API_KEY:
-            print(f"yunwu.ai API Key: {YUNWU_API_KEY[:10]}... (已配置)")
-            print("✓ 将使用yunwu.ai生成真实图片")
+            print(f"api.openlux.ai API Key: {OPENLUX_API_KEY[:10]}... (已配置)")
+            print("✓ 将使用 api.openlux.ai 生成真实图片")
         else:
-            print("yunwu.ai API Key: 未配置（将从网站请求中获取或使用占位图片）")
+            print("api.openlux.ai API Key: 未配置（将从网站请求中获取或使用占位图片）")
             print("提示: 设置环境变量 YUNWU_API_KEY 可启用真实生成")
     if FORWARD_TO_REAL_API:
         print(f"真实API地址: {REAL_API_BASE_URL}")

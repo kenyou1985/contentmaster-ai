@@ -96,7 +96,7 @@ export async function cacheImage(imageUrl: string): Promise<string> {
         const referers: Record<string, string> = {
           'p11-dreamina-sign.byteimg.com': 'https://jimeng.jianying.com/',
           'byteimg.com': 'https://jimeng.jianying.com/',
-          'yunwu.ai': 'https://yunwu.ai/',
+          'api.openlux.ai': 'https://api.openlux.ai/',
           'bytedance.com': 'https://jimeng.jianying.com/',
           'cos.ap-beijing.myqcloud.com': 'https://www.runninghub.ai/',
           'rh-images': 'https://www.runninghub.ai/',

@@ -102,7 +102,7 @@ async function fetchUrlAsBlob(url: string): Promise<Blob> {
   const referers: Record<string, string> = {
     'p11-dreamina-sign.byteimg.com': 'https://jimeng.jianying.com/',
     'byteimg.com': 'https://jimeng.jianying.com/',
-    'yunwu.ai': 'https://yunwu.ai/',
+    'api.openlux.ai': 'https://api.openlux.ai/',
     'bytedance.com': 'https://jimeng.jianying.com/',
   };
   const ref = Object.keys(referers).find(k => hostname.includes(k));

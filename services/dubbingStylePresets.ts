@@ -1,5 +1,5 @@
 /**
- * 一键配音：赛道人设（与深度洗稿提示词区同款分类），供 gpt-5.4-mini 口播优化时叠加风格。
+ * 一键配音：赛道人设（与深度洗稿提示词区同款分类），供 gpt-5.6-luna 口播优化时叠加风格。
  */
 
 export interface DubbingStyleTrack {
