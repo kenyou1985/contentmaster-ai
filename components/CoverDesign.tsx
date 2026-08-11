@@ -392,6 +392,24 @@ function detectTopicLang(text: string): 'en' | 'zh' {
   return 'zh';
 }
 
+/**
+ * 判断文本是否像"句子"而非"关键词罗列"。
+ * 三层过滤：
+ * 1. 长度 ≥ 6
+ * 2. 4+ 顿号/逗号分隔 → 判定关键词堆砌
+ * 3. 必须含至少一个中文动/系词（否则即使是短句也可能只是名词短语）
+ * 返回 true = 句子，false = 关键词堆砌或纯名词短语
+ */
+export function isSentenceLike(text: string): boolean {
+  const t = (text || '').trim();
+  if (!t || t.length < 6) return false;
+  const separatorCount = (t.match(/[、，；;]/g) || []).length;
+  if (separatorCount >= 4) return false;
+  // 必须含动/系词（否则即使有标点也可能只是名词短语）
+  if (!/是|有|在|为|了|被|把|让|给|从|到|看|说|想|做|打|攻|开|关|停|爆|崩|翻|输|赢|推|拉|撕|咬|捅|杀|抓|抢|夺|战|争|斗|压|撑|扛|背|藏|锁|盯|揭|曝|戳|刺|砍|砸|挖|掘|折|叠|卷|铺|张|合|并|切|断|连|接|通|堵|塞|挡|拦|阻|卡|分|裂|碎|烂|腐|坏|损|伤|亡|死|活|生|长|成|败|盈|亏|得|失|获|取|夺|请|求|要|需|盼|愿|思|念|感|觉|见|听|闻|握|拿|放|丢|投|挂|盖|绑|扎|捏|揉|搓|拍|劈|掏|抓|提|搬|搞|弄|推|抗|挡|围|封|绞|催|逼/.test(t)) return false;
+  return true;
+}
+
 /** 多句靶点拆行（换行优先，否则按句末标点切） */
 function splitMultiHookLines(text: string): string[] {
   const t = text.trim();
@@ -715,7 +733,31 @@ ${langRule}
 
     if (copyOnly) {
       // 简化模式：只生成 8 个文案字段（不要写 var_*_prompt_en）
-      const zhHookRule = `【靶点 Hook】target_phrase_badge：封面主标题，极限 Hook，从核心议题「${coreTopic.trim()}」转化（禁止复制原文）。技法：① 反直觉反转（真相反转）② 身份/结果承诺（99%的人不知道）③ 禁忌窥探（被隐瞒的真相）④ 数字冲击（3个致命误区）⑤ 极端化（千万别这么做）。单句，6–20字，语气强。target_phrase_multi：2–3句多句 Hook，技法同上，与 badge 同主题分层展开，不要重复 badge，每句独立。`;
+      const zhHookRule = `【靶点 Hook·硬性结构铁律】
+target_phrase_badge（封面主标题·一句话极限靶点）：
+- **必须是完整句子**，必须有主谓宾结构，**严禁输出关键词罗列/名词堆砌/用顿号/逗号/空格隔开的词组**！
+- 6–20 字，单句，**至少含 1 个动词或 1 个问号/感叹号**（如"暗刀"、"捅刀"、"开战"、"锁定"等具体动作词）
+- 必须从核心议题「${coreTopic.trim()}」的具体事件/争议/反转中提炼，**禁止脱离议题**
+- 技法：① 反直觉反转（真相反转）② 身份/结果承诺（99%的人不知道）③ 禁忌窥探（被隐瞒的真相）④ 数字冲击（3个致命误区）⑤ 极端化（千万别这么做）
+- ❌ 错误示范："卢秀燕、赖清德、中华民国"（仅名词罗列）
+- ✅ 正确示范："卢秀燕这一刀，捅穿了国民党初选"
+- ✅ 正确示范："2028 先开战的，是卢秀燕背后这一招"
+
+target_phrase_multi（多句极限靶点·2–3 句）：
+- **每句必须是完整句子**（带主谓宾/问号/感叹号），**严禁输出关键词列表**
+- 2–3 句，每句用 \\n 隔开；与 badge 同主题但分层展开（不重复 badge 的句式）
+- 写"为什么 X 会发生/为什么 X 重要/谁在背后/下一步会怎样"的角度展开
+- ❌ 错误示范："卢秀燕\\n赖清德\\n中华民国"（每行一个词）
+- ✅ 正确示范："卢秀燕盯 2028 早已不是新闻\\n但这次初选谁在背后捅刀，才是看点\\n国民党下一步会怎么走？"（每句完整、递进）
+
+seo_tags（封面 SEO 长尾标签库）：
+- 必须输出 8–10 个标签，**用空格分隔**，每个标签**必须以 # 开头**
+- 标签组合策略（每类至少 1 个）：
+  · 热搜词标签：核心人物 + 核心事件词（如 #卢秀燕 #国民党初选 #2028选举）
+  · 悬念钩子标签：1–2 个搜索长尾（如 #谁在背后捅 #初选暗战）
+  · 垂直赛道标签：1–2 个赛道大类（如 #台海局势 #政治解读 #时政辣评）
+- ❌ 错误示范："卢秀燕 赖清德 中华民国"（无 # 前缀、空格分隔的纯名词）
+- ✅ 正确示范："#卢秀燕 #国民党初选 #2028 #谁在背后捅 #初选暗战 #台海局势 #时政辣评"`;
       const enHookRule = `[Hook] target_phrase_badge: one punchline Hook, transform from topic (do NOT copy verbatim). Techniques: ① counter-intuitive flip ② identity/commitment promise ③ forbidden truth ④ number shock ⑤ extreme. Single line, 6–12 words, punchy. target_phrase_multi: 2–3 Hook lines, same theme layered, do NOT repeat badge.`;
       const copyOnlySystem = `YouTube copy & SEO director for ${nicheName} niche.${selectedTemplate ? ` Template: ${selectedTemplate.icon} ${selectedTemplate.name}.` : ''}
 Output STRICT JSON only. No explanations. No markdown. No code fences. Just raw JSON starting with { and ending with }. The JSON must contain exactly these 8 keys: titles_warning, titles_anti_truth, titles_stop_doing, golden_description, seo_tags, visual_emotion_lock, target_phrase_badge, target_phrase_multi.
@@ -825,40 +867,108 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
       };
     }
 
-    // ── 中文 Hook 模板库：基于事实锚点 × 5 种技法 ──
+    // ── 中文 Hook：基于核心观点句子结构生成金句 ──
+    // 策略：核心观点本身往往就是金句（"X：Y"或"X，谁 Y"），优先复用其结构
+    // 抽取出"主语 + 谓语 + 关键动作"，围绕该动作延伸 5 种技法的金句
+    const cleanedTopic = topicFull.replace(/[：:]\s*/, '：').trim();
+
+    // 抽取核心观点里的关键短语作为"动作锚点"（避免单纯用 anchor 替换导致跑题）
+    // 优先匹配含动作词/争议词的子句
+    function extractCoreClause(text: string): string {
+      // 1) 含动作词的子句优先（开战/暗刀/捅/盯/锁/翻/塌/暴/反/逆/冲/爆/撕/掀/打）
+      const actionRegex = /([^，,。；;\n]{2,20}(?:开战|暗刀|捅刀|捅|盯上|锁死|翻盘|塌|暴跌|暴雷|反转|逆袭|冲|爆|撕|掀|打脸|封锁|围堵|制裁|决战|抢先|先开|对决|开战|宣战|清算|摊牌|背刺|翻脸|反水|倒戈|背叛|下架|退场|开战|撕裂|崩盘|暴跌))/;
+      const actionMatch = text.match(actionRegex);
+      if (actionMatch) return actionMatch[1].trim();
+
+      // 2) 含反问/疑问的子句
+      const qMatch = text.match(/([^，,。；;\n]{4,30}[？?])/);
+      if (qMatch) return qMatch[1].trim();
+
+      // 3) 含"X：Y"或"X——Y"结构的冒号后部分
+      const colonMatch = text.match(/[：:]([^，,。；;\n]{4,30})/);
+      if (colonMatch) return colonMatch[1].trim();
+
+      // 4) 否则返回核心观点第一句精华
+      const firstClause = text.split(/[。！？!?\n;；]+/).map(s => s.trim()).filter(s => s.length >= 4)[0] || text;
+      return firstClause.slice(0, 24);
+    }
+
+    const coreClause = extractCoreClause(topicFull);
+    const mainSubject = facts[0] || '这件事';
+
+    // ── 一句话极限靶点（6–18 字、必须含动作/悬念）──
     const zhBadgeTemplates = [
-      // 技法① 数字冲击（锚点含数字时首选）
-      `${anchor}，到底发生了什么？`,
-      // 技法② 禁忌/窥探感
-      `关于${anchor}，内部人员从不公开说的事`,
-      // 技法③ 反直觉反转（锚点是动作/变化词时首选）
-      `${anchor}，只是表象？真相比这更震撼`,
-      // 技法④ 身份/结果承诺
-      `看完${anchor}，我才搞懂了这背后的逻辑`,
-      // 技法⑤ 极端化悬念
-      `${anchor}——没人敢正面回答的真相`,
+      // ① 直接引用核心观点中的动作子句（最相关）
+      `${coreClause}`,
+      // ② 极端化悬念
+      `${mainSubject}这步棋，下得太狠了`,
+      // ③ 反直觉反转
+      `${mainSubject}：你只看到了表面`,
+      // ④ 数字/结果承诺
+      `${mainSubject}背后，藏着 3 个真相`,
+      // ⑤ 禁忌窥探
+      `谁在${coreClause.replace(/^[是谁在有让]/, '')}？没人敢直说`,
     ];
+
+    // ── 多句极限靶点（每句完整句子 + 递进展开）──
     const zhMultiTemplates = [
-      // 悬念递进
-      `为什么${anchor}？\n背后的真实原因被掩盖了多久\n深度解析，一次讲透`,
-      // 禁忌窥探
-      `关于${anchor}，官方从未正式回应的事\n知情人选择沉默的真正原因\n看完你会重新思考整个事件`,
-      // 反直觉反转
-      `${anchor}？你看到的可能只是假象\n真相恰恰相反\n这才是被忽视的关键`,
+      // ① 悬念递进（围绕 coreClause 展开三层）
+      `${coreClause}\n为什么有人支持，有人反对？\n背后真相本期一次讲透`,
+      // ② 禁忌窥探
+      `关于「${mainSubject}」，官方从不正面回应\n知情人选择沉默的真正原因\n看完你会重新判断整件事`,
+      // ③ 反直觉反转
+      `${mainSubject}？你看到的可能只是假象\n真相恰恰相反\n这才是被忽视的关键`,
+      // ④ 直接展开核心观点
+      `${topicFull.slice(0, 30)}\n看完你会懂，这场博弈的底层逻辑\n评论区留下你的看法`,
     ];
+
+    // ── SEO 长尾标签（热搜词 + 长尾 + 赛道大类）──
+    // 赛道大类标签库
+    const topicStr = topicFull.toLowerCase();
+    const isSports = /足球|篮球|世界杯|奥运|冠军|球员|球队|联赛|进球|得分|金牌|体育|阿根廷|梅西|c罗/i.test(topicStr);
+    const isTech = /ai|人工智能|手机|芯片|电脑|科技|互联网、软件|技术|数据|算法|openai|google|苹果/i.test(topicStr);
+    const isFinance = /股票|基金|比特币|加密|货币|经济|投资|理财|银行|金融|市场|房价|工资/i.test(topicStr);
+    const isPolitics = /政治|政府|国家|总统|选举|外交|战争|军事|俄罗斯|美国|中国|国际|卢秀燕|国民党|赖清德|柯文哲|民进党|民进|台海|两岸|初选/i.test(topicStr);
+
+    const nicheTrackTags = isPolitics
+      ? ['#时政辣评', '#政治解读', '#台海局势', '#大国博弈']
+      : isFinance
+        ? ['#财经真相', '#投资逻辑', '#经济解读']
+        : isSports
+          ? ['#体育内幕', '#深度解析']
+          : isTech
+            ? ['#科技前沿', '#行业内幕']
+            : ['#深度解析', '#真相揭秘', '#热门话题'];
+
+    // 核心人物/事件标签（取 facts 前 4 个 + 主语）
+    const entityTagSet = new Set<string>();
+    entityTagSet.add(`#${mainSubject}`);
+    facts.slice(0, 4).forEach(f => entityTagSet.add(`#${f}`));
+
+    // 长尾钩子标签（基于 coreClause 提取关键词）
+    const longTailSet = new Set<string>();
+    if (/背后|捅|暗刀|暗战|内幕|博弈/.test(topicFull)) longTailSet.add('#背后真相');
+    if (/开战|对决|先开|抢先/.test(topicFull)) longTailSet.add('#抢先开战');
+    if (/2028|2026|2027/.test(topicFull)) longTailSet.add('#选举布局');
+    if (/初选|提名|候选人/.test(topicFull)) longTailSet.add('#初选暗战');
+    if (/谁在/.test(topicFull)) longTailSet.add('#谁在背后');
+
+    // 合并：长尾(1-2) + 人物事件(2-3) + 赛道大类(1-2)，共 6-8 个
+    const seoTagList: string[] = [
+      ...Array.from(longTailSet).slice(0, 2),
+      ...Array.from(entityTagSet).slice(0, 3),
+      ...nicheTrackTags.slice(0, 2),
+    ].filter(Boolean).slice(0, 7);
 
     const badgeIdx = Math.floor(Math.random() * zhBadgeTemplates.length);
     const multiIdx = Math.floor(Math.random() * zhMultiTemplates.length);
 
     return {
-      titles_warning: `⚠️ 关于${anchor}，90% 的人都理解错了`,
-      titles_anti_truth: `关于${anchor}的真相，被掩盖了太久了`,
-      titles_stop_doing: `千万别再误解${anchor}了`,
+      titles_warning: `⚠️ 关于「${mainSubject}」，90% 的人都理解错了`,
+      titles_anti_truth: `「${mainSubject}」的真相，被掩盖了太久了`,
+      titles_stop_doing: `千万别再误解「${mainSubject}」了`,
       golden_description: `${topicFull} —— 深度拆解，3 分钟讲透底层原理与实战路径。订阅获取每周爆款拆解。`,
-      seo_tags: [
-        '#深度解析', '#真相揭秘', '#知识科普', '#冷知识', '#历史真相',
-        ...(facts.slice(0, 3).map(f => `#${f}`)),
-      ].slice(0, 5).join(' '),
+      seo_tags: seoTagList.join(' '),
       visual_emotion_lock: '开场紧张 → 中段释疑 → 结尾顿悟，情绪弧线由焦虑转为笃定。',
       target_phrase_badge: zhBadgeTemplates[badgeIdx],
       target_phrase_multi: zhMultiTemplates[multiIdx],
@@ -952,20 +1062,6 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
         // existing 为空时退化为 localCopy + 本地兜底 VAR（保证用户至少有内容）
         const ex = existing || {};
         const merged = {
-          titles_warning: '',
-          titles_anti_truth: '',
-          titles_stop_doing: '',
-          golden_description: '',
-          seo_tags: '',
-          visual_emotion_lock: '',
-          target_phrase_badge: '',
-          target_phrase_multi: '',
-          var_a: '',
-          var_b: '',
-          var_c: '',
-          var_d: '',
-          var_e: '',
-          var_f: '',
           ...ex,
           titles_warning: parsed?.titles_warning || localCopy.titles_warning,
           titles_anti_truth: parsed?.titles_anti_truth || localCopy.titles_anti_truth,
@@ -973,8 +1069,13 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
           golden_description: parsed?.golden_description || localCopy.golden_description,
           seo_tags: parsed?.seo_tags || localCopy.seo_tags,
           visual_emotion_lock: parsed?.visual_emotion_lock || localCopy.visual_emotion_lock,
-          target_phrase_badge: parsed?.target_phrase_badge || localCopy.target_phrase_badge,
-          target_phrase_multi: parsed?.target_phrase_multi || localCopy.target_phrase_multi,
+          // 关键：靶点必须是句子。LLM 偶发输出纯名词罗列（如"卢秀燕、赖清德、中华民国"），此时丢弃走本地兜底
+          target_phrase_badge: (parsed?.target_phrase_badge && isSentenceLike(parsed.target_phrase_badge))
+            ? parsed.target_phrase_badge
+            : localCopy.target_phrase_badge,
+          target_phrase_multi: (parsed?.target_phrase_multi && isSentenceLike(parsed.target_phrase_multi))
+            ? parsed.target_phrase_multi
+            : localCopy.target_phrase_multi,
           var_a: ex.var_a || localVars.a,
           var_b: ex.var_b || localVars.b,
           var_c: ex.var_c || localVars.c,
@@ -1050,8 +1151,12 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
         golden_description: copyParsed?.golden_description || localCopy.golden_description,
         seo_tags: copyParsed?.seo_tags || localCopy.seo_tags,
         visual_emotion_lock: copyParsed?.visual_emotion_lock || localCopy.visual_emotion_lock,
-        target_phrase_badge: copyParsed?.target_phrase_badge || localCopy.target_phrase_badge,
-        target_phrase_multi: copyParsed?.target_phrase_multi || localCopy.target_phrase_multi,
+        target_phrase_badge: (copyParsed?.target_phrase_badge && isSentenceLike(copyParsed.target_phrase_badge))
+          ? copyParsed.target_phrase_badge
+          : localCopy.target_phrase_badge,
+        target_phrase_multi: (copyParsed?.target_phrase_multi && isSentenceLike(copyParsed.target_phrase_multi))
+          ? copyParsed.target_phrase_multi
+          : localCopy.target_phrase_multi,
         var_a: vars.a,
         var_b: vars.b,
         var_c: vars.c,
