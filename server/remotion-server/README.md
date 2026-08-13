@@ -161,11 +161,13 @@ components/
 | 变量 | 值 | 说明 |
 |---|---|---|
 | `PORT` | (自动注入) | Railway 自动注入 |
-| `REMOTION_PROJECT_ROOT` | `/app/remotion` | Dockerfile 默认已设 |
-| `REMOTION_OUTPUT_DIR` | `/tmp/remotion-out` | Dockerfile 默认已设 |
+| ~~`REMOTION_PROJECT_ROOT`~~ | **不要设置** | Dockerfile 已设默认值 `/app/remotion`，重复设置易踩坑（见下方 ⚠️） |
+| `REMOTION_OUTPUT_DIR` | `/tmp/remotion-out` | 默认值已 OK |
 | `NODE_ENV` | `production` | 推荐 |
-| `PUPPETEER_SKIP_CHROMIUM_DOWNLOAD` | `true` | Dockerfile 默认已设 |
-| `PUPPETEER_EXECUTABLE_PATH` | `/usr/bin/chromium` | Dockerfile 默认已设 |
+| `PUPPETEER_SKIP_CHROMIUM_DOWNLOAD` | `true` | 默认值已 OK |
+| `PUPPETEER_EXECUTABLE_PATH` | `/usr/bin/chromium` | 默认值已 OK |
+
+> ⚠️ **常见陷阱**：在 Railway Variables 里手动粘贴 `REMOTION_PROJECT_ROOT` 时如果多带一个换行（编辑器隐藏字符），会出现 `projectRoot: "/app/remotion\n"`、路径找不到的诡异错误。**强烈建议不要在 Railway 里覆盖这个变量**，让 Dockerfile 的 `ENV` 决定即可。最新版代码已做防御：环境变量清洗 + 多候选路径自动探测。
 
 ### 4. 验证服务
 

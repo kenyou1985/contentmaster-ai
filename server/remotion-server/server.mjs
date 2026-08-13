@@ -28,11 +28,35 @@ import { execSync } from 'child_process';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const RENDER_WORKER = join(__dirname, 'render-worker.mjs');
-// REMOTION_PROJECT_ROOT 允许在部署环境（如 Railway）覆盖默认路径
-// 优先级：环境变量 > ../../remotion（本地开发）> /app/remotion（Docker 部署）
+
+// ── Remotion 项目根路径解析 ─────────────────────────
+// 优先级：环境变量（清洗后）> 自动探测候选路径
+// 防御性处理：环境变量可能被意外附加换行符 / 空格（Railway Variables 面板粘贴时常出 bug）
+const RAW_ENV_ROOT = process.env.REMOTION_PROJECT_ROOT;
+
+// 自动探测候选路径（按优先级）
+const CANDIDATE_ROOTS = [
+  // 1. 环境变量（清洗后）
+  RAW_ENV_ROOT ? RAW_ENV_ROOT.replace(/[\r\n\s]+$/g, '').trim() : null,
+  // 2. Docker / Railway 镜像默认位置
+  '/app/remotion',
+  // 3. 本地开发（从 server/remotion-server/ 上两级）
+  join(__dirname, '..', '..', 'remotion'),
+  // 4. 工作区再上一级（某些 CI 形态）
+  join(__dirname, '..', '..', '..', 'remotion'),
+  // 5. 当前进程 cwd（如果从仓库根目录启动 server.mjs）
+  join(process.cwd(), 'remotion'),
+].filter(Boolean);
+
+// 去重并按顺序逐个探测
+const SEEN = new Set();
 const REMOTION_PROJECT_ROOT =
-  process.env.REMOTION_PROJECT_ROOT
-  || join(__dirname, '..', '..', 'remotion');
+  CANDIDATE_ROOTS.find((p) => {
+    if (SEEN.has(p)) return false;
+    SEEN.add(p);
+    return existsSync(join(p, 'src', 'index.tsx'));
+  }) || CANDIDATE_ROOTS[0] || join(__dirname, '..', '..', 'remotion');
+
 const REMOTION_PROJECT_ENTRY = join(REMOTION_PROJECT_ROOT, 'src', 'index.tsx');
 
 const IS_RAILWAY = !!process.env.RAILWAY_ENVIRONMENT || !!process.env.RAILWAY_PROJECT_ID;
@@ -437,6 +461,12 @@ const healthHandler = (_req, res) => {
       projectRoot: REMOTION_PROJECT_ROOT,
       entry: REMOTION_PROJECT_ENTRY,
       entryExists: existsSync(REMOTION_PROJECT_ENTRY),
+      rawEnvRoot: RAW_ENV_ROOT,
+      cleanedEnvRoot: RAW_ENV_ROOT ? RAW_ENV_ROOT.replace(/[\r\n\s]+$/g, '').trim() : null,
+      candidates: CANDIDATE_ROOTS.map((p) => ({
+        path: p,
+        exists: existsSync(join(p, 'src', 'index.tsx')),
+      })),
     },
     runtime: {
       chromium: chromiumOk,
