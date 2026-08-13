@@ -1,0 +1,84 @@
+# ContentMaster AI · Remotion 渲染服务端
+# 用于部署在 Railway（也兼容 Render / Fly.io / 任何 Docker 主机）
+# 镜像内同时包含 server/remotion-server 和 remotion/ 两份代码：
+#   - /app/remotion-server   → Express server.mjs（监听 $PORT）
+#   - /app/remotion          → Remotion 项目（render-worker 加载这里）
+
+# ── 阶段 1：安装 remotion-server 依赖 ─────────────────────
+FROM node:20-bookworm-slim AS remotion-server-deps
+WORKDIR /app/remotion-server
+COPY server/remotion-server/package.json server/remotion-server/package-lock.json* ./
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 make g++ ca-certificates \
+ && npm install --no-audit --no-fund --legacy-peer-deps \
+ && rm -rf /var/lib/apt/lists/*
+
+# ── 阶段 2：安装 remotion 项目依赖 ─────────────────────
+FROM node:20-bookworm-slim AS remotion-project-deps
+WORKDIR /app/remotion
+COPY remotion/package.json remotion/package-lock.json* ./
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 make g++ ca-certificates \
+ && npm install --no-audit --no-fund --legacy-peer-deps \
+ && npm install --no-audit --no-fund --legacy-peer-deps \
+       @remotion/bundler@^4.0.250 @remotion/renderer@^4.0.250 \
+ && rm -rf /var/lib/apt/lists/*
+
+# ── 阶段 3：运行时 ─────────────────────
+# 基础镜像：Remotion 官方推荐 al2023（amazon-linux 2023），它预装 Chrome 兼容运行时
+# 这里为了避免 amazon-linux 复杂源，同时仍能装 Chrome，选 Debian + 手动装 Chrome
+FROM node:20-bookworm-slim
+
+# 关键系统依赖（Chromium / Chrome + 中文/多语言字体 + ffmpeg）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Chromium 运行时
+    chromium fonts-liberation libnss3 libatk-bridge2.0-0 libxkbcommon0 \
+    libxcomposite1 libxdamage1 libxrandr2 libgbm1 libxss1 libasound2 \
+    libatk1.0-0 libcairo2 libcups2 libdbus-1-3 libdrm2 libgtk-3-0 \
+    libpango-1.0-0 libpangocairo-1.0-0 fonts-noto-cjk fonts-noto-color-emoji \
+    # ffmpeg (Remotion 渲染需要)
+    ffmpeg \
+    # 工具
+    ca-certificates curl tini \
+ && rm -rf /var/lib/apt/lists/*
+
+# 准备 Chrome 软链接（Remotion 默认会尝试 google-chrome / chromium）
+RUN mkdir -p /opt/google/chrome && \
+    ln -sf /usr/bin/chromium /usr/local/bin/google-chrome && \
+    ln -sf /usr/bin/chromium /usr/local/bin/chrome && \
+    chromium --version || true
+
+# 复制 server 代码与依赖
+WORKDIR /app/remotion-server
+COPY server/remotion-server/ ./
+COPY --from=remotion-server-deps /app/remotion-server/node_modules ./node_modules
+
+# 复制 remotion 项目源码与依赖
+WORKDIR /app/remotion
+COPY remotion/ ./
+COPY --from=remotion-project-deps /app/remotion/node_modules ./node_modules
+
+# 渲染输出目录（Railway 容器重启即丢失，仅作为短期缓存。正式生产请挂 S3/R2）
+RUN mkdir -p /tmp/remotion-out /tmp/remotion-out/logs /tmp/remotion-temp
+
+# 回到 server 工作目录
+WORKDIR /app/remotion-server
+
+# 关键环境变量
+ENV REMOTION_PROJECT_ROOT=/app/remotion \
+    REMOTION_OUTPUT_DIR=/tmp/remotion-out \
+    NODE_ENV=production \
+    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+
+# 健康检查（Railway 暂不用其内置 healthcheck，但方便本地 docker run 验证）
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:${PORT:-10000}/health || exit 1
+
+EXPOSE 10000
+
+# tini 正确处理 PID 1 信号（spawn 子进程 = render-worker）
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
+# 启动：端口由 Railway 注入 $PORT
+CMD ["sh", "-c", "node server.mjs"]

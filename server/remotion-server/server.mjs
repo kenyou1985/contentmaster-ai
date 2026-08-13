@@ -22,12 +22,18 @@ import { join, dirname, basename, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { promises as fs } from 'fs';
 import { Readable } from 'stream';
+import os from 'os';
+import { execSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const RENDER_WORKER = join(__dirname, 'render-worker.mjs');
-const REMOTION_PROJECT_ENTRY = join(__dirname, '..', '..', 'remotion', 'src', 'index.tsx');
-const REMOTION_PROJECT_ROOT = join(__dirname, '..', '..', 'remotion');
+// REMOTION_PROJECT_ROOT 允许在部署环境（如 Railway）覆盖默认路径
+// 优先级：环境变量 > ../../remotion（本地开发）> /app/remotion（Docker 部署）
+const REMOTION_PROJECT_ROOT =
+  process.env.REMOTION_PROJECT_ROOT
+  || join(__dirname, '..', '..', 'remotion');
+const REMOTION_PROJECT_ENTRY = join(REMOTION_PROJECT_ROOT, 'src', 'index.tsx');
 
 const IS_RAILWAY = !!process.env.RAILWAY_ENVIRONMENT || !!process.env.RAILWAY_PROJECT_ID;
 const IS_VERCEL = !!process.env.VERCEL;
@@ -396,13 +402,51 @@ function runRenderWorker(payload, taskId) {
 
 // ── 健康检查（同时支持 /health 与 /api/remotion/health，兼容前端 proxy 链）────
 const healthHandler = (_req, res) => {
+  // 运行时诊断（Railway 部署排查用）
+  let chromiumOk = false;
+  let chromiumVersion = null;
+  let ffmpegOk = false;
+  let ffmpegVersion = null;
+  try {
+    chromiumVersion = execSync('chromium --version 2>/dev/null || google-chrome --version 2>/dev/null || echo ""', { timeout: 3000 })
+      .toString().trim();
+    chromiumOk = /Chromium|Google Chrome/i.test(chromiumVersion);
+  } catch {}
+  try {
+    ffmpegVersion = execSync('ffmpeg -version 2>&1 | head -1', { timeout: 3000 }).toString().trim();
+    ffmpegOk = /ffmpeg/i.test(ffmpegVersion);
+  } catch {}
+
+  const totalMemMB = Math.round(os.totalmem() / 1024 / 1024);
+  const freeMemMB = Math.round(os.freemem() / 1024 / 1024);
+  const cpus = os.cpus()?.length || 0;
+
   res.json({
     status: 'ok',
     service: 'remotion-render-server',
+    version: '1.0.0',
     port: PORT,
+    node: process.version,
     platform: IS_RAILWAY ? 'railway' : IS_VERCEL ? 'vercel' : 'local',
-    remotionEntry: REMOTION_PROJECT_ENTRY,
-    remotionEntryExists: existsSync(REMOTION_PROJECT_ENTRY),
+    env: {
+      RAILWAY_ENVIRONMENT: process.env.RAILWAY_ENVIRONMENT || null,
+      RAILWAY_PROJECT_ID: process.env.RAILWAY_PROJECT_ID || null,
+      RAILWAY_PUBLIC_DOMAIN: process.env.RAILWAY_PUBLIC_DOMAIN || null,
+    },
+    remotion: {
+      projectRoot: REMOTION_PROJECT_ROOT,
+      entry: REMOTION_PROJECT_ENTRY,
+      entryExists: existsSync(REMOTION_PROJECT_ENTRY),
+    },
+    runtime: {
+      chromium: chromiumOk,
+      chromiumVersion,
+      ffmpeg: ffmpegOk,
+      ffmpegVersion,
+      cpus,
+      totalMemMB,
+      freeMemMB,
+    },
     outputDir: OUTPUT_DIR,
     activeTasks: renderTasks.size,
     timestamp: Date.now(),

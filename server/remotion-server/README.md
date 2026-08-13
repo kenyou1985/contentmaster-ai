@@ -128,3 +128,104 @@ components/
 - 视频时长 > 5 分钟时，Chrome 内存占用 2-4GB
 - 默认仅 `h264` 编码（`h265` 可选）
 - 当前仅本地服务（18093）+ Railway 自建 Node，**未接入 Vercel Sandbox / Lambda**
+
+---
+
+## 🚀 Railway 部署（线上视频渲染）
+
+> 适用场景：前端在 Vercel，Remotion 渲染服务在 Railway。两者通过 `VITE_REMITION_API_BASE` 串联。
+
+### 1. Dockerfile 准备（仓库已就绪）
+
+仓库根目录已包含：
+
+- `Dockerfile.remotion` — 镜像构建（同时打包 `server/remotion-server` + `remotion`）
+- `railway.toml` — Railway 部署元数据 + healthcheck
+- `.dockerignore` — 减小构建上下文
+
+### 2. Railway 服务创建
+
+1. https://railway.app → New Project → **Deploy from GitHub Repo**
+2. 选 `kenyou1985/contentmaster-ai`
+3. Settings → **Build**：
+   - Builder: `DOCKERFILE`
+   - Dockerfile Path: `Dockerfile.remotion`
+4. Settings → **Deploy** → Health Check Path: `/health`
+5. Settings → **Resources**：
+   - 至少 **2 vCPU / 4GB RAM**（推荐 **8GB**）
+   - 如渲染 1080p+ 视频，建议升级到 16GB
+6. 部署完成 → Railway 会给出 `https://<project>.up.railway.app`
+
+### 3. 环境变量（Railway Dashboard → Variables）
+
+| 变量 | 值 | 说明 |
+|---|---|---|
+| `PORT` | (自动注入) | Railway 自动注入 |
+| `REMOTION_PROJECT_ROOT` | `/app/remotion` | Dockerfile 默认已设 |
+| `REMOTION_OUTPUT_DIR` | `/tmp/remotion-out` | Dockerfile 默认已设 |
+| `NODE_ENV` | `production` | 推荐 |
+| `PUPPETEER_SKIP_CHROMIUM_DOWNLOAD` | `true` | Dockerfile 默认已设 |
+| `PUPPETEER_EXECUTABLE_PATH` | `/usr/bin/chromium` | Dockerfile 默认已设 |
+
+### 4. 验证服务
+
+```bash
+curl https://<your-remotion>.up.railway.app/health
+# 期望输出（含 chromium/ffmpeg 状态）：
+# {
+#   "status": "ok",
+#   "platform": "railway",
+#   "remotion": { "entryExists": true, ... },
+#   "runtime": { "chromium": true, "ffmpeg": true, "cpus": 2, "freeMemMB": 6144 },
+#   "env": { "RAILWAY_PUBLIC_DOMAIN": "<your-remotion>.up.railway.app" }
+# }
+```
+
+### 5. 前端联调（Vercel 端）
+
+在 Vercel 项目的 Environment Variables：
+
+```
+VITE_REMITION_API_BASE=https://<your-remotion>.up.railway.app
+```
+
+然后重新触发 Vercel 部署。
+
+### 6. CORS 调试
+
+`server.mjs` 已默认放行 `*.vercel.app` / `*.railway.app` 域名。前端打包后首次调用若 403，先检查 Vercel 域名是否在白名单列表（`CORS_ALLOWED` 数组）。
+
+### 7. 📦 持久化考虑（重要）
+
+Railway 容器重启后 **`/tmp/remotion-out` 视频会丢失**。生产建议：
+
+- **方案 A**：把 `/tmp/remotion-out` 挂到 Railway Volume（但 Volume 只有单机实例）
+- **方案 B（推荐）**：在 `server.mjs` 渲染完成后，把 MP4 自动上传到 S3 / R2 / OSS，前端从对象存储下载
+- **方案 C**：加一个 `/api/remotion/upload/<taskId>` 端点，把结果推送到外部存储
+
+### 8. ⚠️ 已知问题
+
+- **冷启动慢**：第一次部署后第一次渲染需要 30-60s（Chromium 启动 + npm 包预热）
+- **大视频超时**：默认无超时，10 分钟以上视频请手动调高 Railway Idle Timeout
+- **内存分配**：4GB 是底线，1080p 60fps 建议 8GB+
+
+### 9. 完整部署步骤（极简）
+
+```bash
+# 1. 推代码
+git add . && git commit -m "feat: remotion 服务 Railway 部署" && git push
+
+# 2. Railway 控制台
+#    - New Project → Deploy from GitHub Repo
+#    - 选仓库 → Dockerfile 路径填 Dockerfile.remotion
+#    - 设置 /health healthcheck
+#    - 升级到 2 vCPU / 4GB
+
+# 3. Vercel 端
+#    - VITE_REMITION_API_BASE = Railway 域名
+#    - 重新部署
+
+# 4. 验证
+#    - 浏览器打开 Vercel 站点 → 「成片」→ 渲染
+#    - 进度条从 0 → 100%，最终下载视频
+```

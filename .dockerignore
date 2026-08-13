@@ -1,0 +1,30 @@
+# 减少 Docker 构建上下文大小
+node_modules
+.npm
+.cache
+dist
+build
+.git
+.gitignore
+.DS_Store
+*.log
+.env
+.env.local
+.env.*.local
+coverage
+public
+.vscode
+.idea
+# 大文件（视频/字体/输出）
+*.mp4
+*.mov
+*.webm
+*.psd
+*.ai
+Caches
+Parcels
+*.tmp
+/tmp
+/tmp/*
+.cache
+.idea
