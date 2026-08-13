@@ -4,6 +4,7 @@
  */
 
 import { lsGetItem, lsSetItem } from './storageService';
+import { logger } from './logger';
 
 export interface Character {
   id: string;
@@ -47,9 +48,9 @@ function normalizeCharacterRecord(c: Character): Character {
 export function getAllCharacters(): Character[] {
   const stored = lsGetItem<Character[]>(STORAGE_KEY, []);
   if (!stored || !stored.length) return [];
-  console.debug('[CharacterLibrary] 读取角色库，数量:', stored.length);
+  logger.debug('[CharacterLibrary] 读取角色库，数量:', stored.length);
   const filtered = stored.filter(char => char.id && char.name);
-  console.debug('[CharacterLibrary] 过滤后数量:', filtered.length);
+  logger.debug('[CharacterLibrary] 过滤后数量:', filtered.length);
   const normalized = filtered.map(normalizeCharacterRecord);
   const dirty = normalized.some((c, i) => {
     const prev = filtered[i];
@@ -212,7 +213,7 @@ export function detectCharactersInPrompt(prompt: string): Character[] {
 
   // 仅在有匹配时输出最终结果
   if (matched.length > 0) {
-    console.debug('[CharacterLibrary] 匹配到角色:', matched.map(c => c.name).join(', '));
+    logger.debug('[CharacterLibrary] 匹配到角色:', matched.map(c => c.name).join(', '));
   }
 
   // 将提示词转换为小写以便匹配

@@ -1,0 +1,19 @@
+{
+  "name": "contentmaster-ai-remotion",
+  "version": "1.0.0",
+  "description": "Remotion project for ContentMaster AI video rendering",
+  "scripts": {
+    "build": "remotion compositions MyVideo",
+    "start": "remotion studio",
+    "render": "remotion render"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "^4.0.250"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "typescript": "^5.8.0"
+  }
+}

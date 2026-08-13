@@ -1,0 +1,25 @@
+{
+  "name": "remotion-render-server",
+  "version": "1.0.0",
+  "description": "ContentMaster AI - Remotion 视频渲染 HTTP 服务",
+  "main": "server.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "@remotion/bundler": "^4.0.250",
+    "@remotion/renderer": "^4.0.250",
+    "cors": "^2.8.5",
+    "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3"
+  }
+}

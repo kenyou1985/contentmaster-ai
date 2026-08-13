@@ -6,6 +6,7 @@ import { saveHistory, getHistory } from '../services/historyService';
 import { generateImage, COVER_GEMINI_IMAGE_MODEL } from '../services/yunwuService';
 import { useToast } from './Toast';
 import { cacheImages } from '../services/imageCacheService';
+import { logger } from '../services/logger';
 
 interface LogEntry {
   id: number;
@@ -43,7 +44,7 @@ interface ChannelGeneratorProps {
 }
 
 export const ChannelGenerator: React.FC<ChannelGeneratorProps> = ({ apiKey, provider, toast: externalToast }) => {
-  console.debug('[ChannelGenerator] 组件初始化开始 - 入参检查:', { apiKey: apiKey ? '***masked***' : 'undefined', provider });
+  logger.debug('[ChannelGenerator] 组件初始化开始 - 入参检查:', { apiKey: apiKey ? '***masked***' : 'undefined', provider });
   const internalToast = useToast();
   const toast = externalToast || internalToast;
 

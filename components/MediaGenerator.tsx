@@ -9,6 +9,12 @@ import {
   polishTextForTtsSpeechWithStyle,
 } from '../services/yunwuService';
 import { cacheVideo, getCachedVideoUrl, downloadVideo } from '../services/videoCacheService';
+import { renderRemotionVideo, checkRemotionHealth, getRemotionApiBase, buildRemotionUrl } from '../services/remotionExportService';
+import type { RemotionExportConfig, RemotionExportOptions } from '../services/remotionRenderTypes';
+import { transcribeShots } from '../services/localAsrService';
+import { REMOTION_TEMPLATES, getTemplateById, getTemplateDefaultTransition } from '../services/remotionTemplates';
+import { cacheLocalBgm, listCachedBgm, removeCachedBgm, clearCachedBgm, isLikelyAudio, BgmCacheEntry } from '../services/bgmUploadService';
+import { logger } from '../services/logger';
 import { cacheImage, getCachedImageUrl } from '../services/imageCacheService';
 import {
   generateImage as generateRunningHubImage,
@@ -32,7 +38,7 @@ import {
 } from '../services/characterLibraryService';
 import { CharacterLibrary } from './CharacterLibrary';
 import { VoiceLibrary } from './VoiceLibrary';
-import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, Settings2, FolderOpen, Rocket, Copy, Check, CheckSquare, Square, Users, HardDrive, ListOrdered, ArrowUp, Terminal, Gauge, AlertCircle, Sparkles, Wand2, XCircle } from 'lucide-react';
+import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, Settings2, FolderOpen, Rocket, Copy, Check, CheckSquare, Square, Users, HardDrive, ListOrdered, ArrowUp, Terminal, Gauge, AlertCircle, Sparkles, Wand2, XCircle, Film, Music } from 'lucide-react';
 import JSZip from 'jszip';
 import { HistorySelector } from './HistorySelector';
 import { getRunningHubMaxConcurrent, setRunningHubMaxConcurrent, initRunningHubConcurrency, MAX_CONCURRENT } from '../services/runningHubConcurrency';
@@ -119,6 +125,8 @@ interface Shot {
   selected?: boolean;
   editing?: boolean;
   selectedImageIndex?: number; // 选中的图片索引（-1 表示未选中）
+  /** Ken Burns 运动类型（图片镜头有效） */
+  motion?: 'none' | 'kenBurns' | 'zoomIn' | 'zoomOut' | 'panLeft' | 'panRight' | 'panUp' | 'panDown' | 'push' | 'pull';
 }
 
 /** 镜头文案：完整文案即为配音正文（不再按冒号截断） */
@@ -892,6 +900,143 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   /** 导出取消标志 */
   const jianyingExportCancelledRef = useRef(false);
 
+  // ── Remotion 视频合成导出（M1 阶段，仅基础导出） ─────
+  const [isRenderingRemotion, setIsRenderingRemotion] = useState(false);
+  const [remotionProgress, setRemotionProgress] = useState(0);
+  const [remotionMessage, setRemotionMessage] = useState('');
+  const [remotionExportUrl, setRemotionExportUrl] = useState<string>('');
+  const [remotionExportBlobUrl, setRemotionExportBlobUrl] = useState<string>('');
+  const remotionCancelledRef = useRef(false);
+
+  // ── 本地 WASM Whisper ASR 状态 ───────────────────────────────────────
+  const [whisperRunning, setWhisperRunning] = useState(false);
+  const [whisperProgress, setWhisperProgress] = useState({ done: 0, total: 0, current: '' });
+  const [whisperEnabled, setWhisperEnabled] = useState(false);
+  /** shotId → textCues（ASR 生成的词级时间戳） */
+  const [audioCuesByShot, setAudioCuesByShot] = useState<Record<string, import('../services/remotionRenderTypes').SubtitleCue[]>>({});
+  /** 避免 Whisper ASR 完成后，shotsToRemotion 读到旧闭包的 audioCuesByShot */
+  const audioCuesRef = useRef<Record<string, import('../services/remotionRenderTypes').SubtitleCue[]>>({});
+  audioCuesRef.current = audioCuesByShot;
+
+  const [remotionConfig, setRemotionConfig] = useState<RemotionExportConfig>({
+    template: { id: 'landscape_default', name: '横屏默认（1920×1080）', resolution: '1920x1080', defaultFontSize: 48, defaultColor: '#ffffff' },
+    resolution: '1920x1080',
+    fps: 30,
+    codec: 'h264',
+    bgm: { enabled: false, volume: 0.3, fadeIn: 1, fadeOut: 1, loop: true },
+    subtitle: {
+      enabled: true,
+      style: 'default',
+      position: 'bottom',
+      fontSize: 48,
+      color: '#ffffff',
+      fontFamily: '"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif',
+      fontWeight: 700,
+      letterSpacing: 0,
+      lineHeight: 1.4,
+      paddingX: 24,
+      paddingY: 8,
+      strokeColor: '#000000',
+      strokeWidth: 2,
+      shadow: true,
+      shadowBlur: 6,
+      shadowColor: 'rgba(0,0,0,0.75)',
+      fadeInFrames: 9,
+      fadeOutFrames: 9,
+      altColor: '#ffe600',
+      preset: 'spring',
+    },
+    transition: { type: 'none', duration: 0.4 },
+    motion: 'kenBurns', // 默认轻微放大效果
+    output: { target: 'download' },
+  });
+  const [remotionSettingsOpen, setRemotionSettingsOpen] = useState(false);
+
+  // BGM 缓存列表
+  const [cachedBgm, setCachedBgm] = useState<BgmCacheEntry[]>([]);
+  const [bgmUploading, setBgmUploading] = useState(false);
+  // 字幕样式面板展开
+  const [subtitleStyleOpen, setSubtitleStyleOpen] = useState(false);
+  // 转场设置面板展开
+  const [transitionOpen, setTransitionOpen] = useState(false);
+
+  useEffect(() => {
+    setCachedBgm(listCachedBgm());
+  }, []);
+
+  /**
+   * 切换模板：自动套用推荐分辨率 + 推荐字体/字号/颜色 + 推荐默认转场
+   */
+  const applyTemplate = (templateId: string) => {
+    const tpl = getTemplateById(templateId);
+    if (!tpl) return;
+    setRemotionConfig(c => ({
+      ...c,
+      template: tpl,
+      resolution: tpl.resolution,
+      subtitle: {
+        ...c.subtitle,
+        fontSize: tpl.defaultFontSize ?? c.subtitle.fontSize,
+        color: tpl.defaultColor ?? c.subtitle.color,
+        fontFamily: tpl.fontFamily ?? c.subtitle.fontFamily,
+      },
+      transition: {
+        ...c.transition,
+        type: c.transition?.type === 'none' ? c.transition.type : getTemplateDefaultTransition(templateId),
+        duration: c.transition?.duration ?? 0.4,
+      },
+    }));
+  };
+
+  const handleBgmUpload = async (file: File) => {
+    if (!isLikelyAudio(file.name)) {
+      toast.error('仅支持 mp3 / wav / aac / m4a / ogg / flac 格式');
+      return;
+    }
+    if (file.size > 32 * 1024 * 1024) {
+      toast.error('音频文件过大（>32MB），请压缩后再上传');
+      return;
+    }
+    setBgmUploading(true);
+    try {
+      const entry = await cacheLocalBgm(file);
+      setCachedBgm(listCachedBgm());
+      setRemotionConfig(c => ({
+        ...c,
+        bgm: { ...c.bgm, enabled: true, url: entry.dataUrl },
+      }));
+      toast.success(`已上传背景音乐：${entry.name}`);
+    } catch (e: any) {
+      toast.error(`上传失败：${e.message}`);
+    } finally {
+      setBgmUploading(false);
+    }
+  };
+
+  const handleBgmSelect = (entry: BgmCacheEntry) => {
+    setRemotionConfig(c => ({
+      ...c,
+      bgm: { ...c.bgm, enabled: true, url: entry.dataUrl },
+    }));
+  };
+
+  const handleBgmRemove = (entry: BgmCacheEntry) => {
+    const key = `${entry.name}::${entry.size}::${0}`;
+    removeCachedBgm(key);
+    setCachedBgm(listCachedBgm());
+    if (remotionConfig.bgm.url === entry.dataUrl) {
+      setRemotionConfig(c => ({ ...c, bgm: { ...c.bgm, url: undefined, enabled: false } }));
+    }
+  };
+
+  const handleBgmClearAll = () => {
+    if (!confirm('确认清空所有缓存的背景音乐？')) return;
+    clearCachedBgm();
+    setCachedBgm([]);
+    setRemotionConfig(c => ({ ...c, bgm: { ...c.bgm, url: undefined, enabled: false } }));
+    toast.success('已清空 BGM 缓存');
+  };
+
   // shots 转 JianyingShot[]，导出前将图片URL转为 data:URL 避免临时链接过期
   const shotsToJianying = (sList: Shot[]): JianyingShot[] =>
     sList.map((s) => {
@@ -900,7 +1045,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         rawAudio && !/^https?:|^data:|^blob:/i.test(rawAudio)
           ? resolveRunningHubOutputUrl(rawAudio)
           : rawAudio;
-      const exportCaption = (s.voiceSourceText || getTtsSpeakText(s) || s.caption || '').trim();
+      // exportCaption：永远优先使用原始文案（shot.caption），禁止配音修改后的文案影响导出
+      // voiceSourceText 记录实际送入 TTS 的文本（可能经过 LLM 润色），仅用于诊断
+      const exportCaption = (s.caption || '').trim();
 
       // 选择主图：优先用已选图片，否则用第一张
       const primaryImageUrl = s.imageUrls?.[s.selectedImageIndex ?? 0] || s.imageUrls?.[0];
@@ -1277,6 +1424,239 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       ? `OC_${task.completedAt || tsStr()}`
       : `Q_${task.completedAt || tsStr()}`;
     await performExportToJianying(targetShots, reexportName);
+  };
+
+  // ── Remotion 视频合成导出 ─────────────────────
+  /** 把 Shot[] 转换为 RemotionShot[]（与剪映共用数据） */
+  const shotsToRemotion = (sList: Shot[]): RemotionExportOptions['shots'] => {
+    return sList.map((s) => {
+      const rawAudio = s.voiceAudioUrl?.trim();
+      const audioUrl =
+        rawAudio && !/^https?:|^data:|^blob:/i.test(rawAudio)
+          ? resolveRunningHubOutputUrl(rawAudio)
+          : rawAudio;
+      // exportCaption：永远优先使用原始文案（shot.caption），禁止配音修改后的文案影响导出
+      // voiceSourceText 记录实际送入 TTS 的文本（可能经过 LLM 润色），仅用于诊断
+      const exportCaption = (s.caption || '').trim();
+      const primaryImageUrl = s.imageUrls?.[s.selectedImageIndex ?? 0] || s.imageUrls?.[0];
+      // ASR 生成的词级 cue（如有）；用 audioCuesRef 避免读到旧闭包的 state
+      const textCues = audioCuesRef.current[s.id];
+      console.log('[shotsToRemotion]', JSON.stringify({ shotId: s.id, motion: s.motion, videoUrl: !!s.videoUrl, imageUrl: !!s.imageUrls?.length }));
+      return {
+        id: s.id,
+        number: s.number,
+        caption: exportCaption,
+        imageUrl: primaryImageUrl,
+        imageUrls: s.imageUrls,
+        videoUrl: s.videoUrl,
+        audioUrl,
+        voiceoverAudioUrl: audioUrl,
+        audioDurationSec: s.audioDurationSec,
+        audioDurationExact: s.audioDurationExact,
+        text: exportCaption,
+        textCues,
+        // 运动：镜头级 > 全局预设 > 默认 kenBurns
+        motion: s.motion ?? (s.videoUrl ? 'none' : (remotionConfig.motion ?? 'kenBurns')),
+      };
+    });
+  };
+
+  const performExportToRemotion = async (exportShots: Shot[], exportDraftName: string): Promise<boolean> => {
+    remotionCancelledRef.current = false;
+    setIsRenderingRemotion(true);
+    setRemotionProgress(0);
+    setRemotionMessage('准备渲染...');
+    setRemotionExportUrl('');
+    setRemotionExportBlobUrl('');
+    try {
+      // ── 步骤 0：本地 Whisper ASR（生成词级时间戳）──
+      // 缓存 ASR 结果，避免 state 更新时机晚于 renderRemotionVideo 调用
+      let asrCues: Record<string, import('../services/remotionRenderTypes').SubtitleCue[]> = {};
+      if (whisperEnabled) {
+        const shotsWithAudio = exportShots.filter(s => s.voiceAudioUrl && !s.voiceAudioUrl.startsWith('blob:'));
+        if (shotsWithAudio.length > 0) {
+          setRemotionMessage('正在分析音频（本地 Whisper）...');
+          setWhisperRunning(true);
+          setWhisperProgress({ done: 0, total: shotsWithAudio.length, current: '' });
+          try {
+          asrCues = await transcribeShots(
+            shotsWithAudio.map(s => {
+              const rawAudio = s.voiceAudioUrl?.trim();
+              const audioUrl =
+                rawAudio && !/^https?:|^data:|^blob:/i.test(rawAudio)
+                  ? resolveRunningHubOutputUrl(rawAudio)
+                  : rawAudio;
+              return {
+                shotId: s.id,
+                audioUrl,
+                caption: (s.caption || '').trim(),
+                durationInFrames: Math.round((s.audioDurationExact ?? 4) * (remotionConfig.fps ?? 30)),
+                fps: remotionConfig.fps ?? 30,
+              };
+            }),
+              (done, total, current) => {
+                setWhisperProgress({ done, total, current });
+                setRemotionMessage(`ASR: ${done}/${total} ${current}`);
+              }
+            );
+          } catch (e: any) {
+            console.warn('[Whisper] ASR 失败，继续渲染（无词级时间戳）:', e?.message);
+          }
+          setWhisperRunning(false);
+          if (remotionCancelledRef.current) {
+            appendTerminalLog('Remotion', '导出已取消');
+            setIsRenderingRemotion(false);
+            return false;
+          }
+        }
+      } else {
+        // Whisper 禁用时：仍需探测音频时长（保证 audioDurationExact 有效，防止音频截断）
+        const shotsNeedingDuration = exportShots.filter(
+          s => s.voiceAudioUrl && !s.voiceAudioUrl.startsWith('blob:') && (s.audioDurationExact == null || s.audioDurationExact <= 0),
+        );
+        if (shotsNeedingDuration.length > 0) {
+          setRemotionMessage('探测音频时长...');
+          for (const s of shotsNeedingDuration) {
+            const rawAudio = s.voiceAudioUrl?.trim();
+            const audioUrl =
+              rawAudio && !/^https?:|^data:|^blob:/i.test(rawAudio)
+                ? resolveRunningHubOutputUrl(rawAudio)
+                : rawAudio;
+            try {
+              const probedSec = await probeAudioDurationSec(audioUrl);
+              if (probedSec != null && probedSec > 0) {
+                updateShot(s.id, { audioDurationExact: probedSec, audioDurationSec: Math.round(probedSec) });
+              }
+            } catch { /* ignore */ }
+          }
+          // 等待 state 更新后重新读取（否则 exportShots 参数仍是旧数组）
+          await new Promise<void>((resolve) => {
+            const unsub = setInterval(() => {
+              const latest = shotsRef.current;
+              const allProbed = shotsNeedingDuration.every(
+                s => {
+                  const live = latest.find(ls => ls.id === s.id);
+                  return live && (live.audioDurationExact ?? 0) > 0;
+                }
+              );
+              if (allProbed) {
+                clearInterval(unsub);
+                resolve();
+              }
+            }, 100);
+            // 最多等 10 秒
+            setTimeout(() => { clearInterval(unsub); resolve(); }, 10000);
+          });
+        }
+      }
+
+      // ★ 必须用 shotsRef.current（最新 state），不能用 exportShots 参数（旧闭包数组）
+      const latestShots = shotsRef.current;
+      // 将 ASR 结果注入 ref，确保 shotsToRemotion 能读到最新 cues
+      if (Object.keys(asrCues).length > 0) {
+        audioCuesRef.current = asrCues;
+        setAudioCuesByShot(asrCues);
+      }
+      const result = await renderRemotionVideo(
+        {
+          draftName: exportDraftName,
+          shots: shotsToRemotion(latestShots),
+          config: remotionConfig,
+        },
+        (progress, message) => {
+          if (remotionCancelledRef.current) return;
+          setRemotionProgress(progress);
+          setRemotionMessage(message || '处理中...');
+        }
+      );
+
+      if (remotionCancelledRef.current) {
+        appendTerminalLog('Remotion', '导出已取消');
+        return false;
+      }
+
+      if (!result.success) {
+        throw new Error(result.error || '渲染失败');
+      }
+
+      // 输出结果
+      const apiBase = getRemotionApiBase();
+      const fullUrl = buildRemotionUrl(result.outputUrl);
+      setRemotionExportUrl(fullUrl);
+      setRemotionProgress(100);
+      setRemotionMessage('渲染完成');
+
+      // 根据 output.target 处理
+      const target = remotionConfig.output.target;
+      if (target === 'download') {
+        // 直接下载
+        const a = document.createElement('a');
+        a.href = fullUrl;
+        a.download = `${exportDraftName}.mp4`;
+        a.target = '_blank';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } else if (target === 'browser') {
+        // 写入 IndexedDB 缓存 + 生成 Blob URL
+        try {
+          const res = await fetch(fullUrl, { signal: AbortSignal.timeout(600_000) });
+          if (res.ok) {
+            const blob = await res.blob();
+            const blobUrl = URL.createObjectURL(blob);
+            const cacheKey = `remotion://${result.taskId}`;
+            const meta = {
+              url: cacheKey,
+              blobUrl,
+              cachedAt: Date.now(),
+              size: blob.size,
+              filename: `${exportDraftName}.mp4`,
+              pageBootId: (window as any).__CM_PAGE_BOOT_ID__ || `${Date.now()}_${Math.random().toString(36).slice(2, 11)}`,
+            };
+            localStorage.setItem(
+              `VIDEO_CACHE_${btoa(cacheKey).replace(/[+/=]/g, '')}`,
+              JSON.stringify(meta)
+            );
+            setRemotionExportBlobUrl(blobUrl);
+          }
+        } catch (e) {
+          console.warn('[Remotion] 缓存视频失败:', e);
+        }
+      }
+
+      appendTerminalLog('Remotion', `导出成功: ${exportDraftName} (${(result.videoSizeBytes / 1024 / 1024).toFixed(2)} MB, ${result.videoDurationSec.toFixed(1)}s)`);
+      toast.success(`Remotion 视频导出成功: ${exportDraftName}.mp4`);
+      return true;
+    } catch (err: any) {
+      appendTerminalLog('Remotion', `导出异常: ${err.message}`);
+      toast.error(`Remotion 导出失败: ${err.message}`);
+      return false;
+    } finally {
+      setIsRenderingRemotion(false);
+    }
+  };
+
+  const handleExportToRemotion = async () => {
+    if (tableShots.length === 0) {
+      toast.error('没有可导出的镜头');
+      return;
+    }
+    // 检查 Remotion 服务是否可用
+    try {
+      const health = await checkRemotionHealth();
+      if (health.status !== 'ok') {
+        toast.error('Remotion 服务状态异常');
+        return;
+      }
+      if (!health.remotionEntryExists) {
+        toast.error('Remotion 项目入口文件不存在，请先初始化');
+        return;
+      }
+    } catch (e: any) {
+      toast.error(`Remotion 服务不可用: ${e.message}。请先启动本地服务 (端口 18093)`);
+      return;
+    }
+    await performExportToRemotion(tableShots, buildPipelineDraftName());
   };
 
   // ==================== 一键成片 Pipeline 函数 ====================
@@ -2415,9 +2795,9 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     // 仅在以下情况写入：主工作区，或一键成片/队列执行中（activeQueueTaskIdRef 非 null）
     const isOnMain = activeWorkspaceTabIdRef.current === 'main';
     const isPipelineActive = activeQueueTaskIdRef.current != null;
-    console.log('[updateShot] shotId:', shotId, 'isOnMain:', isOnMain, 'isPipelineActive:', isPipelineActive, 'updates:', updates);
+    logger.debug('[updateShot] shotId:', shotId, 'isOnMain:', isOnMain, 'isPipelineActive:', isPipelineActive, 'updates:', updates);
     if (isOnMain === false && isPipelineActive === false) {
-      console.log('[updateShot] 阻止更新，因为既不在主工作区也不在 pipeline 执行中');
+      logger.debug('[updateShot] 阻止更新，因为既不在主工作区也不在 pipeline 执行中');
       return;
     }
     // 必须先同步更新 shotsRef：每轮 render 会把 shotsRef.current = shots，若 setState 尚未提交，中间若发生重绘会回滚 ref（导出读到无配音）。
@@ -4957,6 +5337,596 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               {queueProcessorRunning ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />}
               {queueProcessorRunning ? '队列执行中...' : '处理队列'}
             </button>
+            {/* Remotion 视频导出按钮 */}
+            <button
+              onClick={handleExportToRemotion}
+              disabled={isRenderingRemotion || tableShots.length === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-lg transition-all disabled:opacity-50"
+              title="使用 Remotion 渲染合成 MP4 视频"
+            >
+              {isRenderingRemotion ? <Loader2 size={14} className="animate-spin" /> : <Film size={14} />}
+              {isRenderingRemotion ? '渲染中...' : '导出视频'}
+            </button>
+            {/* Remotion 设置按钮 */}
+            <div className="relative">
+              <button
+                onClick={() => setRemotionSettingsOpen(v => !v)}
+                className={`flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded-lg border transition-all ${remotionSettingsOpen || remotionConfig.output.target !== 'download' || remotionConfig.bgm.enabled || remotionConfig.subtitle.style !== 'default' || remotionConfig.motion !== 'kenBurns' ? 'bg-emerald-900/60 border-emerald-500 text-emerald-200' : 'bg-slate-800/60 border-slate-600 text-slate-400 hover:text-slate-200 hover:border-slate-500'}`}
+                title="Remotion 导出高级设置"
+              >
+                <Settings2 size={13} />
+                {remotionConfig.output.target !== 'download' || remotionConfig.bgm.enabled || remotionConfig.subtitle.style !== 'default' || remotionConfig.motion !== 'kenBurns' ? '已设置' : '高级'}
+              </button>
+              {remotionSettingsOpen && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setRemotionSettingsOpen(false)} />
+                  <div className="absolute right-0 top-full mt-1.5 z-20 w-80 max-h-[70vh] overflow-y-auto bg-slate-800/95 backdrop-blur border border-slate-600 rounded-xl shadow-2xl p-3 flex flex-col gap-2.5">
+                    <div className="flex items-center justify-between sticky top-0 bg-slate-800/95 pb-1 -mt-1">
+                      <span className="text-xs font-medium text-slate-200 flex items-center gap-1.5">
+                        <Film size={12} className="text-emerald-400" />
+                        Remotion 视频导出设置
+                      </span>
+                      <button onClick={() => setRemotionSettingsOpen(false)} className="text-slate-400 hover:text-slate-200">
+                        <X size={12} />
+                      </button>
+                    </div>
+                    <div className="border-t border-slate-700" />
+
+                    {/* ─── 模板（10 种） ─── */}
+                    <div className="flex flex-col gap-1">
+                      <span className="text-[10px] text-slate-400">模板</span>
+                      <select
+                        value={remotionConfig.template.id}
+                        onChange={(e) => applyTemplate(e.target.value)}
+                        className="w-full bg-slate-700 border border-slate-600 text-slate-200 text-[11px] rounded px-2 py-1"
+                      >
+                        {REMOTION_TEMPLATES.map(t => (
+                          <option key={t.id} value={t.id}>{t.name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* ─── 片头预设 ─── */}
+                    <div className="flex flex-col gap-1">
+                      <span className="text-[10px] text-slate-400">片头</span>
+                      <div className="flex flex-col gap-1">
+                        <select
+                          value={remotionConfig.intro?.style ?? 'none'}
+                          onChange={(e) => setRemotionConfig(c => ({ ...c, intro: { ...c.intro, style: e.target.value } }))}
+                          className="w-full bg-slate-700 border border-slate-600 text-slate-200 text-[11px] rounded px-2 py-1"
+                        >
+                          <option value="none">无片头</option>
+                          <option value="fade_in">纯色淡入</option>
+                          <option value="slide_up">底部滑入</option>
+                          <option value="typewriter">打字机</option>
+                          <option value="glitch">故障风</option>
+                          <option value="zoom_in">从大变小</option>
+                          <option value="split">分裂入场</option>
+                        </select>
+                        {(remotionConfig.intro?.style ?? 'none') !== 'none' && (
+                          <input
+                            type="text"
+                            value={remotionConfig.intro?.text ?? ''}
+                            onChange={(e) => setRemotionConfig(c => ({ ...c, intro: { ...c.intro, text: e.target.value } }))}
+                            placeholder="片头文字（可空）"
+                            className="w-full bg-slate-700 border border-slate-600 text-slate-200 text-[10px] rounded px-2 py-1"
+                          />
+                        )}
+                      </div>
+                    </div>
+
+                    {/* 分辨率 / 帧率 / 编码 */}
+                    <div className="grid grid-cols-3 gap-1.5">
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-[9px] text-slate-500">分辨率</span>
+                        <select
+                          value={remotionConfig.resolution}
+                          onChange={(e) => setRemotionConfig(c => ({ ...c, resolution: e.target.value as any }))}
+                          className="w-full bg-slate-700 border border-slate-600 text-slate-200 text-[10px] rounded px-1.5 py-1"
+                        >
+                          <option value="1280x720">720P 横</option>
+                          <option value="1920x1080">1080P 横</option>
+                          <option value="1080x1920">1080P 竖</option>
+                          <option value="1080x1080">方形</option>
+                          <option value="2560x1080">宽幅 21:9</option>
+                          <option value="3840x2160">4K</option>
+                        </select>
+                      </div>
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-[9px] text-slate-500">帧率</span>
+                        <select
+                          value={remotionConfig.fps}
+                          onChange={(e) => setRemotionConfig(c => ({ ...c, fps: Number(e.target.value) as any }))}
+                          className="w-full bg-slate-700 border border-slate-600 text-slate-200 text-[10px] rounded px-1.5 py-1"
+                        >
+                          <option value="24">24</option>
+                          <option value="30">30</option>
+                          <option value="60">60</option>
+                        </select>
+                      </div>
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-[9px] text-slate-500">编码</span>
+                        <select
+                          value={remotionConfig.codec}
+                          onChange={(e) => setRemotionConfig(c => ({ ...c, codec: e.target.value as any }))}
+                          className="w-full bg-slate-700 border border-slate-600 text-slate-200 text-[10px] rounded px-1.5 py-1"
+                        >
+                          <option value="h264">H.264</option>
+                          <option value="h265">H.265</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="border-t border-slate-700" />
+
+                    {/* ─── 转场 ─── */}
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] text-slate-400">分镜转场</span>
+                        <button
+                          onClick={() => setTransitionOpen(v => !v)}
+                          className="text-[9px] text-slate-500 hover:text-slate-300"
+                        >
+                          {transitionOpen ? '收起' : '展开'}
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        {(['none', 'fade', 'slide', 'zoom'] as const).map(t => (
+                          <button
+                            key={t}
+                            onClick={() => setRemotionConfig(c => ({ ...c, transition: { ...c.transition, type: t, duration: c.transition?.duration ?? 0.4 } }))}
+                            className={`flex-1 text-[10px] px-2 py-1 rounded ${(remotionConfig.transition?.type || 'fade') === t ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                          >
+                            {t === 'none' ? '无' : t === 'fade' ? '淡入淡出' : t === 'slide' ? '滑动' : '缩放'}
+                          </button>
+                        ))}
+                      </div>
+                      {transitionOpen && remotionConfig.transition?.type !== 'none' && (
+                        <div className="flex items-center gap-2 text-[10px] text-slate-400 pl-1">
+                          <span>时长</span>
+                          <input
+                            type="range"
+                            min="0.1"
+                            max="1.5"
+                            step="0.1"
+                            value={remotionConfig.transition?.duration ?? 0.4}
+                            onChange={(e) => setRemotionConfig(c => ({ ...c, transition: { ...c.transition, type: c.transition?.type ?? 'fade', duration: Number(e.target.value) } }))}
+                            className="flex-1"
+                          />
+                          <span className="w-10 text-right">{(remotionConfig.transition?.duration ?? 0.4).toFixed(1)}s</span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="border-t border-slate-700" />
+
+                    {/* ─── 分镜运动预设 ─── */}
+                    <div className="flex flex-col gap-1.5">
+                      <span className="text-[10px] text-slate-400">分镜运动</span>
+                      <div className="grid grid-cols-4 gap-1">
+                        {([
+                          ['none', '无'],
+                          ['kenBurns', '轻微'],
+                          ['kenBurnsStrong', '强力'],
+                          ['kenBurnsSlow', '慢速'],
+                          ['zoomIn', '放大'],
+                          ['zoomOut', '缩小'],
+                          ['panLeft', '左移'],
+                          ['panRight', '右移'],
+                          ['panUp', '上移'],
+                          ['panDown', '下移'],
+                          ['push', '推入'],
+                          ['pull', '拉远'],
+                        ] as const).map(([val, label]) => (
+                          <button
+                            key={val}
+                            onClick={() => setRemotionConfig(c => ({ ...c, motion: val }))}
+                            className={`text-[10px] px-1.5 py-1 rounded transition-all ${remotionConfig.motion === val ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                            title={val === 'kenBurns' ? 'Ken Burns：轻微放大 1.0→1.08（默认）' :
+                                   val === 'kenBurnsStrong' ? '强力 Ken Burns：明显放大 1.0→1.3' :
+                                   val === 'kenBurnsSlow' ? '慢速 Ken Burns：更平滑的弹性曲线' :
+                                   val === 'none' ? '无运动（静止）' :
+                                   val === 'zoomIn' ? '持续放大 1.0→1.3' :
+                                   val === 'zoomOut' ? '持续缩小 1.3→1.0' :
+                                   val === 'panLeft' ? '图片向左平移' :
+                                   val === 'panRight' ? '图片向右平移' :
+                                   val === 'panUp' ? '图片向上平移' :
+                                   val === 'panDown' ? '图片向下平移' :
+                                   val === 'push' ? '推进：逐渐拉远' :
+                                   val === 'pull' ? '拉远：逐渐拉近' : val}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="bg-slate-700/50 rounded px-2 py-1">
+                        <span className="text-[9px] text-slate-500">
+                          当前：{
+                            remotionConfig.motion === 'kenBurns' ? '轻微放大（Ken Burns 1.0→1.08）' :
+                            remotionConfig.motion === 'kenBurnsStrong' ? '强力 Ken Burns（1.0→1.3，明显放大）' :
+                            remotionConfig.motion === 'kenBurnsSlow' ? '慢速 Ken Burns（更平滑弹性）' :
+                            remotionConfig.motion === 'none' ? '无运动（静止）' :
+                            remotionConfig.motion === 'zoomIn' ? '持续放大（1.0→1.3）' :
+                            remotionConfig.motion === 'zoomOut' ? '持续缩小（1.3→1.0）' :
+                            remotionConfig.motion === 'panLeft' ? '向左平移' :
+                            remotionConfig.motion === 'panRight' ? '向右平移' :
+                            remotionConfig.motion === 'panUp' ? '向上平移' :
+                            remotionConfig.motion === 'panDown' ? '向下平移' :
+                            remotionConfig.motion === 'push' ? '推进（拉远）' :
+                            remotionConfig.motion === 'pull' ? '拉远（拉近）' :
+                            remotionConfig.motion
+                          }
+                          {`（仅图片镜头生效）`}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="border-t border-slate-700" />
+
+                    {/* ─── 背景音乐 ─── */}
+                    <div className="flex flex-col gap-1.5">
+                      <div className="flex items-center justify-between">
+                        <label className="flex items-center gap-2.5 cursor-pointer group">
+                          <button
+                            onClick={() => setRemotionConfig(c => ({ ...c, bgm: { ...c.bgm, enabled: !c.bgm.enabled } }))}
+                            className={`w-9 h-5 rounded-full relative transition-all duration-200 ${remotionConfig.bgm.enabled ? 'bg-emerald-600' : 'bg-slate-600 group-hover:bg-slate-500'}`}
+                          >
+                            <span
+                              className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200 ${remotionConfig.bgm.enabled ? 'left-[18px]' : 'left-0.5'}`}
+                            />
+                          </button>
+                          <span className="text-[11px] font-medium text-slate-200">背景音乐</span>
+                        </label>
+                        {cachedBgm.length > 0 && (
+                          <button
+                            onClick={handleBgmClearAll}
+                            className="text-[9px] text-slate-500 hover:text-red-400"
+                            title="清空所有 BGM 缓存"
+                          >
+                            清空缓存
+                          </button>
+                        )}
+                      </div>
+                      {remotionConfig.bgm.enabled && (
+                        <div className="flex flex-col gap-1.5 pl-2">
+                          {/* 本地上传 */}
+                          <label className="flex items-center gap-2 cursor-pointer px-2 py-1.5 bg-slate-700/60 hover:bg-slate-700 border border-dashed border-slate-500 rounded text-[10px] text-slate-300">
+                            <input
+                              type="file"
+                              accept="audio/mp3,audio/mpeg,audio/wav,audio/x-wav,audio/aac,audio/m4a,audio/ogg,audio/flac,.mp3,.wav,.aac,.m4a,.ogg,.flac"
+                              className="hidden"
+                              onChange={(e) => {
+                                const f = e.target.files?.[0];
+                                if (f) handleBgmUpload(f);
+                                e.target.value = '';
+                              }}
+                            />
+                            <Upload size={11} className="text-emerald-400" />
+                            <span>{bgmUploading ? '上传中...' : '本地上传（自动缓存）'}</span>
+                          </label>
+                          {/* URL 输入 */}
+                          <input
+                            type="text"
+                            placeholder="或粘贴音频 URL（mp3/wav）"
+                            value={remotionConfig.bgm.url?.startsWith('data:') ? '' : (remotionConfig.bgm.url || '')}
+                            onChange={(e) => setRemotionConfig(c => ({ ...c, bgm: { ...c.bgm, url: e.target.value } }))}
+                            className="w-full bg-slate-700 border border-slate-600 text-slate-200 text-[10px] rounded px-2 py-1"
+                          />
+                          {/* 缓存列表 */}
+                          {cachedBgm.length > 0 && (
+                            <div className="max-h-24 overflow-y-auto flex flex-col gap-1 bg-slate-900/40 rounded p-1">
+                              {cachedBgm.map((entry) => {
+                                const selected = remotionConfig.bgm.url === entry.dataUrl;
+                                return (
+                                  <div
+                                    key={`${entry.name}-${entry.size}`}
+                                    className={`flex items-center gap-1 px-1.5 py-1 rounded text-[10px] ${selected ? 'bg-emerald-700/50 text-emerald-100' : 'text-slate-300 hover:bg-slate-700/50'}`}
+                                  >
+                                    <button
+                                      onClick={() => handleBgmSelect(entry)}
+                                      className="flex-1 text-left truncate"
+                                      title={entry.name}
+                                    >
+                                      <Music size={9} className="inline mr-1" />
+                                      {entry.name} ({(entry.size / 1024 / 1024).toFixed(1)}MB)
+                                    </button>
+                                    <button
+                                      onClick={() => handleBgmRemove(entry)}
+                                      className="text-slate-500 hover:text-red-400"
+                                      title="移除该项"
+                                    >
+                                      <X size={9} />
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {/* 音量 / 淡入淡出 */}
+                          <div className="flex items-center gap-2 text-[10px] text-slate-400">
+                            <span>音量</span>
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.05"
+                              value={remotionConfig.bgm.volume ?? 0.3}
+                              onChange={(e) => setRemotionConfig(c => ({ ...c, bgm: { ...c.bgm, volume: Number(e.target.value) } }))}
+                              className="flex-1"
+                            />
+                            <span className="w-9 text-right">{Math.round((remotionConfig.bgm.volume ?? 0.3) * 100)}%</span>
+                          </div>
+                          <div className="flex items-center gap-2 text-[10px] text-slate-400">
+                            <span>淡入</span>
+                            <input
+                              type="number"
+                              min="0"
+                              max="10"
+                              step="0.5"
+                              value={remotionConfig.bgm.fadeIn ?? 1}
+                              onChange={(e) => setRemotionConfig(c => ({ ...c, bgm: { ...c.bgm, fadeIn: Number(e.target.value) } }))}
+                              className="w-12 bg-slate-700 border border-slate-600 text-slate-200 text-[10px] rounded px-1.5 py-0.5"
+                            />
+                            <span>淡出</span>
+                            <input
+                              type="number"
+                              min="0"
+                              max="10"
+                              step="0.5"
+                              value={remotionConfig.bgm.fadeOut ?? 1}
+                              onChange={(e) => setRemotionConfig(c => ({ ...c, bgm: { ...c.bgm, fadeOut: Number(e.target.value) } }))}
+                              className="w-12 bg-slate-700 border border-slate-600 text-slate-200 text-[10px] rounded px-1.5 py-0.5"
+                            />
+                            <span>秒</span>
+                          </div>
+                          <label className="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={remotionConfig.bgm.loop ?? true}
+                              onChange={(e) => setRemotionConfig(c => ({ ...c, bgm: { ...c.bgm, loop: e.target.checked } }))}
+                              className="accent-emerald-500"
+                            />
+                            循环播放
+                          </label>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="border-t border-slate-700" />
+
+                    {/* ─── 字幕 ─── */}
+                    <div className="flex flex-col gap-1.5">
+                      <div className="flex items-center justify-between">
+                        <label className="flex items-center gap-2.5 cursor-pointer group">
+                          <button
+                            onClick={() => setRemotionConfig(c => ({ ...c, subtitle: { ...c.subtitle, enabled: !c.subtitle.enabled } }))}
+                            className={`w-9 h-5 rounded-full relative transition-all duration-200 ${remotionConfig.subtitle.enabled ? 'bg-emerald-600' : 'bg-slate-600 group-hover:bg-slate-500'}`}
+                          >
+                            <span
+                              className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200 ${remotionConfig.subtitle.enabled ? 'left-[18px]' : 'left-0.5'}`}
+                            />
+                          </button>
+                          <span className="text-[11px] font-medium text-slate-200">字幕（按句切分）</span>
+                        </label>
+                        {remotionConfig.subtitle.enabled && (
+                          <button
+                            onClick={() => setSubtitleStyleOpen(v => !v)}
+                            className="text-[9px] text-slate-500 hover:text-slate-300"
+                          >
+                            {subtitleStyleOpen ? '收起样式' : '样式'}
+                          </button>
+                        )}
+                      </div>
+                      {remotionConfig.subtitle.enabled && (
+                        <div className="flex flex-col gap-1.5 pl-2">
+                          <div className="flex items-center gap-1.5">
+                            <select
+                              value={remotionConfig.subtitle.style}
+                              onChange={(e) => setRemotionConfig(c => ({ ...c, subtitle: { ...c.subtitle, style: e.target.value as any } }))}
+                              className="flex-1 bg-slate-700 border border-slate-600 text-slate-200 text-[10px] rounded px-2 py-1"
+                            >
+                              <option value="default">默认</option>
+                              <option value="stroke">描边</option>
+                              <option value="tiktok">TikTok 风</option>
+                              <option value="karaoke">卡拉OK</option>
+                            </select>
+                            {/* Whisper ASR 开关 */}
+                            <button
+                              onClick={() => setWhisperEnabled(v => !v)}
+                              title="开启后使用本地 Whisper 生成词级时间戳（支持卡拉 OK 染色）"
+                              className={`flex items-center gap-1 px-2 py-1 text-[10px] rounded border transition-all ${
+                                whisperEnabled ? 'bg-purple-600 border-purple-400 text-white' : 'bg-slate-700 border-slate-600 text-slate-400 hover:text-slate-200'
+                              }`}
+                            >
+                              <Sparkles size={10} />
+                              ASR
+                            </button>
+                            <select
+                              value={remotionConfig.subtitle.position}
+                              onChange={(e) => setRemotionConfig(c => ({ ...c, subtitle: { ...c.subtitle, position: e.target.value as any } }))}
+                              className="flex-1 bg-slate-700 border border-slate-600 text-slate-200 text-[10px] rounded px-2 py-1"
+                            >
+                              <option value="top">顶部</option>
+                              <option value="middle">中间</option>
+                              <option value="bottom">底部</option>
+                            </select>
+                          </div>
+
+                          {subtitleStyleOpen && (
+                            <div className="flex flex-col gap-1.5 bg-slate-900/40 rounded p-2">
+                              <div className="grid grid-cols-2 gap-1.5">
+                                <div className="flex flex-col gap-0.5">
+                                  <span className="text-[9px] text-slate-500">字号(px)</span>
+                                  <input
+                                    type="number"
+                                    min="12"
+                                    max="200"
+                                    value={remotionConfig.subtitle.fontSize ?? 48}
+                                    onChange={(e) => setRemotionConfig(c => ({ ...c, subtitle: { ...c.subtitle, fontSize: Number(e.target.value) } }))}
+                                    className="w-full bg-slate-700 border border-slate-600 text-slate-200 text-[10px] rounded px-1.5 py-0.5"
+                                  />
+                                </div>
+                                <div className="flex flex-col gap-0.5">
+                                  <span className="text-[9px] text-slate-500">颜色</span>
+                                  <div className="flex items-center gap-1">
+                                    <input
+                                      type="color"
+                                      value={remotionConfig.subtitle.color || '#ffffff'}
+                                      onChange={(e) => setRemotionConfig(c => ({ ...c, subtitle: { ...c.subtitle, color: e.target.value } }))}
+                                      className="w-6 h-6 bg-slate-700 border border-slate-600 rounded"
+                                    />
+                                    <input
+                                      type="text"
+                                      value={remotionConfig.subtitle.color || '#ffffff'}
+                                      onChange={(e) => setRemotionConfig(c => ({ ...c, subtitle: { ...c.subtitle, color: e.target.value } }))}
+                                      className="flex-1 bg-slate-700 border border-slate-600 text-slate-200 text-[10px] rounded px-1.5 py-0.5"
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="flex flex-col gap-0.5">
+                                <span className="text-[9px] text-slate-500">字体</span>
+                                <select
+                                  value={remotionConfig.subtitle.fontFamily || ''}
+                                  onChange={(e) => setRemotionConfig(c => ({ ...c, subtitle: { ...c.subtitle, fontFamily: e.target.value } }))}
+                                  className="w-full bg-slate-700 border border-slate-600 text-slate-200 text-[10px] rounded px-1.5 py-0.5"
+                                >
+                                  <option value="">默认（PingFang SC）</option>
+                                  <option value='"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif'>苹方 / 微软雅黑</option>
+                                  <option value='"Source Han Sans SC","Noto Sans CJK SC",sans-serif'>思源黑体</option>
+                                  <option value='"Source Han Serif SC","Noto Serif CJK SC",serif'>思源宋体</option>
+                                  <option value='"STKaiti","KaiTi","Songti SC",serif'>楷体 / 宋体</option>
+                                  <option value='"Microsoft YaHei",sans-serif'>微软雅黑</option>
+                                  <option value='"SimHei","Heiti SC",sans-serif'>黑体</option>
+                                  <option value='Impact,"Helvetica Neue",sans-serif'>Impact</option>
+                                  <option value='"Roboto","Helvetica Neue",sans-serif'>Roboto</option>
+                                  <option value='"Inter","Helvetica Neue",sans-serif'>Inter</option>
+                                </select>
+                              </div>
+                              <div className="grid grid-cols-3 gap-1.5">
+                                <div className="flex flex-col gap-0.5">
+                                  <span className="text-[9px] text-slate-500">字间距</span>
+                                  <input
+                                    type="number"
+                                    min="-5"
+                                    max="20"
+                                    step="1"
+                                    value={remotionConfig.subtitle.letterSpacing ?? 0}
+                                    onChange={(e) => setRemotionConfig(c => ({ ...c, subtitle: { ...c.subtitle, letterSpacing: Number(e.target.value) } }))}
+                                    className="w-full bg-slate-700 border border-slate-600 text-slate-200 text-[10px] rounded px-1.5 py-0.5"
+                                  />
+                                </div>
+                                <div className="flex flex-col gap-0.5">
+                                  <span className="text-[9px] text-slate-500">行高</span>
+                                  <input
+                                    type="number"
+                                    min="0.8"
+                                    max="3"
+                                    step="0.1"
+                                    value={remotionConfig.subtitle.lineHeight ?? 1.4}
+                                    onChange={(e) => setRemotionConfig(c => ({ ...c, subtitle: { ...c.subtitle, lineHeight: Number(e.target.value) } }))}
+                                    className="w-full bg-slate-700 border border-slate-600 text-slate-200 text-[10px] rounded px-1.5 py-0.5"
+                                  />
+                                </div>
+                                <div className="flex flex-col gap-0.5">
+                                  <span className="text-[9px] text-slate-500">字重</span>
+                                  <select
+                                    value={String(remotionConfig.subtitle.fontWeight ?? 700)}
+                                    onChange={(e) => setRemotionConfig(c => ({ ...c, subtitle: { ...c.subtitle, fontWeight: e.target.value === 'bold' ? 'bold' : Number(e.target.value) as any } }))}
+                                    className="w-full bg-slate-700 border border-slate-600 text-slate-200 text-[10px] rounded px-1.5 py-0.5"
+                                  >
+                                    <option value="400">400 常规</option>
+                                    <option value="500">500 中等</option>
+                                    <option value="600">600 半粗</option>
+                                    <option value="700">700 粗</option>
+                                    <option value="900">900 特粗</option>
+                                  </select>
+                                </div>
+                              </div>
+                              {(remotionConfig.subtitle.style === 'stroke' || remotionConfig.subtitle.style === 'tiktok' || remotionConfig.subtitle.style === 'karaoke') && (
+                                <div className="grid grid-cols-2 gap-1.5">
+                                  <div className="flex flex-col gap-0.5">
+                                    <span className="text-[9px] text-slate-500">交替/高亮色</span>
+                                    <div className="flex items-center gap-1">
+                                      <input
+                                        type="color"
+                                        value={remotionConfig.subtitle.altColor || '#ffe600'}
+                                        onChange={(e) => setRemotionConfig(c => ({ ...c, subtitle: { ...c.subtitle, altColor: e.target.value } }))}
+                                        className="w-6 h-6 bg-slate-700 border border-slate-600 rounded cursor-pointer"
+                                      />
+                                      <input
+                                        type="text"
+                                        value={remotionConfig.subtitle.altColor || '#ffe600'}
+                                        onChange={(e) => setRemotionConfig(c => ({ ...c, subtitle: { ...c.subtitle, altColor: e.target.value } }))}
+                                        className="flex-1 bg-slate-700 border border-slate-600 text-slate-200 text-[10px] rounded px-1.5 py-0.5"
+                                      />
+                                    </div>
+                                  </div>
+                                  {remotionConfig.subtitle.style === 'stroke' && (
+                                    <>
+                                      <div className="flex flex-col gap-0.5">
+                                        <span className="text-[9px] text-slate-500">描边宽度</span>
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          max="10"
+                                          step="0.5"
+                                          value={remotionConfig.subtitle.strokeWidth ?? 2}
+                                          onChange={(e) => setRemotionConfig(c => ({ ...c, subtitle: { ...c.subtitle, strokeWidth: Number(e.target.value) } }))}
+                                          className="w-full bg-slate-700 border border-slate-600 text-slate-200 text-[10px] rounded px-1.5 py-0.5"
+                                        />
+                                      </div>
+                                    </>
+                                  )}
+                                </div>
+                              )}
+                              <label className="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={remotionConfig.subtitle.shadow !== false}
+                                  onChange={(e) => setRemotionConfig(c => ({ ...c, subtitle: { ...c.subtitle, shadow: e.target.checked } }))}
+                                  className="accent-emerald-500"
+                                />
+                                阴影
+                              </label>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="border-t border-slate-700" />
+
+                    {/* ─── 输出位置 ─── */}
+                    <div className="flex flex-col gap-1.5">
+                      <span className="text-[10px] text-slate-400">输出位置</span>
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={() => setRemotionConfig(c => ({ ...c, output: { ...c.output, target: 'browser' } }))}
+                          className={`flex-1 text-[10px] px-2 py-1 rounded ${remotionConfig.output.target === 'browser' ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300'}`}
+                        >
+                          浏览器缓存
+                        </button>
+                        <button
+                          onClick={() => setRemotionConfig(c => ({ ...c, output: { ...c.output, target: 'download' } }))}
+                          className={`flex-1 text-[10px] px-2 py-1 rounded ${remotionConfig.output.target === 'download' ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300'}`}
+                        >
+                          直接下载
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* 提示说明 */}
+                    <div className="bg-slate-700/50 rounded-lg p-2 flex items-start gap-1.5">
+                      <Sparkles size={10} className="text-amber-400 mt-0.5 flex-shrink-0" />
+                      <p className="text-[9px] text-slate-400 leading-relaxed">
+                        字幕按标点自动逐句输出；BGM 上传后自动缓存到 sessionStorage；转场支持淡入淡出 / 滑动 / 缩放。
+                      </p>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
             {/* 取消队列执行按钮 */}
             {queueProcessorRunning && (
               <button
@@ -5114,6 +6084,57 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                   </a>
                 ))}
               </div>
+            )}
+            {/* Remotion 渲染进度条 */}
+            {isRenderingRemotion && (
+              <div className="flex items-center gap-2">
+                <div className="flex flex-col gap-0.5 min-w-[140px]">
+                  <div className="h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-emerald-500 transition-all duration-300"
+                      style={{ width: `${Math.min(100, Math.max(0, remotionProgress))}%` }}
+                    />
+                  </div>
+                  <span className="text-[9px] text-slate-400 truncate">{remotionMessage || '渲染中...'}</span>
+                </div>
+                <button
+                  onClick={() => {
+                    remotionCancelledRef.current = true;
+                    setIsRenderingRemotion(false);
+                    setRemotionProgress(0);
+                    setRemotionMessage('已取消');
+                    toast.info('已取消渲染');
+                  }}
+                  className="px-2 py-1 bg-red-600 hover:bg-red-500 text-white text-[10px] font-medium rounded transition-all"
+                  title="取消渲染"
+                >
+                  取消
+                </button>
+              </div>
+            )}
+            {/* Remotion 视频下载/播放链接 */}
+            {remotionExportBlobUrl && !isRenderingRemotion && (
+              <a
+                href={remotionExportBlobUrl}
+                download={`remotion_${Date.now()}.mp4`}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-lg transition-all"
+                title="下载 Remotion 渲染视频"
+              >
+                <Download size={14} />
+                下载视频
+              </a>
+            )}
+            {remotionExportUrl && !isRenderingRemotion && !remotionExportBlobUrl && (
+              <a
+                href={remotionExportUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-lg transition-all"
+                title="查看 Remotion 渲染视频"
+              >
+                <Download size={14} />
+                查看视频
+              </a>
             )}
           </div>
         </div>
@@ -5793,6 +6814,177 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                       >
                         重新製作
                       </button>
+                    </div>
+                    {/* 镜头运动模式（Ken Burns 分组按钮） */}
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-[9px] text-slate-500">运动</span>
+                      <div className="flex flex-wrap gap-0.5">
+                        {/* Ken Burns */}
+                        <button
+                          type="button"
+                          disabled={!!shot.videoUrl || !isMainWorkspace}
+                          onClick={() => updateShot(shot.id, { motion: 'kenBurns' } as any)}
+                          className={`text-[9px] px-1.5 py-0.5 rounded border ${
+                            (shot.motion ?? 'kenBurns') === 'kenBurns'
+                              ? 'bg-blue-600 border-blue-400 text-white'
+                              : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
+                          } disabled:opacity-30`}
+                          title="智能缩放（Ken Burns）"
+                        >
+                          K.Burns
+                        </button>
+                        {/* 推 */}
+                        <button
+                          type="button"
+                          disabled={!!shot.videoUrl || !isMainWorkspace}
+                          onClick={() => updateShot(shot.id, { motion: 'push' } as any)}
+                          className={`text-[9px] px-1.5 py-0.5 rounded border ${
+                            shot.motion === 'push'
+                              ? 'bg-blue-600 border-blue-400 text-white'
+                              : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
+                          } disabled:opacity-30`}
+                          title="推（放大视角）"
+                        >
+                          推
+                        </button>
+                        {/* 拉 */}
+                        <button
+                          type="button"
+                          disabled={!!shot.videoUrl || !isMainWorkspace}
+                          onClick={() => updateShot(shot.id, { motion: 'pull' } as any)}
+                          className={`text-[9px] px-1.5 py-0.5 rounded border ${
+                            shot.motion === 'pull'
+                              ? 'bg-blue-600 border-blue-400 text-white'
+                              : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
+                          } disabled:opacity-30`}
+                          title="拉（缩小视角）"
+                        >
+                          拉
+                        </button>
+                        {/* 上 */}
+                        <button
+                          type="button"
+                          disabled={!!shot.videoUrl || !isMainWorkspace}
+                          onClick={() => updateShot(shot.id, { motion: 'panUp' } as any)}
+                          className={`text-[9px] px-1.5 py-0.5 rounded border ${
+                            shot.motion === 'panUp'
+                              ? 'bg-blue-600 border-blue-400 text-white'
+                              : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
+                          } disabled:opacity-30`}
+                          title="上移"
+                        >
+                          ↑
+                        </button>
+                        {/* 下 */}
+                        <button
+                          type="button"
+                          disabled={!!shot.videoUrl || !isMainWorkspace}
+                          onClick={() => updateShot(shot.id, { motion: 'panDown' } as any)}
+                          className={`text-[9px] px-1.5 py-0.5 rounded border ${
+                            shot.motion === 'panDown'
+                              ? 'bg-blue-600 border-blue-400 text-white'
+                              : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
+                          } disabled:opacity-30`}
+                          title="下移"
+                        >
+                          ↓
+                        </button>
+                        {/* 左 */}
+                        <button
+                          type="button"
+                          disabled={!!shot.videoUrl || !isMainWorkspace}
+                          onClick={() => updateShot(shot.id, { motion: 'panLeft' } as any)}
+                          className={`text-[9px] px-1.5 py-0.5 rounded border ${
+                            shot.motion === 'panLeft'
+                              ? 'bg-blue-600 border-blue-400 text-white'
+                              : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
+                          } disabled:opacity-30`}
+                          title="左移"
+                        >
+                          ←
+                        </button>
+                        {/* 右 */}
+                        <button
+                          type="button"
+                          disabled={!!shot.videoUrl || !isMainWorkspace}
+                          onClick={() => updateShot(shot.id, { motion: 'panRight' } as any)}
+                          className={`text-[9px] px-1.5 py-0.5 rounded border ${
+                            shot.motion === 'panRight'
+                              ? 'bg-blue-600 border-blue-400 text-white'
+                              : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
+                          } disabled:opacity-30`}
+                          title="右移"
+                        >
+                          →
+                        </button>
+                        {/* 静止 */}
+                        <button
+                          type="button"
+                          disabled={!!shot.videoUrl || !isMainWorkspace}
+                          onClick={() => updateShot(shot.id, { motion: 'none' } as any)}
+                          className={`text-[9px] px-1.5 py-0.5 rounded border ${
+                            shot.motion === 'none'
+                              ? 'bg-blue-600 border-blue-400 text-white'
+                              : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
+                          } disabled:opacity-30`}
+                          title="静止（无运动）"
+                        >
+                          静止
+                        </button>
+                        {/* 放大 */}
+                        <button
+                          type="button"
+                          disabled={!!shot.videoUrl || !isMainWorkspace}
+                          onClick={() => updateShot(shot.id, { motion: 'zoomIn' } as any)}
+                          className={`text-[9px] px-1.5 py-0.5 rounded border ${
+                            shot.motion === 'zoomIn'
+                              ? 'bg-blue-600 border-blue-400 text-white'
+                              : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
+                          } disabled:opacity-30`}
+                          title="放大（从正常到放大）"
+                        >
+                          放大
+                        </button>
+                        {/* 缩小 */}
+                        <button
+                          type="button"
+                          disabled={!!shot.videoUrl || !isMainWorkspace}
+                          onClick={() => updateShot(shot.id, { motion: 'zoomOut' } as any)}
+                          className={`text-[9px] px-1.5 py-0.5 rounded border ${
+                            shot.motion === 'zoomOut'
+                              ? 'bg-blue-600 border-blue-400 text-white'
+                              : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
+                          } disabled:opacity-30`}
+                          title="缩小（从放大到正常）"
+                        >
+                          缩小
+                        </button>
+                      </div>
+                      {/* 批量运动切换 */}
+                      <select
+                        disabled={!!shot.videoUrl || !isMainWorkspace}
+                        value=""
+                        onChange={(e) => {
+                          const m = e.target.value;
+                          if (!m) return;
+                          const targets = tableShots.filter(s => !s.videoUrl && s.selected);
+                          if (targets.length === 0) return;
+                          targets.forEach(s => updateShot(s.id, { motion: m } as any));
+                        }}
+                        className="text-[9px] px-1 py-0.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded border border-slate-600 disabled:opacity-30"
+                      >
+                        <option value="">批量切换选中…</option>
+                        <option value="kenBurns">K.Burns</option>
+                        <option value="push">推</option>
+                        <option value="pull">拉</option>
+                        <option value="panUp">↑</option>
+                        <option value="panDown">↓</option>
+                        <option value="panLeft">←</option>
+                        <option value="panRight">→</option>
+                        <option value="zoomIn">放大</option>
+                        <option value="zoomOut">缩小</option>
+                        <option value="none">静止</option>
+                      </select>
                     </div>
                     <button
                       onClick={() => {

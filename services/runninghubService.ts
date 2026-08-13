@@ -9,6 +9,7 @@ import {
   INDEXTTS2_RUNNINGHUB_WORKFLOW_ID,
   INDEXTTS2_WORKFLOW_TEMPLATE,
 } from './indexTts2WorkflowTemplate';
+import { logger } from './logger';
 
 /** 判断文本主要语言：包含汉字 → 中文，纯拉丁字母且含英文字母 → 英文 */
 function detectPrimaryLanguage(text: string): 'zh' | 'en' {
@@ -1403,7 +1404,7 @@ export const checkTaskStatus = async (
   };
 
   try {
-    console.log('[RunningHub] 查询任务:', { taskId });
+    logger.debug('[RunningHub] 查询任务:', { taskId });
 
     const q = await fetchOpenApiV2Query(apiKey, taskId);
     if (q && typeof q === 'object') {
@@ -1452,7 +1453,7 @@ export const checkTaskStatus = async (
       const mediaUrls = extractUrlsFromOpenApiV2Results(q);
       const mediaUrl = mediaUrls[0];
 
-      console.log('[RunningHub] openapi/v2/query:', {
+      logger.debug('[RunningHub] openapi/v2/query:', {
         taskId,
         status: qStatus,
         hasUrl: !!mediaUrl,
