@@ -417,7 +417,7 @@ app.get('/api/remotion/bundle-cache/stats', async (_req, res) => {
     const { getCacheStats } = await import('./bundle-cache.mjs');
     const stats = getCacheStats();
     res.json({ success: true, ...stats });
-  } catch (e: any) {
+  } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
 });
@@ -434,7 +434,7 @@ app.post('/api/remotion/bundle-cache/clear', async (_req, res) => {
     const projectCache = join(REMOTION_PROJECT_ROOT, 'node_modules', '.cache', 'webpack');
     clearWebpackCache(REMOTION_PROJECT_ROOT);
     res.json({ success: true, cleared, manifestCleared: true, webpackCleared: true });
-  } catch (e: any) {
+  } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
 });
@@ -518,7 +518,7 @@ app.post('/api/remotion/render/long', async (req, res) => {
     const shots = payload.shots;
     const fps = payload.config?.fps || 30;
     const totalDur = shots.reduce(
-      (s: number, x: any) => s + (x.audioDurationExact ?? x.audioDurationSec ?? x.duration ?? 4),
+      (s, x) => s + (x.audioDurationExact ?? x.audioDurationSec ?? x.duration ?? 4),
       0
     );
 
@@ -542,7 +542,7 @@ app.post('/api/remotion/render/long', async (req, res) => {
     const segments = splitShotsIntoSegments(shots, 1200); // 每段 ≤ 20 分钟
 
     const parentTaskId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const childTaskIds: string[] = [];
+    const childTaskIds = [];
 
     for (let i = 0; i < segments.length; i++) {
       const segShots = segments[i];
@@ -603,8 +603,8 @@ app.post('/api/remotion/render/long', async (req, res) => {
           result: {
             outputPath: finalPath,
             outputUrl: `/api/remotion/download/${parentTaskId}.mp4`,
-            durationSec: segResults.reduce((s: number, r: any) => s + (r.durationSec || 0), 0),
-            videoDurationSec: segResults.reduce((s: number, r: any) => s + (r.durationSec || 0), 0),
+            durationSec: segResults.reduce((s, r) => s + (r.durationSec || 0), 0),
+            videoDurationSec: segResults.reduce((s, r) => s + (r.durationSec || 0), 0),
             videoSizeBytes: stats.size,
             resolution: payload.config?.resolution || '1920x1080',
             fps,
@@ -618,22 +618,23 @@ app.post('/api/remotion/render/long', async (req, res) => {
             })),
           },
         });
-      } catch (err: any) {
+      } catch (err) {
+        const errMsg = (err && typeof err === 'object' && err.message) ? err.message : String(err);
         updateTask(parentTaskId, {
           status: 'failed',
-          error: err.message,
-          message: `分批拼接失败: ${err.message}`,
+          error: errMsg,
+          message: `分批拼接失败: ${errMsg}`,
         });
       }
     });
-  } catch (e: any) {
+  } catch (e) {
     console.error('[remotion] render/long 失败:', e);
     res.status(500).json({ success: false, error: e.message });
   }
 });
 
 /** 等待多个子任务完成 */
-function waitForTasks(taskIds: string[], parentTaskId: string): Promise<void> {
+function waitForTasks(taskIds, parentTaskId) {
   return new Promise((resolve, reject) => {
     const total = taskIds.length;
     let done = 0;
@@ -673,7 +674,7 @@ function waitForTasks(taskIds: string[], parentTaskId: string): Promise<void> {
   });
 }
 
-function logTask(taskId: string, msg: string) {
+function logTask(taskId, msg) {
   const task = renderTasks.get(taskId);
   if (!task) return;
   task.logs.push({ time: Date.now(), message: msg });
