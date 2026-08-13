@@ -10,7 +10,7 @@ import {
 } from '../services/yunwuService';
 import { cacheVideo, getCachedVideoUrl, downloadVideo } from '../services/videoCacheService';
 import { renderRemotionVideo, checkRemotionHealth, getRemotionApiBase, buildRemotionUrl } from '../services/remotionExportService';
-import type { RemotionExportConfig, RemotionExportOptions } from '../services/remotionRenderTypes';
+import type { RemotionExportConfig, RemotionExportOptions, SubtitleCue } from '../services/remotionRenderTypes';
 import { transcribeShots } from '../services/localAsrService';
 import { REMOTION_TEMPLATES, getTemplateById, getTemplateDefaultTransition } from '../services/remotionTemplates';
 import { cacheLocalBgm, listCachedBgm, removeCachedBgm, clearCachedBgm, isLikelyAudio, BgmCacheEntry } from '../services/bgmUploadService';
@@ -29,6 +29,7 @@ import {
 import { getSelectedVoice, updateVoice } from '../services/voiceLibraryService';
 import { LTX2_WORKFLOW_TEMPLATE } from '../services/ltx2WorkflowTemplate';
 import { generateJimengImages, generateJimengVideoAsync, queryJimengVideoTask } from '../services/jimengService';
+import { generateSrt, generateAss, downloadSubtitleFile } from '../services/subtitleFileService';
 import {
   detectCharactersInPrompt,
   pickPrimaryCharacterForPrompt,
@@ -38,7 +39,7 @@ import {
 } from '../services/characterLibraryService';
 import { CharacterLibrary } from './CharacterLibrary';
 import { VoiceLibrary } from './VoiceLibrary';
-import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, Settings2, FolderOpen, Rocket, Copy, Check, CheckSquare, Square, Users, HardDrive, ListOrdered, ArrowUp, Terminal, Gauge, AlertCircle, Sparkles, Wand2, XCircle, Film, Music } from 'lucide-react';
+import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, Settings2, FolderOpen, Rocket, Copy, Check, CheckSquare, Square, Users, HardDrive, ListOrdered, ArrowUp, Terminal, Gauge, AlertCircle, Sparkles, Wand2, XCircle, Film, Music, AlertTriangle, ChevronDown, ExternalLink } from 'lucide-react';
 import JSZip from 'jszip';
 import { HistorySelector } from './HistorySelector';
 import { getRunningHubMaxConcurrent, setRunningHubMaxConcurrent, initRunningHubConcurrency, MAX_CONCURRENT } from '../services/runningHubConcurrency';
@@ -906,7 +907,37 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const [remotionMessage, setRemotionMessage] = useState('');
   const [remotionExportUrl, setRemotionExportUrl] = useState<string>('');
   const [remotionExportBlobUrl, setRemotionExportBlobUrl] = useState<string>('');
+  /** 渲染失败时的 stack trace 和完整日志（M2 #10） */
+  const [remotionErrorDetail, setRemotionErrorDetail] = useState<{ error?: string; stderr?: string; logs?: { time: number; message: string; progress?: number }[]; taskId?: string } | null>(null);
+  const [remotionLogsOpen, setRemotionLogsOpen] = useState(false);
+  /** M2 #9：最近一次导出的 shot id 列表（用于字幕文件下载） */
+  const [remotionExportShotIds, setRemotionExportShotIds] = useState<string[]>([]);
+  const [subtitleExportOpen, setSubtitleExportOpen] = useState(false);
   const remotionCancelledRef = useRef(false);
+  /** M2 #7：字幕安全区缓存（shot.id → SafeZone） */
+  const safeZoneCacheRef = useRef<Record<string, import('../services/safeZoneDetector').SafeZone>>({});
+
+  /** 解析分辨率字符串为 {width, height} */
+  const parseResolution = (res: string): { width: number; height: number } => {
+    const [w, h] = res.split('x').map(Number);
+    return { width: w || 1920, height: h || 1080 };
+  };
+
+  /** 拉取渲染失败时的服务端详细日志（stack trace） */
+  const fetchRemotionErrorDetail = async (taskId: string) => {
+    try {
+      // 后端 base URL：本地 → 18093，否则走 vite proxy
+      const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+      const base = isLocal ? 'http://localhost:18093' : '';
+      const res = await fetch(`${base}/api/remotion/render/status/${taskId}`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      return { ...data, taskId };
+    } catch (e) {
+      console.warn('[Remotion] 拉取错误详情失败:', e);
+      return null;
+    }
+  };
 
   // ── 本地 WASM Whisper ASR 状态 ───────────────────────────────────────
   const [whisperRunning, setWhisperRunning] = useState(false);
@@ -948,6 +979,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     },
     transition: { type: 'none', duration: 0.4 },
     motion: 'kenBurns', // 默认轻微放大效果
+    safeZoneDetection: false, // M2 #7：字幕防遮挡默认关闭（启用后增加 5~10s）
     output: { target: 'download' },
   });
   const [remotionSettingsOpen, setRemotionSettingsOpen] = useState(false);
@@ -970,22 +1002,37 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const applyTemplate = (templateId: string) => {
     const tpl = getTemplateById(templateId);
     if (!tpl) return;
-    setRemotionConfig(c => ({
-      ...c,
-      template: tpl,
-      resolution: tpl.resolution,
-      subtitle: {
-        ...c.subtitle,
-        fontSize: tpl.defaultFontSize ?? c.subtitle.fontSize,
-        color: tpl.defaultColor ?? c.subtitle.color,
-        fontFamily: tpl.fontFamily ?? c.subtitle.fontFamily,
-      },
-      transition: {
-        ...c.transition,
-        type: c.transition?.type === 'none' ? c.transition.type : getTemplateDefaultTransition(templateId),
-        duration: c.transition?.duration ?? 0.4,
-      },
-    }));
+    setRemotionConfig(prev => {
+      // 计算字号：baseFontSize * fontSizeScale（竖屏自动 +25% / +30% / +35%）
+      const baseFontSize = tpl.defaultFontSize ?? prev.subtitle.fontSize ?? 48;
+      const scale = tpl.fontSizeScale ?? 1.0;
+      const scaledFontSize = Math.round(baseFontSize * scale);
+      return {
+        ...prev,
+        template: tpl,
+        resolution: tpl.resolution,
+        subtitle: {
+          ...prev.subtitle,
+          fontSize: scaledFontSize,
+          color: tpl.defaultColor ?? prev.subtitle.color,
+          fontFamily: tpl.fontFamily ?? prev.subtitle.fontFamily,
+          position: tpl.defaultSubtitlePosition ?? prev.subtitle.position,
+        },
+        transition: {
+          ...prev.transition,
+          type: prev.transition?.type === 'none' ? prev.transition.type : getTemplateDefaultTransition(templateId),
+          duration: prev.transition?.duration ?? 0.4,
+        },
+        // 模板推荐的运动类型（如果用户没自定义，则应用）
+        motion: tpl.recommendedMotion ?? prev.motion ?? 'kenBurns',
+      };
+    });
+    const scale = tpl.fontSizeScale ?? 1.0;
+    const scalePct = Math.round((scale - 1) * 100);
+    toast.info(
+      `已应用模板：${tpl.name}${scalePct > 0 ? `（字号+${scalePct}%，字幕位置：${tpl.defaultSubtitlePosition ?? 'bottom'}）` : ''}`,
+      2500
+    );
   };
 
   const handleBgmUpload = async (file: File) => {
@@ -1442,6 +1489,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       // ASR 生成的词级 cue（如有）；用 audioCuesRef 避免读到旧闭包的 state
       const textCues = audioCuesRef.current[s.id];
       console.log('[shotsToRemotion]', JSON.stringify({ shotId: s.id, motion: s.motion, videoUrl: !!s.videoUrl, imageUrl: !!s.imageUrls?.length }));
+      // M2 #7：字幕防遮挡 - 从缓存中取该 shot 的安全区
+      const safeZone = remotionConfig.safeZoneDetection ? safeZoneCacheRef.current[s.id] : undefined;
       return {
         id: s.id,
         number: s.number,
@@ -1457,6 +1506,15 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         textCues,
         // 运动：镜头级 > 全局预设 > 默认 kenBurns
         motion: s.motion ?? (s.videoUrl ? 'none' : (remotionConfig.motion ?? 'kenBurns')),
+        // M2 #7：字幕安全区（仅图片镜头有意义）
+        safeZone: safeZone ? {
+          top: safeZone.top,
+          bottom: safeZone.bottom,
+          left: safeZone.left,
+          right: safeZone.right,
+          preferredPosition: safeZone.preferredPosition,
+          confidence: safeZone.confidence,
+        } : undefined,
       };
     });
   };
@@ -1468,7 +1526,33 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     setRemotionMessage('准备渲染...');
     setRemotionExportUrl('');
     setRemotionExportBlobUrl('');
+    setRemotionErrorDetail(null);
+    setRemotionLogsOpen(false);
     try {
+      // M2 #7：字幕防遮挡 - 自动检测图片安全区
+      if (remotionConfig.safeZoneDetection) {
+        const imageShots = exportShots.filter(s => !s.videoUrl && (s.imageUrls?.length ?? 0) > 0);
+        if (imageShots.length > 0) {
+          setRemotionMessage(`检测字幕安全区（${imageShots.length} 张图）...`);
+          try {
+            const { detectSafeZonesForShots } = await import('../services/safeZoneDetector');
+            const zones = await detectSafeZonesForShots(
+              imageShots.map(s => ({ id: s.id, imageUrl: s.imageUrls?.[s.selectedImageIndex ?? 0] || s.imageUrls?.[0], imageUrls: s.imageUrls })),
+              (done, total, current) => {
+                setRemotionMessage(`安全区检测 ${done}/${total}（${current}）`);
+              }
+            );
+            safeZoneCacheRef.current = zones;
+            const autoCount = Object.values(zones).filter(z => z.preferredPosition !== 'bottom').length;
+            if (autoCount > 0) {
+              toast.info(`已为 ${autoCount} 个镜头自动调整字幕位置避开主体`, 3000);
+            }
+          } catch (e) {
+            console.warn('[safeZone] 检测失败，跳过:', e);
+            toast.warning('安全区检测失败，使用默认位置');
+          }
+        }
+      }
       // ── 步骤 0：本地 Whisper ASR（生成词级时间戳）──
       // 缓存 ASR 结果，避免 state 更新时机晚于 renderRemotionVideo 调用
       let asrCues: Record<string, import('../services/remotionRenderTypes').SubtitleCue[]> = {};
@@ -1583,6 +1667,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       const apiBase = getRemotionApiBase();
       const fullUrl = buildRemotionUrl(result.outputUrl);
       setRemotionExportUrl(fullUrl);
+      setRemotionExportShotIds(exportShots.map(s => s.id)); // M2 #9: 记录导出 shot id 用于字幕下载
       setRemotionProgress(100);
       setRemotionMessage('渲染完成');
 
@@ -1629,7 +1714,19 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       return true;
     } catch (err: any) {
       appendTerminalLog('Remotion', `导出异常: ${err.message}`);
-      toast.error(`Remotion 导出失败: ${err.message}`);
+      // 尝试从服务端拉取详细 stack trace 和完整日志
+      try {
+        const taskIdMatch = (err.message || '').match(/\b(\d{13,}_[a-z0-9]{8})\b/);
+        const taskId = taskIdMatch?.[1];
+        if (taskId) {
+          const detail = await fetchRemotionErrorDetail(taskId);
+          setRemotionErrorDetail(detail);
+        }
+      } catch {
+        /* 静默：拉失败不影响主流程 */
+      }
+      toast.error(`Remotion 导出失败: ${err.message}（点击查看详情）`, 6000);
+      setRemotionLogsOpen(true);
       return false;
     } finally {
       setIsRenderingRemotion(false);
@@ -1657,6 +1754,123 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       return;
     }
     await performExportToRemotion(tableShots, buildPipelineDraftName());
+  };
+
+  /**
+   * M2 #8：批量导出（按镜头数量分片）
+   * - 比如 30 个镜头按 8 个/段，分成 4 个任务依次提交到服务端队列
+   * - 每个任务独立渲染，前端只跟踪最后一个任务的进度
+   */
+  const handleBatchExportToRemotion = async () => {
+    if (tableShots.length === 0) {
+      toast.error('没有可导出的镜头');
+      return;
+    }
+    const SHOTS_PER_TASK = 8;
+    if (tableShots.length <= SHOTS_PER_TASK) {
+      toast.info(`镜头数 ≤ ${SHOTS_PER_TASK}，直接走普通导出`);
+      return handleExportToRemotion();
+    }
+    try {
+      const health = await checkRemotionHealth();
+      if (health.status !== 'ok' || !health.remotionEntryExists) {
+        toast.error('Remotion 服务不可用');
+        return;
+      }
+    } catch (e: any) {
+      toast.error(`Remotion 服务不可用: ${e.message}`);
+      return;
+    }
+    const chunks: Shot[][] = [];
+    for (let i = 0; i < tableShots.length; i += SHOTS_PER_TASK) {
+      chunks.push(tableShots.slice(i, i + SHOTS_PER_TASK));
+    }
+    setBatchProgress({ current: 0, total: chunks.length, type: 'remotionBatch' });
+    setIsRenderingRemotion(true);
+    setRemotionMessage(`批量提交 ${chunks.length} 个分段任务...`);
+    try {
+      const apiBase = getRemotionApiBase();
+      // 每个分段都需要走 ASR + shotsToRemotion + payload 构造
+      const tasksPayload = [];
+      for (let i = 0; i < chunks.length; i++) {
+        const chunkShots = chunks[i];
+        const chunkName = `${buildPipelineDraftName()}_part${i + 1}`;
+        // 本地 Whisper ASR（按需）
+        let asrCues: Record<string, SubtitleCue[]> = {};
+        if (whisperEnabled) {
+          try {
+            const items = chunkShots
+              .filter(s => s.voiceAudioUrl && !s.voiceAudioUrl.startsWith('blob:'))
+              .map(s => {
+                const rawAudio = s.voiceAudioUrl!.trim();
+                const audioUrl = /^https?:|^data:|^blob:/i.test(rawAudio)
+                  ? rawAudio
+                  : resolveRunningHubOutputUrl(rawAudio);
+                return {
+                  shotId: s.id,
+                  audioUrl,
+                  caption: (s.caption || '').trim(),
+                  durationInFrames: Math.round((s.audioDurationExact ?? 4) * (remotionConfig.fps ?? 30)),
+                  fps: remotionConfig.fps ?? 30,
+                };
+              });
+            if (items.length > 0) {
+              setRemotionMessage(`ASR: 第 ${i + 1}/${chunks.length} 段 ${items.length} 个镜头...`);
+              asrCues = await transcribeShots(items, (done, total, current) => {
+                setRemotionMessage(`ASR ${i + 1}/${chunks.length}: ${done}/${total} ${current}`);
+              });
+            }
+          } catch (e) {
+            console.warn('[batch] ASR 失败，跳过:', e);
+          }
+        }
+        const shotsPayload = chunkShots.map(s => {
+          const rawAudio = s.voiceAudioUrl?.trim();
+          const audioUrl = rawAudio && !/^https?:|^data:|^blob:/i.test(rawAudio)
+            ? resolveRunningHubOutputUrl(rawAudio)
+            : rawAudio;
+          return {
+            id: s.id,
+            number: s.number,
+            caption: s.caption || '',
+            imageUrl: s.imageUrls?.[s.selectedImageIndex ?? 0] || s.imageUrls?.[0],
+            imageUrls: s.imageUrls,
+            videoUrl: s.videoUrl,
+            audioUrl,
+            voiceoverAudioUrl: audioUrl,
+            audioDurationSec: s.audioDurationSec,
+            audioDurationExact: s.audioDurationExact,
+            text: s.caption || '',
+            textCues: asrCues[s.id],
+            motion: s.motion ?? (s.videoUrl ? 'none' : (remotionConfig.motion ?? 'kenBurns')),
+          };
+        });
+        tasksPayload.push({
+          shots: shotsPayload,
+          config: remotionConfig,
+          _draftName: chunkName,
+        });
+        setBatchProgress({ current: i + 1, total: chunks.length, type: 'remotionBatch' });
+      }
+      // 批量提交到服务端队列
+      const res = await fetch(`${apiBase}/api/remotion/render/batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tasks: tasksPayload }),
+      });
+      if (!res.ok) throw new Error(`批量提交失败: HTTP ${res.status}`);
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || '批量提交失败');
+      setRemotionMessage(`已入队 ${data.count} 个分段任务，服务器将依次渲染`);
+      toast.success(`已批量提交 ${data.count} 个分段任务，请稍候...`, 4000);
+      appendTerminalLog('Remotion', `批量导出: 共 ${chunks.length} 段，taskIds=${data.taskIds.slice(0, 3).join(',')}...`);
+    } catch (e: any) {
+      toast.error(`批量导出失败: ${e.message}`);
+      appendTerminalLog('Remotion', `批量导出异常: ${e.message}`);
+    } finally {
+      setIsRenderingRemotion(false);
+      setBatchProgress({ current: 0, total: 0, type: 'video' });
+    }
   };
 
   // ==================== 一键成片 Pipeline 函数 ====================
@@ -5347,15 +5561,27 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
               {isRenderingRemotion ? <Loader2 size={14} className="animate-spin" /> : <Film size={14} />}
               {isRenderingRemotion ? '渲染中...' : '导出视频'}
             </button>
+            {/* M2 #8：批量导出按钮（镜头 > 8 时启用） */}
+            {tableShots.length > 8 && (
+              <button
+                onClick={handleBatchExportToRemotion}
+                disabled={isRenderingRemotion}
+                className="flex items-center gap-1.5 px-2 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium rounded-lg transition-all disabled:opacity-50"
+                title={`批量分段导出（每 8 个镜头一段，自动排队渲染，适合长视频）`}
+              >
+                <ListOrdered size={13} />
+                批量导出
+              </button>
+            )}
             {/* Remotion 设置按钮 */}
             <div className="relative">
               <button
                 onClick={() => setRemotionSettingsOpen(v => !v)}
-                className={`flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded-lg border transition-all ${remotionSettingsOpen || remotionConfig.output.target !== 'download' || remotionConfig.bgm.enabled || remotionConfig.subtitle.style !== 'default' || remotionConfig.motion !== 'kenBurns' ? 'bg-emerald-900/60 border-emerald-500 text-emerald-200' : 'bg-slate-800/60 border-slate-600 text-slate-400 hover:text-slate-200 hover:border-slate-500'}`}
+                className={`flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded-lg border transition-all ${remotionSettingsOpen || remotionConfig.output.target !== 'download' || remotionConfig.bgm.enabled || remotionConfig.subtitle.style !== 'default' || remotionConfig.motion !== 'kenBurns' || remotionConfig.safeZoneDetection ? 'bg-emerald-900/60 border-emerald-500 text-emerald-200' : 'bg-slate-800/60 border-slate-600 text-slate-400 hover:text-slate-200 hover:border-slate-500'}`}
                 title="Remotion 导出高级设置"
               >
                 <Settings2 size={13} />
-                {remotionConfig.output.target !== 'download' || remotionConfig.bgm.enabled || remotionConfig.subtitle.style !== 'default' || remotionConfig.motion !== 'kenBurns' ? '已设置' : '高级'}
+                {remotionConfig.output.target !== 'download' || remotionConfig.bgm.enabled || remotionConfig.subtitle.style !== 'default' || remotionConfig.motion !== 'kenBurns' || remotionConfig.safeZoneDetection ? '已设置' : '高级'}
               </button>
               {remotionSettingsOpen && (
                 <>
@@ -5384,6 +5610,14 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                           <option key={t.id} value={t.id}>{t.name}</option>
                         ))}
                       </select>
+                      {/* 模板自适应提示 */}
+                      <div className="text-[9px] text-slate-500 px-1">
+                        {remotionConfig.template.fontSizeScale && remotionConfig.template.fontSizeScale > 1.0 ? (
+                          <>📱 竖屏优化：字幕字号 ×{remotionConfig.template.fontSizeScale.toFixed(2)}，位置默认 <span className="text-emerald-400">{remotionConfig.template.defaultSubtitlePosition === 'middle' ? '中段' : remotionConfig.template.defaultSubtitlePosition === 'top' ? '顶部' : '底部'}</span></>
+                        ) : remotionConfig.template.recommendedMotion && remotionConfig.template.recommendedMotion !== 'kenBurns' ? (
+                          <>🎬 推荐运动：{remotionConfig.template.recommendedMotion}</>
+                        ) : null}
+                      </div>
                     </div>
 
                     {/* ─── 片头预设 ─── */}
@@ -5719,6 +5953,17 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                       </div>
                       {remotionConfig.subtitle.enabled && (
                         <div className="flex flex-col gap-1.5 pl-2">
+                          {/* M2 #7：字幕防遮挡开关 */}
+                          <label className="flex items-center gap-2 cursor-pointer text-[10px] text-slate-300">
+                            <input
+                              type="checkbox"
+                              checked={remotionConfig.safeZoneDetection ?? false}
+                              onChange={(e) => setRemotionConfig(c => ({ ...c, safeZoneDetection: e.target.checked }))}
+                              className="accent-emerald-500"
+                            />
+                            <span>字幕防遮挡（自动避开主体）</span>
+                            <span className="text-[8px] text-slate-500">逐图分析</span>
+                          </label>
                           <div className="flex items-center gap-1.5">
                             <select
                               value={remotionConfig.subtitle.style}
@@ -6112,6 +6357,99 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                 </button>
               </div>
             )}
+
+            {/* M2 #10：渲染失败时的服务端日志面板（stack trace） */}
+            {!isRenderingRemotion && remotionErrorDetail && (
+              <div className="relative">
+                <button
+                  onClick={() => setRemotionLogsOpen(v => !v)}
+                  className="flex items-center gap-1.5 px-2 py-1 bg-red-900/60 hover:bg-red-900/80 border border-red-700 text-red-200 text-[10px] font-medium rounded-lg transition-all"
+                  title="查看服务端渲染日志和错误堆栈"
+                >
+                  <AlertTriangle size={11} />
+                  渲染失败 · 查看日志
+                  <ChevronDown size={11} className={`transition-transform ${remotionLogsOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {remotionLogsOpen && (
+                  <div className="absolute right-0 top-full mt-1.5 z-30 w-[480px] max-h-[60vh] bg-slate-900/98 backdrop-blur border border-red-700/60 rounded-xl shadow-2xl p-3 flex flex-col gap-2">
+                    <div className="flex items-center justify-between sticky top-0 bg-slate-900/95 pb-1 -mt-1">
+                      <span className="text-xs font-medium text-red-200 flex items-center gap-1.5">
+                        <AlertTriangle size={12} className="text-red-400" />
+                        服务端渲染日志
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        {remotionErrorDetail.taskId && (
+                          <button
+                            onClick={async () => {
+                              const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+                              const base = isLocal ? 'http://localhost:18093' : '';
+                              window.open(`${base}/api/remotion/render/log/${remotionErrorDetail.taskId}`, '_blank');
+                            }}
+                            className="text-[9px] text-slate-400 hover:text-slate-200 flex items-center gap-1"
+                            title="在新窗口查看完整日志文件"
+                          >
+                            <ExternalLink size={10} />
+                            完整日志
+                          </button>
+                        )}
+                        <button
+                          onClick={async () => {
+                            const text = [
+                              remotionErrorDetail.error && `错误: ${remotionErrorDetail.error}`,
+                              remotionErrorDetail.stderr && `\n[stderr]\n${remotionErrorDetail.stderr}`,
+                              remotionErrorDetail.logs && `\n[logs]\n${remotionErrorDetail.logs.map(l => l.message).join('\n')}`,
+                            ].filter(Boolean).join('\n');
+                            try {
+                              await navigator.clipboard.writeText(text);
+                              toast.success('已复制日志到剪贴板');
+                            } catch {
+                              toast.error('复制失败');
+                            }
+                          }}
+                          className="text-[9px] text-slate-400 hover:text-slate-200 flex items-center gap-1"
+                          title="复制日志"
+                        >
+                          <Copy size={10} />
+                          复制
+                        </button>
+                        <button onClick={() => setRemotionLogsOpen(false)} className="text-slate-400 hover:text-slate-200">
+                          <X size={12} />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="border-t border-red-900/40" />
+                    {/* 主错误 */}
+                    {remotionErrorDetail.error && (
+                      <div className="bg-red-950/50 border border-red-800/60 rounded px-2 py-1.5 text-[10px] text-red-200 font-mono leading-relaxed">
+                        {remotionErrorDetail.error}
+                      </div>
+                    )}
+                    {/* stderr / stack trace */}
+                    {remotionErrorDetail.stderr && (
+                      <div>
+                        <div className="text-[9px] text-slate-500 mb-1">stack trace (stderr)</div>
+                        <pre className="bg-slate-950 border border-slate-800 rounded p-2 text-[10px] text-slate-300 font-mono whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
+                          {remotionErrorDetail.stderr}
+                        </pre>
+                      </div>
+                    )}
+                    {/* 日志列表 */}
+                    {remotionErrorDetail.logs && remotionErrorDetail.logs.length > 0 && (
+                      <div>
+                        <div className="text-[9px] text-slate-500 mb-1">最近日志（{remotionErrorDetail.logs.length} 条）</div>
+                        <div className="bg-slate-950 border border-slate-800 rounded p-2 text-[10px] font-mono max-h-40 overflow-y-auto flex flex-col gap-0.5">
+                          {remotionErrorDetail.logs.slice(-50).map((l, i) => (
+                            <div key={i} className={`${typeof l.message === 'string' && l.message.startsWith('[stderr]') ? 'text-red-300' : 'text-slate-400'}`}>
+                              {l.message}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             {/* Remotion 视频下载/播放链接 */}
             {remotionExportBlobUrl && !isRenderingRemotion && (
               <a
@@ -6135,6 +6473,123 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                 <Download size={14} />
                 查看视频
               </a>
+            )}
+
+            {/* M2 #9：字幕文件下载（SRT / ASS） */}
+            {remotionExportShotIds.length > 0 && !isRenderingRemotion && (
+              <div className="relative">
+                <button
+                  onClick={() => setSubtitleExportOpen(v => !v)}
+                  className="flex items-center gap-1.5 px-2 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-medium rounded-lg border border-slate-600 transition-all"
+                  title="下载字幕文件，便于二次编辑（剪映/PR/DaVinci）"
+                >
+                  <FileText size={12} />
+                  字幕文件
+                  <ChevronDown size={10} className={`transition-transform ${subtitleExportOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {subtitleExportOpen && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setSubtitleExportOpen(false)} />
+                    <div className="absolute right-0 top-full mt-1 z-20 bg-slate-800/95 backdrop-blur border border-slate-600 rounded-xl shadow-2xl p-1.5 flex flex-col gap-1 min-w-[180px]">
+                      <button
+                        onClick={() => {
+                          try {
+                            const shotsForExport = tableShots.filter(s => remotionExportShotIds.includes(s.id));
+                            const cuesRecord = audioCuesByShot;
+                            const srtContent = generateSrt({
+                              fps: remotionConfig.fps,
+                              resolution: parseResolution(remotionConfig.resolution),
+                              shots: shotsForExport.map(s => ({
+                                id: s.id,
+                                caption: s.caption,
+                                textCues: cuesRecord[s.id],
+                              })),
+                            });
+                            downloadSubtitleFile(srtContent, `remotion_${Date.now()}.srt`, 'text/plain');
+                            toast.success('SRT 字幕已下载');
+                            setSubtitleExportOpen(false);
+                          } catch (e: any) {
+                            toast.error(`下载失败: ${e.message}`);
+                          }
+                        }}
+                        className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] text-slate-200 hover:bg-slate-700 rounded text-left"
+                      >
+                        <Download size={11} />
+                        下载 SRT（通用字幕）
+                      </button>
+                      <button
+                        onClick={() => {
+                          try {
+                            const shotsForExport = tableShots.filter(s => remotionExportShotIds.includes(s.id));
+                            const cuesRecord = audioCuesByShot;
+                            const assContent = generateAss({
+                              fps: remotionConfig.fps,
+                              resolution: parseResolution(remotionConfig.resolution),
+                              shots: shotsForExport.map(s => ({
+                                id: s.id,
+                                caption: s.caption,
+                                textCues: cuesRecord[s.id],
+                              })),
+                              fontName: remotionConfig.subtitle.fontFamily?.split(',')[0]?.replace(/['"]/g, '').trim() || 'PingFang SC',
+                              fontSize: remotionConfig.subtitle.fontSize || 48,
+                              color: remotionConfig.subtitle.color || '#ffffff',
+                              outlineColor: remotionConfig.subtitle.strokeColor || '#000000',
+                              outlineWidth: remotionConfig.subtitle.strokeWidth ?? 2,
+                              shadow: remotionConfig.subtitle.shadow !== false,
+                              position: remotionConfig.subtitle.position || 'bottom',
+                            });
+                            downloadSubtitleFile(assContent, `remotion_${Date.now()}.ass`, 'text/plain');
+                            toast.success('ASS 字幕已下载');
+                            setSubtitleExportOpen(false);
+                          } catch (e: any) {
+                            toast.error(`下载失败: ${e.message}`);
+                          }
+                        }}
+                        className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] text-slate-200 hover:bg-slate-700 rounded text-left"
+                      >
+                        <Download size={11} />
+                        下载 ASS（高级样式）
+                      </button>
+                      <button
+                        onClick={async () => {
+                          try {
+                            const shotsForExport = tableShots.filter(s => remotionExportShotIds.includes(s.id));
+                            const cuesRecord = audioCuesByShot;
+                            const srt = generateSrt({
+                              fps: remotionConfig.fps,
+                              resolution: parseResolution(remotionConfig.resolution),
+                              shots: shotsForExport.map(s => ({ id: s.id, caption: s.caption, textCues: cuesRecord[s.id] })),
+                            });
+                            const ass = generateAss({
+                              fps: remotionConfig.fps,
+                              resolution: parseResolution(remotionConfig.resolution),
+                              shots: shotsForExport.map(s => ({ id: s.id, caption: s.caption, textCues: cuesRecord[s.id] })),
+                              fontName: remotionConfig.subtitle.fontFamily?.split(',')[0]?.replace(/['"]/g, '').trim() || 'PingFang SC',
+                              fontSize: remotionConfig.subtitle.fontSize || 48,
+                              color: remotionConfig.subtitle.color || '#ffffff',
+                              outlineColor: remotionConfig.subtitle.strokeColor || '#000000',
+                              outlineWidth: remotionConfig.subtitle.strokeWidth ?? 2,
+                              shadow: remotionConfig.subtitle.shadow !== false,
+                              position: remotionConfig.subtitle.position || 'bottom',
+                            });
+                            const ts = Date.now();
+                            downloadSubtitleFile(srt, `remotion_${ts}.srt`, 'text/plain');
+                            setTimeout(() => downloadSubtitleFile(ass, `remotion_${ts}.ass`, 'text/plain'), 200);
+                            toast.success('SRT + ASS 已下载');
+                            setSubtitleExportOpen(false);
+                          } catch (e: any) {
+                            toast.error(`下载失败: ${e.message}`);
+                          }
+                        }}
+                        className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] text-emerald-300 hover:bg-emerald-900/40 rounded text-left border-t border-slate-700"
+                      >
+                        <Download size={11} />
+                        全部下载（SRT + ASS）
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             )}
           </div>
         </div>

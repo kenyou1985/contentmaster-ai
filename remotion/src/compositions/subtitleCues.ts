@@ -45,6 +45,19 @@ export interface SubtitleStyleConfig {
   altColor?: string;
   /** 入场动画 */
   preset?: 'none' | 'spring';
+  /**
+   * 字幕安全区（M2 #7：自动避开主体/重要物品）
+   * - 0~1 归一化坐标（相对视频画布）
+   * - 若提供，则按 safeZone 计算字幕位置；position 字段被覆盖为推荐位置
+   */
+  safeZone?: {
+    top: number;
+    bottom: number;
+    left: number;
+    right: number;
+    preferredPosition: 'top' | 'middle' | 'bottom';
+    confidence?: number;
+  };
 }
 
 export interface SubtitleFullConfig extends SubtitleStyleConfig {

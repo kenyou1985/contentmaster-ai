@@ -57,7 +57,9 @@ app.use(
 
 // ── 静态文件：存放渲染好的 MP4 ─────────────────────
 const OUTPUT_DIR = process.env.REMOTION_OUTPUT_DIR || (IS_RAILWAY ? join('/tmp', 'remotion-out') : join('/tmp', 'remotion-out'));
+const LOG_DIR = join(OUTPUT_DIR, 'logs');
 if (!existsSync(OUTPUT_DIR)) mkdirSync(OUTPUT_DIR, { recursive: true });
+if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
 
 app.use('/api/remotion/download', express.static(OUTPUT_DIR, {
   maxAge: '7d',
@@ -67,6 +69,45 @@ app.use('/api/remotion/download', express.static(OUTPUT_DIR, {
     }
   },
 }));
+
+// ── 渲染队列（批量任务串行调度，避免内存爆炸）─────────────────────
+const MAX_PARALLEL_WORKERS = 1; // 默认串行（macOS 内存优先），可改为 2 启用并行
+const renderQueue = [];        // 待执行任务队列
+const activeWorkers = new Set(); // 正在运行的 taskId
+let queueTickScheduled = false;
+
+function scheduleQueueTick() {
+  if (queueTickScheduled) return;
+  queueTickScheduled = true;
+  setImmediate(() => {
+    queueTickScheduled = false;
+    tickQueue();
+  });
+}
+
+function tickQueue() {
+  while (activeWorkers.size < MAX_PARALLEL_WORKERS && renderQueue.length > 0) {
+    const next = renderQueue.shift();
+    activeWorkers.add(next.taskId);
+    next.run().finally(() => {
+      activeWorkers.delete(next.taskId);
+      scheduleQueueTick();
+    });
+  }
+}
+
+function enqueueRender(taskId, payload) {
+  renderQueue.push({
+    taskId,
+    run: () => runRenderWorker(payload, taskId),
+  });
+  updateTask(taskId, {
+    status: 'queued',
+    progress: 0,
+    message: `排队中（前面还有 ${renderQueue.length} 个任务）`,
+  });
+  scheduleQueueTick();
+}
 
 // ── 任务队列（内存版）──────────────────────────────
 const renderTasks = new Map();
@@ -81,12 +122,16 @@ function createRenderTask(payload) {
     status: 'queued',
     createdAt: now,
     updatedAt: now,
+    renderStartAt: now, // M2 #13: 用于估算 ETA
     payload,
     result: null,
     error: null,
     progress: 0,
     message: '任务已创建',
     logs: [],
+    frame: undefined,
+    totalFrames: undefined,
+    fps: undefined,
   };
   renderTasks.set(taskId, task);
   return task;
@@ -129,11 +174,32 @@ function updateTask(taskId, patch) {
     });
     if (task.logs.length > 500) task.logs = task.logs.slice(-500);
   }
+  // M2 #13：SSE 推送帧进度（frame / totalFrames / fps / eta）
+  const etaSec = computeEta(task);
   notifySse(taskId, {
     status: task.status,
     progress: task.progress,
     message: task.message,
+    frame: patch.frame ?? task.frame,
+    totalFrames: patch.totalFrames ?? task.totalFrames,
+    fps: patch.fps ?? task.fps,
+    etaSec,
   });
+}
+
+/**
+ * M2 #13：根据已渲染帧数和 FPS 估算剩余时间（秒）
+ * - 需要 >= 2 个 progress 数据点才能估算
+ * - 简单的滚动平均：每收到一个进度就重新计算
+ */
+function computeEta(task) {
+  if (!task.frame || !task.totalFrames || !task.fps) return undefined;
+  const elapsedMs = Date.now() - (task.renderStartAt ?? task.createdAt);
+  if (elapsedMs <= 0) return undefined;
+  const framesPerSec = task.frame / (elapsedMs / 1000);
+  if (framesPerSec <= 0) return undefined;
+  const remainingFrames = Math.max(0, task.totalFrames - task.frame);
+  return Math.round(remainingFrames / framesPerSec);
 }
 
 // ── Data URL → Temp File 转换 ─────────────────────
@@ -242,10 +308,15 @@ function runRenderWorker(payload, taskId) {
           try {
             const msg = JSON.parse(trimmed);
             if (msg.type === 'progress') {
-              updateTask(taskId, {
+              const patch = {
                 progress: msg.progress,
                 message: msg.message,
-              });
+                frame: msg.frame,
+                totalFrames: msg.totalFrames,
+                fps: msg.fps,
+              };
+              updateTask(taskId, patch);
+              // M2 #12 兼容：长视频分批时，前缀信息直接包含 part 索引
             } else if (msg.type === 'log') {
               updateTask(taskId, { message: msg.message });
             } else if (msg.type === 'done') {
@@ -274,7 +345,29 @@ function runRenderWorker(payload, taskId) {
     });
 
     child.stderr.on('data', (chunk) => {
-      stderrBuf += chunk.toString();
+      const s = chunk.toString();
+      stderrBuf += s;
+      // stderr 通常是 error stack，把每一行也作为日志推送给前端
+      const task = renderTasks.get(taskId);
+      if (task) {
+        for (const line of s.split('\n')) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          task.logs.push({
+            time: Date.now(),
+            progress: task.progress,
+            message: `[stderr] ${trimmed}`,
+          });
+          if (task.logs.length > 500) task.logs = task.logs.slice(-500);
+        }
+        notifySse(taskId, {
+          status: task.status,
+          progress: task.progress,
+          message: task.message,
+          // 失败时附上 stderr tail，方便前端直接显示 stack trace
+          stderrTail: task.status === 'failed' ? stderrBuf.slice(-2000) : undefined,
+        });
+      }
     });
 
     child.on('close', (code) => {
@@ -317,6 +410,34 @@ const healthHandler = (_req, res) => {
 };
 app.get('/health', healthHandler);
 app.get('/api/remotion/health', healthHandler);
+
+// M2 #11：bundle 缓存状态查询
+app.get('/api/remotion/bundle-cache/stats', async (_req, res) => {
+  try {
+    const { getCacheStats } = await import('./bundle-cache.mjs');
+    const stats = getCacheStats();
+    res.json({ success: true, ...stats });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/remotion/bundle-cache/clear', async (_req, res) => {
+  try {
+    const { clearWebpackCache } = await import('./bundle-cache.mjs');
+    const cacheDir = join('/tmp', 'remotion-bundle-cache');
+    let cleared = false;
+    if (existsSync(cacheDir)) {
+      rmSync(cacheDir, { recursive: true, force: true });
+      cleared = true;
+    }
+    const projectCache = join(REMOTION_PROJECT_ROOT, 'node_modules', '.cache', 'webpack');
+    clearWebpackCache(REMOTION_PROJECT_ROOT);
+    res.json({ success: true, cleared, manifestCleared: true, webpackCleared: true });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
 // 同时兼容 /api/remotion 重写到根（部分前端/反代会带 strip）
 // 这里不主动改路径，下面路由已经全部以 /api/remotion/* 形式提供。
@@ -386,6 +507,180 @@ app.post('/api/remotion/upload-media', async (req, res) => {
   }
 });
 
+// ── 长视频分批渲染（M2 #12：>30 分钟自动分批 + ffmpeg 拼接）─────────────────────
+app.post('/api/remotion/render/long', async (req, res) => {
+  try {
+    const payload = req.body || {};
+    if (!Array.isArray(payload.shots) || payload.shots.length === 0) {
+      return res.status(400).json({ success: false, error: 'shots 不能为空' });
+    }
+
+    const shots = payload.shots;
+    const fps = payload.config?.fps || 30;
+    const totalDur = shots.reduce(
+      (s: number, x: any) => s + (x.audioDurationExact ?? x.audioDurationSec ?? x.duration ?? 4),
+      0
+    );
+
+    const LONG_THRESHOLD = 1800; // 30 分钟
+    if (totalDur <= LONG_THRESHOLD) {
+      // 短于阈值：走普通路由
+      const task = createRenderTask(payload);
+      const { cleanedShots, tempDir } = extractDataUrlsToTempFiles(payload.shots);
+      const normalizedPayload = { ...payload, shots: cleanedShots, _tempDir: tempDir };
+      enqueueRender(task.taskId, normalizedPayload);
+      return res.json({
+        success: true,
+        taskId: task.taskId,
+        mode: 'single',
+        message: '视频短于 30 分钟，使用单段渲染',
+      });
+    }
+
+    // 长视频分批：每个分段独立一个 task，前端可分段观察
+    const { splitShotsIntoSegments } = await import('./batch-renderer.mjs');
+    const segments = splitShotsIntoSegments(shots, 1200); // 每段 ≤ 20 分钟
+
+    const parentTaskId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const childTaskIds: string[] = [];
+
+    for (let i = 0; i < segments.length; i++) {
+      const segShots = segments[i];
+      const segPayload = { ...payload, shots: segShots };
+      const childTask = createRenderTask(segPayload);
+      childTask.parentTaskId = parentTaskId;
+      childTask.segmentIndex = i;
+      childTask.totalSegments = segments.length;
+      childTaskIds.push(childTask.taskId);
+      const { cleanedShots, tempDir } = extractDataUrlsToTempFiles(segShots);
+      const normalizedPayload = { ...segPayload, shots: cleanedShots, _tempDir: tempDir };
+      enqueueRender(childTask.taskId, normalizedPayload);
+    }
+
+    // 父任务用于串联进度（前端按整体观察）
+    const parentTask = createRenderTask(payload);
+    parentTask.taskId = parentTaskId;
+    parentTask.isParent = true;
+    parentTask.segmentCount = segments.length;
+    parentTask.childTaskIds = childTaskIds;
+    renderTasks.set(parentTaskId, parentTask);
+    updateTask(parentTaskId, {
+      status: 'running',
+      progress: 5,
+      message: `长视频：${(totalDur / 60).toFixed(1)} 分钟 → ${segments.length} 个分段（并行排队中）`,
+    });
+
+    res.json({
+      success: true,
+      taskId: parentTaskId,
+      mode: 'batch',
+      segmentCount: segments.length,
+      childTaskIds,
+      message: `长视频检测：${(totalDur / 60).toFixed(1)} 分钟，分为 ${segments.length} 段渲染`,
+    });
+
+    // 异步：等所有子任务完成后 ffmpeg 拼接
+    setImmediate(async () => {
+      try {
+        const { concatMp4 } = await import('./batch-renderer.mjs');
+        await waitForTasks(childTaskIds, parentTaskId);
+        const segResults = childTaskIds.map((tid) => renderTasks.get(tid)?.result).filter(Boolean);
+        if (segResults.length !== segments.length) {
+          throw new Error(`子任务未全部成功（${segResults.length}/${segments.length}）`);
+        }
+        // 把分段的 shot 数据写到 result 里好让前端拼接文件路径
+        const finalPath = join(OUTPUT_DIR, `${parentTaskId}.mp4`);
+        const realPartPaths = childTaskIds.map((tid) => {
+          const r = renderTasks.get(tid)?.result;
+          return r?.outputPath || join(OUTPUT_DIR, `${tid}.mp4`);
+        });
+        await concatMp4(realPartPaths, finalPath, (m) => logTask(parentTaskId, m));
+        const stats = statSync(finalPath);
+        updateTask(parentTaskId, {
+          status: 'success',
+          progress: 100,
+          message: `分批拼接完成（${segments.length} 段 → 1 个 MP4）`,
+          result: {
+            outputPath: finalPath,
+            outputUrl: `/api/remotion/download/${parentTaskId}.mp4`,
+            durationSec: segResults.reduce((s: number, r: any) => s + (r.durationSec || 0), 0),
+            videoDurationSec: segResults.reduce((s: number, r: any) => s + (r.durationSec || 0), 0),
+            videoSizeBytes: stats.size,
+            resolution: payload.config?.resolution || '1920x1080',
+            fps,
+            format: 'mp4',
+            taskId: parentTaskId,
+            segments: segments.map((seg, i) => ({
+              index: i,
+              taskId: childTaskIds[i],
+              shotsCount: seg.length,
+              path: realPartPaths[i],
+            })),
+          },
+        });
+      } catch (err: any) {
+        updateTask(parentTaskId, {
+          status: 'failed',
+          error: err.message,
+          message: `分批拼接失败: ${err.message}`,
+        });
+      }
+    });
+  } catch (e: any) {
+    console.error('[remotion] render/long 失败:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+/** 等待多个子任务完成 */
+function waitForTasks(taskIds: string[], parentTaskId: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const total = taskIds.length;
+    let done = 0;
+    let failed = 0;
+    const interval = setInterval(() => {
+      let allDone = true;
+      let anyFailed = false;
+      for (const tid of taskIds) {
+        const t = renderTasks.get(tid);
+        if (!t) {
+          anyFailed = true;
+          continue;
+        }
+        if (t.status === 'success') done++;
+        else if (t.status === 'failed') {
+          done++;
+          anyFailed = true;
+        } else {
+          allDone = false;
+        }
+      }
+      // 更新父任务进度 = 平均子任务进度
+      const avg = taskIds.reduce((s, tid) => s + (renderTasks.get(tid)?.progress || 0), 0) / total;
+      updateTask(parentTaskId, {
+        progress: Math.min(95, Math.round(avg)),
+        message: `分批渲染进度：${done}/${total} 段完成${anyFailed ? '（含失败段）' : ''}`,
+      });
+      if (allDone || anyFailed) {
+        clearInterval(interval);
+        if (anyFailed) {
+          reject(new Error(`${failed || '某'}段渲染失败`));
+        } else {
+          resolve();
+        }
+      }
+    }, 2000);
+  });
+}
+
+function logTask(taskId: string, msg: string) {
+  const task = renderTasks.get(taskId);
+  if (!task) return;
+  task.logs.push({ time: Date.now(), message: msg });
+  if (task.logs.length > 500) task.logs = task.logs.slice(-500);
+  process.stdout.write(JSON.stringify({ type: 'log', taskId, message: msg }) + '\n');
+}
+
 // ── 异步提交渲染任务 ─────────────────────
 app.post('/api/remotion/render/start', async (req, res) => {
   try {
@@ -401,35 +696,57 @@ app.post('/api/remotion/render/start', async (req, res) => {
     const { cleanedShots, tempDir } = extractDataUrlsToTempFiles(payload.shots);
     const normalizedPayload = { ...payload, shots: cleanedShots, _tempDir: tempDir };
 
-    // 异步执行
-    setImmediate(() => {
-      runRenderWorker(normalizedPayload, task.taskId)
-        .then((result) => {
-          cleanupTempDir(tempDir);
-          if (result) {
-            updateTask(task.taskId, {
-              status: 'success',
-              progress: 100,
-              message: '渲染完成',
-              result,
-            });
-          }
-        })
-        .catch((err) => {
-          cleanupTempDir(tempDir);
-          updateTask(task.taskId, {
-            status: 'failed',
-            error: err.message,
-            message: `渲染失败: ${err.message}`,
-          });
-        });
-    });
+    // 异步执行（通过全局队列限流）
+    enqueueRender(task.taskId, normalizedPayload);
 
     res.json({ success: true, taskId: task.taskId });
   } catch (e) {
     console.error('[remotion] render/start 失败:', e);
     res.status(500).json({ success: false, error: e.message });
   }
+});
+
+// ── 批量提交（M2 #8：一次提交多个任务，自动排队执行）─────────────────────
+app.post('/api/remotion/render/batch', async (req, res) => {
+  try {
+    const { tasks } = req.body || {};
+    if (!Array.isArray(tasks) || tasks.length === 0) {
+      return res.status(400).json({ success: false, error: 'tasks 必须是非空数组' });
+    }
+    const taskIds = [];
+    for (const payload of tasks) {
+      if (!payload || !Array.isArray(payload.shots) || payload.shots.length === 0) continue;
+      const task = createRenderTask(payload);
+      taskIds.push(task.taskId);
+      const { cleanedShots, tempDir } = extractDataUrlsToTempFiles(payload.shots);
+      const normalizedPayload = { ...payload, shots: cleanedShots, _tempDir: tempDir };
+      enqueueRender(task.taskId, normalizedPayload);
+    }
+    res.json({
+      success: true,
+      taskIds,
+      count: taskIds.length,
+      message: `已入队 ${taskIds.length} 个任务`,
+    });
+  } catch (e) {
+    console.error('[remotion] render/batch 失败:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ── 队列状态查询（M2 #8：前端展示"前面还有 N 个任务"）─────────────────────
+app.get('/api/remotion/render/queue', (_req, res) => {
+  const queueItems = renderQueue.map((q, i) => ({
+    position: i + 1,
+    taskId: q.taskId,
+    shots: q.shots || 0, // 占位，createRenderTask 时记录
+  }));
+  res.json({
+    queueLength: renderQueue.length,
+    activeCount: activeWorkers.size,
+    maxParallel: MAX_PARALLEL_WORKERS,
+    queue: queueItems,
+  });
 });
 
 // ── 同步渲染（仅本地短镜头测试用）─────────────────────
@@ -462,12 +779,28 @@ app.get('/api/remotion/render/status/:id', (req, res) => {
   if (!task) {
     return res.status(404).json({ status: 'not_found', error: '任务不存在或已过期' });
   }
+  // 失败时返回完整 stderr（用于前端 stack trace 展示）
+  let stderr = '';
+  if (task.status === 'failed') {
+    // 从最近 500 行日志里抓所有 [stderr] 行，重组成完整 stderr
+    stderr = task.logs
+      .filter((l) => typeof l.message === 'string' && l.message.startsWith('[stderr]'))
+      .map((l) => l.message.replace(/^\[stderr\]\s*/, ''))
+      .join('\n');
+  }
   res.json({
     status: task.status,
     progress: task.progress,
     message: task.message,
     error: task.error,
-    logs: task.logs.slice(-20),
+    frame: task.frame,
+    totalFrames: task.totalFrames,
+    fps: task.fps,
+    etaSec: computeEta(task),
+    logs: task.logs.slice(-200), // 失败时给前端更多上下文
+    stderr: stderr || undefined,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
   });
 });
 
@@ -505,12 +838,16 @@ app.get('/api/remotion/render/sse/:id', (req, res) => {
   if (!sseConnections.has(taskId)) sseConnections.set(taskId, new Set());
   sseConnections.get(taskId).add(res);
 
-  // 立即推送当前状态
+  // 立即推送当前状态（含 frame/eta）
   res.write(
     `data: ${JSON.stringify({
       status: task.status,
       progress: task.progress,
       message: task.message,
+      frame: task.frame,
+      totalFrames: task.totalFrames,
+      fps: task.fps,
+      etaSec: computeEta(task),
     })}\n\n`
   );
 
@@ -523,6 +860,18 @@ app.get('/api/remotion/render/sse/:id', (req, res) => {
     clearInterval(heartbeat);
     sseConnections.get(taskId)?.delete(res);
   });
+});
+
+// ── 完整日志文件（调试用）─────────────────────
+app.get('/api/remotion/render/log/:id', (req, res) => {
+  const taskId = req.params.id;
+  const logPath = join(LOG_DIR, `${taskId}.log`);
+  if (!existsSync(logPath)) {
+    return res.status(404).json({ success: false, error: '日志文件不存在或已过期' });
+  }
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  createReadStream(logPath).pipe(res);
 });
 
 // ── 错误处理 ─────────────────────

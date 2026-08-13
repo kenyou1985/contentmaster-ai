@@ -112,11 +112,19 @@ const CueLayer: React.FC<{
     : undefined;
 
   // ── 通用样式（位置 / 字号 / 描边 / 阴影）──
+  // M2 #7：如果提供了 safeZone，按其计算字幕位置（自动避开主体）
+  const effectivePosition = config.safeZone?.preferredPosition ?? config.position;
+  const safeZoneTop = config.safeZone?.top;
+  const safeZoneBottom = config.safeZone?.bottom;
   const positionStyle: CSSProperties = {
-    top: config.position === 'top' ? '8%' : config.position === 'middle' ? '50%' : 'auto',
-    bottom: config.position === 'bottom' ? '10%' : 'auto',
+    top: effectivePosition === 'top'
+      ? safeZoneTop != null ? `${safeZoneTop * 100}%` : '8%'
+      : effectivePosition === 'middle' ? '50%' : 'auto',
+    bottom: effectivePosition === 'bottom'
+      ? safeZoneBottom != null ? `${(1 - safeZoneBottom) * 100}%` : '10%'
+      : 'auto',
     transform:
-      config.position === 'middle'
+      effectivePosition === 'middle'
         ? `translateY(-50%) ${entryTransform ?? ''}`
         : entryTransform,
     transformOrigin: 'center center',

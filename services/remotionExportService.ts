@@ -272,7 +272,18 @@ export async function renderRemotionVideo(
 
   // 提交任务
   onProgress?.(15, '提交渲染任务...');
-  const startRes = await fetch(`${apiBase}/render/start`, {
+  // M2 #12：根据预估时长自动选择普通 / 长视频分批 渲染
+  const totalDuration = (options.shots || []).reduce(
+    (s: number, x: any) => s + (x?.audioDurationExact ?? x?.audioDurationSec ?? x?.duration ?? 4),
+    0
+  );
+  const useLongBatch = totalDuration > 1800; // >30 分钟走分批
+  const renderStartUrl = useLongBatch ? `${apiBase}/render/long` : `${apiBase}/render/start`;
+  onProgress?.(
+    16,
+    useLongBatch ? `长视频：${(totalDuration / 60).toFixed(1)} 分钟，将分批渲染` : '提交渲染任务...'
+  );
+  const startRes = await fetch(renderStartUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(safePayload),
@@ -287,11 +298,43 @@ export async function renderRemotionVideo(
     throw new Error(`提交响应异常: ${JSON.stringify(startObj).slice(0, 300)}`);
   }
   const taskId = startObj.taskId;
+  if (startObj.mode === 'batch') {
+    console.log(`[RemotionExport] 长视频分批: ${startObj.segmentCount} 段（childTaskIds: ${startObj.childTaskIds?.join(',')}）`);
+    onProgress?.(
+      20,
+      `📦 长视频检测（共 ${(totalDuration / 60).toFixed(1)} 分钟），将分 ${startObj.segmentCount} 段渲染`
+    );
+  }
   onProgress?.(20, '任务已提交，等待渲染...');
 
-  // 轮询结果
-  const result = await pollForRemotionResult(taskId, apiBase, options.config, onProgress);
-  return result;
+  // M2 #13：SSE 实时帧进度订阅（优先；若 SSE 失败则回退到轮询）
+  let sseUnsubscribe: (() => void) | null = null;
+  try {
+    sseUnsubscribe = subscribeRemotionProgress(taskId, (info) => {
+      if (info.frame !== undefined && info.totalFrames !== undefined) {
+        // 帧级进度消息，比轮询更细
+        const eta = info.etaSec !== undefined ? ` · 剩余 ${formatEta(info.etaSec)}` : '';
+        onProgress?.(
+          info.progress ?? lastProgress,
+          `渲染中: 帧 ${info.frame}/${info.totalFrames}${eta}`
+        );
+      } else if (info.message) {
+        onProgress?.(info.progress ?? lastProgress, info.message);
+      }
+    });
+  } catch (e) {
+    console.warn('[RemotionExport] SSE 订阅失败，回退到轮询:', e);
+  }
+
+  let lastProgress = 0; // hoisted
+
+  // 轮询结果（兜底，兼容 SSE 不可用场景）
+  try {
+    const result = await pollForRemotionResult(taskId, apiBase, options.config, onProgress);
+    return result;
+  } finally {
+    sseUnsubscribe?.();
+  }
 }
 
 // ── 轮询 ─────────────────────
@@ -443,14 +486,21 @@ export async function downloadOrCacheRenderedVideo(
   return { blobUrl: URL.createObjectURL(blob), downloaded: false };
 }
 
-// ── SSE 实时进度（可选，用于实时性要求高的场景）────────────────────
+// ── SSE 实时进度（M2 #13：按帧推送）────────────────────
 export function subscribeRemotionProgress(
   taskId: string,
   onUpdate: (info: RemotionProgressInfo) => void,
 ): () => void {
   const apiBase = getRemotionApiBase();
   const url = `${apiBase}/render/sse/${encodeURIComponent(taskId)}`;
-  const es = new EventSource(url);
+  let es: EventSource | null = null;
+  let closed = false;
+  try {
+    es = new EventSource(url);
+  } catch (e) {
+    console.warn('[RemotionExport] EventSource 创建失败:', e);
+    return () => undefined;
+  }
   es.onmessage = (ev) => {
     try {
       const data = JSON.parse(ev.data);
@@ -459,13 +509,44 @@ export function subscribeRemotionProgress(
         message: data.message ?? '',
         frame: data.frame,
         totalFrames: data.totalFrames,
+        fps: data.fps,
+        etaSec: data.etaSec,
       });
+      // 终态时自动关闭（避免长连接占用）
+      if (data.status === 'success' || data.status === 'failed') {
+        closed = true;
+        es?.close();
+      }
     } catch {
       /* ignore */
     }
   };
   es.onerror = () => {
-    /* ignore */
+    if (!closed) {
+      // 浏览器会自动重连，这里仅记录
+      console.debug('[RemotionExport] SSE 临时连接异常，浏览器将自动重连');
+    }
   };
-  return () => es.close();
+  return () => {
+    closed = true;
+    try {
+      es?.close();
+    } catch {
+      /* ignore */
+    }
+  };
+}
+
+/**
+ * 把秒数格式化为 ETA 字符串（"剩余 2 分 30 秒"）
+ */
+function formatEta(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return '';
+  const s = Math.round(sec);
+  if (s < 60) return `${s} 秒`;
+  const m = Math.floor(s / 60);
+  const rest = s % 60;
+  if (m < 60) return `${m} 分 ${rest} 秒`;
+  const h = Math.floor(m / 60);
+  return `${h} 小时 ${m % 60} 分`;
 }

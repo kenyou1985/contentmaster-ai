@@ -196,13 +196,18 @@ export const MyVideo: React.FC<RemotionInputProps> = ({ shots, config }) => {
             const sequenceFrom = Math.max(0, startFrame - leadInFrames);
             // 优先使用 shot 上预计算的 textCues（来自 Whisper ASR 等）
             const externalCues = (shot as any).textCues as SubtitleCue[] | undefined;
+            // M2 #7：每个 shot 单独的安全区（自动避开主体）
+            const shotSafeZone = (shot as any).safeZone;
+            const cfgWithSafeZone = shotSafeZone
+              ? { ...subtitleCfg, safeZone: shotSafeZone }
+              : subtitleCfg;
             return (
               <Subtitle
                 key={`sub-${shot.id}`}
                 text={shot.text || shot.caption}
                 durationInFrames={durationFrames}
                 offsetFrames={sequenceFrom}
-                config={subtitleCfg}
+                config={cfgWithSafeZone}
                 cues={externalCues}
               />
             );

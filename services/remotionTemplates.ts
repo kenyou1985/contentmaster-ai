@@ -13,6 +13,9 @@ export const REMOTION_TEMPLATES: RemotionTemplateConfig[] = [
     fontFamily: '"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif',
     defaultFontSize: 56,
     defaultColor: '#ffffff',
+    defaultSubtitlePosition: 'middle',
+    fontSizeScale: 1.25,
+    recommendedMotion: 'kenBurnsStrong',
   },
   {
     id: 'landscape_default',
@@ -21,6 +24,9 @@ export const REMOTION_TEMPLATES: RemotionTemplateConfig[] = [
     fontFamily: '"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif',
     defaultFontSize: 48,
     defaultColor: '#ffffff',
+    defaultSubtitlePosition: 'bottom',
+    fontSizeScale: 1.0,
+    recommendedMotion: 'kenBurns',
   },
   {
     id: 'square_default',
@@ -29,6 +35,9 @@ export const REMOTION_TEMPLATES: RemotionTemplateConfig[] = [
     fontFamily: '"PingFang SC","Microsoft YaHei",sans-serif',
     defaultFontSize: 50,
     defaultColor: '#ffffff',
+    defaultSubtitlePosition: 'bottom',
+    fontSizeScale: 1.05,
+    recommendedMotion: 'kenBurns',
   },
   {
     id: 'cinema_wide',
@@ -37,6 +46,9 @@ export const REMOTION_TEMPLATES: RemotionTemplateConfig[] = [
     fontFamily: '"Source Han Sans SC","Noto Sans CJK SC",sans-serif',
     defaultFontSize: 44,
     defaultColor: '#f5e9c8',
+    defaultSubtitlePosition: 'bottom',
+    fontSizeScale: 1.0,
+    recommendedMotion: 'kenBurnsSlow',
   },
   {
     id: 'reels',
@@ -45,6 +57,9 @@ export const REMOTION_TEMPLATES: RemotionTemplateConfig[] = [
     fontFamily: '"Inter","Helvetica Neue","PingFang SC",sans-serif',
     defaultFontSize: 60,
     defaultColor: '#ffffff',
+    defaultSubtitlePosition: 'middle',
+    fontSizeScale: 1.3,
+    recommendedMotion: 'kenBurnsStrong',
   },
   {
     id: 'tiktok',
@@ -53,6 +68,9 @@ export const REMOTION_TEMPLATES: RemotionTemplateConfig[] = [
     fontFamily: '"PingFang SC","Microsoft YaHei",sans-serif',
     defaultFontSize: 62,
     defaultColor: '#ffffff',
+    defaultSubtitlePosition: 'middle',
+    fontSizeScale: 1.35,
+    recommendedMotion: 'kenBurnsStrong',
   },
   {
     id: 'youtube_shorts',
@@ -61,6 +79,9 @@ export const REMOTION_TEMPLATES: RemotionTemplateConfig[] = [
     fontFamily: '"Roboto","Noto Sans CJK SC",sans-serif',
     defaultFontSize: 58,
     defaultColor: '#ffffff',
+    defaultSubtitlePosition: 'middle',
+    fontSizeScale: 1.3,
+    recommendedMotion: 'kenBurns',
   },
   {
     id: 'documentary_warm',
@@ -69,6 +90,9 @@ export const REMOTION_TEMPLATES: RemotionTemplateConfig[] = [
     fontFamily: '"Source Han Serif SC","Noto Serif CJK SC",serif',
     defaultFontSize: 46,
     defaultColor: '#fff2d6',
+    defaultSubtitlePosition: 'bottom',
+    fontSizeScale: 1.0,
+    recommendedMotion: 'kenBurnsSlow',
   },
   {
     id: 'magazine',
@@ -77,6 +101,9 @@ export const REMOTION_TEMPLATES: RemotionTemplateConfig[] = [
     fontFamily: '"Helvetica Neue","PingFang SC",sans-serif',
     defaultFontSize: 52,
     defaultColor: '#ffffff',
+    defaultSubtitlePosition: 'bottom',
+    fontSizeScale: 1.05,
+    recommendedMotion: 'kenBurns',
   },
   {
     id: 'chinese_ink',
@@ -85,6 +112,9 @@ export const REMOTION_TEMPLATES: RemotionTemplateConfig[] = [
     fontFamily: '"STKaiti","KaiTi","Songti SC",serif',
     defaultFontSize: 50,
     defaultColor: '#f8f4e3',
+    defaultSubtitlePosition: 'bottom',
+    fontSizeScale: 1.0,
+    recommendedMotion: 'kenBurnsSlow',
   },
 ];
 

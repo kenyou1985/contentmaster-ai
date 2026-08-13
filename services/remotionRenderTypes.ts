@@ -139,6 +139,12 @@ export interface RemotionTemplateConfig {
   defaultFontSize?: number;
   /** 推荐默认字幕颜色 */
   defaultColor?: string;
+  /** 字幕默认位置：竖屏默认 'middle'（画面中段，避免被下方 UI 遮挡），横屏默认 'bottom' */
+  defaultSubtitlePosition?: 'top' | 'middle' | 'bottom';
+  /** 字幕字号缩放（竖屏需要更大字号，1.2 = +20%） */
+  fontSizeScale?: number;
+  /** 推荐的 Ken Burns 运动类型（竖屏模板默认 'kenBurnsStrong' 增强动感） */
+  recommendedMotion?: 'none' | 'kenBurns' | 'kenBurnsStrong' | 'kenBurnsSlow' | 'zoomIn' | 'zoomOut' | 'panLeft' | 'panRight' | 'panUp' | 'panDown' | 'push' | 'pull';
 }
 
 export interface RemotionExportConfig {
@@ -167,6 +173,8 @@ export interface RemotionExportConfig {
    * - push/pull: 推拉
    */
   motion?: 'none' | 'kenBurns' | 'kenBurnsStrong' | 'kenBurnsSlow' | 'zoomIn' | 'zoomOut' | 'panLeft' | 'panRight' | 'panUp' | 'panDown' | 'push' | 'pull';
+  /** M2 #7：字幕防遮挡 - 自动检测图片安全区，让字幕避开主体 */
+  safeZoneDetection?: boolean;
   /** 预留字段 */
   intro?: {
     style?: string;
@@ -211,4 +219,8 @@ export interface RemotionProgressInfo {
   message: string;
   frame?: number;
   totalFrames?: number;
+  /** 视频帧率 */
+  fps?: number;
+  /** 估算剩余时间（秒），由服务端基于已渲染帧数推算 */
+  etaSec?: number;
 }

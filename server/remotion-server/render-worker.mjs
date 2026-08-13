@@ -13,6 +13,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { promises as fs } from 'fs';
 import os from 'os';
+import { prepareBundleCache, recordBundleResult, clearWebpackCache } from './bundle-cache.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -43,10 +44,17 @@ function writeLog(prefix, message) {
   appendFileSync(_logFp, line);
 }
 
-function logProgress(progress, message) {
+function logProgress(progress, message, meta) {
   writeLog('PROGRESS', `${progress}% ${message}`);
   process.stdout.write(
-    JSON.stringify({ type: 'progress', progress: Math.round(progress), message }) + '\n'
+    JSON.stringify({
+      type: 'progress',
+      progress: Math.round(progress),
+      message,
+      frame: meta?.frame,
+      totalFrames: meta?.totalFrames,
+      fps: meta?.fps,
+    }) + '\n'
   );
 }
 
@@ -245,25 +253,31 @@ async function main() {
     logInfo(`镜头运动参数: ${dataShots.map(s => `id=${s.id?.slice(0,8)} motion=${s.motion}`).join(' | ')}`);
     logInfo(`镜头时长: ${dataShots.map(s => `id=${s.id?.slice(0,8)} dur=${s.audioDurationExact ?? s.audioDurationSec ?? '?'}s`).join(' | ')}`);
 
-    logInfo('步骤 2/4: 打包 Remotion 项目...');
-    const useBundleCache = process.env.REMOTION_BUNDLE_CACHE === 'true';
-    if (!useBundleCache) {
-      try {
-        const cacheDir = join(PROJECT_ROOT, 'node_modules', '.cache', 'webpack');
-        if (existsSync(cacheDir)) {
-          const { rmSync } = await import('fs');
-          rmSync(cacheDir, { recursive: true, force: true });
-          logInfo('已清空 Remotion bundle cache');
-        }
-      } catch (e) {
-        logInfo(`[warn] 清空 cache 失败（忽略）: ${e.message}`);
+    logInfo('步骤 2/4: 打包 Remotion 项目（M2 #11 智能缓存策略）...');
+    const t0 = Date.now();
+    // 检查 L1 缓存（基于源文件 hash + Node 版本 + Remotion 版本）
+    const cacheCheck = await prepareBundleCache(PROJECT_ROOT, ENTRY_FILE);
+    let bundleLocation;
+    if (cacheCheck.hit && cacheCheck.bundleUrl) {
+      // L1 命中：直接复用上次打包结果（~0.1s）
+      bundleLocation = cacheCheck.bundleUrl;
+      logInfo(`[bundle] ✅ L1 缓存命中，cacheKey=${cacheCheck.cacheKey}（跳过 ${Date.now() - t0}ms）`);
+      logProgress(10, 'Remotion 项目复用缓存');
+    } else {
+      // L1 不命中：按需清 L2 + 重新打包（启用 webpack 持久化缓存以备下次命中）
+      if (cacheCheck.needWebpackClear) {
+        const cleared = clearWebpackCache(PROJECT_ROOT);
+        if (cleared) logInfo('[bundle] L1 cache key 不匹配，已清空 webpack 持久化缓存');
       }
+      bundleLocation = await bundle({
+        entryPoint: ENTRY_FILE,
+        enableCaching: true, // L2 始终启用，webpack 内部 cache
+      });
+      // 记录结果以便下次 L1 命中
+      recordBundleResult(cacheCheck.cacheKey, bundleLocation);
+      logInfo(`[bundle] 🔧 已重新打包，cacheKey=${cacheCheck.cacheKey}（耗时 ${Date.now() - t0}ms）`);
+      logProgress(10, 'Remotion 项目打包完成');
     }
-    const bundleLocation = await bundle({
-      entryPoint: ENTRY_FILE,
-      enableCaching: useBundleCache,
-    });
-    logProgress(10, 'Remotion 项目打包完成');
 
     const safeConfig = {
       ...config,
@@ -306,7 +320,12 @@ async function main() {
           logInfo(`[ShotLayer shot check] shots=${dataShots.length} firstShotMotion=${dataShots[0]?.motion}`);
         }
         const overall = 10 + Math.round(progress * 85);
-        logProgress(overall, `渲染中 (${renderedFrames}/${totalFrames} 帧, ${Math.round(progress * 100)}%)`);
+        // M2 #13：把帧号也作为结构化字段推送给前端（SSE 实时帧进度）
+        logProgress(
+          overall,
+          `渲染中 (${renderedFrames}/${totalFrames} 帧, ${Math.round(progress * 100)}%)`,
+          { frame: renderedFrames, totalFrames, fps: composition.fps }
+        );
       },
       onBrowserLog: (info) => {
         if (info.type === 'error') {
