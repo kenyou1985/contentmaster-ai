@@ -1,4 +1,4 @@
-import { AbsoluteFill, Sequence, useVideoConfig, Audio, staticFile } from 'remotion';
+import { AbsoluteFill, Sequence, useVideoConfig, useCurrentFrame, interpolate, Audio, staticFile } from 'remotion';
 import { useMemo, type CSSProperties } from 'react';
 import { ShotLayer } from './ShotLayer';
 import { ShotSequence } from './ShotSequence';
@@ -47,7 +47,7 @@ function getIntroDurationFrames(config: RemotionInputProps['config'], fps: numbe
 }
 
 export const MyVideo: React.FC<RemotionInputProps> = ({ shots, config }) => {
-  const { fps } = useVideoConfig();
+  const { fps, durationInFrames: compositionDurationFrames } = useVideoConfig();
 
   // 片头总时长
   const introDurationFrames = getIntroDurationFrames(config, fps);
@@ -146,12 +146,16 @@ export const MyVideo: React.FC<RemotionInputProps> = ({ shots, config }) => {
 
   return (
     <AbsoluteFill style={{ backgroundColor: '#000' }}>
-      {/* 背景音乐（贯穿全程） */}
+      {/* 背景音乐：从 frame 0 开始播放（覆盖片头），尾部淡出 */}
       {config.bgm?.enabled && config.bgm.url && (
-        <Audio
-          src={resolveMediaUrl(config.bgm.url) || config.bgm.url}
-          volume={(config.bgm.volume ?? 0.3) as number}
+        <BgmLayer
+          url={config.bgm.url}
+          volume={config.bgm.volume ?? 0.3}
           loop={config.bgm.loop ?? true}
+          fadeInSec={config.bgm.fadeIn ?? 0}
+          fadeOutSec={config.bgm.fadeOut ?? 0}
+          compositionDurationFrames={compositionDurationFrames}
+          fps={fps}
         />
       )}
 
@@ -215,5 +219,45 @@ export const MyVideo: React.FC<RemotionInputProps> = ({ shots, config }) => {
         </AbsoluteFill>
       )}
     </AbsoluteFill>
+  );
+};
+
+/**
+ * 背景音乐层
+ * - 包裹在 <Sequence from={0} durationInFrames={duration}> 内，强制从 frame 0 开始播放
+ * - 这样片头阶段也有 BGM，不会出现"静音片头"
+ * - 支持首尾淡入淡出（fadeIn / fadeOut）
+ */
+const BgmLayer: React.FC<{
+  url: string;
+  volume: number;
+  loop: boolean;
+  fadeInSec: number;
+  fadeOutSec: number;
+  compositionDurationFrames: number;
+  fps: number;
+}> = ({ url, volume, loop, fadeInSec, fadeOutSec, compositionDurationFrames, fps }) => {
+  const frame = useCurrentFrame();
+  const src = resolveMediaUrl(url) || url;
+
+  const fadeInFrames = Math.max(0, Math.round(fadeInSec * fps));
+  const fadeOutFrames = Math.max(0, Math.round(fadeOutSec * fps));
+  const total = compositionDurationFrames;
+
+  // 淡入：前 fadeInFrames 帧从 0 升到目标 volume
+  const fadeIn = fadeInFrames > 0
+    ? interpolate(frame, [0, fadeInFrames], [0, 1], { extrapolateRight: 'clamp' })
+    : 1;
+  // 淡出：最后 fadeOutFrames 帧从 1 降到 0
+  const fadeOut = fadeOutFrames > 0
+    ? interpolate(frame, [Math.max(0, total - fadeOutFrames), total], [1, 0], { extrapolateLeft: 'clamp' })
+    : 1;
+
+  const finalVolume = Math.max(0, Math.min(1, volume * Math.min(fadeIn, fadeOut)));
+
+  return (
+    <Sequence from={0} durationInFrames={total}>
+      <Audio src={src} volume={finalVolume} loop={loop} />
+    </Sequence>
   );
 };

@@ -12,7 +12,7 @@
  */
 
 import { createHash } from 'crypto';
-import { existsSync, writeFileSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { promises as fs } from 'fs';
 
@@ -110,7 +110,6 @@ export async function checkBundleCache(projectRoot, entryFile) {
  * 记录打包结果（更新 manifest）
  */
 export function recordBundleResult(cacheKey, bundleUrl, bundleSize) {
-  const { mkdirSync } = require('fs');
   mkdirSync(CACHE_ROOT, { recursive: true });
   const manifestPath = getManifestPath();
 
@@ -138,7 +137,6 @@ export function recordBundleResult(cacheKey, bundleUrl, bundleSize) {
  * 清空 webpack 持久化缓存
  */
 export function clearWebpackCache(projectRoot) {
-  const { rmSync } = require('fs');
   try {
     const cacheDir = getWebpackCacheDir(projectRoot);
     if (existsSync(cacheDir)) {

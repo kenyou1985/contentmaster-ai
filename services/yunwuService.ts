@@ -206,7 +206,9 @@ Rules:
 - Output ONLY the final text to be spoken. Preserve the exact same language as the input.
 - Do NOT translate. Do NOT convert English to Chinese or vice versa. The input language must match the output language.
 - Do NOT add role names, shot labels, markdown, or quotes wrapping the entire output.
+- Do NOT add, remove, or rewrite sentences. Every sentence from the input MUST appear in the output verbatim (you may only add/modify punctuation and line breaks within sentences).
 - Keep the content complete; do not summarize away substantive lines.
+- If you cannot safely optimize without changing meaning, return the input text exactly as-is.
 - Input is expected to stay within about 5000 characters; keep the output in the same ballpark—no gratuitous lengthening or filler.`;
 
 /** 简单检测文本是否以中文字符为主（混合文本时以多数判断） */
@@ -219,6 +221,68 @@ function detectLanguage(text: string): 'zh' | 'en' | 'mixed' {
   if (zhRatio > 0.5) return 'zh';
   if (zhRatio < 0.1) return 'en';
   return 'mixed';
+}
+
+/**
+ * 内容完整性校验：确保 LLM 输出与原文语义等价（句子/词集合一致）。
+ * 允许：标点规范化、断句拆分/合并、语气词清理、换行位置调整。
+ * 不允许：新增句子、删减句子、替换核心词汇、改变语序导致语义偏移。
+ *
+ * 校验规则：
+ * 1. 中文文本：提取所有「有效句子」（≥4个CJK字符），逐一检查原文句子是否全部出现在优化版中
+ * 2. 英文文本：提取所有「单词集合」，检查原文词集合是否为优化版词集合的超集
+ * 3. 若校验失败 → 回退原文
+ */
+function validateContentIntegrity(original: string, polished: string): { valid: boolean; reason?: string } {
+  const orig = (original || '').trim();
+  const poly = (polished || '').trim();
+  if (!orig || !poly) return { valid: false, reason: 'empty input' };
+
+  // 允许的字符差异（标点、空白），但整体长度不应剧烈变化
+  // 长度差异超过 ±50% → 直接判定为改写
+  if (poly.length < orig.length * 0.5 || poly.length > orig.length * 1.5) {
+    return { valid: false, reason: `长度剧烈变化: orig=${orig.length} poly=${poly.length}` };
+  }
+
+  // 中文：提取有效句子（≥4个CJK字符的连续段落）
+  const chineseMatch = orig.match(/[\u4e00-\u9fff]/g);
+  if (chineseMatch && chineseMatch.length >= 4) {
+    // 提取原文所有 ≥4 字的连续段落作为「有效句子」
+    const origSentences: string[] = [];
+    let buf = '';
+    for (const ch of orig) {
+      if (/[\u4e00-\u9fff]/.test(ch)) {
+        buf += ch;
+      } else {
+        if (buf.length >= 4) origSentences.push(buf);
+        buf = '';
+      }
+    }
+    if (buf.length >= 4) origSentences.push(buf);
+    // 每个有效句子都必须出现在优化版中（允许标点/空格差异）
+    for (const sent of origSentences) {
+      if (!poly.includes(sent)) {
+        return { valid: false, reason: `原文关键内容「${sent}」在优化版中丢失` };
+      }
+    }
+  } else {
+    // 英文或短文本：检查词集合超集
+    const origWords = orig.split(/\s+/).filter(w => w.length >= 3 && /[a-zA-Z]/i.test(w));
+    const polyWords = new Set(poly.split(/\s+/).filter(w => w.length >= 3 && /[a-zA-Z]/i.test(w)));
+    // 原文每个词都必须出现在优化版（允许顺序变化、时态变化等）
+    for (const w of origWords) {
+      if (!polyWords.has(w)) {
+        // 再试一次忽略大小写
+        const lower = w.toLowerCase();
+        const found = Array.from(polyWords).some(pw => pw.toLowerCase() === lower);
+        if (!found) {
+          return { valid: false, reason: `原文关键词「${w}」在优化版中丢失` };
+        }
+      }
+    }
+  }
+
+  return { valid: true };
 }
 
 /** 构建带语言检测的 TTS 润色 system prompt */
@@ -262,8 +326,18 @@ async function runTtsPolishChat(
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content;
     if (typeof content !== 'string' || !content.trim()) return fallback;
-    const out = stripThinkTags(stripLeadingTrailingCodeFence(content).trim());
-    return out.length >= 2 ? out : fallback;
+    const polished = stripThinkTags(stripLeadingTrailingCodeFence(content).trim());
+
+    // 内容完整性校验：禁止 LLM 改写文案内容（新增/删减句子）
+    if (fallback) {
+      const check = validateContentIntegrity(fallback, polished);
+      if (!check.valid) {
+        console.warn(`[TTSPolish] 内容被修改，拒绝替换原文（${check.reason}），回退原文`);
+        return fallback;
+      }
+    }
+
+    return polished.length >= 2 ? polished : fallback;
   } catch (e) {
     console.warn('[OpenLuxService] TTS polish request failed, using raw text:', e);
     return fallback;
