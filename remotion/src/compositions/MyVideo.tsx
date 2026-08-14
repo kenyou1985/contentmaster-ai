@@ -54,19 +54,24 @@ export const MyVideo: React.FC<RemotionInputProps> = ({ shots, config }) => {
   const introDurationFrames = getIntroDurationFrames(config, fps);
 
   // 镜头时间轴计算
-  //   - 视觉由 ShotSequence（视频 Sequence）通过 leadIn 重叠完成转场
-  //   - 音频由 ShotAudioLayer 单独挂在顶层 Sequence，避免被 leadIn 重叠污染
-  //   - leadIn：本镜头"前面"被下一镜头覆盖进来的帧数（视觉提前进入下一段）
-  //   - leadOut：本镜头"末尾"被下一镜头覆盖的帧数
-  //     等价于下一镜头的 leadIn；audio 在这段做 fadeOut
+  //   - 视觉（视频 Sequence）按 leadIn 重叠做转场
+  //   - 音频（ShotAudioLayer）严格不重叠：每个镜头音频在前一个镜头音频结束后立即开始
+  //     audioStartFrame[i] = audioStartFrame[i-1] + audioDurationFrames[i-1]
+  //   - 这样：
+  //     * 音频文件开头/末尾完整保留（用户反馈："今天"不能丢）
+  //     * 镜头切换时不会出现音频重叠噪音（用户反馈：末尾和开头叠加）
+  //     * 代价：B 音频比 B 视频晚 leadIn_B 帧开始（约 0.4s），
+  //       因为视频提前了 leadIn 帧做视觉转场，而音频在前一个镜头音频结束后才开始
+  //     * 听感上：视频画面先出现 ~0.4s 后才有新镜头音频，可接受
   const segments = useMemo(() => {
     type Segment = {
       shot: typeof shots[0];
-      startFrame: number;            // 音频起点（绝对时间轴，不含 leadIn）
+      startFrame: number;            // 视频 Sequence 起点（含 leadIn）
       leadInFrames: number;
       leadOutFrames: number;
-      durationFrames: number;        // 视觉总时长（含 leadIn + leadOut + 主体）
-      audioDurationFrames: number;   // 音频播完帧数
+      durationFrames: number;        // 视觉总时长
+      audioDurationFrames: number;
+      audioStartFrame: number;       // 音频 Sequence 起点（与前一个音频严格不重叠）
       transitionIn: import('../types').TransitionType;
       transitionOut: import('../types').TransitionType;
       transitionFrames: number;
@@ -96,25 +101,22 @@ export const MyVideo: React.FC<RemotionInputProps> = ({ shots, config }) => {
       toList.push(to);
     }
 
-    // 2) 判断每段是否与"下一段"重叠（仅当本段有 out 转场 + 下一段有 in 转场时）
-    // canOverlapNext[i] = 镜头 i 的"末尾"是否与镜头 i+1 重叠
+    // 2) 判断每段是否与"下一段"重叠
     const canOverlapNext: boolean[] = shots.map((_, i) => {
       if (i >= shots.length - 1) return false;
       return toList[i] !== 'none' && tiList[i + 1] !== 'none';
     });
 
-    // 3) 计算 startFrame 和 leadIn/leadOut
+    // 3) 计算 startFrame / leadIn / leadOut / audioStartFrame
     const out: Segment[] = [];
     let cursor = 0;
+    let audioCursor = 0;  // 音频时间轴上的累计位置（不带 leadIn）
 
     for (let i = 0; i < shots.length; i++) {
       const df = baseFrames[i];
       const leadIn = i > 0 && canOverlapNext[i - 1] ? effTfList[i] : 0;
       const leadOut = i < shots.length - 1 && canOverlapNext[i] ? effTfList[i + 1] : 0;
 
-      // 主体段 = df；视觉总时长 = leadIn + df + leadOut
-      // 注意：这里 leadIn 是"被上一镜头覆盖进来的"占位帧，
-      //      leadOut 是"被下一镜头覆盖出去的"占位帧
       out.push({
         shot: shots[i],
         startFrame: cursor + introDurationFrames,
@@ -122,14 +124,16 @@ export const MyVideo: React.FC<RemotionInputProps> = ({ shots, config }) => {
         leadOutFrames: leadOut,
         durationFrames: df + leadIn + leadOut,
         audioDurationFrames: df,
+        audioStartFrame: audioCursor + introDurationFrames,  // ★ 音频严格不重叠
         transitionIn: tiList[i],
         transitionOut: toList[i],
         transitionFrames: effTfList[i],
       });
 
-      // 下一个 cursor = 当前音频起点 + df - 下一镜头的 leadIn
+      // 下一个 cursor = 当前音频起点 + df - 下一镜头的 leadIn（视觉重叠）
       const nextLeadIn = i < shots.length - 1 && canOverlapNext[i] ? effTfList[i + 1] : 0;
       cursor += Math.max(1, df - nextLeadIn);
+      audioCursor += df;  // ★ 音频时间轴累加 df，不减 nextLeadIn
     }
 
     return out;
@@ -191,17 +195,15 @@ export const MyVideo: React.FC<RemotionInputProps> = ({ shots, config }) => {
         />
       )}
 
-      {/* 音频层（独立 Sequence，绝对时间轴，不受视频 leadIn 重叠影响） */}
-      {/* 在 leadIn/leadOut 区段做 fadeOut/fadeIn 实现音频 crossfade */}
-      {segments.map(({ shot, startFrame, leadInFrames, leadOutFrames, audioDurationFrames }) => {
+      {/* 音频层（独立 Sequence，每个镜头音频在前一个镜头音频结束后立即开始，
+          不参与视频 leadIn 重叠 — 避免末尾和开头音频重叠） */}
+      {segments.map(({ shot, audioStartFrame, audioDurationFrames }) => {
         if (!shot.audioUrl) return null;
         return (
           <ShotAudioLayer
             key={`audio-${shot.id}`}
             url={shot.audioUrl}
-            startFrame={startFrame}
-            leadInFrames={leadInFrames}
-            leadOutFrames={leadOutFrames}
+            startFrame={audioStartFrame}
             audioDurationFrames={audioDurationFrames}
           />
         );
