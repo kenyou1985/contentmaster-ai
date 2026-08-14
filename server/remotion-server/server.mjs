@@ -318,7 +318,11 @@ function extractDataUrlsToTempFiles(shots) {
 function replaceFilePathsWithHttpUrls(shots, filePathMap, baseUrl) {
   const reversedMap = new Map();
   for (const [dataUrl, filePath] of filePathMap) {
-    reversedMap.set(filePath, `${baseUrl}/media${filePath}`);
+    // filePath 形如 /tmp/remotion_data_xxx/media_0000.png
+    // /media 路由已经 mount 到 /tmp，所以 URL 应该是 /media/remotion_data_xxx/media_0000.png
+    // 需要去掉 /tmp 前缀
+    const urlPath = filePath.replace(/^\/tmp/, '');
+    reversedMap.set(filePath, `${baseUrl}/media${urlPath}`);
   }
 
   const result = JSON.parse(JSON.stringify(shots));
@@ -594,8 +598,11 @@ app.post('/render/start', async (req, res) => {
     // 提取 data URL 为文件
     const { cleanedShots, tempDir, filePathMap } = extractDataUrlsToTempFiles(payload.shots);
 
-    // 构建 baseUrl 并转换为 HTTP URL（Remotion webpack dev server 需要 HTTP URL）
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    // 构建 baseUrl
+    // 重要：Remotion 内部的 chromium 浏览器需要访问媒体文件
+    // 用 127.0.0.1:PORT 确保访问到容器内的 Express server
+    // （req.host 在 Railway 可能是 railway.app 域名，从容器内可能无法解析）
+    const baseUrl = process.env.MEDIA_BASE_URL || `http://127.0.0.1:${PORT}`;
     const shotsWithHttpUrls = replaceFilePathsWithHttpUrls(cleanedShots, filePathMap, baseUrl);
 
     const normalizedPayload = { ...payload, shots: shotsWithHttpUrls, _tempDir: tempDir };
@@ -721,8 +728,8 @@ app.post('/render/sync', async (req, res) => {
 
     // 提取 data URL 为文件
     const { cleanedShots, tempDir, filePathMap } = extractDataUrlsToTempFiles(payload.shots);
-    // 转换为 HTTP URL
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    // 转换为 HTTP URL → 用 127.0.0.1:PORT 走容器内回环
+    const baseUrl = process.env.MEDIA_BASE_URL || `http://127.0.0.1:${PORT}`;
     const shotsWithHttpUrls = replaceFilePathsWithHttpUrls(cleanedShots, filePathMap, baseUrl);
     const normalizedPayload = { ...payload, shots: shotsWithHttpUrls, _tempDir: tempDir };
 
