@@ -1,17 +1,10 @@
 {
   "$schema": "https://railway.app railway-schema.json",
-  "projects": {
-    "remotion": {
-      "environment": "production",
-      "region": "us-east1"
-    }
-  },
   "environments": {
     "production": {
       "deployment": {
         "branch": "main",
-        "rootDirectory": ".",
-        "dockerfilePath": "Dockerfile.remotion"
+        "rootDirectory": "."
       },
       "start": {
         "command": "sh -c 'cd /app/remotion && node ../server/server.mjs'"
