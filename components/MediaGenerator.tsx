@@ -981,6 +981,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     motion: 'push', // 默认推入（拉远）效果
     safeZoneDetection: false, // M2 #7：字幕防遮挡默认关闭（启用后增加 5~10s）
     output: { target: 'download' },
+    videoFilter: {}, // 全局视频滤镜（blur/brightness/contrast/saturation/exposure/temperature/hue/grayscale）
   });
   const [remotionSettingsOpen, setRemotionSettingsOpen] = useState(false);
 
@@ -5574,11 +5575,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             <div className="relative">
               <button
                 onClick={() => setRemotionSettingsOpen(v => !v)}
-                className={`flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded-lg border transition-all ${remotionSettingsOpen || remotionConfig.output.target !== 'download' || remotionConfig.bgm.enabled || remotionConfig.subtitle.style !== 'default' || remotionConfig.motion !== 'kenBurns' || remotionConfig.safeZoneDetection ? 'bg-emerald-900/60 border-emerald-500 text-emerald-200' : 'bg-slate-800/60 border-slate-600 text-slate-400 hover:text-slate-200 hover:border-slate-500'}`}
+                className={`flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded-lg border transition-all ${remotionSettingsOpen || remotionConfig.output.target !== 'download' || remotionConfig.bgm.enabled || remotionConfig.subtitle.style !== 'default' || remotionConfig.motion !== 'kenBurns' || remotionConfig.safeZoneDetection || Object.keys(remotionConfig.videoFilter || {}).length > 0 ? 'bg-emerald-900/60 border-emerald-500 text-emerald-200' : 'bg-slate-800/60 border-slate-600 text-slate-400 hover:text-slate-200 hover:border-slate-500'}`}
                 title="Remotion 导出高级设置"
               >
                 <Settings2 size={13} />
-                {remotionConfig.output.target !== 'download' || remotionConfig.bgm.enabled || remotionConfig.subtitle.style !== 'default' || remotionConfig.motion !== 'kenBurns' || remotionConfig.safeZoneDetection ? '已设置' : '高级'}
+                {remotionConfig.output.target !== 'download' || remotionConfig.bgm.enabled || remotionConfig.subtitle.style !== 'default' || remotionConfig.motion !== 'kenBurns' || remotionConfig.safeZoneDetection || Object.keys(remotionConfig.videoFilter || {}).length > 0 ? '已设置' : '高级'}
               </button>
               {remotionSettingsOpen && (
                 <>
@@ -5734,37 +5735,43 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                     {/* ─── 分镜运动预设 ─── */}
                     <div className="flex flex-col gap-1.5">
                       <span className="text-[10px] text-slate-400">分镜运动</span>
-                      <div className="grid grid-cols-4 gap-1">
+                      <div className="grid grid-cols-7 gap-1">
                         {([
                           ['none', '无'],
                           ['kenBurns', '轻微'],
                           ['kenBurnsStrong', '强力'],
                           ['kenBurnsSlow', '慢速'],
+                          ['kenBurnsLinear', '线性'],
                           ['zoomIn', '放大'],
                           ['zoomOut', '缩小'],
-                          ['panLeft', '左移'],
-                          ['panRight', '右移'],
-                          ['panUp', '上移'],
-                          ['panDown', '下移'],
+                          ['panLeft', '左'],
+                          ['panRight', '右'],
+                          ['panUp', '上'],
+                          ['panDown', '下'],
                           ['push', '推入'],
                           ['pull', '拉远'],
+                          ['rotateCW', '顺旋'],
                         ] as const).map(([val, label]) => (
                           <button
                             key={val}
                             onClick={() => setRemotionConfig(c => ({ ...c, motion: val }))}
-                            className={`text-[10px] px-1.5 py-1 rounded transition-all ${remotionConfig.motion === val ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
-                            title={val === 'kenBurns' ? 'Ken Burns：轻微放大 1.0→1.08（默认）' :
-                                   val === 'kenBurnsStrong' ? '强力 Ken Burns：明显放大 1.0→1.3' :
-                                   val === 'kenBurnsSlow' ? '慢速 Ken Burns：更平滑的弹性曲线' :
-                                   val === 'none' ? '无运动（静止）' :
-                                   val === 'zoomIn' ? '持续放大 1.0→1.3' :
-                                   val === 'zoomOut' ? '持续缩小 1.3→1.0' :
-                                   val === 'panLeft' ? '图片向左平移' :
-                                   val === 'panRight' ? '图片向右平移' :
-                                   val === 'panUp' ? '图片向上平移' :
-                                   val === 'panDown' ? '图片向下平移' :
-                                   val === 'push' ? '推进：逐渐拉远' :
-                                   val === 'pull' ? '拉远：逐渐拉近' : val}
+                            className={`text-[10px] px-1 py-1 rounded transition-all ${remotionConfig.motion === val ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                            title={
+                              val === 'kenBurns' ? 'Ken Burns 轻微放大：全程线性放大 1.0→1.08' :
+                              val === 'kenBurnsStrong' ? 'Ken Burns 强力：全程明显放大 1.0→1.35' :
+                              val === 'kenBurnsSlow' ? 'Ken Burns 慢速：全程超平滑放大 1.0→1.12' :
+                              val === 'kenBurnsLinear' ? 'Ken Burns 线性：全程均匀放大 1.0→1.15' :
+                              val === 'none' ? '无运动（静止）' :
+                              val === 'zoomIn' ? '持续放大 1.0→1.4' :
+                              val === 'zoomOut' ? '持续缩小 1.4→1.0' :
+                              val === 'panLeft' ? '向左平移' :
+                              val === 'panRight' ? '向右平移' :
+                              val === 'panUp' ? '向上平移' :
+                              val === 'panDown' ? '向下平移' :
+                              val === 'push' ? '推入：从局部放大到全图，逐渐拉远' :
+                              val === 'pull' ? '拉远：从全图缩小，逐渐拉近' :
+                              val === 'rotateCW' ? '顺时针旋转（全程 0°→5°）' : val
+                            }
                           >
                             {label}
                           </button>
@@ -5773,22 +5780,143 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                       <div className="bg-slate-700/50 rounded px-2 py-1">
                         <span className="text-[9px] text-slate-500">
                           当前：{
-                            remotionConfig.motion === 'kenBurns' ? '轻微放大（Ken Burns 1.0→1.08）' :
-                            remotionConfig.motion === 'kenBurnsStrong' ? '强力 Ken Burns（1.0→1.3，明显放大）' :
-                            remotionConfig.motion === 'kenBurnsSlow' ? '慢速 Ken Burns（更平滑弹性）' :
+                            remotionConfig.motion === 'kenBurns' ? 'Ken Burns 轻微（全程 1.0→1.08）' :
+                            remotionConfig.motion === 'kenBurnsStrong' ? 'Ken Burns 强力（全程 1.0→1.35）' :
+                            remotionConfig.motion === 'kenBurnsSlow' ? 'Ken Burns 慢速（全程 1.0→1.12，超平滑）' :
+                            remotionConfig.motion === 'kenBurnsLinear' ? 'Ken Burns 线性（全程 1.0→1.15，均匀）' :
                             remotionConfig.motion === 'none' ? '无运动（静止）' :
-                            remotionConfig.motion === 'zoomIn' ? '持续放大（1.0→1.3）' :
-                            remotionConfig.motion === 'zoomOut' ? '持续缩小（1.3→1.0）' :
+                            remotionConfig.motion === 'zoomIn' ? '持续放大（1.0→1.4）' :
+                            remotionConfig.motion === 'zoomOut' ? '持续缩小（1.4→1.0）' :
                             remotionConfig.motion === 'panLeft' ? '向左平移' :
                             remotionConfig.motion === 'panRight' ? '向右平移' :
                             remotionConfig.motion === 'panUp' ? '向上平移' :
                             remotionConfig.motion === 'panDown' ? '向下平移' :
-                            remotionConfig.motion === 'push' ? '推进（拉远）' :
-                            remotionConfig.motion === 'pull' ? '拉远（拉近）' :
+                            remotionConfig.motion === 'push' ? '推入（局部→全图，逐渐拉远）' :
+                            remotionConfig.motion === 'pull' ? '拉远（全图→缩小，逐渐拉近）' :
+                            remotionConfig.motion === 'rotateCW' ? '顺时针旋转（0°→5°）' :
                             remotionConfig.motion
                           }
-                          {`（仅图片镜头生效）`}
+                          {`（仅图片镜头）`}
                         </span>
+                      </div>
+                    </div>
+
+                    <div className="border-t border-slate-700" />
+
+                    {/* ─── 视频滤镜 ─── */}
+                    <div className="flex flex-col gap-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] text-slate-400">视频滤镜</span>
+                        {Object.keys(remotionConfig.videoFilter || {}).length > 0 && (
+                          <button
+                            onClick={() => setRemotionConfig(c => ({ ...c, videoFilter: {} }))}
+                            className="text-[9px] text-slate-500 hover:text-red-400 transition-colors"
+                            title="清除所有滤镜"
+                          >
+                            清除
+                          </button>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {/* 模糊 */}
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-[9px] text-slate-500">模糊 <span className="text-slate-600">(blur)</span></span>
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="range"
+                              min="0"
+                              max="20"
+                              step="0.5"
+                              value={remotionConfig.videoFilter?.blur ?? 0}
+                              onChange={e => setRemotionConfig(c => ({ ...c, videoFilter: { ...c.videoFilter, blur: Number(e.target.value) || undefined } }))}
+                              className="flex-1 accent-blue-500"
+                            />
+                            <span className="text-[9px] text-slate-400 w-7 text-right">{remotionConfig.videoFilter?.blur ?? 0}</span>
+                          </div>
+                        </div>
+                        {/* 亮度 */}
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-[9px] text-slate-500">亮度 <span className="text-slate-600">(bright)</span></span>
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="range"
+                              min="0.3"
+                              max="2"
+                              step="0.05"
+                              value={remotionConfig.videoFilter?.brightness ?? 1}
+                              onChange={e => setRemotionConfig(c => ({ ...c, videoFilter: { ...c.videoFilter, brightness: Number(e.target.value) !== 1 ? Number(e.target.value) : undefined } }))}
+                              className="flex-1 accent-yellow-500"
+                            />
+                            <span className="text-[9px] text-slate-400 w-7 text-right">{(remotionConfig.videoFilter?.brightness ?? 1).toFixed(1)}</span>
+                          </div>
+                        </div>
+                        {/* 对比度 */}
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-[9px] text-slate-500">对比度 <span className="text-slate-600">(contrast)</span></span>
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="range"
+                              min="0.3"
+                              max="2"
+                              step="0.05"
+                              value={remotionConfig.videoFilter?.contrast ?? 1}
+                              onChange={e => setRemotionConfig(c => ({ ...c, videoFilter: { ...c.videoFilter, contrast: Number(e.target.value) !== 1 ? Number(e.target.value) : undefined } }))}
+                              className="flex-1 accent-cyan-500"
+                            />
+                            <span className="text-[9px] text-slate-400 w-7 text-right">{(remotionConfig.videoFilter?.contrast ?? 1).toFixed(1)}</span>
+                          </div>
+                        </div>
+                        {/* 饱和度 */}
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-[9px] text-slate-500">饱和度 <span className="text-slate-600">(saturate)</span></span>
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="range"
+                              min="0"
+                              max="2"
+                              step="0.05"
+                              value={remotionConfig.videoFilter?.saturation ?? 1}
+                              onChange={e => setRemotionConfig(c => ({ ...c, videoFilter: { ...c.videoFilter, saturation: Number(e.target.value) !== 1 ? Number(e.target.value) : undefined } }))}
+                              className="flex-1 accent-pink-500"
+                            />
+                            <span className="text-[9px] text-slate-400 w-7 text-right">{(remotionConfig.videoFilter?.saturation ?? 1).toFixed(1)}</span>
+                          </div>
+                        </div>
+                        {/* 曝光 */}
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-[9px] text-slate-500">曝光 <span className="text-slate-600">(exposure)</span></span>
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="range"
+                              min="-2"
+                              max="2"
+                              step="0.1"
+                              value={remotionConfig.videoFilter?.exposure ?? 0}
+                              onChange={e => setRemotionConfig(c => ({ ...c, videoFilter: { ...c.videoFilter, exposure: Number(e.target.value) !== 0 ? Number(e.target.value) : undefined } }))}
+                              className="flex-1 accent-amber-500"
+                            />
+                            <span className="text-[9px] text-slate-400 w-7 text-right">{(remotionConfig.videoFilter?.exposure ?? 0).toFixed(1)}</span>
+                          </div>
+                        </div>
+                        {/* 黑白 */}
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-[9px] text-slate-500">黑白 <span className="text-slate-600">(gray)</span></span>
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.05"
+                              value={remotionConfig.videoFilter?.grayscale ?? 0}
+                              onChange={e => setRemotionConfig(c => ({ ...c, videoFilter: { ...c.videoFilter, grayscale: Number(e.target.value) > 0 ? Number(e.target.value) : undefined } }))}
+                              className="flex-1 accent-slate-400"
+                            />
+                            <span className="text-[9px] text-slate-400 w-7 text-right">{((remotionConfig.videoFilter?.grayscale ?? 0) * 100).toFixed(0)}%</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-[8px] text-slate-600 px-1">
+                        滤镜全程覆盖镜头时长，图片/视频均适用；仅当值偏离默认值时生效
                       </div>
                     </div>
 

@@ -186,6 +186,7 @@ export const MyVideo: React.FC<RemotionInputProps> = ({ shots, config }) => {
               transitionOut={transitionOut}
               transitionFrames={transitionFrames}
               globalMotion={config.motion}
+              globalFilter={config.videoFilter}
             />
           </Sequence>
         );

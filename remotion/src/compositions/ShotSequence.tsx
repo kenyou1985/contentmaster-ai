@@ -1,7 +1,7 @@
 import { interpolate, useCurrentFrame, useVideoConfig, AbsoluteFill } from 'remotion';
 import type { CSSProperties, ReactNode } from 'react';
 import { ShotLayer } from './ShotLayer';
-import { RemotionInputShot } from '../types';
+import { RemotionInputShot, RemotionInputVideoFilter } from '../types';
 
 export type TransitionType = 'none' | 'fade' | 'slide' | 'zoom';
 
@@ -13,6 +13,8 @@ export interface ShotSequenceProps {
   transitionFrames: number;     // 半个转场占多少帧（重叠 = 2x）
   /** 全局运动预设（来自 config.motion） */
   globalMotion?: string;
+  /** 全局滤镜配置（来自 config.videoFilter） */
+  globalFilter?: RemotionInputVideoFilter;
 }
 
 /**
@@ -92,6 +94,7 @@ export const ShotSequence: React.FC<ShotSequenceProps> = ({
   transitionOut,
   transitionFrames,
   globalMotion,
+  globalFilter,
 }) => {
   const { width, height } = useVideoConfig();
   const overlap = Math.max(0, Math.min(transitionFrames, Math.floor(durationInFrames / 2)));
@@ -119,7 +122,12 @@ export const ShotSequence: React.FC<ShotSequenceProps> = ({
 
   return (
     <AbsoluteFill style={transitionStyle}>
-      <ShotLayer shot={shot} durationInFrames={durationInFrames} globalMotion={globalMotion} />
+      <ShotLayer
+        shot={shot}
+        durationInFrames={durationInFrames}
+        globalMotion={globalMotion}
+        globalFilter={globalFilter}
+      />
     </AbsoluteFill>
   );
 };

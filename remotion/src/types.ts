@@ -40,10 +40,41 @@ export interface RemotionInputShot {
   transitionIn?: string;
   transitionOut?: string;
   /**
-   * Ken Burns 运动类型（图片镜头有效）
-   * 支持: none | kenBurns | kenBurnsStrong | kenBurnsSlow | zoomIn | zoomOut | panLeft | panRight | panUp | panDown | push | pull
+   * 镜头级视频滤镜（优先级高于全局 videoFilter）
+   * 支持: blur / brightness / contrast / saturation / exposure / temperature / hue / grayscale / opacity
    */
-  motion?: 'none' | 'kenBurns' | 'kenBurnsStrong' | 'kenBurnsSlow' | 'zoomIn' | 'zoomOut' | 'panLeft' | 'panRight' | 'panUp' | 'panDown' | 'push' | 'pull';
+  videoFilter?: RemotionInputVideoFilter;
+  /**
+   * Ken Burns 运动类型（图片镜头有效）
+   * 支持:
+   *   none | kenBurns | kenBurnsStrong | kenBurnsSlow | kenBurnsLinear
+   *   zoomIn | zoomOut | panLeft | panRight | panUp | panDown
+   *   push | pull | rotateCW | rotateCCW
+   */
+  motion?: 'none' | 'kenBurns' | 'kenBurnsStrong' | 'kenBurnsSlow' | 'kenBurnsLinear'
+    | 'zoomIn' | 'zoomOut' | 'panLeft' | 'panRight' | 'panUp' | 'panDown'
+    | 'push' | 'pull' | 'rotateCW' | 'rotateCCW';
+}
+
+export interface RemotionInputVideoFilter {
+  /** 高斯模糊半径（0 = 无） */
+  blur?: number;
+  /** 亮度（1 = 原始，>1 变亮，<1 变暗） */
+  brightness?: number;
+  /** 对比度（1 = 原始，>1 提高，<1 降低） */
+  contrast?: number;
+  /** 饱和度（1 = 原始，0 = 灰度，>1 提高） */
+  saturation?: number;
+  /** 曝光档位（0 = 原始，正数提亮，负数压暗） */
+  exposure?: number;
+  /** 色温（正数偏暖，负数偏冷） */
+  temperature?: number;
+  /** 色调偏移（-180~180） */
+  hue?: number;
+  /** 黑白（0-1，1 = 完全灰度） */
+  grayscale?: number;
+  /** 透明度（0 = 完全透明，1 = 完全不透明） */
+  opacity?: number;
 }
 
 export interface RemotionInputBGM {
@@ -89,10 +120,20 @@ export interface RemotionInputConfig {
   transition?: { type: 'none' | 'fade' | 'slide' | 'zoom'; duration: number };
   output?: { target: string };
   /**
-   * 全局分镜运动预设（每个镜头的运动默认继承此值；单个镜头也可独立覆盖）
-   * 支持: none | kenBurns | kenBurnsStrong | kenBurnsSlow | zoomIn | zoomOut | panLeft | panRight | panUp | panDown | push | pull
+   * 全局视频滤镜（图片/视频镜头均适用）
+   * 支持: blur / brightness / contrast / saturation / exposure / temperature / hue / grayscale / opacity
    */
-  motion?: 'none' | 'kenBurns' | 'kenBurnsStrong' | 'kenBurnsSlow' | 'zoomIn' | 'zoomOut' | 'panLeft' | 'panRight' | 'panUp' | 'panDown' | 'push' | 'pull';
+  videoFilter?: RemotionInputVideoFilter;
+  /**
+   * 全局分镜运动预设（每个镜头的运动默认继承此值；单个镜头也可独立覆盖）
+   * 支持:
+   *   none | kenBurns | kenBurnsStrong | kenBurnsSlow | kenBurnsLinear
+   *   zoomIn | zoomOut | panLeft | panRight | panUp | panDown
+   *   push | pull | rotateCW | rotateCCW
+   */
+  motion?: 'none' | 'kenBurns' | 'kenBurnsStrong' | 'kenBurnsSlow' | 'kenBurnsLinear'
+    | 'zoomIn' | 'zoomOut' | 'panLeft' | 'panRight' | 'panUp' | 'panDown'
+    | 'push' | 'pull' | 'rotateCW' | 'rotateCCW';
   /**
    * 片头预设
    * - style: none | fade_in | slide_up | typewriter | glitch | zoom_in | split
