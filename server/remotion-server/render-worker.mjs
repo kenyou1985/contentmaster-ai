@@ -6,77 +6,177 @@
  * 输出：stdout 逐行 JSON { type, ... }
  * 日志：/tmp/remotion-out/logs/<taskId>.log（方便跟踪调试）
  */
-
-// 动态导入 Remotion 模块（解决 Docker 容器中路径问题）
-let bundler, renderer;
-
-async function loadRemotionModules() {
-  // 尝试从多个路径加载 Remotion 模块
-  const pathsToTry = [
-    join(PROJECT_ROOT, 'node_modules'),
-    join(__dirname, 'node_modules'),
-  ];
-
-  for (const modulesPath of pathsToTry) {
-    try {
-      const bundlerPath = join(modulesPath, '@remotion', 'bundler', 'package.json');
-      const rendererPath = join(modulesPath, '@remotion', 'renderer', 'package.json');
-      
-      if (existsSync(bundlerPath) && existsSync(rendererPath)) {
-        logInfo(`[module] 从 ${modulesPath} 加载 Remotion 模块`);
-        
-        // 使用 import 动态加载
-        const bundlerModule = await import(`${modulesPath}/@remotion/bundler/dist/index.cjs`);
-        const rendererModule = await import(`${modulesPath}/@remotion/renderer/dist/index.cjs`);
-        
-        bundler = bundlerModule;
-        renderer = rendererModule;
-        return true;
-      }
-    } catch (e) {
-      logInfo(`[module] 从 ${modulesPath} 加载失败: ${e.message}`);
-    }
-  }
-  
-  // 最后尝试默认路径
-  try {
-    const { bundle } = await import('@remotion/bundler');
-    const { renderMedia, getCompositions, selectComposition } = await import('@remotion/renderer');
-    bundler = { bundle };
-    renderer = { renderMedia, getCompositions, selectComposition };
-    return true;
-  } catch (e) {
-    logError(`无法加载 Remotion 模块: ${e.message}`);
-    return false;
-  }
-}
-import { existsSync, mkdirSync, statSync, writeFileSync, appendFileSync } from 'fs';
+import { existsSync, mkdirSync, statSync, writeFileSync, appendFileSync, readFileSync as fsReadFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { promises as fs } from 'fs';
 import os from 'os';
+import { createRequire } from 'module';
 import { prepareBundleCache, recordBundleResult, clearWebpackCache } from './bundle-cache.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const require = createRequire(import.meta.url);
 
+// ── 路径常量 ──────────────────────────────────────────────────────
 const PROJECT_ROOT = process.env.REMOTION_PROJECT_ROOT || join(__dirname, '..', '..', 'remotion');
-const NODE_MODULES = join(PROJECT_ROOT, 'node_modules');
 const ENTRY_FILE = join(PROJECT_ROOT, 'src', 'index.tsx');
 const OUTPUT_DIR = process.env.REMOTION_OUTPUT_DIR || join('/tmp', 'remotion-out');
 const PUBLIC_MEDIA_DIR = join(PROJECT_ROOT, 'public', 'mmedia');
 const LOG_DIR = join(OUTPUT_DIR, 'logs');
 
-// 确保模块路径正确（在 Docker 容器中，node_modules 在 PROJECT_ROOT 下）
-const RENDERER_MODULE_PATH = existsSync(join(NODE_MODULES, '@remotion', 'bundler'))
-  ? NODE_MODULES
-  : join(__dirname, 'node_modules');
-
 if (!existsSync(OUTPUT_DIR)) mkdirSync(OUTPUT_DIR, { recursive: true });
 if (!existsSync(PUBLIC_MEDIA_DIR)) mkdirSync(PUBLIC_MEDIA_DIR, { recursive: true });
 if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
 
-// ── 日志工具 ────────────────────────────────────────────────────
+// ── Remotion 模块加载器 ─────────────────────────────────────────────
+let bundler = null;
+let renderer = null;
+
+async function loadRemotionModules() {
+  if (bundler && renderer) {
+    writeLog('INFO', '[module] 模块已加载，跳过');
+    return true;
+  }
+
+  // Remotion 模块可能在不同位置
+  const possiblePaths = [
+    PROJECT_ROOT,
+    __dirname,
+    '/app/remotion',
+    '/app/remotion-server',
+  ].map(p => join(p, 'node_modules'));
+
+  writeLog('INFO', `[module] PROJECT_ROOT=${PROJECT_ROOT}`);
+  writeLog('INFO', `[module] __dirname=${__dirname}`);
+  writeLog('INFO', `[module] 开始搜索 Remotion 模块...`);
+
+  for (const modulesPath of possiblePaths) {
+    const bundlerPath = join(modulesPath, '@remotion', 'bundler');
+    const rendererPath = join(modulesPath, '@remotion', 'renderer');
+
+    writeLog('INFO', `[module] 检查路径: ${modulesPath}`);
+
+    if (!existsSync(bundlerPath) || !existsSync(rendererPath)) {
+      continue;
+    }
+
+    writeLog('INFO', `[module] 找到模块候选: ${modulesPath}`);
+
+    // 尝试多种加载方式
+    const loadMethods = [
+      // 方式 1: 读取 package.json 获取正确入口
+      async () => {
+        try {
+          const bundlerPkg = JSON.parse(fsReadFileSync(join(bundlerPath, 'package.json'), 'utf-8'));
+          const rendererPkg = JSON.parse(fsReadFileSync(join(rendererPath, 'package.json'), 'utf-8'));
+
+          // 获取 main 或 exports
+          let bundlerEntry = bundlerPkg.main;
+          let rendererEntry = rendererPkg.main;
+
+          // 尝试从 exports 字段获取
+          if (!bundlerEntry && bundlerPkg.exports) {
+            const exp = bundlerPkg.exports;
+            bundlerEntry = exp['.']?.require || exp['.']?.import || exp['.'];
+          }
+          if (!rendererEntry && rendererPkg.exports) {
+            const exp = rendererPkg.exports;
+            rendererEntry = exp['.']?.require || exp['.']?.import || exp['.'];
+          }
+
+          if (bundlerEntry && rendererEntry) {
+            const bundlerAbs = join(bundlerPath, bundlerEntry);
+            const rendererAbs = join(rendererPath, rendererEntry);
+
+            const b = require(bundlerAbs);
+            const r = require(rendererAbs);
+
+            if (b.bundle && r.renderMedia) {
+              bundler = b;
+              renderer = r;
+              writeLog('INFO', `[module] ✅ 方式1成功: ${modulesPath}`);
+              return true;
+            }
+          }
+        } catch (e) {
+          writeLog('INFO', `[module] 方式1失败: ${e.message}`);
+        }
+        return false;
+      },
+
+      // 方式 2: 直接 require 包目录（Node 会自动找 main）
+      async () => {
+        try {
+          const b = require(bundlerPath);
+          const r = require(rendererPath);
+
+          if (b.bundle && r.renderMedia) {
+            bundler = b;
+            renderer = r;
+            writeLog('INFO', `[module] ✅ 方式2成功: ${modulesPath}`);
+            return true;
+          }
+        } catch (e) {
+          writeLog('INFO', `[module] 方式2失败: ${e.message}`);
+        }
+        return false;
+      },
+
+      // 方式 3: 动态 import dist/index.cjs
+      async () => {
+        try {
+          const bundlerAbs = join(bundlerPath, 'dist', 'index.cjs');
+          const rendererAbs = join(rendererPath, 'dist', 'index.cjs');
+
+          if (!existsSync(bundlerAbs) || !existsSync(rendererAbs)) {
+            return false;
+          }
+
+          const b = await import(bundlerAbs);
+          const r = await import(rendererAbs);
+
+          if (b.bundle && r.renderMedia) {
+            bundler = b;
+            renderer = r;
+            writeLog('INFO', `[module] ✅ 方式3成功: ${modulesPath}`);
+            return true;
+          }
+        } catch (e) {
+          writeLog('INFO', `[module] 方式3失败: ${e.message}`);
+        }
+        return false;
+      },
+    ];
+
+    for (const method of loadMethods) {
+      if (await method()) {
+        return true;
+      }
+    }
+  }
+
+  // 最后尝试默认路径（让 Node 自动查找）
+  try {
+    writeLog('INFO', '[module] 尝试默认路径...');
+    const b = require('@remotion/bundler');
+    const r = require('@remotion/renderer');
+
+    if (b.bundle && r.renderMedia) {
+      bundler = b;
+      renderer = r;
+      writeLog('INFO', '[module] ✅ 默认路径成功');
+      return true;
+    }
+  } catch (e) {
+    writeLog('ERROR', `[module] 默认路径失败: ${e.message}`);
+  }
+
+  writeLog('ERROR', '无法加载 Remotion 模块，请检查安装');
+  return false;
+}
+
+// ── 日志工具 ──────────────────────────────────────────────────────
 let _logFp = null;
 
 function initLog(taskId) {
@@ -86,10 +186,12 @@ function initLog(taskId) {
 }
 
 function writeLog(prefix, message) {
-  if (!_logFp) return;
   const ts = new Date().toISOString().slice(11, 23);
-  const line = `[${ts}] [${prefix}] ${message}\n`;
-  appendFileSync(_logFp, line);
+  const line = `[${ts}] [${prefix}] ${message}`;
+  console.log(line);
+  if (_logFp) {
+    appendFileSync(_logFp, line + '\n');
+  }
 }
 
 function logProgress(progress, message, meta) {
@@ -108,15 +210,11 @@ function logProgress(progress, message, meta) {
 
 function logInfo(message) {
   writeLog('INFO', message);
-  process.stdout.write(JSON.stringify({ type: 'log', message }) + '\n');
 }
 
 function logError(error) {
   const msg = typeof error === 'string' ? error : error.message || String(error);
   writeLog('ERROR', msg);
-  process.stdout.write(
-    JSON.stringify({ type: 'error', error: msg }) + '\n'
-  );
 }
 
 function logDone(result) {
@@ -124,21 +222,16 @@ function logDone(result) {
   process.stdout.write(JSON.stringify({ type: 'done', result }) + '\n');
 }
 
-// ── 媒体转换 ────────────────────────────────────────────────────
-// 把本地文件或远程 URL 的媒体都转成 data URL，避免渲染时联网下载失败
+// ── 媒体转换 ─────────────────────────────────────────────────────
 async function convertMediaToDataUrls(shots) {
-  // 并发限制：同时最多下载 4 个远程文件，避免耗尽 fd / 内存
-  const CONCURRENCY = 4;
   const newShots = [];
   for (const shot of shots) {
     const newShot = { ...shot };
-    // 处理单个 URL 字段（imageUrl / audioUrl / voiceoverAudioUrl / videoUrl）
     for (const key of ['imageUrl', 'audioUrl', 'voiceoverAudioUrl', 'videoUrl']) {
       const val = newShot[key];
       if (!val || typeof val !== 'string') continue;
-      // 已是 data URL，跳过
       if (val.startsWith('data:')) continue;
-      // 本地文件
+
       if (!val.startsWith('http://') && !val.startsWith('https://')) {
         if (!existsSync(val)) {
           logInfo(`[warn] 媒体文件不存在: ${val}`);
@@ -154,29 +247,22 @@ async function convertMediaToDataUrls(shots) {
         }
         continue;
       }
-      // 远程 URL → 下载并转 data URL
+
       try {
         const fetched = await fetchWithRetry(val, 3);
         if (fetched) {
           newShot[key] = `data:${fetched.mime};base64,${fetched.base64}`;
-          logInfo(`  ${key}: ${val.slice(0, 80)} → data URL (${(fetched.size / 1024).toFixed(1)}KB)`);
-        } else {
-          logInfo(`[warn] 远程媒体下载失败，保留原 URL: ${val.slice(0, 80)}`);
+          logInfo(`  ${key}: ${val.slice(0, 80)} → data URL`);
         }
       } catch (e) {
         logInfo(`[warn] 远程媒体下载出错: ${val.slice(0, 80)}: ${e.message}`);
       }
     }
 
-    // 处理 imageUrls 数组
     if (Array.isArray(shot.imageUrls)) {
       newShot.imageUrls = [];
       for (const u of shot.imageUrls) {
-        if (!u || typeof u !== 'string') {
-          newShot.imageUrls.push(u);
-          continue;
-        }
-        if (u.startsWith('data:')) {
+        if (!u || typeof u !== 'string' || u.startsWith('data:')) {
           newShot.imageUrls.push(u);
           continue;
         }
@@ -194,7 +280,6 @@ async function convertMediaToDataUrls(shots) {
           }
           continue;
         }
-        // 远程图片
         try {
           const fetched = await fetchWithRetry(u, 3);
           if (fetched) {
@@ -213,10 +298,9 @@ async function convertMediaToDataUrls(shots) {
   return newShots;
 }
 
-// 带重试的 fetch（用于下载远程媒体文件）
 async function fetchWithRetry(url, retries = 3) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000); // 30s 超时
+  const timeout = setTimeout(() => controller.abort(), 30000);
   try {
     const res = await fetch(url, { signal: controller.signal });
     clearTimeout(timeout);
@@ -231,7 +315,6 @@ async function fetchWithRetry(url, retries = 3) {
   } catch (e) {
     clearTimeout(timeout);
     if (retries > 1) {
-      logInfo(`[warn] fetch 重试 ${retries - 1}: ${e.message}`);
       return fetchWithRetry(url, retries - 1);
     }
     return null;
@@ -260,7 +343,7 @@ function getConcurrency() {
   return totalMemGB >= 16 ? 2 : 1;
 }
 
-// ── stdin 读取参数（绕过 argv 上限）─────────────────────────────
+// ── stdin 读取参数 ─────────────────────────────────────────────────
 async function readStdinArgs() {
   const chunks = [];
   for await (const chunk of process.stdin) {
@@ -276,12 +359,20 @@ async function main() {
     const { payload, taskId } = await readStdinArgs();
     initLog(taskId);
 
-    // 首先加载 Remotion 模块
+    logInfo('== Remotion 渲染任务开始 ==');
+    logInfo(`任务 ID: ${taskId}`);
+    logInfo(`PROJECT_ROOT: ${PROJECT_ROOT}`);
+    logInfo(`ENTRY_FILE: ${ENTRY_FILE}`);
+    logInfo(`ENTRY_FILE exists: ${existsSync(ENTRY_FILE)}`);
+
+    // 加载 Remotion 模块
     logInfo('步骤 0/4: 加载 Remotion 模块...');
     const loaded = await loadRemotionModules();
     if (!loaded) {
       throw new Error('无法加载 Remotion 模块，请检查 node_modules 安装');
     }
+    logInfo(`bundler.bundle 类型: ${typeof bundler.bundle}`);
+    logInfo(`renderer.renderMedia 类型: ${typeof renderer.renderMedia}`);
 
     const shots = payload.shots || [];
     const config = payload.config || {};
@@ -290,47 +381,39 @@ async function main() {
       throw new Error('shots 为空');
     }
 
-    logInfo('== Remotion 渲染任务开始 ==');
-    logInfo(`任务 ID: ${taskId}`);
     logInfo(`镜头数: ${shots.length}`);
     logInfo(`分辨率: ${config.resolution || '1920x1080'}`);
     logInfo(`帧率: ${config.fps || 30}`);
     logInfo(`编码: ${config.codec || 'h264'}`);
-    logInfo(`入口: ${ENTRY_FILE}`);
 
     if (!existsSync(ENTRY_FILE)) {
       throw new Error(`Remotion 入口文件不存在: ${ENTRY_FILE}`);
     }
 
-    logInfo('步骤 1/4: 处理媒体文件（本地 + 远程）...');
+    logInfo('步骤 1/4: 处理媒体文件...');
     const dataShots = await convertMediaToDataUrls(shots);
-    logInfo(`已转换 ${dataShots.length} 个镜头的媒体为 data URL`);
-    logInfo(`镜头运动参数: ${dataShots.map(s => `id=${s.id?.slice(0,8)} motion=${s.motion}`).join(' | ')}`);
-    logInfo(`镜头时长: ${dataShots.map(s => `id=${s.id?.slice(0,8)} dur=${s.audioDurationExact ?? s.audioDurationSec ?? '?'}s`).join(' | ')}`);
+    logInfo(`已转换 ${dataShots.length} 个镜头的媒体`);
 
-    logInfo('步骤 2/4: 打包 Remotion 项目（M2 #11 智能缓存策略）...');
+    logInfo('步骤 2/4: 打包 Remotion 项目...');
     const t0 = Date.now();
-    // 检查 L1 缓存（基于源文件 hash + Node 版本 + Remotion 版本）
     const cacheCheck = await prepareBundleCache(PROJECT_ROOT, ENTRY_FILE);
     let bundleLocation;
+
     if (cacheCheck.hit && cacheCheck.bundleUrl) {
-      // L1 命中：直接复用上次打包结果（~0.1s）
       bundleLocation = cacheCheck.bundleUrl;
-      logInfo(`[bundle] ✅ L1 缓存命中，cacheKey=${cacheCheck.cacheKey}（跳过 ${Date.now() - t0}ms）`);
+      logInfo(`[bundle] ✅ L1 缓存命中（跳过 ${Date.now() - t0}ms）`);
       logProgress(10, 'Remotion 项目复用缓存');
     } else {
-      // L1 不命中：按需清 L2 + 重新打包（启用 webpack 持久化缓存以备下次命中）
       if (cacheCheck.needWebpackClear) {
-        const cleared = clearWebpackCache(PROJECT_ROOT);
-        if (cleared) logInfo('[bundle] L1 cache key 不匹配，已清空 webpack 持久化缓存');
+        clearWebpackCache(PROJECT_ROOT);
+        logInfo('[bundle] 已清空 webpack 缓存');
       }
       bundleLocation = await bundler.bundle({
         entryPoint: ENTRY_FILE,
-        enableCaching: true, // L2 始终启用，webpack 内部 cache
+        enableCaching: true,
       });
-      // 记录结果以便下次 L1 命中
       recordBundleResult(cacheCheck.cacheKey, bundleLocation);
-      logInfo(`[bundle] 🔧 已重新打包，cacheKey=${cacheCheck.cacheKey}（耗时 ${Date.now() - t0}ms）`);
+      logInfo(`[bundle] 🔧 已重新打包（耗时 ${Date.now() - t0}ms）`);
       logProgress(10, 'Remotion 项目打包完成');
     }
 
@@ -370,12 +453,10 @@ async function main() {
         ],
       },
       onProgress: ({ progress, renderedFrames, totalFrames }) => {
-        // 渲染前50帧时，实时输出当前 shot 信息用于调试
         if (renderedFrames <= 5) {
-          logInfo(`[ShotLayer shot check] shots=${dataShots.length} firstShotMotion=${dataShots[0]?.motion}`);
+          logInfo(`[ShotLayer] shots=${dataShots.length}`);
         }
         const overall = 10 + Math.round(progress * 85);
-        // M2 #13：把帧号也作为结构化字段推送给前端（SSE 实时帧进度）
         logProgress(
           overall,
           `渲染中 (${renderedFrames}/${totalFrames} 帧, ${Math.round(progress * 100)}%)`,
@@ -386,7 +467,6 @@ async function main() {
         if (info.type === 'error') {
           logInfo(`[browser error] ${info.text.slice(0, 200)}`);
         }
-        // 捕获所有 ShotLayer 等 React 组件的 console 输出，写入任务日志
         const t = info.text?.trim();
         if (t && (t.includes('[ShotLayer]') || t.includes('[shotsToRemotion]'))) {
           logInfo(`[browser] ${t}`);
