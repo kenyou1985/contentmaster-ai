@@ -388,6 +388,7 @@ async function runRenderInProcess(payload, taskId) {
 
     // 媒体文件已经在 /render/start 时转换好了，这里直接使用
     // payload._tempDir 是转换时创建的临时目录
+    // payload.shots 已经是转换后的（包含 HTTP URL）
     log(`临时目录: ${payload._tempDir || 'N/A'}`);
     log(`镜头数量: ${shots.length}`);
 
@@ -408,7 +409,7 @@ async function runRenderInProcess(payload, taskId) {
       ...config,
       output: config.output ? { target: config.output.target } : { target: 'browser' },
     };
-    const inputProps = { shots: cleanedShots, config: safeConfig };
+    const inputProps = { shots: shots, config: safeConfig };
 
     const composition = await renderer.selectComposition({
       serveUrl: bundleLocation,
@@ -467,7 +468,7 @@ async function runRenderInProcess(payload, taskId) {
 
     const videoDurationSec = composition.durationInFrames / composition.fps;
 
-    cleanupTempDir(tempDir);
+    cleanupTempDir(payload._tempDir);
 
     updateTask(taskId, {
       status: 'success',
