@@ -1,8 +1,8 @@
 # ContentMaster AI · Remotion 渲染服务端
 # 用于部署在 Railway（也兼容 Render / Fly.io / 任何 Docker 主机）
 #
-# 架构：单目录部署，所有依赖在 /app 下
-#   - /app/remotion   → Remotion 项目 + 所有 node_modules（server + remotion）
+# 架构：单目录部署，所有依赖在 /app/remotion 下
+#   - /app/remotion   → Remotion 项目 + 所有 node_modules
 
 # ── 构建阶段 ─────────────────────
 FROM node:20-bookworm-slim AS builder
@@ -13,22 +13,6 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 make g++ ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
-
-# 复制 package.json
-COPY remotion/package.json ./remotion/package.json
-COPY server/remotion-server/package.json ./server/package.json
-
-# 安装 remotion 项目依赖
-WORKDIR /app/remotion
-RUN npm install --no-audit --no-fund --legacy-peer-deps
-
-# 单独安装 @remotion/bundler 和 @remotion/renderer（使用兼容版本）
-RUN npm install --no-audit --no-fund --legacy-peer-deps \
-    @remotion/bundler@^4.0.250 @remotion/renderer@^4.0.250
-
-# 复制 remotion 源码
-COPY remotion/src ./src
-COPY remotion/remotion.config.ts ./
 
 # ── 运行时阶段 ─────────────────────
 FROM node:20-bookworm-slim
@@ -53,10 +37,16 @@ RUN mkdir -p /opt/google/chrome && \
     ln -sf /usr/bin/chromium /usr/local/bin/chrome && \
     chromium --version || true
 
-# 复制构建好的项目（包含所有 node_modules）
+# 复制整个 remotion 目录（包含 package.json 和所有 node_modules）
 WORKDIR /app
-COPY --from=builder /app/remotion ./remotion
+COPY remotion/ ./remotion/
+
+# 复制 server.mjs
 COPY server/remotion-server/server.mjs ./server/
+
+# 安装 npm 依赖（在容器内安装，确保 react 等包正确）
+WORKDIR /app/remotion
+RUN npm install --no-audit --no-fund --legacy-peer-deps
 
 # 渲染输出目录
 RUN mkdir -p /tmp/remotion-out /tmp/remotion-out/logs /tmp/remotion-temp
