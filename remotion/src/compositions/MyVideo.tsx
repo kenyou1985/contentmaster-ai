@@ -2,6 +2,7 @@ import { AbsoluteFill, Sequence, useVideoConfig, useCurrentFrame, interpolate, A
 import { useMemo, type CSSProperties } from 'react';
 import { ShotLayer } from './ShotLayer';
 import { ShotSequence } from './ShotSequence';
+import { ShotAudioLayer } from './ShotAudioLayer';
 import { Subtitle } from './Subtitle';
 import { IntroLayer } from './IntroLayer';
 import { getShotDuration, RemotionInputProps } from '../types';
@@ -52,62 +53,85 @@ export const MyVideo: React.FC<RemotionInputProps> = ({ shots, config }) => {
   // 片头总时长
   const introDurationFrames = getIntroDurationFrames(config, fps);
 
-  // 预先计算每个镜头的起始帧 / 时长 / 转场
-  //
-  // 关键修复（音频截断 + 字幕整段输出 bug）：
-  // 旧逻辑通过 `durationFrames -= effTf` 让相邻 Sequence 重叠，但这会缩短当前
-  // Sequence 的时长，进而让 <Audio> 在尾部被截断、字幕 cue 提前结束。
-  // 新逻辑：每个镜头 Sequence 保持完整的音频时长，
-  // 仅通过让下一镜头的 Sequence `from` 提前 leadInFrames 帧来形成画面重叠，
-  // 这样音频 / 字幕 / 视觉都在自己的完整时长内，互不干扰。
+  // 镜头时间轴计算
+  //   - 视觉由 ShotSequence（视频 Sequence）通过 leadIn 重叠完成转场
+  //   - 音频由 ShotAudioLayer 单独挂在顶层 Sequence，避免被 leadIn 重叠污染
+  //   - leadIn：本镜头"前面"被下一镜头覆盖进来的帧数（视觉提前进入下一段）
+  //   - leadOut：本镜头"末尾"被下一镜头覆盖的帧数
+  //     等价于下一镜头的 leadIn；audio 在这段做 fadeOut
   const segments = useMemo(() => {
     type Segment = {
       shot: typeof shots[0];
-      startFrame: number;          // 视觉（音频）起点
-      leadInFrames: number;         // 上一镜头重叠进来的帧数（视觉上提前进入）
-      durationFrames: number;       // 镜头实际渲染时长（等于音频时长，不截断）
+      startFrame: number;            // 音频起点（绝对时间轴，不含 leadIn）
+      leadInFrames: number;
+      leadOutFrames: number;
+      durationFrames: number;        // 视觉总时长（含 leadIn + leadOut + 主体）
+      audioDurationFrames: number;   // 音频播完帧数
       transitionIn: import('../types').TransitionType;
       transitionOut: import('../types').TransitionType;
       transitionFrames: number;
     };
-    const out: Segment[] = [];
-    let cursor = 0;
+
     const transitionGlobal = config.transition?.type ?? DEFAULT_TRANSITION;
     const transitionSec = config.transition?.duration ?? DEFAULT_TRANSITION_FRAMES / 30;
     const transitionFrames = Math.max(0, Math.round(transitionSec * fps));
     const useGlobalTransition = transitionGlobal !== 'none' && transitionFrames > 0;
 
+    // 1) 先算出每个镜头的"基础时长 + 有效转场帧数 + 是否有入场转场"
+    const baseFrames: number[] = [];
+    const effTfList: number[] = [];
+    const tiList: import('../types').TransitionType[] = [];
+    const toList: import('../types').TransitionType[] = [];
+
     for (let i = 0; i < shots.length; i++) {
       const shot = shots[i];
-      const duration = getShotDuration(shot);
-      let durationFrames = Math.max(1, Math.round(duration * fps));
+      const df = Math.max(1, Math.round(getShotDuration(shot) * fps));
+      baseFrames.push(df);
 
-      // 单镜头转场优先；否则用全局
-      const ti = (shot.transitionIn as any) || (useGlobalTransition ? transitionGlobal : 'none');
-      const to = (shot.transitionOut as any) || (useGlobalTransition ? transitionGlobal : 'none');
-      // 把 transitionFrames 限制为 durationFrames/2，避免转场吃掉整段
-      const effTf = Math.min(transitionFrames, Math.floor(durationFrames / 2));
-
-      // 当前镜头是否作为"下一段"与上一镜头重叠？
-      // 仅当上一镜头有出场转场（out）且本镜头有入场转场（in）时重叠
-      const prev = i > 0 ? shots[i - 1] : null;
-      const prevOut = prev ? ((prev as any).transitionOut as any) || (useGlobalTransition ? transitionGlobal : 'none') : 'none';
-      const canOverlap = i > 0 && prevOut !== 'none' && ti !== 'none';
-      const leadInFrames = canOverlap ? effTf : 0;
-
-      out.push({
-        shot,
-        startFrame: cursor + introDurationFrames,  // ★ 片头偏移
-        leadInFrames,
-        durationFrames,                  // ★ 保持完整时长，不截断音频
-        transitionIn: ti,
-        transitionOut: to,
-        transitionFrames: effTf,
-      });
-      // 下一个镜头的视觉起点 = 当前终点 - 重叠量
-      // 注意：片头已经通过 introDurationFrames 把所有镜头往后推了
-      cursor += Math.max(1, durationFrames - leadInFrames);
+      const ti = ((shot as any).transitionIn as any) || (useGlobalTransition ? transitionGlobal : 'none');
+      const to = ((shot as any).transitionOut as any) || (useGlobalTransition ? transitionGlobal : 'none');
+      const effTf = Math.min(transitionFrames, Math.floor(df / 2));
+      effTfList.push(effTf);
+      tiList.push(ti);
+      toList.push(to);
     }
+
+    // 2) 判断每段是否与"下一段"重叠（仅当本段有 out 转场 + 下一段有 in 转场时）
+    // canOverlapNext[i] = 镜头 i 的"末尾"是否与镜头 i+1 重叠
+    const canOverlapNext: boolean[] = shots.map((_, i) => {
+      if (i >= shots.length - 1) return false;
+      return toList[i] !== 'none' && tiList[i + 1] !== 'none';
+    });
+
+    // 3) 计算 startFrame 和 leadIn/leadOut
+    const out: Segment[] = [];
+    let cursor = 0;
+
+    for (let i = 0; i < shots.length; i++) {
+      const df = baseFrames[i];
+      const leadIn = i > 0 && canOverlapNext[i - 1] ? effTfList[i] : 0;
+      const leadOut = i < shots.length - 1 && canOverlapNext[i] ? effTfList[i + 1] : 0;
+
+      // 主体段 = df；视觉总时长 = leadIn + df + leadOut
+      // 注意：这里 leadIn 是"被上一镜头覆盖进来的"占位帧，
+      //      leadOut 是"被下一镜头覆盖出去的"占位帧
+      out.push({
+        shot: shots[i],
+        startFrame: cursor + introDurationFrames,
+        leadInFrames: leadIn,
+        leadOutFrames: leadOut,
+        durationFrames: df + leadIn + leadOut,
+        audioDurationFrames: df,
+        transitionIn: tiList[i],
+        transitionOut: toList[i],
+        transitionFrames: effTfList[i],
+      });
+
+      // 下一个 cursor = 当前音频起点 + df - 下一镜头的 leadIn
+      const nextLeadIn = i < shots.length - 1 && canOverlapNext[i] ? effTfList[i + 1] : 0;
+      cursor += Math.max(1, df - nextLeadIn);
+    }
+
     return out;
   }, [shots, fps, config.transition, introDurationFrames]);
 
@@ -167,21 +191,36 @@ export const MyVideo: React.FC<RemotionInputProps> = ({ shots, config }) => {
         />
       )}
 
-      {/* 镜头序列（含转场，承载视频画面 + 音频） */}
-      {/* sequenceFrom = 视觉起点 - leadInFrames：让本镜头在视觉上提前覆盖到上一镜头尾部，
-          但 Sequence.durationInFrames 仍 = durationFrames + leadInFrames，保证音频完整不截断 */}
-      {segments.map(({ shot, startFrame, leadInFrames, durationFrames, transitionIn, transitionOut, transitionFrames }) => {
+      {/* 音频层（独立 Sequence，绝对时间轴，不受视频 leadIn 重叠影响） */}
+      {/* 在 leadIn/leadOut 区段做 fadeOut/fadeIn 实现音频 crossfade */}
+      {segments.map(({ shot, startFrame, leadInFrames, leadOutFrames, audioDurationFrames }) => {
+        if (!shot.audioUrl) return null;
+        return (
+          <ShotAudioLayer
+            key={`audio-${shot.id}`}
+            url={shot.audioUrl}
+            startFrame={startFrame}
+            leadInFrames={leadInFrames}
+            leadOutFrames={leadOutFrames}
+            audioDurationFrames={audioDurationFrames}
+          />
+        );
+      })}
+
+      {/* 镜头序列（视频画面 + 转场） */}
+      {/* sequenceFrom = startFrame - leadInFrames：让本镜头在视觉上提前覆盖到上一镜头尾部，
+          Sequence.durationInFrames = durationFrames（含 leadIn + leadOut），保证音频完整不截断 */}
+      {segments.map(({ shot, startFrame, leadInFrames, leadOutFrames, durationFrames, transitionIn, transitionOut, transitionFrames }) => {
         const sequenceFrom = Math.max(0, startFrame - leadInFrames);
-        const sequenceDuration = durationFrames + leadInFrames;
         return (
           <Sequence
             key={shot.id}
             from={sequenceFrom}
-            durationInFrames={sequenceDuration}
+            durationInFrames={durationFrames}
           >
             <ShotSequence
               shot={shot}
-              durationInFrames={sequenceDuration}
+              durationInFrames={durationFrames}
               transitionIn={transitionIn}
               transitionOut={transitionOut}
               transitionFrames={transitionFrames}
@@ -197,7 +236,7 @@ export const MyVideo: React.FC<RemotionInputProps> = ({ shots, config }) => {
           而非视频整体时间轴位置。放在 AbsoluteFill 顶层，from 就是绝对帧。 */}
       {subtitleEnabled && (
         <AbsoluteFill style={{ pointerEvents: 'none' }}>
-          {segments.map(({ shot, startFrame, leadInFrames, durationFrames }) => {
+          {segments.map(({ shot, startFrame, leadInFrames, leadOutFrames, audioDurationFrames }) => {
             const sequenceFrom = Math.max(0, startFrame - leadInFrames);
             // 优先使用 shot 上预计算的 textCues（来自 Whisper ASR 等）
             const externalCues = (shot as any).textCues as SubtitleCue[] | undefined;
@@ -210,7 +249,7 @@ export const MyVideo: React.FC<RemotionInputProps> = ({ shots, config }) => {
               <Subtitle
                 key={`sub-${shot.id}`}
                 text={shot.text || shot.caption}
-                durationInFrames={durationFrames}
+                durationInFrames={audioDurationFrames}
                 offsetFrames={sequenceFrom}
                 config={cfgWithSafeZone}
                 cues={externalCues}

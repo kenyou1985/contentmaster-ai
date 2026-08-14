@@ -5,7 +5,6 @@ import {
   useCurrentFrame,
   useVideoConfig,
   interpolate,
-  Audio,
   staticFile,
 } from 'remotion';
 import { RemotionInputShot, RemotionInputVideoFilter } from '../types';
@@ -235,6 +234,8 @@ export const ShotLayer: React.FC<ShotLayerProps> = ({
     .join(' ');
 
   // ── 视频镜头：滤镜 + 无运动 ────────────────────────────────────
+  // 注意：音频（shot.audioUrl）由 MyVideo 层单独挂载到顶层 Sequence，
+  // 不放在此处。这样音频 Sequence 不受 leadIn 重叠影响，避免两个镜头音频重叠
   if (shot.videoUrl) {
     return (
       <AbsoluteFill>
@@ -249,7 +250,6 @@ export const ShotLayer: React.FC<ShotLayerProps> = ({
           muted={false}
           volume={0}
         />
-        {shot.audioUrl && <ShotAudio url={shot.audioUrl} />}
       </AbsoluteFill>
     );
   }
@@ -277,11 +277,6 @@ export const ShotLayer: React.FC<ShotLayerProps> = ({
           filter: cssFilter,
         }}
       />
-      {shot.audioUrl && <ShotAudio url={shot.audioUrl} />}
     </AbsoluteFill>
   );
-};
-
-const ShotAudio: React.FC<{ url: string }> = ({ url }) => {
-  return <Audio src={resolveMediaUrl(url) || url} volume={1} />;
 };
