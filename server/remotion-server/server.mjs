@@ -457,6 +457,9 @@ const healthHandler = (_req, res) => {
       RAILWAY_PROJECT_ID: process.env.RAILWAY_PROJECT_ID || null,
       RAILWAY_PUBLIC_DOMAIN: process.env.RAILWAY_PUBLIC_DOMAIN || null,
     },
+    // 兼容旧版前端（checkRemotionHealth 读取这两个顶层字段）
+    remotionEntry: REMOTION_PROJECT_ENTRY,
+    remotionEntryExists: existsSync(REMOTION_PROJECT_ENTRY),
     remotion: {
       projectRoot: REMOTION_PROJECT_ROOT,
       entry: REMOTION_PROJECT_ENTRY,
