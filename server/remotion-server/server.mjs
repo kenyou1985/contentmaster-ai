@@ -30,7 +30,7 @@ import { createRequire } from 'module';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// ── Remotion 模块加载（在 /app/remotion 目录下加载，确保模块路径正确）──────────────
+// ── Remotion 模块加载（直接导入）──────────────
 let bundler = null;
 let renderer = null;
 let modulesLoaded = false;
@@ -41,13 +41,6 @@ async function loadRemotionModules() {
   
   try {
     console.log('[remotion] 正在加载 Remotion 模块...');
-    
-    // 切换到 /app/remotion 目录后再导入，确保能找到 node_modules
-    if (IS_RAILWAY && existsSync('/app/remotion')) {
-      process.chdir('/app/remotion');
-      console.log('[remotion] 已切换到 /app/remotion 目录');
-    }
-    
     bundler = await import('@remotion/bundler');
     renderer = await import('@remotion/renderer');
     console.log('[remotion] ✅ Remotion 模块加载成功');
@@ -69,9 +62,9 @@ const RAW_ENV_ROOT = process.env.REMOTION_PROJECT_ROOT;
 const CANDIDATE_ROOTS = [
   RAW_ENV_ROOT ? RAW_ENV_ROOT.replace(/[\r\n\s]+$/g, '').trim() : null,
   '/app/remotion',
+  // server.mjs 现在在 /app/server/ 目录
+  join(__dirname, '..', 'remotion'),
   join(__dirname, '..', '..', 'remotion'),
-  join(__dirname, '..', '..', '..', 'remotion'),
-  join(process.cwd(), 'remotion'),
 ].filter(Boolean);
 
 const SEEN = new Set();
@@ -80,7 +73,7 @@ const REMOTION_PROJECT_ROOT =
     if (SEEN.has(p)) return false;
     SEEN.add(p);
     return existsSync(join(p, 'src', 'index.tsx'));
-  }) || CANDIDATE_ROOTS[0] || join(__dirname, '..', '..', 'remotion');
+  }) || CANDIDATE_ROOTS[0] || '/app/remotion';
 
 const REMOTION_PROJECT_ENTRY = join(REMOTION_PROJECT_ROOT, 'src', 'index.tsx');
 
