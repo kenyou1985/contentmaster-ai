@@ -30,7 +30,7 @@ import { createRequire } from 'module';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// ── Remotion 模块加载（直接导入，避免子进程路径问题）──────────────
+// ── Remotion 模块加载（在 /app/remotion 目录下加载，确保模块路径正确）──────────────
 let bundler = null;
 let renderer = null;
 let modulesLoaded = false;
@@ -41,6 +41,13 @@ async function loadRemotionModules() {
   
   try {
     console.log('[remotion] 正在加载 Remotion 模块...');
+    
+    // 切换到 /app/remotion 目录后再导入，确保能找到 node_modules
+    if (IS_RAILWAY && existsSync('/app/remotion')) {
+      process.chdir('/app/remotion');
+      console.log('[remotion] 已切换到 /app/remotion 目录');
+    }
+    
     bundler = await import('@remotion/bundler');
     renderer = await import('@remotion/renderer');
     console.log('[remotion] ✅ Remotion 模块加载成功');

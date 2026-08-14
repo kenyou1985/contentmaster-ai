@@ -58,6 +58,10 @@ WORKDIR /app/remotion-server
 COPY server/remotion-server/ ./
 COPY --from=remotion-server-deps /app/remotion-server/node_modules ./node_modules
 
+# 关键：在 /app/remotion/node_modules 中创建符号链接指向 server 的 node_modules
+# 这样 server.mjs 在任何目录都能找到共享的 express 等包
+RUN ln -sf /app/remotion-server/node_modules /app/remotion/node_modules/remotion-server-deps
+
 # 渲染输出目录（Railway 容器重启即丢失，仅作为短期缓存。正式生产请挂 S3/R2）
 RUN mkdir -p /tmp/remotion-out /tmp/remotion-out/logs /tmp/remotion-temp
 
