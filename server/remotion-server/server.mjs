@@ -62,7 +62,7 @@ const RAW_ENV_ROOT = process.env.REMOTION_PROJECT_ROOT;
 const CANDIDATE_ROOTS = [
   RAW_ENV_ROOT ? RAW_ENV_ROOT.replace(/[\r\n\s]+$/g, '').trim() : null,
   '/app/remotion',
-  // server.mjs 现在在 /app/server/ 目录
+  // server.mjs 在 /app/server/ 目录
   join(__dirname, '..', 'remotion'),
   join(__dirname, '..', '..', 'remotion'),
 ].filter(Boolean);
@@ -79,7 +79,7 @@ const REMOTION_PROJECT_ENTRY = join(REMOTION_PROJECT_ROOT, 'src', 'index.tsx');
 
 const IS_RAILWAY = !!process.env.RAILWAY_ENVIRONMENT || !!process.env.RAILWAY_PROJECT_ID;
 const IS_VERCEL = !!process.env.VERCEL;
-const PORT = process.env.PORT || (IS_RAILWAY ? 10000 : 18093);
+const PORT = process.env.PORT || 10000;
 
 const app = express();
 app.use(express.json({ limit: '2gb' }));
