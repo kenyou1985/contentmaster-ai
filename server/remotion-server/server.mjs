@@ -225,6 +225,23 @@ function computeEta(task) {
   return Math.round(remainingFrames / framesPerSec);
 }
 
+// ── Temp 目录静态文件服务 ─────────────────────
+// Remotion 的 webpack dev server 无法访问 /tmp，需要通过 HTTP 暴露
+const TEMP_DIR = '/tmp';
+app.use('/media', express.static(TEMP_DIR, {
+  dotfiles: 'allow',
+  maxAge: '1h',
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.png') || filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')) {
+      res.setHeader('Content-Type', 'image/png');
+    } else if (filePath.endsWith('.mp3') || filePath.endsWith('.wav') || filePath.endsWith('.ogg') || filePath.endsWith('.m4a')) {
+      res.setHeader('Content-Type', 'audio/mpeg');
+    } else if (filePath.endsWith('.mp4') || filePath.endsWith('.webm') || filePath.endsWith('.mov')) {
+      res.setHeader('Content-Type', 'video/mp4');
+    }
+  },
+}));
+
 // ── Data URL → Temp File ─────────────────────
 const MIME_EXT = {
   'image/png': '.png', 'image/jpeg': '.jpg', 'image/jpg': '.jpg',
@@ -235,38 +252,42 @@ const MIME_EXT = {
   'audio/x-m4a': '.m4a', 'audio/m4a': '.m4a',
 };
 
+/**
+ * 把 data URL 转成文件路径，返回 { cleanedShots, tempDir, filePathMap }
+ * filePathMap: data URL → 文件路径 的映射
+ */
 function extractDataUrlsToTempFiles(shots) {
   const tempDir = join('/tmp', `remotion_data_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
   mkdirSync(tempDir, { recursive: true });
-  const replacements = new Map();
+  const filePathMap = new Map();
 
   for (const shot of shots) {
     for (const key of ['imageUrl', 'audioUrl', 'voiceoverAudioUrl', 'videoUrl']) {
       const val = shot[key];
       if (!val || typeof val !== 'string' || !val.startsWith('data:')) continue;
-      if (replacements.has(val)) continue;
+      if (filePathMap.has(val)) continue;
       const headerMatch = val.match(/^data:([^;]+)/);
       const mime = headerMatch ? headerMatch[1] : 'application/octet-stream';
       const ext = MIME_EXT[mime] || '.bin';
-      const idx = replacements.size;
+      const idx = filePathMap.size;
       const filePath = join(tempDir, `media_${String(idx).padStart(4, '0')}${ext}`);
       const commaIdx = val.indexOf(',');
       const b64data = commaIdx >= 0 ? val.slice(commaIdx + 1) : val;
       writeFileSync(filePath, Buffer.from(b64data, 'base64'));
-      replacements.set(val, filePath);
+      filePathMap.set(val, filePath);
     }
     if (Array.isArray(shot.imageUrls)) {
       for (const u of shot.imageUrls) {
-        if (!u || !u.startsWith('data:') || replacements.has(u)) continue;
+        if (!u || !u.startsWith('data:') || filePathMap.has(u)) continue;
         const headerMatch = u.match(/^data:([^;]+)/);
         const mime = headerMatch ? headerMatch[1] : 'application/octet-stream';
         const ext = MIME_EXT[mime] || '.bin';
-        const idx = replacements.size;
+        const idx = filePathMap.size;
         const filePath = join(tempDir, `media_${String(idx).padStart(4, '0')}${ext}`);
         const commaIdx = u.indexOf(',');
         const b64data = commaIdx >= 0 ? u.slice(commaIdx + 1) : u;
         writeFileSync(filePath, Buffer.from(b64data, 'base64'));
-        replacements.set(u, filePath);
+        filePathMap.set(u, filePath);
       }
     }
   }
@@ -275,17 +296,45 @@ function extractDataUrlsToTempFiles(shots) {
   for (const shot of cleanedShots) {
     for (const key of ['imageUrl', 'audioUrl', 'voiceoverAudioUrl', 'videoUrl']) {
       if (shot[key] && shot[key].startsWith('data:')) {
-        shot[key] = replacements.get(shot[key]) || shot[key];
+        shot[key] = filePathMap.get(shot[key]) || shot[key];
       }
     }
     if (Array.isArray(shot.imageUrls)) {
       shot.imageUrls = shot.imageUrls.map((u) =>
-        u && u.startsWith('data:') ? replacements.get(u) || u : u
+        u && u.startsWith('data:') ? filePathMap.get(u) || u : u
       );
     }
   }
 
-  return { cleanedShots, tempDir };
+  return { cleanedShots, tempDir, filePathMap };
+}
+
+/**
+ * 把文件路径替换为 HTTP URL（Remotion webpack dev server 需要 HTTP URL）
+ * @param {Array} shots - 包含文件路径的 shots
+ * @param {Map} filePathMap - data URL → 文件路径 的映射
+ * @param {string} baseUrl - 如 http://localhost:8080
+ */
+function replaceFilePathsWithHttpUrls(shots, filePathMap, baseUrl) {
+  const reversedMap = new Map();
+  for (const [dataUrl, filePath] of filePathMap) {
+    reversedMap.set(filePath, `${baseUrl}/media${filePath}`);
+  }
+
+  const result = JSON.parse(JSON.stringify(shots));
+  for (const shot of result) {
+    for (const key of ['imageUrl', 'audioUrl', 'voiceoverAudioUrl', 'videoUrl']) {
+      if (shot[key] && reversedMap.has(shot[key])) {
+        shot[key] = reversedMap.get(shot[key]);
+      }
+    }
+    if (Array.isArray(shot.imageUrls)) {
+      shot.imageUrls = shot.imageUrls.map((u) =>
+        u && reversedMap.has(u) ? reversedMap.get(u) : u
+      );
+    }
+  }
+  return result;
 }
 
 function cleanupTempDir(tempDir) {
@@ -335,10 +384,10 @@ async function runRenderInProcess(payload, taskId) {
 
     updateTask(taskId, { status: 'running', progress: 5, message: '处理媒体文件...' });
 
-    // 转换媒体文件
-    const { cleanedShots, tempDir } = extractDataUrlsToTempFiles(shots);
-    log(`已处理 ${cleanedShots.length} 个镜头的媒体`);
-    log(`临时目录: ${tempDir}`);
+    // 媒体文件已经在 /render/start 时转换好了，这里直接使用
+    // payload._tempDir 是转换时创建的临时目录
+    log(`临时目录: ${payload._tempDir || 'N/A'}`);
+    log(`镜头数量: ${shots.length}`);
 
     updateTask(taskId, { progress: 10, message: '打包 Remotion 项目...' });
     log('步骤 2/4: 打包 Remotion 项目...');
@@ -539,8 +588,14 @@ app.post('/render/start', async (req, res) => {
     const task = createRenderTask(payload);
     updateTask(task.taskId, { status: 'running', progress: 0, message: '任务已入队' });
 
-    const { cleanedShots, tempDir } = extractDataUrlsToTempFiles(payload.shots);
-    const normalizedPayload = { ...payload, shots: cleanedShots, _tempDir: tempDir };
+    // 提取 data URL 为文件
+    const { cleanedShots, tempDir, filePathMap } = extractDataUrlsToTempFiles(payload.shots);
+
+    // 构建 baseUrl 并转换为 HTTP URL（Remotion webpack dev server 需要 HTTP URL）
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const shotsWithHttpUrls = replaceFilePathsWithHttpUrls(cleanedShots, filePathMap, baseUrl);
+
+    const normalizedPayload = { ...payload, shots: shotsWithHttpUrls, _tempDir: tempDir };
 
     renderQueue.push({
       taskId: task.taskId,
@@ -661,8 +716,12 @@ app.post('/render/sync', async (req, res) => {
     const taskId = `sync_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const task = createRenderTask(payload);
 
-    const { cleanedShots, tempDir } = extractDataUrlsToTempFiles(payload.shots);
-    const normalizedPayload = { ...payload, shots: cleanedShots, _tempDir: tempDir };
+    // 提取 data URL 为文件
+    const { cleanedShots, tempDir, filePathMap } = extractDataUrlsToTempFiles(payload.shots);
+    // 转换为 HTTP URL
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const shotsWithHttpUrls = replaceFilePathsWithHttpUrls(cleanedShots, filePathMap, baseUrl);
+    const normalizedPayload = { ...payload, shots: shotsWithHttpUrls, _tempDir: tempDir };
 
     try {
       await runRenderInProcess(normalizedPayload, task.taskId);
