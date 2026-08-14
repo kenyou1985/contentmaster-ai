@@ -39,140 +39,142 @@ async function loadRemotionModules() {
     return true;
   }
 
-  // Remotion 模块可能在不同位置
-  const possiblePaths = [
-    PROJECT_ROOT,
-    __dirname,
-    '/app/remotion',
-    '/app/remotion-server',
-  ].map(p => join(p, 'node_modules'));
+  // 检查所有可能的路径
+  const allPaths = [
+    { base: PROJECT_ROOT, modules: join(PROJECT_ROOT, 'node_modules') },
+    { base: __dirname, modules: join(__dirname, 'node_modules') },
+    { base: '/app/remotion', modules: '/app/remotion/node_modules' },
+    { base: '/app/remotion-server', modules: '/app/remotion-server/node_modules' },
+  ];
 
   writeLog('INFO', `[module] PROJECT_ROOT=${PROJECT_ROOT}`);
   writeLog('INFO', `[module] __dirname=${__dirname}`);
-  writeLog('INFO', `[module] 开始搜索 Remotion 模块...`);
 
-  for (const modulesPath of possiblePaths) {
-    const bundlerPath = join(modulesPath, '@remotion', 'bundler');
-    const rendererPath = join(modulesPath, '@remotion', 'renderer');
+  // 先列出所有路径下的 @remotion 目录
+  for (const { base, modules } of allPaths) {
+    const remotionDir = join(modules, '@remotion');
+    if (existsSync(remotionDir)) {
+      try {
+        const entries = fs.readdirSync(remotionDir);
+        writeLog('INFO', `[module] ${remotionDir} 内容: ${entries.join(', ')}`);
+      } catch (e) {
+        writeLog('INFO', `[module] 无法读取 ${remotionDir}: ${e.message}`);
+      }
+    } else {
+      writeLog('INFO', `[module] 不存在: ${remotionDir}`);
+    }
+  }
 
-    writeLog('INFO', `[module] 检查路径: ${modulesPath}`);
+  for (const { base, modules } of allPaths) {
+    const bundlerPath = join(modules, '@remotion', 'bundler');
+    const rendererPath = join(modules, '@remotion', 'renderer');
 
     if (!existsSync(bundlerPath) || !existsSync(rendererPath)) {
       continue;
     }
 
-    writeLog('INFO', `[module] 找到模块候选: ${modulesPath}`);
+    writeLog('INFO', `[module] 找到模块: ${modules}`);
 
-    // 尝试多种加载方式
-    const loadMethods = [
-      // 方式 1: 读取 package.json 获取正确入口
-      async () => {
+    // 方式 1: 读取 package.json 获取正确入口
+    try {
+      const bundlerPkgPath = join(bundlerPath, 'package.json');
+      const rendererPkgPath = join(rendererPath, 'package.json');
+
+      if (!existsSync(bundlerPkgPath) || !existsSync(rendererPkgPath)) {
+        writeLog('INFO', '[module] package.json 不存在');
+        continue;
+      }
+
+      const bundlerPkg = JSON.parse(fsReadFileSync(bundlerPkgPath, 'utf-8'));
+      const rendererPkg = JSON.parse(fsReadFileSync(rendererPkgPath, 'utf-8'));
+
+      writeLog('INFO', `[module] bundler main: ${bundlerPkg.main || 'none'}`);
+      writeLog('INFO', `[module] bundler exports: ${JSON.stringify(bundlerPkg.exports || {}).slice(0, 200)}`);
+
+      // 尝试多种入口
+      const bundlerEntries = [
+        bundlerPkg.main,
+        bundlerPkg.exports?.['.']?.require,
+        bundlerPkg.exports?.['.']?.import,
+        bundlerPkg.exports?.['.'],
+        'dist/index.js',
+        'dist/index.cjs',
+        'dist/bundler.js',
+      ].filter(Boolean);
+
+      const rendererEntries = [
+        rendererPkg.main,
+        rendererPkg.exports?.['.']?.require,
+        rendererPkg.exports?.['.']?.import,
+        rendererPkg.exports?.['.'],
+        'dist/index.js',
+        'dist/index.cjs',
+        'dist/renderer.js',
+      ].filter(Boolean);
+
+      for (const entry of bundlerEntries) {
         try {
-          const bundlerPkg = JSON.parse(fsReadFileSync(join(bundlerPath, 'package.json'), 'utf-8'));
-          const rendererPkg = JSON.parse(fsReadFileSync(join(rendererPath, 'package.json'), 'utf-8'));
+          const absPath = join(bundlerPath, entry);
+          writeLog('INFO', `[module] 尝试 bundler: ${absPath}`);
 
-          // 获取 main 或 exports
-          let bundlerEntry = bundlerPkg.main;
-          let rendererEntry = rendererPkg.main;
-
-          // 尝试从 exports 字段获取
-          if (!bundlerEntry && bundlerPkg.exports) {
-            const exp = bundlerPkg.exports;
-            bundlerEntry = exp['.']?.require || exp['.']?.import || exp['.'];
-          }
-          if (!rendererEntry && rendererPkg.exports) {
-            const exp = rendererPkg.exports;
-            rendererEntry = exp['.']?.require || exp['.']?.import || exp['.'];
+          if (!existsSync(absPath)) {
+            continue;
           }
 
-          if (bundlerEntry && rendererEntry) {
-            const bundlerAbs = join(bundlerPath, bundlerEntry);
-            const rendererAbs = join(rendererPath, rendererEntry);
-
-            const b = require(bundlerAbs);
-            const r = require(rendererAbs);
-
-            if (b.bundle && r.renderMedia) {
-              bundler = b;
-              renderer = r;
-              writeLog('INFO', `[module] ✅ 方式1成功: ${modulesPath}`);
-              return true;
-            }
-          }
-        } catch (e) {
-          writeLog('INFO', `[module] 方式1失败: ${e.message}`);
-        }
-        return false;
-      },
-
-      // 方式 2: 直接 require 包目录（Node 会自动找 main）
-      async () => {
-        try {
-          const b = require(bundlerPath);
-          const r = require(rendererPath);
-
-          if (b.bundle && r.renderMedia) {
+          const b = require(absPath);
+          if (b && typeof b.bundle === 'function') {
             bundler = b;
-            renderer = r;
-            writeLog('INFO', `[module] ✅ 方式2成功: ${modulesPath}`);
-            return true;
+            writeLog('INFO', `[module] ✅ bundler 加载成功: ${absPath}`);
+            break;
           }
         } catch (e) {
-          writeLog('INFO', `[module] 方式2失败: ${e.message}`);
+          writeLog('INFO', `[module] bundler ${entry} 失败: ${e.message}`);
         }
-        return false;
-      },
+      }
 
-      // 方式 3: 动态 import dist/index.cjs
-      async () => {
+      if (!bundler) continue;
+
+      for (const entry of rendererEntries) {
         try {
-          const bundlerAbs = join(bundlerPath, 'dist', 'index.cjs');
-          const rendererAbs = join(rendererPath, 'dist', 'index.cjs');
+          const absPath = join(rendererPath, entry);
+          writeLog('INFO', `[module] 尝试 renderer: ${absPath}`);
 
-          if (!existsSync(bundlerAbs) || !existsSync(rendererAbs)) {
-            return false;
+          if (!existsSync(absPath)) {
+            continue;
           }
 
-          const b = await import(bundlerAbs);
-          const r = await import(rendererAbs);
-
-          if (b.bundle && r.renderMedia) {
-            bundler = b;
+          const r = require(absPath);
+          if (r && typeof r.renderMedia === 'function') {
             renderer = r;
-            writeLog('INFO', `[module] ✅ 方式3成功: ${modulesPath}`);
-            return true;
+            writeLog('INFO', `[module] ✅ renderer 加载成功: ${absPath}`);
+            break;
           }
         } catch (e) {
-          writeLog('INFO', `[module] 方式3失败: ${e.message}`);
+          writeLog('INFO', `[module] renderer ${entry} 失败: ${e.message}`);
         }
-        return false;
-      },
-    ];
+      }
 
-    for (const method of loadMethods) {
-      if (await method()) {
+      if (bundler && renderer) {
+        writeLog('INFO', `[module] ✅ 所有模块加载成功！`);
         return true;
       }
+    } catch (e) {
+      writeLog('INFO', `[module] 加载过程出错: ${e.message}`);
     }
   }
 
-  // 最后尝试默认路径（让 Node 自动查找）
+  // 最后尝试默认路径
   try {
     writeLog('INFO', '[module] 尝试默认路径...');
-    const b = require('@remotion/bundler');
-    const r = require('@remotion/renderer');
-
-    if (b.bundle && r.renderMedia) {
-      bundler = b;
-      renderer = r;
-      writeLog('INFO', '[module] ✅ 默认路径成功');
-      return true;
-    }
+    bundler = require('@remotion/bundler');
+    renderer = require('@remotion/renderer');
+    writeLog('INFO', '[module] ✅ 默认路径成功');
+    return true;
   } catch (e) {
     writeLog('ERROR', `[module] 默认路径失败: ${e.message}`);
   }
 
-  writeLog('ERROR', '无法加载 Remotion 模块，请检查安装');
+  writeLog('ERROR', '无法加载 Remotion 模块');
   return false;
 }
 
