@@ -1,0 +1,89 @@
+# ContentMaster AI · Remotion 渲染服务端
+# 用于部署在 Railway（也兼容 Render / Fly.io / 任何 Docker 主机）
+#
+# 架构：单目录部署，所有依赖在 /app 下
+#   - /app/remotion   → Remotion 项目 + 所有 node_modules（server + remotion）
+
+# ── 构建阶段 ─────────────────────
+FROM node:20-bookworm-slim AS builder
+
+WORKDIR /app
+
+# 安装基础工具
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 make g++ ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# 复制 package.json
+COPY remotion/package.json ./remotion/package.json
+COPY server/remotion-server/package.json ./server/package.json
+
+# 安装 remotion 项目依赖
+WORKDIR /app/remotion
+RUN npm install --no-audit --no-fund --legacy-peer-deps
+
+# 单独安装 @remotion/bundler 和 @remotion/renderer（使用兼容版本）
+RUN npm install --no-audit --no-fund --legacy-peer-deps \
+    @remotion/bundler@^4.0.250 @remotion/renderer@^4.0.250
+
+# 复制 remotion 源码
+COPY remotion/src ./src
+COPY remotion/remotion.config.ts ./
+
+# ── 运行时阶段 ─────────────────────
+FROM node:20-bookworm-slim
+
+# 关键系统依赖（Chromium / Chrome + 中文/多语言字体 + ffmpeg）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Chromium 运行时
+    chromium fonts-liberation libnss3 libatk-bridge2.0-0 libxkbcommon0 \
+    libxcomposite1 libxdamage1 libxrandr2 libgbm1 libxss1 libasound2 \
+    libatk1.0-0 libcairo2 libcups2 libdbus-1-3 libdrm2 libgtk-3-0 \
+    libpango-1.0-0 libpangocairo-1.0-0 fonts-liberation fonts-noto-cjk \
+    fonts-noto-color-emoji \
+    # ffmpeg (Remotion 渲染需要)
+    ffmpeg \
+    # 工具
+    ca-certificates curl tini \
+ && rm -rf /var/lib/apt/lists/*
+
+# 准备 Chrome 软链接
+RUN mkdir -p /opt/google/chrome && \
+    ln -sf /usr/bin/chromium /usr/local/bin/google-chrome && \
+    ln -sf /usr/bin/chromium /usr/local/bin/chrome && \
+    chromium --version || true
+
+# 复制构建好的项目（包含所有 node_modules）
+WORKDIR /app
+COPY --from=builder /app/remotion ./remotion
+COPY server/remotion-server/server.mjs ./server/
+
+# 渲染输出目录
+RUN mkdir -p /tmp/remotion-out /tmp/remotion-out/logs /tmp/remotion-temp
+
+# 验证
+RUN echo "=== 验证安装 ===" && \
+    echo "/app/remotion/node_modules/@remotion/bundler exists: $(test -d /app/remotion/node_modules/@remotion/bundler && echo yes || echo no)" && \
+    echo "/app/remotion/node_modules/@remotion/renderer exists: $(test -d /app/remotion/node_modules/@remotion/renderer && echo yes || echo no)" && \
+    echo "/app/remotion/node_modules/react exists: $(test -d /app/remotion/node_modules/react && echo yes || echo no)" && \
+    echo "/app/remotion/src/index.tsx exists: $(test -f /app/remotion/src/index.tsx && echo yes || echo no)" && \
+    echo "/app/server/server.mjs exists: $(test -f /app/server/server.mjs && echo yes || echo no)" && \
+    echo "=== 验证完成 ==="
+
+# 关键环境变量
+ENV REMOTION_PROJECT_ROOT=/app/remotion \
+    REMOTION_OUTPUT_DIR=/tmp/remotion-out \
+    NODE_ENV=production \
+    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:${PORT:-10000}/health || exit 1
+
+EXPOSE 10000
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
+# 启动：从 /app/remotion 目录启动，这样所有模块解析都正确
+CMD ["sh", "-c", "cd /app/remotion && node ../server/server.mjs"]
