@@ -43,10 +43,15 @@ export function getRemotionApiBase(): string {
 /**
  * 拼接 Remotion 后端 URL。
  *
- * 修复历史：worker 输出 `/api/remotion/download/<task>.mp4`，前端若 base 也是 `/api/remotion`，
- * 会拼成 `/api/remotion/api/remotion/download/...` 双前缀，导致走 Vite proxy 后 404。
+ * 修复历史：
+ * - v1: 直接拼 base + path，download 输出 /api/remotion/download/... 导致双前缀
+ * - v2: 剥掉 outputUrl 里的 /api/remotion 前缀后再拼 base
  *
- * 策略：去掉 outputUrl 里「第一个 /api/remotion」前缀后再拼 base。
+ * 当前逻辑（v2）：
+ * - Railway: base = https://<app>.up.railway.app，outputUrl = /download/123.mp4
+ *            → 直接拼 base + /download/123.mp4
+ * - 本地 proxy: base = /api/remotion，outputUrl = /download/123.mp4
+ *            → 拼出 /api/remotion/download/123.mp4，Vite proxy strip 后正确转发
  */
 export function buildRemotionUrl(outputUrl: string): string {
   if (!outputUrl) return '';

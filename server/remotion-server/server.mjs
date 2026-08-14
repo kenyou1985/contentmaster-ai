@@ -2,14 +2,15 @@
 /**
  * ContentMaster AI - Remotion 视频渲染 HTTP 服务
  *
- * 路由：
+ * 路由（全部在根路径）：
  *   GET  /health                       → 健康检查
- *   POST /api/remotion/upload-media    → data URL → temp file
- *   POST /api/remotion/render/start    → 异步提交渲染任务
- *   GET  /api/remotion/render/status/:id → 轮询状态
- *   GET  /api/remotion/render/result/:id → 获取最终 MP4
- *   POST /api/remotion/render/sync     → 同步短路（仅供本地短镜头）
- *   GET  /api/remotion/render/sse/:id  → SSE 实时进度
+ *   POST /upload-media                 → data URL → temp file
+ *   POST /render/start                  → 异步提交渲染任务
+ *   GET  /render/status/:id            → 轮询状态
+ *   GET  /render/result/:id            → 获取最终 MP4
+ *   POST /render/sync                  → 同步短路（仅供本地短镜头）
+ *   GET  /render/sse/:id               → SSE 实时进度
+ *   GET  /download/:file               → 下载渲染好的 MP4
  *
  * 端口：18093（本地）
  *      Railway / Vercel 由 PORT 环境变量决定
@@ -91,7 +92,7 @@ const LOG_DIR = join(OUTPUT_DIR, 'logs');
 if (!existsSync(OUTPUT_DIR)) mkdirSync(OUTPUT_DIR, { recursive: true });
 if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
 
-app.use('/api/remotion/download', express.static(OUTPUT_DIR, {
+app.use('/download', express.static(OUTPUT_DIR, {
   maxAge: '7d',
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('.mp4')) {
@@ -424,7 +425,7 @@ function runRenderWorker(payload, taskId) {
   });
 }
 
-// ── 健康检查（同时支持 /health 与 /api/remotion/health，兼容前端 proxy 链）────
+// ── 健康检查（所有路由现已在根路径，/health 唯一入口）────
 const healthHandler = (_req, res) => {
   // 运行时诊断（Railway 部署排查用）
   let chromiumOk = false;
@@ -486,10 +487,9 @@ const healthHandler = (_req, res) => {
   });
 };
 app.get('/health', healthHandler);
-app.get('/api/remotion/health', healthHandler);
 
 // M2 #11：bundle 缓存状态查询
-app.get('/api/remotion/bundle-cache/stats', async (_req, res) => {
+app.get('/bundle-cache/stats', async (_req, res) => {
   try {
     const { getCacheStats } = await import('./bundle-cache.mjs');
     const stats = getCacheStats();
@@ -499,7 +499,7 @@ app.get('/api/remotion/bundle-cache/stats', async (_req, res) => {
   }
 });
 
-app.post('/api/remotion/bundle-cache/clear', async (_req, res) => {
+app.post('/bundle-cache/clear', async (_req, res) => {
   try {
     const { clearWebpackCache } = await import('./bundle-cache.mjs');
     const cacheDir = join('/tmp', 'remotion-bundle-cache');
@@ -522,7 +522,7 @@ app.post('/api/remotion/bundle-cache/clear', async (_req, res) => {
 // ── 本地 WASM Whisper ASR ─────────────────────
 import { transcribeBatch, getPipeline } from './asr-service.mjs';
 
-app.post('/api/remotion/asr/transcribe', async (req, res) => {
+app.post('/asr/transcribe', async (req, res) => {
   try {
     const { items = [], model } = req.body || {};
     if (!Array.isArray(items) || items.length === 0) {
@@ -545,7 +545,7 @@ app.post('/api/remotion/asr/transcribe', async (req, res) => {
 });
 
 // 预热：提前加载 Whisper 模型（用户还没开始渲染时点一下）
-app.get('/api/remotion/asr/warmup', async (req, res) => {
+app.get('/asr/warmup', async (req, res) => {
   try {
     await getPipeline();
     res.json({ success: true, message: '模型已就绪' });
@@ -555,12 +555,12 @@ app.get('/api/remotion/asr/warmup', async (req, res) => {
 });
 
 // 模型状态检查
-app.get('/api/remotion/asr/status', async (req, res) => {
+app.get('/asr/status', async (req, res) => {
   res.json({ ready: true, model: 'Xenova/whisper-base' });
 });
 
 // ── Data URL 上传 ─────────────────────
-app.post('/api/remotion/upload-media', async (req, res) => {
+app.post('/upload-media', async (req, res) => {
   try {
     const { items } = req.body || {};
     if (!Array.isArray(items) || items.length === 0) {
@@ -585,7 +585,7 @@ app.post('/api/remotion/upload-media', async (req, res) => {
 });
 
 // ── 长视频分批渲染（M2 #12：>30 分钟自动分批 + ffmpeg 拼接）─────────────────────
-app.post('/api/remotion/render/long', async (req, res) => {
+app.post('/render/long', async (req, res) => {
   try {
     const payload = req.body || {};
     if (!Array.isArray(payload.shots) || payload.shots.length === 0) {
@@ -679,7 +679,7 @@ app.post('/api/remotion/render/long', async (req, res) => {
           message: `分批拼接完成（${segments.length} 段 → 1 个 MP4）`,
           result: {
             outputPath: finalPath,
-            outputUrl: `/api/remotion/download/${parentTaskId}.mp4`,
+            outputUrl: `/download/${parentTaskId}.mp4`,
             durationSec: segResults.reduce((s, r) => s + (r.durationSec || 0), 0),
             videoDurationSec: segResults.reduce((s, r) => s + (r.durationSec || 0), 0),
             videoSizeBytes: stats.size,
@@ -760,7 +760,7 @@ function logTask(taskId, msg) {
 }
 
 // ── 异步提交渲染任务 ─────────────────────
-app.post('/api/remotion/render/start', async (req, res) => {
+app.post('/render/start', async (req, res) => {
   try {
     const payload = req.body || {};
     if (!Array.isArray(payload.shots) || payload.shots.length === 0) {
@@ -785,7 +785,7 @@ app.post('/api/remotion/render/start', async (req, res) => {
 });
 
 // ── 批量提交（M2 #8：一次提交多个任务，自动排队执行）─────────────────────
-app.post('/api/remotion/render/batch', async (req, res) => {
+app.post('/render/batch', async (req, res) => {
   try {
     const { tasks } = req.body || {};
     if (!Array.isArray(tasks) || tasks.length === 0) {
@@ -813,7 +813,7 @@ app.post('/api/remotion/render/batch', async (req, res) => {
 });
 
 // ── 队列状态查询（M2 #8：前端展示"前面还有 N 个任务"）─────────────────────
-app.get('/api/remotion/render/queue', (_req, res) => {
+app.get('/render/queue', (_req, res) => {
   const queueItems = renderQueue.map((q, i) => ({
     position: i + 1,
     taskId: q.taskId,
@@ -828,7 +828,7 @@ app.get('/api/remotion/render/queue', (_req, res) => {
 });
 
 // ── 同步渲染（仅本地短镜头测试用）─────────────────────
-app.post('/api/remotion/render/sync', async (req, res) => {
+app.post('/render/sync', async (req, res) => {
   try {
     const payload = req.body || {};
     if (!Array.isArray(payload.shots) || payload.shots.length === 0) {
@@ -852,7 +852,7 @@ app.post('/api/remotion/render/sync', async (req, res) => {
 });
 
 // ── 轮询状态 ─────────────────────
-app.get('/api/remotion/render/status/:id', (req, res) => {
+app.get('/render/status/:id', (req, res) => {
   const task = renderTasks.get(req.params.id);
   if (!task) {
     return res.status(404).json({ status: 'not_found', error: '任务不存在或已过期' });
@@ -883,7 +883,7 @@ app.get('/api/remotion/render/status/:id', (req, res) => {
 });
 
 // ── 获取结果 ─────────────────────
-app.get('/api/remotion/render/result/:id', (req, res) => {
+app.get('/render/result/:id', (req, res) => {
   const task = renderTasks.get(req.params.id);
   if (!task) {
     return res.status(404).json({ success: false, error: '任务不存在或已过期' });
@@ -902,7 +902,7 @@ app.get('/api/remotion/render/result/:id', (req, res) => {
 });
 
 // ── SSE 实时进度 ─────────────────────
-app.get('/api/remotion/render/sse/:id', (req, res) => {
+app.get('/render/sse/:id', (req, res) => {
   const taskId = req.params.id;
   const task = renderTasks.get(taskId);
   if (!task) {
@@ -941,7 +941,7 @@ app.get('/api/remotion/render/sse/:id', (req, res) => {
 });
 
 // ── 完整日志文件（调试用）─────────────────────
-app.get('/api/remotion/render/log/:id', (req, res) => {
+app.get('/render/log/:id', (req, res) => {
   const taskId = req.params.id;
   const logPath = join(LOG_DIR, `${taskId}.log`);
   if (!existsSync(logPath)) {

@@ -928,8 +928,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     try {
       // 后端 base URL：本地 → 18093，否则走 vite proxy
       const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-      const base = isLocal ? 'http://localhost:18093' : '';
-      const res = await fetch(`${base}/api/remotion/render/status/${taskId}`);
+      const base = isLocal ? 'http://localhost:18093' : getRemotionApiBase();
+      const res = await fetch(`${base}/render/status/${taskId}`);
       if (!res.ok) return null;
       const data = await res.json();
       return { ...data, taskId };
@@ -1853,7 +1853,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         setBatchProgress({ current: i + 1, total: chunks.length, type: 'remotionBatch' });
       }
       // 批量提交到服务端队列
-      const res = await fetch(`${apiBase}/api/remotion/render/batch`, {
+      const res = await fetch(`${apiBase}/render/batch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tasks: tasksPayload }),
@@ -6382,8 +6382,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                           <button
                             onClick={async () => {
                               const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-                              const base = isLocal ? 'http://localhost:18093' : '';
-                              window.open(`${base}/api/remotion/render/log/${remotionErrorDetail.taskId}`, '_blank');
+                              const base = isLocal ? 'http://localhost:18093' : getRemotionApiBase();
+                              window.open(`${base}/render/log/${remotionErrorDetail.taskId}`, '_blank');
                             }}
                             className="text-[9px] text-slate-400 hover:text-slate-200 flex items-center gap-1"
                             title="在新窗口查看完整日志文件"

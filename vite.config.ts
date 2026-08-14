@@ -346,7 +346,7 @@ export default defineConfig(({ mode }) => {
           '/api/remotion': {
             target: 'http://127.0.0.1:18093',
             changeOrigin: true,
-            rewrite: (path) => path,
+            rewrite: (path) => path.replace(/^\/api\/remotion/, ''),
           },
         },
       },
