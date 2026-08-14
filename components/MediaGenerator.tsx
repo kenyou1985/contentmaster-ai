@@ -978,7 +978,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       preset: 'spring',
     },
     transition: { type: 'none', duration: 0.4 },
-    motion: 'kenBurns', // 默认轻微放大效果
+    motion: 'push', // 默认推入（拉远）效果
     safeZoneDetection: false, // M2 #7：字幕防遮挡默认关闭（启用后增加 5~10s）
     output: { target: 'download' },
   });
@@ -5388,191 +5388,188 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         </div>
 
         {/* 操作栏 */}
-        <div className="flex items-center justify-between bg-slate-800/50 border border-slate-700 rounded-xl p-3">
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* 批量操作 */}
-            <div className="flex items-center gap-1 border-r border-slate-700 pr-2 mr-1">
-              <button
-                onClick={handleBatchGenerateImages}
-                className="flex items-center gap-1 px-2 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition-all"
-                title="批量生成图片"
-              >
-                <Rocket size={13} />
-                批量圖片
-              </button>
-              <button
-                onClick={handleBatchGenerateVideos}
-                disabled={videoGeneratingCount > 0}
-                className="flex items-center gap-1 px-2 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
-                title="批量生成视频"
-              >
-                <Rocket size={13} />
-                批量视频
-              </button>
-              <button
-                onClick={handleBatchGenerateVoice}
-                disabled={voiceGeneratingCount > 0}
-                className="flex items-center gap-1 px-2 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
-                title="批量生成语音"
-              >
-                <Rocket size={13} />
-                批量語音
-              </button>
-            </div>
-
-            {/* 批量选择按钮 */}
-            <div className="flex items-center gap-1 border-r border-slate-700 pr-2 mr-1">
-              <button
-                onClick={handleSelectAll}
-                className="flex items-center gap-1 px-2 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-medium rounded transition-all"
-                title="全选"
-              >
-                <CheckSquare size={14} />
-              </button>
-              <button
-                onClick={handleDeselectAll}
-                className="flex items-center gap-1 px-2 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-medium rounded transition-all"
-                title="取消全选"
-              >
-                <Square size={14} />
-              </button>
-              <button
-                onClick={handleToggleSelect}
-                className="flex items-center gap-1 px-2 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-medium rounded transition-all"
-                title="反选"
-              >
-                <RefreshCw size={14} />
-              </button>
-            </div>
-
-            <button onClick={handleAddShot} className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition-all">
-              <Plus size={14} />
-              添加镜头
+        <div className="flex items-center gap-2 flex-wrap bg-slate-800/50 border border-slate-700 rounded-xl p-3">
+          {/* 批量操作 */}
+          <div className="flex items-center gap-1 border-r border-slate-700 pr-2 mr-1">
+            <button
+              onClick={handleBatchGenerateImages}
+              className="flex items-center gap-1 px-2 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition-all"
+              title="批量生成图片"
+            >
+              <Rocket size={13} />
+              批量圖片
             </button>
             <button
-              onClick={handleDeleteSelected}
-              disabled={selectedCount === 0}
-              className="flex items-center gap-1 px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
+              onClick={handleBatchGenerateVideos}
+              disabled={videoGeneratingCount > 0}
+              className="flex items-center gap-1 px-2 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
+              title="批量生成视频"
             >
-              <Trash2 size={14} />
-              刪除 ({selectedCount})
+              <Rocket size={13} />
+              批量视频
             </button>
             <button
-              onClick={handleExportImagesAsZip}
-              disabled={
-                selectedCount === 0 ||
-                batchZipBusy ||
-                !tableShots.some((s) => s.selected && s.imageUrls?.length)
-              }
-              className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
-              title="导出选中镜头的所有图片为 ZIP 文件"
+              onClick={handleBatchGenerateVoice}
+              disabled={voiceGeneratingCount > 0}
+              className="flex items-center gap-1 px-2 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
+              title="批量生成语音"
             >
-              <Download size={14} />
-              图片ZIP
+              <Rocket size={13} />
+              批量語音
             </button>
-            <button
-              onClick={handleExportAudioAsZip}
-              disabled={
-                selectedCount === 0 ||
-                batchZipBusy ||
-                !tableShots.some((s) => s.selected && s.voiceAudioUrl?.trim())
-              }
-              className="flex items-center gap-1 px-3 py-1.5 bg-teal-600 hover:bg-teal-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
-              title="将选中镜头已生成的配音各打包为一个文件，下载为 ZIP"
-            >
-              <Download size={14} />
-              音频ZIP
-            </button>
-            <button
-              onClick={handleExportVideoAsZip}
-              disabled={
-                selectedCount === 0 ||
-                batchZipBusy ||
-                !tableShots.some((s) => {
-                  if (!s.selected) return false;
-                  const list = s.videoUrls?.length ? s.videoUrls : s.videoUrl ? [s.videoUrl] : [];
-                  return list.some((u) => u?.trim());
-                })
-              }
-              className="flex items-center gap-1 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
-              title="将选中镜头已生成的视频打包为 ZIP（多视频镜头会包含多条）"
-            >
-              <Download size={14} />
-              视频ZIP
-            </button>
-
-            <span className="text-xs text-slate-500 ml-1">
-              {generatingCount > 0 ? `生成中: ${generatingCount} 個任務...` : '就緒'}
-            </span>
           </div>
 
-          {/* 一键成片 & 队列按钮 */}
-          <div className="flex items-center gap-2 ml-4 flex-shrink-0">
-            <input
-              type="text"
-              value={jianyingOutputDir}
-              onChange={(e) => onChangeJianyingOutputDir(e.target.value)}
-              placeholder="剪映草稿根目录"
-              className="w-[180px] px-3 py-1.5 bg-slate-900/70 border border-slate-600 focus:border-purple-500 outline-none text-slate-100 text-xs rounded-lg"
-              title="本机导出时：剪映草稿将直接写入该目录（或映射路径）。线上 Vercel 时由 Railway 打包 ZIP，此项用于解压后路径对照。"
-            />
+          {/* 批量选择按钮 */}
+          <div className="flex items-center gap-1 border-r border-slate-700 pr-2 mr-1">
             <button
-              onClick={() => handleOneClickPipeline()}
-              disabled={oneClickRunning || imageGeneratingCount + videoGeneratingCount + voiceGeneratingCount > 0}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs font-semibold rounded-lg shadow-lg transition-all disabled:opacity-50"
+              onClick={handleSelectAll}
+              className="flex items-center gap-1 px-2 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-medium rounded transition-all"
+              title="全选"
             >
-              {oneClickRunning ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />}
-              {oneClickRunning ? '成片中...' : '一键成片'}
-            </button>
-            {/* 取消一键成片按钮 */}
-            {oneClickRunning && (
-              <button
-                onClick={cancelOneClickPipeline}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-semibold rounded-lg shadow transition-all"
-                title="取消正在执行的一键成片"
-              >
-                <XCircle size={14} />
-                取消
-              </button>
-            )}
-            <button
-              onClick={handleEnqueueOneClickTask}
-              disabled={queueProcessorRunning}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white text-xs font-medium rounded-lg transition-all disabled:opacity-50"
-            >
-              <ArrowUp size={14} />
-              加入挂机队列
+              <CheckSquare size={14} />
             </button>
             <button
-              onClick={() => { if (!queueProcessorRunning) processOneClickQueue(); }}
-              disabled={queueProcessorRunning}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold rounded-lg shadow transition-all disabled:opacity-50"
+              onClick={handleDeselectAll}
+              className="flex items-center gap-1 px-2 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-medium rounded transition-all"
+              title="取消全选"
             >
-              {queueProcessorRunning ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />}
-              {queueProcessorRunning ? '队列执行中...' : '处理队列'}
+              <Square size={14} />
             </button>
-            {/* Remotion 视频导出按钮 */}
             <button
-              onClick={handleExportToRemotion}
-              disabled={isRenderingRemotion || tableShots.length === 0}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-lg transition-all disabled:opacity-50"
-              title="使用 Remotion 渲染合成 MP4 视频"
+              onClick={handleToggleSelect}
+              className="flex items-center gap-1 px-2 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-medium rounded transition-all"
+              title="反选"
             >
-              {isRenderingRemotion ? <Loader2 size={14} className="animate-spin" /> : <Film size={14} />}
-              {isRenderingRemotion ? '渲染中...' : '导出视频'}
+              <RefreshCw size={14} />
             </button>
-            {/* M2 #8：批量导出按钮（镜头 > 8 时启用） */}
-            {tableShots.length > 8 && (
-              <button
-                onClick={handleBatchExportToRemotion}
-                disabled={isRenderingRemotion}
-                className="flex items-center gap-1.5 px-2 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium rounded-lg transition-all disabled:opacity-50"
-                title={`批量分段导出（每 8 个镜头一段，自动排队渲染，适合长视频）`}
-              >
-                <ListOrdered size={13} />
-                批量导出
-              </button>
-            )}
+          </div>
+
+          <button onClick={handleAddShot} className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition-all">
+            <Plus size={14} />
+            添加镜头
+          </button>
+          <button
+            onClick={handleDeleteSelected}
+            disabled={selectedCount === 0}
+            className="flex items-center gap-1 px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
+          >
+            <Trash2 size={14} />
+            刪除 ({selectedCount})
+          </button>
+          <button
+            onClick={handleExportImagesAsZip}
+            disabled={
+              selectedCount === 0 ||
+              batchZipBusy ||
+              !tableShots.some((s) => s.selected && s.imageUrls?.length)
+            }
+            className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
+            title="导出选中镜头的所有图片为 ZIP 文件"
+          >
+            <Download size={14} />
+            图片ZIP
+          </button>
+          <button
+            onClick={handleExportAudioAsZip}
+            disabled={
+              selectedCount === 0 ||
+              batchZipBusy ||
+              !tableShots.some((s) => s.selected && s.voiceAudioUrl?.trim())
+            }
+            className="flex items-center gap-1 px-3 py-1.5 bg-teal-600 hover:bg-teal-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
+            title="将选中镜头已生成的配音各打包为一个文件，下载为 ZIP"
+          >
+            <Download size={14} />
+            音频ZIP
+          </button>
+          <button
+            onClick={handleExportVideoAsZip}
+            disabled={
+              selectedCount === 0 ||
+              batchZipBusy ||
+              !tableShots.some((s) => {
+                if (!s.selected) return false;
+                const list = s.videoUrls?.length ? s.videoUrls : s.videoUrl ? [s.videoUrl] : [];
+                return list.some((u) => u?.trim());
+              })
+            }
+            className="flex items-center gap-1 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded transition-all disabled:opacity-50"
+            title="将选中镜头已生成的视频打包为 ZIP（多视频镜头会包含多条）"
+          >
+            <Download size={14} />
+            视频ZIP
+          </button>
+
+          <span className="text-xs text-slate-500 ml-1">
+            {generatingCount > 0 ? `生成中: ${generatingCount} 個任務...` : '就緒'}
+          </span>
+
+          {/* 剪映草稿输出目录（紧凑模式） */}
+          <input
+            type="text"
+            value={jianyingOutputDir}
+            onChange={(e) => onChangeJianyingOutputDir(e.target.value)}
+            placeholder="剪映草稿目录（可选）"
+            className="w-[140px] px-2 py-1.5 bg-slate-900/70 border border-slate-600 focus:border-purple-500 outline-none text-slate-100 text-xs rounded-lg"
+            title="本机导出时：剪映草稿将直接写入该目录（或映射路径）。线上 Vercel 时由 Railway 打包 ZIP，此项用于解压后路径对照。"
+          />
+          <button
+            onClick={() => handleOneClickPipeline()}
+            disabled={oneClickRunning || imageGeneratingCount + videoGeneratingCount + voiceGeneratingCount > 0}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs font-semibold rounded-lg shadow-lg transition-all disabled:opacity-50"
+          >
+            {oneClickRunning ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />}
+            {oneClickRunning ? '成片中...' : '一键成片'}
+          </button>
+          {/* 取消一键成片按钮 */}
+          {oneClickRunning && (
+            <button
+              onClick={cancelOneClickPipeline}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-semibold rounded-lg shadow transition-all"
+              title="取消正在执行的一键成片"
+            >
+              <XCircle size={14} />
+              取消
+            </button>
+          )}
+          <button
+            onClick={handleEnqueueOneClickTask}
+            disabled={queueProcessorRunning}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white text-xs font-medium rounded-lg transition-all disabled:opacity-50"
+          >
+            <ArrowUp size={14} />
+            加入挂机队列
+          </button>
+          <button
+            onClick={() => { if (!queueProcessorRunning) processOneClickQueue(); }}
+            disabled={queueProcessorRunning}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold rounded-lg shadow transition-all disabled:opacity-50"
+          >
+            {queueProcessorRunning ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />}
+            {queueProcessorRunning ? '队列执行中...' : '处理队列'}
+          </button>
+          {/* Remotion 视频导出按钮 */}
+          <button
+            onClick={handleExportToRemotion}
+            disabled={isRenderingRemotion || tableShots.length === 0}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-lg transition-all disabled:opacity-50"
+            title="使用 Remotion 渲染合成 MP4 视频"
+          >
+            {isRenderingRemotion ? <Loader2 size={14} className="animate-spin" /> : <Film size={14} />}
+            {isRenderingRemotion ? '渲染中...' : '导出视频'}
+          </button>
+          {/* M2 #8：批量导出按钮（镜头 > 8 时启用） */}
+          {tableShots.length > 8 && (
+            <button
+              onClick={handleBatchExportToRemotion}
+              disabled={isRenderingRemotion}
+              className="flex items-center gap-1.5 px-2 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium rounded-lg transition-all disabled:opacity-50"
+              title={`批量分段导出（每 8 个镜头一段，自动排队渲染，适合长视频）`}
+            >
+              <ListOrdered size={13} />
+              批量导出
+            </button>
+          )}
             {/* Remotion 设置按钮 */}
             <div className="relative">
               <button
@@ -7270,177 +7267,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                         重新製作
                       </button>
                     </div>
-                    {/* 镜头运动模式（Ken Burns 分组按钮） */}
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-[9px] text-slate-500">运动</span>
-                      <div className="flex flex-wrap gap-0.5">
-                        {/* Ken Burns */}
-                        <button
-                          type="button"
-                          disabled={!!shot.videoUrl || !isMainWorkspace}
-                          onClick={() => updateShot(shot.id, { motion: 'kenBurns' } as any)}
-                          className={`text-[9px] px-1.5 py-0.5 rounded border ${
-                            (shot.motion ?? 'kenBurns') === 'kenBurns'
-                              ? 'bg-blue-600 border-blue-400 text-white'
-                              : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
-                          } disabled:opacity-30`}
-                          title="智能缩放（Ken Burns）"
-                        >
-                          K.Burns
-                        </button>
-                        {/* 推 */}
-                        <button
-                          type="button"
-                          disabled={!!shot.videoUrl || !isMainWorkspace}
-                          onClick={() => updateShot(shot.id, { motion: 'push' } as any)}
-                          className={`text-[9px] px-1.5 py-0.5 rounded border ${
-                            shot.motion === 'push'
-                              ? 'bg-blue-600 border-blue-400 text-white'
-                              : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
-                          } disabled:opacity-30`}
-                          title="推（放大视角）"
-                        >
-                          推
-                        </button>
-                        {/* 拉 */}
-                        <button
-                          type="button"
-                          disabled={!!shot.videoUrl || !isMainWorkspace}
-                          onClick={() => updateShot(shot.id, { motion: 'pull' } as any)}
-                          className={`text-[9px] px-1.5 py-0.5 rounded border ${
-                            shot.motion === 'pull'
-                              ? 'bg-blue-600 border-blue-400 text-white'
-                              : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
-                          } disabled:opacity-30`}
-                          title="拉（缩小视角）"
-                        >
-                          拉
-                        </button>
-                        {/* 上 */}
-                        <button
-                          type="button"
-                          disabled={!!shot.videoUrl || !isMainWorkspace}
-                          onClick={() => updateShot(shot.id, { motion: 'panUp' } as any)}
-                          className={`text-[9px] px-1.5 py-0.5 rounded border ${
-                            shot.motion === 'panUp'
-                              ? 'bg-blue-600 border-blue-400 text-white'
-                              : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
-                          } disabled:opacity-30`}
-                          title="上移"
-                        >
-                          ↑
-                        </button>
-                        {/* 下 */}
-                        <button
-                          type="button"
-                          disabled={!!shot.videoUrl || !isMainWorkspace}
-                          onClick={() => updateShot(shot.id, { motion: 'panDown' } as any)}
-                          className={`text-[9px] px-1.5 py-0.5 rounded border ${
-                            shot.motion === 'panDown'
-                              ? 'bg-blue-600 border-blue-400 text-white'
-                              : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
-                          } disabled:opacity-30`}
-                          title="下移"
-                        >
-                          ↓
-                        </button>
-                        {/* 左 */}
-                        <button
-                          type="button"
-                          disabled={!!shot.videoUrl || !isMainWorkspace}
-                          onClick={() => updateShot(shot.id, { motion: 'panLeft' } as any)}
-                          className={`text-[9px] px-1.5 py-0.5 rounded border ${
-                            shot.motion === 'panLeft'
-                              ? 'bg-blue-600 border-blue-400 text-white'
-                              : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
-                          } disabled:opacity-30`}
-                          title="左移"
-                        >
-                          ←
-                        </button>
-                        {/* 右 */}
-                        <button
-                          type="button"
-                          disabled={!!shot.videoUrl || !isMainWorkspace}
-                          onClick={() => updateShot(shot.id, { motion: 'panRight' } as any)}
-                          className={`text-[9px] px-1.5 py-0.5 rounded border ${
-                            shot.motion === 'panRight'
-                              ? 'bg-blue-600 border-blue-400 text-white'
-                              : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
-                          } disabled:opacity-30`}
-                          title="右移"
-                        >
-                          →
-                        </button>
-                        {/* 静止 */}
-                        <button
-                          type="button"
-                          disabled={!!shot.videoUrl || !isMainWorkspace}
-                          onClick={() => updateShot(shot.id, { motion: 'none' } as any)}
-                          className={`text-[9px] px-1.5 py-0.5 rounded border ${
-                            shot.motion === 'none'
-                              ? 'bg-blue-600 border-blue-400 text-white'
-                              : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
-                          } disabled:opacity-30`}
-                          title="静止（无运动）"
-                        >
-                          静止
-                        </button>
-                        {/* 放大 */}
-                        <button
-                          type="button"
-                          disabled={!!shot.videoUrl || !isMainWorkspace}
-                          onClick={() => updateShot(shot.id, { motion: 'zoomIn' } as any)}
-                          className={`text-[9px] px-1.5 py-0.5 rounded border ${
-                            shot.motion === 'zoomIn'
-                              ? 'bg-blue-600 border-blue-400 text-white'
-                              : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
-                          } disabled:opacity-30`}
-                          title="放大（从正常到放大）"
-                        >
-                          放大
-                        </button>
-                        {/* 缩小 */}
-                        <button
-                          type="button"
-                          disabled={!!shot.videoUrl || !isMainWorkspace}
-                          onClick={() => updateShot(shot.id, { motion: 'zoomOut' } as any)}
-                          className={`text-[9px] px-1.5 py-0.5 rounded border ${
-                            shot.motion === 'zoomOut'
-                              ? 'bg-blue-600 border-blue-400 text-white'
-                              : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
-                          } disabled:opacity-30`}
-                          title="缩小（从放大到正常）"
-                        >
-                          缩小
-                        </button>
-                      </div>
-                      {/* 批量运动切换 */}
-                      <select
-                        disabled={!!shot.videoUrl || !isMainWorkspace}
-                        value=""
-                        onChange={(e) => {
-                          const m = e.target.value;
-                          if (!m) return;
-                          const targets = tableShots.filter(s => !s.videoUrl && s.selected);
-                          if (targets.length === 0) return;
-                          targets.forEach(s => updateShot(s.id, { motion: m } as any));
-                        }}
-                        className="text-[9px] px-1 py-0.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded border border-slate-600 disabled:opacity-30"
-                      >
-                        <option value="">批量切换选中…</option>
-                        <option value="kenBurns">K.Burns</option>
-                        <option value="push">推</option>
-                        <option value="pull">拉</option>
-                        <option value="panUp">↑</option>
-                        <option value="panDown">↓</option>
-                        <option value="panLeft">←</option>
-                        <option value="panRight">→</option>
-                        <option value="zoomIn">放大</option>
-                        <option value="zoomOut">缩小</option>
-                        <option value="none">静止</option>
-                      </select>
-                    </div>
+                    {/* 镜头运动已移至 Remotion 高级设置 → 分镜运动（全局默认） */}
+
                     <button
                       onClick={() => {
                         setEditingShotId(shot.id);
@@ -7461,8 +7289,6 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
             </div>
           )}
         </div>
-
-      </div>
 
       {/* 图片放大模态框 */}
       {enlargedImageUrl && (

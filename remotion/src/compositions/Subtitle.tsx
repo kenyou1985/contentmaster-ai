@@ -1,5 +1,5 @@
 import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig, interpolate, spring } from 'remotion';
-import { type CSSProperties, useMemo } from 'react';
+import { type CSSProperties, useMemo, Fragment } from 'react';
 import { buildSubtitleCues, splitTextToWords, type SubtitleCue, type SubtitleFullConfig, type SubtitleWord } from './subtitleCues';
 
 interface SubtitleProps {
@@ -206,12 +206,12 @@ const TikTokSubtitle: React.FC<{
   return (
     <div style={{ ...baseStyle, color: baseColor, opacity }}>
       {words.map((word, i) => (
-        <span
-          key={i}
-          style={{ color: i % 2 === 0 ? baseColor : altColor }}
-        >
-          {word}
-        </span>
+        <Fragment key={i}>
+          {i > 0 && ' '}
+          <span style={{ color: i % 2 === 0 ? baseColor : altColor }}>
+            {word}
+          </span>
+        </Fragment>
       ))}
     </div>
   );
@@ -254,9 +254,12 @@ const KaraokeSubtitle: React.FC<{
       {words.map((w, i) => {
         const isRead = nowMs >= w.endMs;
         return (
-          <span key={i} style={{ color: isRead ? altColor : baseColor }}>
-            {w.text}
-          </span>
+          <Fragment key={i}>
+            {i > 0 && ' '}
+            <span style={{ color: isRead ? altColor : baseColor }}>
+              {w.text}
+            </span>
+          </Fragment>
         );
       })}
     </div>

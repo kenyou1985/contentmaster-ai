@@ -36,8 +36,8 @@ export const ShotLayer: React.FC<ShotLayerProps> = ({ shot, durationInFrames, gl
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
 
-  // 运动优先级：镜头级 > 全局级 > 默认 kenBurns
-  const rawMotion = shot.motion || globalMotion || 'kenBurns';
+  // 运动优先级：镜头级 > 全局级 > 默认 push（推入）
+  const rawMotion = shot.motion || globalMotion || 'push';
   // 统一映射：把 kenBurnsStrong/kenBurnsSlow 映射为内部 key
   const motionBase: string = rawMotion;
 
