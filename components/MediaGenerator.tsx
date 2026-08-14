@@ -657,7 +657,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   const [oneClickRunning, setOneClickRunning] = useState(false);
   const [oneClickPipelineProgress, setOneClickPipelineProgress] = useState<string>('');
   /** 一键成片：是否生成视频（导出剪映仍会执行，仅无视频轨道） */
-  const [oneClickPipelineMode, setOneClickPipelineMode] = useState<'image_audio_video' | 'image_audio_only'>('image_audio_video');
+  const [oneClickPipelineMode, setOneClickPipelineMode] = useState<'image_audio_video' | 'image_audio_only'>('image_audio_only');
 
   // Workspace Tab 系统
   // 'main' = 当前编辑器，'oc_<id>' = 一键成片任务，'q_<id>' = 队列任务
@@ -2117,17 +2117,17 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       }
     }
 
-    // Step 4: 导出剪映（等视频真正生成完毕后才执行，不会提前）
-    setOneClickPipelineProgress('导出剪映草稿...');
-    patchTaskProgress(90, '导出剪映…');
+    // Step 4: 导出视频（Remotion MP4 合成 — 用户偏好：自动走视频合成而非剪映草稿）
+    setOneClickPipelineProgress('合成视频...');
+    patchTaskProgress(90, '合成视频…');
     // 取当前最新镜头数据（含音频 URL）
     const finalShots = targetShotIds.map(id => getLiveShot(id)).filter(Boolean) as Shot[];
-    appendTerminalLog('Pipeline', `开始导出剪映草稿: ${exportDraftName}（${finalShots.length} 镜）`);
-    const jianyingResult = await performExportToJianying(finalShots, exportDraftName);
+    appendTerminalLog('Pipeline', `开始合成视频(Remotion): ${exportDraftName}（${finalShots.length} 镜）`);
+    const remotionResult = await performExportToRemotion(finalShots, exportDraftName);
     appendTerminalLog('Pipeline', `[${taskType === 'oneshot' ? '一键成片' : '队列任务'}] 执行完成`);
 
-    // 仅在剪映导出成功时才显示完成 toast（pipeline 可能中途失败，catch 会显示错误 toast）
-    if (jianyingResult !== false) {
+    // 仅在视频合成成功时才显示完成 toast（pipeline 可能中途失败，catch 会显示错误 toast）
+    if (remotionResult !== false) {
       setOneClickPipelineProgress('');
       toast.success(
         oneClickPipelineMode === 'image_audio_only'
