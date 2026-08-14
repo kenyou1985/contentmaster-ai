@@ -252,6 +252,23 @@ const MIME_EXT = {
   'audio/x-m4a': '.m4a', 'audio/m4a': '.m4a',
 };
 
+// 最小占位文件：用于远程 URL 下载失败时占位，避免 Remotion 重新下载
+// 1x1 透明 PNG（base64）
+const PLACEHOLDER_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+  'base64'
+);
+// 空 mp3（最小合法 mp3 帧）
+const PLACEHOLDER_MP3 = Buffer.from([0xff, 0xfb, 0x90, 0x44, 0x00, 0x00, 0x00, 0x00]);
+const PLACEHOLDER_BYTES = {
+  '.png': PLACEHOLDER_PNG, '.jpg': PLACEHOLDER_PNG, '.jpeg': PLACEHOLDER_PNG,
+  '.gif': PLACEHOLDER_PNG, '.webp': PLACEHOLDER_PNG,
+  '.mp3': PLACEHOLDER_MP3, '.wav': PLACEHOLDER_MP3, '.ogg': PLACEHOLDER_MP3,
+  '.m4a': PLACEHOLDER_MP3, '.aac': PLACEHOLDER_MP3,
+  '.mp4': PLACEHOLDER_MP3, '.mov': PLACEHOLDER_MP3, '.webm': PLACEHOLDER_MP3,
+  '.bin': Buffer.alloc(0),
+};
+
 /**
  * 把 data URL 或远程 URL 转成文件路径，返回 { cleanedShots, tempDir, filePathMap }
  * filePathMap: 原始 URL → 文件路径 的映射
@@ -299,9 +316,11 @@ async function extractUrlsToTempFiles(shots, log = console.log) {
       log(`下载成功 (${(buf.length / 1024).toFixed(1)} KB): ${basename(filePath)}`);
       return filePath;
     } catch (e) {
-      log(`�️ 下载失败 ${val.slice(0, 60)}...: ${e.message}`);
-      // 失败时返回 null，让 cleanedShots 保留原始 URL
-      return null;
+      log(`⚠️ 下载失败 ${val.slice(0, 60)}...: ${e.message}，使用占位文件`);
+      // 下载失败时写一个最小占位文件，避免 Remotion 重新下载
+      const placeholder = PLACEHOLDER_BYTES[ext] || PLACEHOLDER_BYTES['.bin'];
+      writeFileSync(filePath, placeholder);
+      return filePath;
     }
   };
 
@@ -328,7 +347,7 @@ async function extractUrlsToTempFiles(shots, log = console.log) {
           else if (pathname.includes('video')) ext = '.mp4';
         } catch {}
         const filePath = await downloadRemote(val, ext);
-        if (filePath) filePathMap.set(val, filePath);
+        filePathMap.set(val, filePath);
       }
     }
   }
