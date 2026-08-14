@@ -253,41 +253,82 @@ const MIME_EXT = {
 };
 
 /**
- * 把 data URL 转成文件路径，返回 { cleanedShots, tempDir, filePathMap }
- * filePathMap: data URL → 文件路径 的映射
+ * 把 data URL 或远程 URL 转成文件路径，返回 { cleanedShots, tempDir, filePathMap }
+ * filePathMap: 原始 URL → 文件路径 的映射
  */
-function extractDataUrlsToTempFiles(shots) {
+async function extractUrlsToTempFiles(shots, log = console.log) {
   const tempDir = join('/tmp', `remotion_data_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
   mkdirSync(tempDir, { recursive: true });
   const filePathMap = new Map();
 
-  for (const shot of shots) {
+  const collectUrls = (shot) => {
+    const urls = [];
     for (const key of ['imageUrl', 'audioUrl', 'voiceoverAudioUrl', 'videoUrl']) {
       const val = shot[key];
-      if (!val || typeof val !== 'string' || !val.startsWith('data:')) continue;
-      if (filePathMap.has(val)) continue;
-      const headerMatch = val.match(/^data:([^;]+)/);
-      const mime = headerMatch ? headerMatch[1] : 'application/octet-stream';
-      const ext = MIME_EXT[mime] || '.bin';
-      const idx = filePathMap.size;
-      const filePath = join(tempDir, `media_${String(idx).padStart(4, '0')}${ext}`);
-      const commaIdx = val.indexOf(',');
-      const b64data = commaIdx >= 0 ? val.slice(commaIdx + 1) : val;
-      writeFileSync(filePath, Buffer.from(b64data, 'base64'));
-      filePathMap.set(val, filePath);
+      if (val && typeof val === 'string') urls.push({ key, val });
     }
     if (Array.isArray(shot.imageUrls)) {
       for (const u of shot.imageUrls) {
-        if (!u || !u.startsWith('data:') || filePathMap.has(u)) continue;
-        const headerMatch = u.match(/^data:([^;]+)/);
+        if (u && typeof u === 'string') urls.push({ key: 'imageUrls', val: u });
+      }
+    }
+    return urls;
+  };
+
+  const writeFileFromBase64 = (val, ext) => {
+    const idx = filePathMap.size;
+    const filePath = join(tempDir, `media_${String(idx).padStart(4, '0')}${ext}`);
+    const commaIdx = val.indexOf(',');
+    const b64data = commaIdx >= 0 ? val.slice(commaIdx + 1) : val;
+    writeFileSync(filePath, Buffer.from(b64data, 'base64'));
+    return filePath;
+  };
+
+  const downloadRemote = async (val, ext) => {
+    const idx = filePathMap.size;
+    const filePath = join(tempDir, `media_${String(idx).padStart(4, '0')}${ext}`);
+    try {
+      log(`下载远程媒体: ${val.slice(0, 80)}...`);
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 60000);
+      const res = await fetch(val, { signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      writeFileSync(filePath, buf);
+      log(`下载成功 (${(buf.length / 1024).toFixed(1)} KB): ${basename(filePath)}`);
+      return filePath;
+    } catch (e) {
+      log(`�️ 下载失败 ${val.slice(0, 60)}...: ${e.message}`);
+      // 失败时返回 null，让 cleanedShots 保留原始 URL
+      return null;
+    }
+  };
+
+  for (const shot of shots) {
+    for (const { key, val } of collectUrls(shot)) {
+      if (filePathMap.has(val)) continue;
+
+      if (val.startsWith('data:')) {
+        const headerMatch = val.match(/^data:([^;]+)/);
         const mime = headerMatch ? headerMatch[1] : 'application/octet-stream';
         const ext = MIME_EXT[mime] || '.bin';
-        const idx = filePathMap.size;
-        const filePath = join(tempDir, `media_${String(idx).padStart(4, '0')}${ext}`);
-        const commaIdx = u.indexOf(',');
-        const b64data = commaIdx >= 0 ? u.slice(commaIdx + 1) : u;
-        writeFileSync(filePath, Buffer.from(b64data, 'base64'));
-        filePathMap.set(u, filePath);
+        const filePath = writeFileFromBase64(val, ext);
+        filePathMap.set(val, filePath);
+      } else if (val.startsWith('http://') || val.startsWith('https://')) {
+        // 从 URL 推断扩展名
+        let ext = '.bin';
+        try {
+          const u = new URL(val);
+          const pathname = u.pathname.toLowerCase();
+          const m = pathname.match(/\.([a-z0-9]{2,5})(\?|$)/);
+          if (m) ext = '.' + m[1];
+          else if (pathname.includes('audio')) ext = '.mp3';
+          else if (pathname.includes('image') || pathname.includes('img')) ext = '.png';
+          else if (pathname.includes('video')) ext = '.mp4';
+        } catch {}
+        const filePath = await downloadRemote(val, ext);
+        if (filePath) filePathMap.set(val, filePath);
       }
     }
   }
@@ -295,16 +336,18 @@ function extractDataUrlsToTempFiles(shots) {
   const cleanedShots = JSON.parse(JSON.stringify(shots));
   for (const shot of cleanedShots) {
     for (const key of ['imageUrl', 'audioUrl', 'voiceoverAudioUrl', 'videoUrl']) {
-      if (shot[key] && shot[key].startsWith('data:')) {
-        shot[key] = filePathMap.get(shot[key]) || shot[key];
+      if (shot[key] && filePathMap.has(shot[key])) {
+        shot[key] = filePathMap.get(shot[key]);
       }
     }
     if (Array.isArray(shot.imageUrls)) {
       shot.imageUrls = shot.imageUrls.map((u) =>
-        u && u.startsWith('data:') ? filePathMap.get(u) || u : u
+        u && filePathMap.has(u) ? filePathMap.get(u) : u
       );
     }
   }
+
+  log(`媒体下载完成: ${filePathMap.size} 个文件，已映射 ${cleanedShots.reduce((acc, s) => acc + (Array.isArray(s.imageUrls) ? s.imageUrls.length : 0) + ['imageUrl','audioUrl','voiceoverAudioUrl','videoUrl'].filter(k => s[k]).length, 0)} 处引用`);
 
   return { cleanedShots, tempDir, filePathMap };
 }
@@ -595,8 +638,8 @@ app.post('/render/start', async (req, res) => {
     const task = createRenderTask(payload);
     updateTask(task.taskId, { status: 'running', progress: 0, message: '任务已入队' });
 
-    // 提取 data URL 为文件
-    const { cleanedShots, tempDir, filePathMap } = extractDataUrlsToTempFiles(payload.shots);
+    // 提取 data URL / 远程 URL 为文件
+    const { cleanedShots, tempDir, filePathMap } = await extractUrlsToTempFiles(payload.shots);
 
     // 构建 baseUrl
     // 重要：Remotion 内部的 chromium 浏览器需要访问媒体文件
@@ -726,8 +769,8 @@ app.post('/render/sync', async (req, res) => {
     const taskId = `sync_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const task = createRenderTask(payload);
 
-    // 提取 data URL 为文件
-    const { cleanedShots, tempDir, filePathMap } = extractDataUrlsToTempFiles(payload.shots);
+    // 提取 data URL / 远程 URL 为文件
+    const { cleanedShots, tempDir, filePathMap } = await extractUrlsToTempFiles(payload.shots);
     // 转换为 HTTP URL → 用 127.0.0.1:PORT 走容器内回环
     const baseUrl = process.env.MEDIA_BASE_URL || `http://127.0.0.1:${PORT}`;
     const shotsWithHttpUrls = replaceFilePathsWithHttpUrls(cleanedShots, filePathMap, baseUrl);
