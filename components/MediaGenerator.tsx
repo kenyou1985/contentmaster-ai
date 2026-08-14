@@ -5702,14 +5702,30 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                           {transitionOpen ? '收起' : '展开'}
                         </button>
                       </div>
-                      <div className="flex items-center gap-1.5">
-                        {(['none', 'fade', 'slide', 'zoom'] as const).map(t => (
+                      <div className="grid grid-cols-7 gap-1">
+                        {([
+                          ['none', '无', '无转场（硬切）'],
+                          ['fade', '淡入', '淡入淡出溶解'],
+                          ['slide', '滑动', '滑动推出'],
+                          ['wipe', '擦除', '方向擦除（侧幕盖上来）'],
+                          ['flip', '翻转', '3D 翻转'],
+                          ['clockWipe', '时钟', '时钟式圆扫'],
+                          ['iris', '光圈', '圆形光圈揭开'],
+                          ['zoomBlur', '缩模', '缩放+模糊聚焦'],
+                          ['dreamyZoom', '梦幻', '缩放+白光闪烁'],
+                          ['crossZoom', '交错', '交差缩放切换'],
+                          ['filmBurn', '灼烧', '橙红色电影灼烧'],
+                          ['ripple', '波纹', '水波纹扩散'],
+                          ['pushCut', '推切', '闪光冲击硬切'],
+                          ['dissolve', '溶解', '噪点颗粒溶解'],
+                        ] as const).map(([val, label, tip]) => (
                           <button
-                            key={t}
-                            onClick={() => setRemotionConfig(c => ({ ...c, transition: { ...c.transition, type: t, duration: c.transition?.duration ?? 0.4 } }))}
-                            className={`flex-1 text-[10px] px-2 py-1 rounded ${(remotionConfig.transition?.type || 'fade') === t ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                            key={val}
+                            onClick={() => setRemotionConfig(c => ({ ...c, transition: { ...c.transition, type: val as any, duration: c.transition?.duration ?? 0.4 } }))}
+                            className={`text-[10px] px-1 py-1 rounded transition-all ${(remotionConfig.transition?.type || 'fade') === val ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                            title={tip}
                           >
-                            {t === 'none' ? '无' : t === 'fade' ? '淡入淡出' : t === 'slide' ? '滑动' : '缩放'}
+                            {label}
                           </button>
                         ))}
                       </div>
@@ -5722,10 +5738,33 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                             max="1.5"
                             step="0.1"
                             value={remotionConfig.transition?.duration ?? 0.4}
-                            onChange={(e) => setRemotionConfig(c => ({ ...c, transition: { ...c.transition, type: c.transition?.type ?? 'fade', duration: Number(e.target.value) } }))}
+                            onChange={(e) => setRemotionConfig(c => ({ ...c, transition: { ...c.transition, type: (c.transition?.type ?? 'fade') as any, duration: Number(e.target.value) } }))}
                             className="flex-1"
                           />
                           <span className="w-10 text-right">{(remotionConfig.transition?.duration ?? 0.4).toFixed(1)}s</span>
+                        </div>
+                      )}
+                      {remotionConfig.transition?.type !== 'none' && (
+                        <div className="bg-slate-700/50 rounded px-2 py-1">
+                          <span className="text-[9px] text-slate-500">
+                            当前：{
+                              remotionConfig.transition?.type === 'fade' ? '淡入淡出（最通用）' :
+                              remotionConfig.transition?.type === 'slide' ? '滑动（左右推出）' :
+                              remotionConfig.transition?.type === 'wipe' ? '方向擦除（侧幕盖上）' :
+                              remotionConfig.transition?.type === 'flip' ? '3D 翻转（深度感）' :
+                              remotionConfig.transition?.type === 'clockWipe' ? '时钟式圆扫（科幻）' :
+                              remotionConfig.transition?.type === 'iris' ? '圆形光圈揭开（电影感）' :
+                              remotionConfig.transition?.type === 'zoomBlur' ? '缩放+模糊聚焦（动态）' :
+                              remotionConfig.transition?.type === 'dreamyZoom' ? '梦幻缩放+白光（MV 感）' :
+                              remotionConfig.transition?.type === 'crossZoom' ? '交差缩放（蒙太奇）' :
+                              remotionConfig.transition?.type === 'filmBurn' ? '电影灼烧（复古）' :
+                              remotionConfig.transition?.type === 'ripple' ? '水波纹扩散（梦幻）' :
+                              remotionConfig.transition?.type === 'pushCut' ? '闪光冲击硬切（动感）' :
+                              remotionConfig.transition?.type === 'dissolve' ? '噪点颗粒溶解（胶片）' :
+                              remotionConfig.transition?.type === 'zoom' ? '缩放（兼容旧配置）' :
+                              remotionConfig.transition?.type
+                            }
+                          </span>
                         </div>
                       )}
                     </div>

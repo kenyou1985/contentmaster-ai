@@ -37,8 +37,8 @@ export interface RemotionInputShot {
    */
   textCues?: RemotionInputCue[];
   filter?: string;
-  transitionIn?: string;
-  transitionOut?: string;
+  transitionIn?: TransitionType;
+  transitionOut?: TransitionType;
   /**
    * 镜头级视频滤镜（优先级高于全局 videoFilter）
    * 支持: blur / brightness / contrast / saturation / exposure / temperature / hue / grayscale / opacity
@@ -55,6 +55,28 @@ export interface RemotionInputShot {
     | 'zoomIn' | 'zoomOut' | 'panLeft' | 'panRight' | 'panUp' | 'panDown'
     | 'push' | 'pull' | 'rotateCW' | 'rotateCCW';
 }
+
+/**
+ * 镜头转场类型
+ * 支持：
+ *   none | fade | slide | wipe | flip | clockWipe | iris
+ *   zoomBlur | dreamyZoom | crossZoom | filmBurn | ripple | pushCut | dissolve
+ */
+export type TransitionType =
+  | 'none'
+  | 'fade'
+  | 'slide'
+  | 'wipe'
+  | 'flip'
+  | 'clockWipe'
+  | 'iris'
+  | 'zoomBlur'
+  | 'dreamyZoom'
+  | 'crossZoom'
+  | 'filmBurn'
+  | 'ripple'
+  | 'pushCut'
+  | 'dissolve';
 
 export interface RemotionInputVideoFilter {
   /** 高斯模糊半径（0 = 无） */
@@ -117,7 +139,7 @@ export interface RemotionInputConfig {
   bitrate?: string;
   bgm: RemotionInputBGM;
   subtitle: RemotionInputSubtitle;
-  transition?: { type: 'none' | 'fade' | 'slide' | 'zoom'; duration: number };
+  transition?: { type: TransitionType; duration: number };
   output?: { target: string };
   /**
    * 全局视频滤镜（图片/视频镜头均适用）

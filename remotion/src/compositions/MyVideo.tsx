@@ -66,8 +66,8 @@ export const MyVideo: React.FC<RemotionInputProps> = ({ shots, config }) => {
       startFrame: number;          // 视觉（音频）起点
       leadInFrames: number;         // 上一镜头重叠进来的帧数（视觉上提前进入）
       durationFrames: number;       // 镜头实际渲染时长（等于音频时长，不截断）
-      transitionIn: 'none' | 'fade' | 'slide' | 'zoom';
-      transitionOut: 'none' | 'fade' | 'slide' | 'zoom';
+      transitionIn: import('../types').TransitionType;
+      transitionOut: import('../types').TransitionType;
       transitionFrames: number;
     };
     const out: Segment[] = [];
