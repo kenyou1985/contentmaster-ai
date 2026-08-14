@@ -6,8 +6,50 @@
  * 输出：stdout 逐行 JSON { type, ... }
  * 日志：/tmp/remotion-out/logs/<taskId>.log（方便跟踪调试）
  */
-import { bundle } from '@remotion/bundler';
-import { renderMedia, getCompositions, selectComposition } from '@remotion/renderer';
+
+// 动态导入 Remotion 模块（解决 Docker 容器中路径问题）
+let bundler, renderer;
+
+async function loadRemotionModules() {
+  // 尝试从多个路径加载 Remotion 模块
+  const pathsToTry = [
+    join(PROJECT_ROOT, 'node_modules'),
+    join(__dirname, 'node_modules'),
+  ];
+
+  for (const modulesPath of pathsToTry) {
+    try {
+      const bundlerPath = join(modulesPath, '@remotion', 'bundler', 'package.json');
+      const rendererPath = join(modulesPath, '@remotion', 'renderer', 'package.json');
+      
+      if (existsSync(bundlerPath) && existsSync(rendererPath)) {
+        logInfo(`[module] 从 ${modulesPath} 加载 Remotion 模块`);
+        
+        // 使用 import 动态加载
+        const bundlerModule = await import(`${modulesPath}/@remotion/bundler/dist/index.cjs`);
+        const rendererModule = await import(`${modulesPath}/@remotion/renderer/dist/index.cjs`);
+        
+        bundler = bundlerModule;
+        renderer = rendererModule;
+        return true;
+      }
+    } catch (e) {
+      logInfo(`[module] 从 ${modulesPath} 加载失败: ${e.message}`);
+    }
+  }
+  
+  // 最后尝试默认路径
+  try {
+    const { bundle } = await import('@remotion/bundler');
+    const { renderMedia, getCompositions, selectComposition } = await import('@remotion/renderer');
+    bundler = { bundle };
+    renderer = { renderMedia, getCompositions, selectComposition };
+    return true;
+  } catch (e) {
+    logError(`无法加载 Remotion 模块: ${e.message}`);
+    return false;
+  }
+}
 import { existsSync, mkdirSync, statSync, writeFileSync, appendFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -19,10 +61,16 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const PROJECT_ROOT = process.env.REMOTION_PROJECT_ROOT || join(__dirname, '..', '..', 'remotion');
+const NODE_MODULES = join(PROJECT_ROOT, 'node_modules');
 const ENTRY_FILE = join(PROJECT_ROOT, 'src', 'index.tsx');
 const OUTPUT_DIR = process.env.REMOTION_OUTPUT_DIR || join('/tmp', 'remotion-out');
 const PUBLIC_MEDIA_DIR = join(PROJECT_ROOT, 'public', 'mmedia');
 const LOG_DIR = join(OUTPUT_DIR, 'logs');
+
+// 确保模块路径正确（在 Docker 容器中，node_modules 在 PROJECT_ROOT 下）
+const RENDERER_MODULE_PATH = existsSync(join(NODE_MODULES, '@remotion', 'bundler'))
+  ? NODE_MODULES
+  : join(__dirname, 'node_modules');
 
 if (!existsSync(OUTPUT_DIR)) mkdirSync(OUTPUT_DIR, { recursive: true });
 if (!existsSync(PUBLIC_MEDIA_DIR)) mkdirSync(PUBLIC_MEDIA_DIR, { recursive: true });
@@ -228,6 +276,13 @@ async function main() {
     const { payload, taskId } = await readStdinArgs();
     initLog(taskId);
 
+    // 首先加载 Remotion 模块
+    logInfo('步骤 0/4: 加载 Remotion 模块...');
+    const loaded = await loadRemotionModules();
+    if (!loaded) {
+      throw new Error('无法加载 Remotion 模块，请检查 node_modules 安装');
+    }
+
     const shots = payload.shots || [];
     const config = payload.config || {};
 
@@ -269,7 +324,7 @@ async function main() {
         const cleared = clearWebpackCache(PROJECT_ROOT);
         if (cleared) logInfo('[bundle] L1 cache key 不匹配，已清空 webpack 持久化缓存');
       }
-      bundleLocation = await bundle({
+      bundleLocation = await bundler.bundle({
         entryPoint: ENTRY_FILE,
         enableCaching: true, // L2 始终启用，webpack 内部 cache
       });
@@ -286,7 +341,7 @@ async function main() {
     const inputProps = { shots: dataShots, config: safeConfig };
 
     logInfo('步骤 3/4: 选择 Composition...');
-    const composition = await selectComposition({
+    const composition = await renderer.selectComposition({
       serveUrl: bundleLocation,
       id: 'MyVideo',
       inputProps,
@@ -299,7 +354,7 @@ async function main() {
 
     logInfo('步骤 4/4: 渲染 MP4...');
 
-    await renderMedia({
+    await renderer.renderMedia({
       composition,
       serveUrl: bundleLocation,
       codec: config.codec === 'h265' ? 'h265' : 'h264',
@@ -353,7 +408,7 @@ async function main() {
 
     logDone({
       outputPath,
-      outputUrl: `/api/remotion/download/${taskId}.mp4`,
+      outputUrl: `/download/${taskId}.mp4`,
       durationSec: videoDurationSec,
       videoSizeBytes: stats.size,
       resolution: `${composition.width}x${composition.height}`,

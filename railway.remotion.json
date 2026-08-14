@@ -1,0 +1,25 @@
+{
+  "$schema": "https://railway.app railway-schema.json",
+  "environments": {
+    "production": {
+      "deployment": {
+        "branch": "main",
+        "rootDirectory": "."
+      },
+      "dockerfile": "Dockerfile.remotion",
+      "build": {
+        "command": "echo 'Using multi-stage Docker build'"
+      },
+      "start": {
+        "command": "node server/remotion-server/server.mjs"
+      },
+      "variables": {
+        "REMOTION_PROJECT_ROOT": "/app/remotion",
+        "REMOTION_OUTPUT_DIR": "/tmp/remotion-out",
+        "NODE_ENV": "production",
+        "PUPPETEER_SKIP_CHROMIUM_DOWNLOAD": "true",
+        "PUPPETEER_EXECUTABLE_PATH": "/usr/bin/chromium"
+      }
+    }
+  }
+}

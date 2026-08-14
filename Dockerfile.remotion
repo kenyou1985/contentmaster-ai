@@ -48,28 +48,34 @@ RUN mkdir -p /opt/google/chrome && \
     ln -sf /usr/bin/chromium /usr/local/bin/chrome && \
     chromium --version || true
 
+# 复制 remotion 项目源码与依赖（先复制，确保模块路径可用）
+WORKDIR /app/remotion
+COPY remotion/ ./
+COPY --from=remotion-project-deps /app/remotion/node_modules ./node_modules
+
 # 复制 server 代码与依赖
 WORKDIR /app/remotion-server
 COPY server/remotion-server/ ./
 COPY --from=remotion-server-deps /app/remotion-server/node_modules ./node_modules
 
-# 复制 remotion 项目源码与依赖
-WORKDIR /app/remotion
-COPY remotion/ ./
-COPY --from=remotion-project-deps /app/remotion/node_modules ./node_modules
-
 # 渲染输出目录（Railway 容器重启即丢失，仅作为短期缓存。正式生产请挂 S3/R2）
 RUN mkdir -p /tmp/remotion-out /tmp/remotion-out/logs /tmp/remotion-temp
 
-# 回到 server 工作目录
-WORKDIR /app/remotion-server
+# 验证 Remotion 模块是否正确安装
+RUN echo "=== 验证 Remotion 模块 ===" && \
+    echo "/app/remotion/node_modules/@remotion/bundler exists: $(test -d /app/remotion/node_modules/@remotion/bundler && echo yes || echo no)" && \
+    echo "/app/remotion/node_modules/@remotion/renderer exists: $(test -d /app/remotion/node_modules/@remotion/renderer && echo yes || echo no)" && \
+    echo "/app/remotion/src/index.tsx exists: $(test -f /app/remotion/src/index.tsx && echo yes || echo no)" && \
+    echo "=== 验证完成 ==="
 
 # 关键环境变量
 ENV REMOTION_PROJECT_ROOT=/app/remotion \
     REMOTION_OUTPUT_DIR=/tmp/remotion-out \
     NODE_ENV=production \
     PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+    # 设置默认 NODE_PATH（Docker 运行时关键）
+    NODE_PATH=/app/remotion/node_modules:/app/remotion-server/node_modules
 
 # 健康检查（Railway 暂不用其内置 healthcheck，但方便本地 docker run 验证）
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \

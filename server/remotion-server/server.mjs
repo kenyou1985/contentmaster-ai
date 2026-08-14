@@ -310,16 +310,29 @@ function cleanupTempDir(tempDir) {
 // ── 子进程调用 render-worker.mjs（stdin 传参，绕过 macOS argv 256KB 上限）────
 function runRenderWorker(payload, taskId) {
   return new Promise((resolve, reject) => {
+    // 计算 remotion node_modules 路径（Docker 容器中两个目录分离）
+    const remotionNodeModules = join(REMOTION_PROJECT_ROOT, 'node_modules');
+    const serverNodeModules = __dirname;
+    
+    // 确保子进程能找到 remotion 模块
+    const childEnv = {
+      ...process.env,
+      REMOTION_PROJECT_ROOT,
+      REMOTION_OUTPUT_DIR: OUTPUT_DIR,
+      // 关键：设置 NODE_PATH 让子进程能找到 /app/remotion/node_modules
+      NODE_PATH: [
+        remotionNodeModules,
+        serverNodeModules,
+        process.env.NODE_PATH || '',
+      ].filter(Boolean).join(':'),
+    };
+    
     const child = spawn(
       'node',
       [RENDER_WORKER],
       {
         cwd: REMOTION_PROJECT_ROOT,
-        env: {
-          ...process.env,
-          REMOTION_PROJECT_ROOT,
-          REMOTION_OUTPUT_DIR: OUTPUT_DIR,
-        },
+        env: childEnv,
         stdio: ['pipe', 'pipe', 'pipe'],
       }
     );
