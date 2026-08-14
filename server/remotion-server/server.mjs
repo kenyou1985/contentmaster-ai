@@ -365,14 +365,16 @@ async function runRenderInProcess(payload, taskId) {
   const outputPath = join(OUTPUT_DIR, `${taskId}.mp4`);
   const logPath = join(LOG_DIR, `${taskId}.log`);
 
-  try {
-    writeFileSync(logPath, '');
-    const log = (msg) => {
+  // log 函数必须在 try 之外定义，以便 catch 块也能使用
+  const log = (msg) => {
+    try {
       const line = `[${new Date().toISOString()}] ${msg}\n`;
       writeFileSync(logPath, line, { flag: 'a' });
       console.log(msg);
-    };
+    } catch {}
+  };
 
+  try {
     log(`== 渲染任务开始: ${taskId} ==`);
     log(`PROJECT_ROOT: ${REMOTION_PROJECT_ROOT}`);
     log(`ENTRY_FILE: ${REMOTION_PROJECT_ENTRY}`);
