@@ -104,18 +104,21 @@ const ShotAudioVolume: React.FC<{
       volume = 0;
     }
   }
-  // ── 主区间：1 ────────────────────────────────────────────────
+  // ── 主区间 [0, audioDurationFrames)：完整播放音频 ────────────────
   else {
     volume = 1;
-    // 第一个镜头（无 leadIn 邻居）：前 N 帧做 fadeIn
-    if (isFirstShot && frame < crossfadeFrames) {
+    // 中间镜头（既不是第一也不是最后）做完整 crossfade：
+    //   - 头 crossfadeFrames 帧从 0 升到 1（从上一镜头 crossfade 进入）
+    //   - 尾 crossfadeFrames 帧从 1 降到 0（向下一镜头 crossfade 出去）
+    if (!isFirstShot && !isLastShot && frame < crossfadeFrames) {
+      // 头 fadeIn：从 0 升到 1
       volume = interpolate(frame, [0, crossfadeFrames], [0, 1], {
         extrapolateLeft: 'clamp',
         extrapolateRight: 'clamp',
       });
     }
-    // 最后一个镜头（无 leadIn 邻居）：后 N 帧做 fadeOut
-    if (isLastShot && audioDurationFrames - frame < crossfadeFrames) {
+    if (!isFirstShot && !isLastShot && audioDurationFrames - frame < crossfadeFrames) {
+      // 尾 fadeOut：从 1 降到 0
       const fadeOut = interpolate(
         frame,
         [audioDurationFrames - crossfadeFrames, audioDurationFrames],
@@ -124,6 +127,19 @@ const ShotAudioVolume: React.FC<{
       );
       volume = Math.min(volume, fadeOut);
     }
+    // 最后一个镜头：仅做尾部 fadeOut（无下一镜头）
+    if (isLastShot && !isFirstShot && audioDurationFrames - frame < crossfadeFrames) {
+      const fadeOut = interpolate(
+        frame,
+        [audioDurationFrames - crossfadeFrames, audioDurationFrames],
+        [1, 0],
+        { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' },
+      );
+      volume = Math.min(volume, fadeOut);
+    }
+    // 第一个镜头：保持 volume = 1，从 frame 0 就是全音量
+    // 不做 fadeIn —— 否则开头音频会被切掉一部分（用户反馈：漏掉"今天"）
+    // 如果用户希望有片头 → 第一镜头的渐变效果，请通过 BGM 淡入或镜头淡入实现
   }
 
   return <Audio src={src} volume={Math.max(0, Math.min(1, volume))} />;
