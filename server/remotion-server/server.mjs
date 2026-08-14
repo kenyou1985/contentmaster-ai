@@ -258,7 +258,7 @@ const PLACEHOLDER_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
   'base64'
 );
-// 空 mp3（最小合法 mp3 帧）
+// 最小 mp3（用于 ffmpeg 失败时的回退，ffprobe 可能仍报错）
 const PLACEHOLDER_MP3 = Buffer.from([0xff, 0xfb, 0x90, 0x44, 0x00, 0x00, 0x00, 0x00]);
 const PLACEHOLDER_BYTES = {
   '.png': PLACEHOLDER_PNG, '.jpg': PLACEHOLDER_PNG, '.jpeg': PLACEHOLDER_PNG,
@@ -268,6 +268,46 @@ const PLACEHOLDER_BYTES = {
   '.mp4': PLACEHOLDER_MP3, '.mov': PLACEHOLDER_MP3, '.webm': PLACEHOLDER_MP3,
   '.bin': Buffer.alloc(0),
 };
+
+/**
+ * 用 ffmpeg 生成合法的占位媒体文件
+ * - 音频：1 秒静音 mp3（ffprobe 可识别时长）
+ * - 图像：1x1 黑/透明 PNG
+ * - 视频：1 秒黑屏 mp4
+ */
+async function generatePlaceholder(ext, filePath, log) {
+  const { execFileSync } = await import('child_process');
+  const isAudio = ['.mp3', '.wav', '.ogg', '.m4a', '.aac'].includes(ext);
+  const isVideo = ['.mp4', '.mov', '.webm'].includes(ext);
+  const isImage = ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext);
+
+  try {
+    if (isAudio) {
+      // 1 秒静音 mp3
+      execFileSync('ffmpeg', [
+        '-y', '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
+        '-t', '1', '-q:a', '9', '-acodec', 'libmp3lame', filePath
+      ], { stdio: 'ignore', timeout: 10000 });
+      return;
+    }
+    if (isVideo) {
+      // 1 秒黑屏 mp4
+      execFileSync('ffmpeg', [
+        '-y', '-f', 'lavfi', '-i', 'color=c=black:s=320x240:d=1',
+        '-t', '1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', filePath
+      ], { stdio: 'ignore', timeout: 10000 });
+      return;
+    }
+    if (isImage) {
+      writeFileSync(filePath, PLACEHOLDER_BYTES[ext] || PLACEHOLDER_PNG);
+      return;
+    }
+  } catch (e) {
+    log(`⚠️ ffmpeg 生成占位失败: ${e.message}，回退到字节占位`);
+  }
+  // 回退：写字节占位
+  writeFileSync(filePath, PLACEHOLDER_BYTES[ext] || Buffer.alloc(0));
+}
 
 /**
  * 把 data URL 或远程 URL 转成文件路径，返回 { cleanedShots, tempDir, filePathMap }
@@ -312,14 +352,17 @@ async function extractUrlsToTempFiles(shots, log = console.log) {
       clearTimeout(timer);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const buf = Buffer.from(await res.arrayBuffer());
+      // 防御：检测空响应或 HTML 错误页（返回了错误页而不是媒体）
+      if (buf.length < 16 || (buf[0] === 0x3c && buf[1] === 0x21)) {
+        throw new Error(`响应无效 (${buf.length} bytes)`);
+      }
       writeFileSync(filePath, buf);
       log(`下载成功 (${(buf.length / 1024).toFixed(1)} KB): ${basename(filePath)}`);
       return filePath;
     } catch (e) {
       log(`⚠️ 下载失败 ${val.slice(0, 60)}...: ${e.message}，使用占位文件`);
-      // 下载失败时写一个最小占位文件，避免 Remotion 重新下载
-      const placeholder = PLACEHOLDER_BYTES[ext] || PLACEHOLDER_BYTES['.bin'];
-      writeFileSync(filePath, placeholder);
+      // 下载失败时用 ffmpeg 生成 1 秒静音 mp3 / 1 帧黑屏图像占位
+      const placeholder = await generatePlaceholder(ext, filePath, log);
       return filePath;
     }
   };
