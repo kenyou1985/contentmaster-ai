@@ -25,9 +25,10 @@ COPY remotion/ ./remotion/
 # 复制 remotion-server 代码
 COPY server/remotion-server/server.mjs ./remotion-server/
 
-# 创建完整的 package.json，包含所有依赖
+# 创建 package.json（使用 cat heredoc 避免引号问题）
 WORKDIR /app/remotion-server
-RUN echo '{
+RUN cat > package.json << 'PKGJSON'
+{
   "name": "remotion-server",
   "version": "1.0.0",
   "type": "module",
@@ -40,7 +41,8 @@ RUN echo '{
     "cors": "^2.8.5",
     "express": "^4.21.0"
   }
-}' > package.json
+}
+PKGJSON
 
 # 安装所有依赖
 RUN npm install --no-audit --no-fund --legacy-peer-deps
