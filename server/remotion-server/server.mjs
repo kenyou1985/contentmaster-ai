@@ -62,9 +62,8 @@ const RAW_ENV_ROOT = process.env.REMOTION_PROJECT_ROOT;
 const CANDIDATE_ROOTS = [
   RAW_ENV_ROOT ? RAW_ENV_ROOT.replace(/[\r\n\s]+$/g, '').trim() : null,
   '/app/remotion',
-  // server.mjs 在 /app/server/ 目录
+  // server.mjs 在 /app/remotion-server/
   join(__dirname, '..', 'remotion'),
-  join(__dirname, '..', '..', 'remotion'),
 ].filter(Boolean);
 
 const SEEN = new Set();
