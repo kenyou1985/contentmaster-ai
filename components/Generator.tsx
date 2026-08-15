@@ -2599,6 +2599,13 @@ Hard rules:
             // 地缘冲突中文 prompt：追加国际 RSS digest + 对齐规则
             const extraRules =
               '\n\n【选题对齐铁律·最高优先级】每条标题须与上方「国际要闻投喂」中至少一条新闻在主题上可对应；禁止10条标题只围绕同一条新闻换皮，须尽量覆盖至少5条不同新闻线索。' +
+              '\n\n【大国为主·冷门国家禁止·铁律】10 条选题按以下优先级分配（违反视为不合格）：\n' +
+              '- **第一圈·超级大国 ≥4 条**：美国/特朗普政府（对俄乌/中东政策/北约/对伊制裁/对中关税战/对台军售）+ 中国/中俄关系（上合/金砖/G20/对美反制/台海军售回应）\n' +
+              '- **第二圈·主战场热战 ≥3 条**：俄乌战争、美-以色列-伊朗冲突（2026-02-28 爆发）、以色列-真主党、加沙/巴以、也门胡塞红海袭扰\n' +
+              '- **第三圈·大国博弈延伸 ≤3 条**：朝鲜半岛、中国-菲律宾南海、印巴对峙、北极博弈、拉美\n' +
+              '- **🚫 禁止冷门国家**：阿富汗/塔利班、乍得、苏丹、刚果（金）、索马里、萨赫勒、布基纳法索、马里、尼日尔、海地、缅甸若开邦等 — 这些国家即使出现在 RSS 投喂中也必须忽略\n' +
+              '- **🚫 禁止冷门议题**：非洲小国政变、中亚小规模边境冲突、武器参数科普\n' +
+              '- **硬约束**：≥3 条与"美国/特朗普"相关，≥2 条与"中国"相关，至少 3 种冲突类型' +
               '\n【博奕爆料风格·中文铁律】每条须含博奕内幕爆料人视角：数据说话、文件曝光、冷峻揭露。禁止写成通讯社导语。禁止"据报道""有分析认为""专家表示"。' +
               '\n【标题党铁律】每条须含强钩子：悬念/反直觉/震撼数字/第二人称刺痛至少其一；总长建议 20–45 汉字，可用冒号/破折号制造节奏。' +
               '\n【输出格式】只输出标题，每行一个，不要任何分析/前言/结语/列表标记/引号/Markdown。';
@@ -2607,6 +2614,13 @@ Hard rules:
             // 英文模式
             const extraRules =
               '\n\n【Topic Alignment Rule — Highest Priority】Each topic title MUST be anchored to at least one item in the "International Intelligence Feed" above. Do NOT generate generic geopolitical topics disconnected from the live RSS intelligence. Cover at least 5 different news lines from the feed. Do NOT output 10 titles all restating the same news item.' +
+              '\n\n【Great Power First · Cold Country Banned · Iron Rule】Prioritize as follows (violation = failure):\n' +
+              '- **Tier-1 Superpowers ≥4 titles**: US/Trump administration (Russia-Ukraine/Middle East policy, NATO/EU, Iran sanctions, China tariff war, Taiwan arms sales) + China/China-Russia relations (SCO/BRICS/G20, US countermeasures, Taiwan arms response)\n' +
+              '- **Tier-2 Main Battlefields ≥3 titles**: Russia-Ukraine war, US-Israel-Iran massive conflict (2026-02-28 outbreak), Israel-Hezbollah, Gaza/Israel-Palestine, Yemen Houthi Red Sea attacks\n' +
+              '- **Tier-3 Power Game Extensions ≤3 titles**: Korean Peninsula, China-Philippines South China Sea, India-Pakistan Kashmir, Arctic, Latin America\n' +
+              '- **🚫 Banned Cold Countries**: Afghanistan/Taliban, Chad, Sudan, Congo (DRC), Somalia, Sahel, Burkina Faso, Mali, Niger, Haiti, Myanmar Rakhine etc — IGNORE these even if appearing in RSS feed\n' +
+              '- **🚫 Banned Cold Topics**: African minor coups, Central Asian minor border skirmishes, weapons parameter explainers\n' +
+              '- **Hard constraints**: ≥3 titles about "US/Trump", ≥2 titles about "China", at least 3 conflict types' +
               '\n【Bo Yi Hook Rule】Every title must carry the Bo Yi insider-reveal voice: this is what the data actually shows, this is what they buried, this is what the arithmetic proves. Do NOT write news-wire summaries. Do NOT write official narrative restatements.' +
               '\n【Output Format】Output exactly one bilingual title per line in this exact format: English Title | 中文标题. No bullets, no numbering, no analysis, no blank lines.';
             prompt = `${digest}\n\n---\n\n` + prompt + extraRules;

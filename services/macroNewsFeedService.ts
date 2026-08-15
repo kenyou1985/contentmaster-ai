@@ -217,7 +217,13 @@ export function subModeName(subMode?: string): string {
 function subModeCoverageLine(subMode?: string): string {
   switch (subMode) {
     case 'GEO_POLITICS':
-      return '||- 本赛道覆盖：中东战火、东欧冲突（俄乌）、南海争端、北约东扩、伊朗以色列对峙、胡塞武装、红海危机、叙利亚/伊拉克乱局、欧洲战场最新进展';
+      return '||- 本赛道覆盖（中东战火/俄乌/南海/红海/伊朗以色列对峙等），按以下优先级排序：\n' +
+        '||- **第一圈·超级大国（必含 ≥4 条）**：美国/特朗普政府（对俄乌/中东政策、北约/欧盟关系、对伊制裁、对中关税战、对台军售）；中国/中俄关系（上合/金砖/G20 博弈、对美反制、台海军售回应）\n' +
+        '||- **第二圈·主战场热战（必含 ≥3 条）**：俄罗斯-乌克兰战争（俄乌拉锯/黑海航运/无人机互袭）；美-以色列-伊朗大规模冲突（2026-02-28 爆发·霍尔木兹封锁/红海外溢/真主党/胡塞联动）；以色列-黎巴嫩/真主党边境；加沙/巴以；也门胡塞武装红海袭扰\n' +
+        '||- **第三圈·大国博弈延伸（可选 ≤3 条）**：朝鲜半岛（朝鲜 vs 美韩）；中国-菲律宾南海博弈；印巴克什米尔对峙；阿塞拜疆-亚美尼亚南高加索；北极博弈；拉美（美后院）\n' +
+        '||- **🚫 禁止冷门国家（不作为选题）**：阿富汗/塔利班、乍得、苏丹内战、刚果（金）、索马里、萨赫勒、布基纳法索、马里、尼日尔、海地、缅甸若开邦等小国独立新闻\n' +
+        '||- **🚫 禁止冷门议题**：非洲小国政变、中亚小规模边境冲突、武器参数科普\n' +
+        '||- **硬约束**：10 条中 ≥3 条与"美国/特朗普"相关，≥2 条与"中国"相关，至少 3 种冲突类型';
     case 'INDO_PACIFIC':
       return '||- 本赛道覆盖：美日印澳四方安全对话（Quad）、AUKUS 核潜艇协议、南海军事化、菲律宾/越南海洋争端、美韩同盟强化、日本防卫预算、印度边境对峙、中美海上博弈';
     case 'MIDEAST_CONFLICT':
@@ -343,9 +349,16 @@ const JSON_HOT_API_SOURCES: { url: string; label: string; tag: MacroNewsHeadline
 // ============ 内置备选新闻（48小时时效·覆盖8大赛道）============
 
 const FALLBACK_HEADLINES: MacroNewsHeadline[] = [
-  // 地缘冲突
+  // 地缘冲突（v6.0：以大国为主·加入俄乌/美以伊/南海/朝鲜半岛等主战场，剔除冷门小国）
   { title: 'Middle East tensions escalate as Iran threatens proportional response', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
   { title: 'US carrier group enters South China Sea amid sovereignty disputes', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
+  { title: 'Zelensky urges NATO allies to deliver long-range missiles as Russia pounds Donetsk', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'geopolitics' },
+  { title: 'Trump administration weighs new sanctions package on Iran over nuclear program', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
+  { title: 'Israel-Hezbollah ceasefire holds as Trump brokers Lebanon border deal', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
+  { title: 'Houthi Red Sea attacks force rerouting of 30% of global container traffic', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
+  { title: 'China and Philippines clash near Scarborough Shoal as US carrier looms', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
+  { title: 'Kim Jong Un unveils new ICBM as US-South Korea launch joint drills', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
+  { title: 'Putin-Xi summit signals deeper Sino-Russian military coordination', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'geopolitics' },
   // 金融货币战
   { title: 'Federal Reserve holds rates steady, signals inflation concerns', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'finance' },
   { title: 'Yuan faces pressure as trade war tariffs take effect', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'finance' },
@@ -373,9 +386,16 @@ const FALLBACK_HEADLINES: MacroNewsHeadline[] = [
 ];
 
 const ZH_FALLBACK_HEADLINES: MacroNewsHeadline[] = [
-  // 地缘冲突 / 中东
+  // 地缘冲突 / 中东（v6.0：以大国为主·增加俄乌/美以伊/南海/朝鲜半岛样本，剔除冷门小国）
   { title: '中东局势骤然升温，伊朗警告将作出对等回应', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
   { title: '胡塞武装封锁红海要道，国际航运保险费率飙升', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
+  { title: '泽连斯基敦促北约交付远程导弹，俄军猛攻顿涅茨克', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'geopolitics' },
+  { title: '特朗普政府酝酿新一轮对伊朗制裁，直指核项目', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
+  { title: '以色列与真主党停火生效，特朗普斡旋黎以边境协议', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
+  { title: '胡塞红海袭击致全球三成集装箱航运被迫绕行', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
+  { title: '中菲黄岩岛海域再对峙，美航母战斗群逼近', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
+  { title: '金正恩亮相新型洲际导弹，美韩启动联合军演反制', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
+  { title: '普京-习近平会晤定调中俄军事协作深化', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'geopolitics' },
   // 金融货币战
   { title: '美联储维持高利率立场，美元指数强势冲击新兴市场', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'finance' },
   { title: '人民币汇率承压，贸易战关税落地后出口商避险情绪升温', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'finance' },
