@@ -37,7 +37,9 @@ const ZH_FEEDS: { url: string; label: string; tag?: MacroNewsHeadline['tag'] }[]
 ];
 
 // 台湾本地新闻 RSS（台海局势子赛道专用）
+// v6.0 多领域覆盖：政治+财经+社会+生活+国际，避免 RSS 投喂单一导致选题雷同（全部预算军购）
 const TAIWAN_FEEDS: { url: string; label: string; tag: MacroNewsHeadline['tag'] }[] = [
+  // ── 政治 ──
   { url: 'https://udn.com/rss/realtime?ch=tw_legislative', label: '联合报-立法院', tag: 'taiwan' },
   { url: 'https://udn.com/rss/realtime?ch=tw_election', label: '联合报-选举', tag: 'taiwan' },
   { url: 'https://www.setn.com/rss/realtime.aspx?CategoryName=Politics', label: '三立新闻-政治', tag: 'taiwan' },
@@ -45,6 +47,32 @@ const TAIWAN_FEEDS: { url: string; label: string; tag: MacroNewsHeadline['tag'] 
   { url: 'https://www.chinatimes.com/rss/politics.xml', label: '中时新闻-政治', tag: 'taiwan' },
   { url: 'https://news.tvbs.com.tw/rss/politics.xml', label: 'TVBS新闻-政治', tag: 'taiwan' },
   { url: 'https://www.cna.com.tw/rss/focus.xml', label: '中央社-焦点', tag: 'taiwan' },
+  // ── 财经/产业 ──
+  { url: 'https://udn.com/rss/realtime?ch=tw_finance', label: '联合报-财经', tag: 'taiwan_finance' },
+  { url: 'https://www.chinatimes.com/rss/finance.xml', label: '中时新闻-财经', tag: 'taiwan_finance' },
+  { url: 'https://www.setn.com/rss/realtime.aspx?CategoryName=Finance', label: '三立新闻-财经', tag: 'taiwan_finance' },
+  { url: 'https://www.ltn.com.tw/rss/business.xml', label: '自由时报-财经', tag: 'taiwan_finance' },
+  { url: 'https://news.tvbs.com.tw/rss/finance.xml', label: 'TVBS新闻-财经', tag: 'taiwan_finance' },
+  // ── 社会/生活/食安/治安/司法 ──
+  { url: 'https://udn.com/rss/realtime?ch=tw_society', label: '联合报-社会', tag: 'taiwan_society' },
+  { url: 'https://www.setn.com/rss/realtime.aspx?CategoryName=Society', label: '三立新闻-社会', tag: 'taiwan_society' },
+  { url: 'https://www.ltn.com.tw/rss/society.xml', label: '自由时报-社会', tag: 'taiwan_society' },
+  { url: 'https://www.chinatimes.com/rss/society.xml', label: '中时新闻-社会', tag: 'taiwan_society' },
+  { url: 'https://news.tvbs.com.tw/rss/society.xml', label: 'TVBS新闻-社会', tag: 'taiwan_society' },
+  // ── 生活/健康/教育/旅游/文化 ──
+  { url: 'https://udn.com/rss/realtime?ch=tw_life', label: '联合报-生活', tag: 'taiwan_life' },
+  { url: 'https://www.setn.com/rss/realtime.aspx?CategoryName=Life', label: '三立新闻-生活', tag: 'taiwan_life' },
+  { url: 'https://www.ltn.com.tw/rss/life.xml', label: '自由时报-生活', tag: 'taiwan_life' },
+  { url: 'https://www.chinatimes.com/rss/life.xml', label: '中时新闻-生活', tag: 'taiwan_life' },
+  // ── 国际/两岸 ──
+  { url: 'https://udn.com/rss/realtime?ch=tw_world', label: '联合报-国际', tag: 'taiwan_world' },
+  { url: 'https://www.cna.com.tw/rss/aall.aspx', label: '中央社-全部', tag: 'taiwan_world' },
+  { url: 'https://www.chinatimes.com/rss/world.xml', label: '中时新闻-国际', tag: 'taiwan_world' },
+  { url: 'https://www.ltn.com.tw/rss/world.xml', label: '自由时报-国际', tag: 'taiwan_world' },
+  // ── 科技/产业/环境/地方 ──
+  { url: 'https://udn.com/rss/realtime?ch=tw_science', label: '联合报-科技', tag: 'taiwan_tech' },
+  { url: 'https://www.chinatimes.com/rss/technology.xml', label: '中时新闻-科技', tag: 'taiwan_tech' },
+  { url: 'https://www.setn.com/rss/realtime.aspx?CategoryName=Tech', label: '三立新闻-科技', tag: 'taiwan_tech' },
 ];
 
 // 国内民生/社会/全网热搜 RSS Feed（抖音热点赛道专用）
@@ -327,9 +355,15 @@ const FALLBACK_HEADLINES: MacroNewsHeadline[] = [
   // 大国博弈
   { title: 'US-China talks stall over trade and Taiwan Strait tensions', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'us_china' },
   { title: 'G7 nations coordinate on economic security amid great power rivalry', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'us_china' },
-  // 台海局势
+  // 台海局势（v6.0：加入财经/社会/民生/科技/食安等非军购议题，避免 LLM 雷同刷军购）
   { title: 'PLA conducts new round of exercises around Taiwan Strait', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan' },
   { title: 'Congress approves new arms package for Taiwan amid tensions', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan' },
+  { title: '台积电法说会释出展望，AI 需求推升全年资本支出', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_finance' },
+  { title: '台湾健保保费调涨方案出炉，工商团体反弹喊价过高', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_society' },
+  { title: '苏丹红食安风暴延烧，下游食品厂下架潮扩大', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_society' },
+  { title: '凯米台风外围环流袭台，农业灾损初估破亿', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_life' },
+  { title: '台股盘中重挫千点，电子权值股拖累大盘失守月线', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_finance' },
+  { title: '新北捷运工安意外 3 死 2 伤，劳动部勒令停工调查', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_society' },
   // 印太战略
   { title: 'Quad nations deepen military cooperation in Indo-Pacific drills', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
   { title: 'Japan and Philippines sign defense pact amid China pressure', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
@@ -351,9 +385,15 @@ const ZH_FALLBACK_HEADLINES: MacroNewsHeadline[] = [
   // 大国政治角力
   { title: '中美高层会谈陷入僵局，台湾与贸易问题成核心分歧', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'us_china' },
   { title: 'G7峰会协调经济安全策略，大国竞争格局加速重塑', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'us_china' },
-  // 台海局势
+  // 台海局势（v6.0：加入财经/社会/民生/科技/食安等非军购议题，避免 LLM 雷同刷军购）
   { title: '解放军台海演习常态化释放强烈信号，军事震慑意图明显', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan' },
   { title: '美方新一轮对外军售计划获批，区域安全动态引关注', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan' },
+  { title: '台积电法说会释出展望，AI 需求推升全年资本支出', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_finance' },
+  { title: '健保保费调涨方案出炉，工商团体反弹喊价过高', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_society' },
+  { title: '苏丹红食安风暴延烧，下游食品厂下架潮扩大', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_society' },
+  { title: '凯米台风外围环流袭台，农业灾损初估破亿', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_life' },
+  { title: '台股盘中重挫千点，电子权值股拖累大盘失守月线', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_finance' },
+  { title: '新北捷运工安意外 3 死 2 伤，劳动部勒令停工调查', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_society' },
   // 印太战略
   { title: '四方安全对话深化军事合作，印太海域联合军演规模扩大', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
   { title: '日本与菲律宾签署防卫协议，深化第一岛链战略部署', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
