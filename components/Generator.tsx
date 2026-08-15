@@ -1168,7 +1168,9 @@ function looksLikeViralTopicLine(raw: string): boolean {
   if (!line) return false;
   if (line.length < 10 || line.length > 60) return false;
   // v9.3 防御性回复黑名单（LLM 拒绝 / 解释 / 让用户输入关键词时）
-  if (/^(我不能|我无法|我无法直接|抱歉|对不起|很抱歉|无法|不知道|无法确定|我需要|请提供|请输入|请告诉我|如果你想|以下是|以下是我|以下这些是|这是一些|下面是|这些是一些|I'm|I cannot|I can't|sorry|Sorry|as an AI)/i.test(line)) return false;
+  if (/^(我不能|我无法|我无法直接|抱歉|对不起|很抱歉|无法|不知道|无法确定|我需要|请提供|请输入|请告诉我|如果你想|以下是|以下是我|以下这些是|这是一些|下面是|这些是一些|按你给的|按你给的结论|如果你要|重新写|我现在就直接|我可以|让我|我帮你|我先|我们先|当然可以|可以的|好的|好的以下是|好的，按|明白|明白，以下|了解|了解了|了解，以下|I'm|I cannot|I can't|sorry|Sorry|as an AI)/i.test(line)) return false;
+  // v6.1 钩子短语防御：拒绝 LLM 把"你以为…其实…""你的钱包"等当成完整标题输出
+  if (/^(你以为|你的钱包|你的养老金|你不知道|你正在见证|你以为是|你的选票|你的纳税钱|你以为的|你猜|听好了|敲黑板|划重点|把这条|再讲一遍)/i.test(line)) return false;
   // 多逗号/多句号（>2 个逗号+句号）= 段落
   const punctCount = (line.match(/[，。；,;.]/g) || []).length;
   if (punctCount > 2) return false;
@@ -2684,7 +2686,17 @@ Hard rules:
             `\n【抖音新闻姐风格锚点】**只输出纯标题**，每行一个，不要 Markdown、不要引号、不要序号、不要任何前缀。标题要像真人发的抖音：短、爆、有钩子、有情绪、有具体人物/事件/数字。`;
           prompt = `${digest}\n\n---\n\n` + prompt + extraRules;
         } else if (niche === NicheType.FINANCE_CRYPTO && financeSubMode === FinanceSubModeId.GEOPOLITICAL_FLASH) {
-          const extraRules = '\n\n【选题对齐铁律】每条标题须与上方「国际要闻投喂」中至少一条新闻在主题上可对应（可芒格式改写）；禁止10条标题只围绕同一条新闻换皮，须尽量覆盖不同地缘/市场线索。\n【标题党铁律】每条须含强钩子：悬念/反问/震撼词/读者切身利益至少其二；禁止写成通讯社导语或「……说明……」式说明体；单条建议22–48字，可用冒号或破折号断句，追求「一眼想点进去」。';
+          const extraRules =
+            '\n\n【选题对齐铁律】每条标题须与上方「国际要闻投喂」中至少一条新闻在主题上可对应（可芒格式改写）；禁止10条标题只围绕同一条新闻换皮，须尽量覆盖不同地缘/市场线索。\n' +
+            '\n【输出格式铁律·最高优先级】只输出 10 行，每行 1 个纯中文标题。严禁输出前言/结语/分析/总结/解释/对话/道歉/"我不能"/"请提供关键词"/"以下是"/"按你给的结论"/"如果你要"/"重新写"等任何说明文字。严禁输出分类小标题/序号/列表标记/Markdown/引号。严禁把"你以为""你的钱包"等钩子短语当成完整标题输出。\n' +
+            '\n【大国为主·冷门国家禁止·铁律】10 条选题按以下优先级分配（违反视为不合格）：' +
+            '- 第一圈·超级大国 ≥4 条：美国/特朗普（对俄乌/中东政策/北约/对伊制裁/对中关税战/对台军售）+ 中国/中俄关系（上合/金砖/G20/对美反制/台海军售回应）' +
+            '- 第二圈·主战场热战 ≥3 条：俄乌战争、美-以色列-伊朗冲突（2026-02-28 爆发）、以色列-真主党、加沙/巴以、也门胡塞红海袭扰' +
+            '- 第三圈·大国博弈延伸 ≤3 条：朝鲜半岛、中菲南海、印巴对峙、北极、拉美' +
+            '- 🚫 禁止冷门国家：阿富汗/塔利班/乍得/苏丹/刚果（金）/索马里/萨赫勒/布基纳法索/马里/尼日尔/海地/缅甸若开邦等 — 即使出现在 RSS 也必须忽略' +
+            '- 🚫 禁止冷门议题：非洲小国政变、中亚小规模边境冲突、武器参数科普' +
+            '- 硬约束：≥3 条与"美国/特朗普"相关，≥2 条与"中国"相关，至少 3 种冲突类型\n' +
+            '\n【标题党铁律】每条须含强钩子：悬念/反问/震撼词/读者切身利益至少其二；禁止写成通讯社导语或「……说明……」式说明体；单条建议22–48字，可用冒号或破折号断句，追求「一眼想点进去」。';
           prompt = `${digest}\n\n---\n\n` + prompt + extraRules;
         }
       } catch (e) {
@@ -2703,11 +2715,19 @@ Hard rules:
     try {
       // 子赛道使用 prompt 中自带的角色设定，避免被通用 titleListSystemInstruction 覆盖
       const isNewsSubMode = niche === NicheType.GENERAL_VIRAL && subModeConfig?.prompt;
+      // BO_YI 走新闻热点赛道的通用 system instruction（强制"只输出 10 行纯标题"）
+      // 此前 BO_YI 用了 config.systemInstruction（含"芒格式+内幕底色"角色），导致 LLM 输出
+      // "我可以改为两种可执行的版本之一""按你给的结论""如果你要"等说明文字当作标题
+      const isBoYiGeoFlash =
+        niche === NicheType.FINANCE_CRYPTO &&
+        financeSubMode === FinanceSubModeId.GEOPOLITICAL_FLASH;
       const topicSystemInstruction = isNewsSubMode
         ? subModeConfig.systemInstruction || ''
-        : (niche === NicheType.GENERAL_VIRAL || niche === NicheType.GREAT_POWER_GAME)
+        : isBoYiGeoFlash
           ? titleListSystemInstruction
-          : config.systemInstruction;
+          : (niche === NicheType.GENERAL_VIRAL || niche === NicheType.GREAT_POWER_GAME)
+            ? titleListSystemInstruction
+            : config.systemInstruction;
 
       // 默认使用非流式生成（非流式稳定可靠，避免 gpt-5.4-mini 的 STREAM_IDLE_TIMEOUT 问题）
       let rawTopics: string[] = [];
@@ -2745,13 +2765,19 @@ Hard rules:
 
       console.log('[Generator] 选题生成完成', { rawTopicsCount: rawTopics.length });
 
+      // BO_YI 走新闻热点赛道的清洗/校验路径（拒绝 LLM 输出的"我可以改为""按你给的""如果你要"等说明文字）
+      const sanitizeLikeViral =
+        niche === NicheType.GENERAL_VIRAL ||
+        niche === NicheType.GREAT_POWER_GAME ||
+        isBoYiGeoFlash;
+
       const normalizedRawTopics =
         niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'en'
           ? rawTopics
               .map((t) => sanitizeGreatPowerBilingualTopicLine(t))
               .filter((t) => looksLikeGreatPowerBilingualTopicLine(t))
               .slice(0, resolvedPlanTopicCount)
-          : niche === NicheType.GENERAL_VIRAL || niche === NicheType.GREAT_POWER_GAME
+          : sanitizeLikeViral
             ? rawTopics
                 .map((t) => sanitizeViralTopicLine(t))
                 .filter((t) => looksLikeViralTopicLine(t))
@@ -2764,7 +2790,7 @@ Hard rules:
               .map((t) => sanitizeGreatPowerBilingualFallbackLine(t))
               .filter((t) => looksLikeGreatPowerBilingualTopicLine(t) || looksLikeGreatPowerEnglishFallbackLine(t))
               .slice(0, resolvedPlanTopicCount)
-          : niche === NicheType.GENERAL_VIRAL || niche === NicheType.GREAT_POWER_GAME
+          : sanitizeLikeViral
             ? rawTopics.map((t) => sanitizeViralTopicLine(t)).filter(Boolean).slice(0, resolvedPlanTopicCount)
             : rawTopics;
 
