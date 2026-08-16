@@ -39,9 +39,10 @@ import {
 } from '../services/characterLibraryService';
 import { CharacterLibrary } from './CharacterLibrary';
 import { VoiceLibrary } from './VoiceLibrary';
-import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, Settings2, FolderOpen, Rocket, Copy, Check, CheckSquare, Square, Users, HardDrive, ListOrdered, ArrowUp, Terminal, Gauge, AlertCircle, Sparkles, Wand2, XCircle, Film, Music, AlertTriangle, ChevronDown, ExternalLink } from 'lucide-react';
+import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, Settings2, FolderOpen, Rocket, Copy, Check, CheckSquare, Square, Users, HardDrive, ListOrdered, ArrowUp, Terminal, Gauge, AlertCircle, Sparkles, Wand2, XCircle, Film, Music, AlertTriangle, ChevronDown, ExternalLink, FileSignature } from 'lucide-react';
 import JSZip from 'jszip';
 import { HistorySelector } from './HistorySelector';
+import CopyBasedPanel from './CopyBasedPanel';
 import { getRunningHubMaxConcurrent, setRunningHubMaxConcurrent, initRunningHubConcurrency, MAX_CONCURRENT } from '../services/runningHubConcurrency';
 import {
   getHistory,
@@ -663,6 +664,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
   // 'main' = 当前编辑器，'oc_<id>' = 一键成片任务，'q_<id>' = 队列任务
   const [activeWorkspaceTabId, setActiveWorkspaceTabId] = useState<string>('main');
   const [queueWorkspaceTabIds, setQueueWorkspaceTabIds] = useState<string[]>([]);
+  // 业务模式 Tab：'shot' = 多镜头分镜（现有），'copy' = 文案成片（新增）
+  const [mediaSubTab, setMediaSubTab] = useState<'shot' | 'copy'>('shot');
   // 队列任务预览用的本地 shots 快照（只读模式）
   const [queuePreviewLocalShots, setQueuePreviewLocalShots] = useState<Shot[] | null>(null);
   // tableShots: 根据当前 tab 决定使用 live shots 还是 queue preview shots
@@ -4963,13 +4966,50 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
+      {/* 顶部业务模式 Tab 切换 + 标题 */}
+      <div className="flex items-center justify-between gap-4">
+        <h2 className="text-xl font-bold text-emerald-400 flex items-center gap-2">
+          <Video size={24} />
+          媒体生成
+        </h2>
+        <div className="flex items-center bg-slate-900/80 border border-slate-700 rounded-lg p-1 gap-1">
+          <button
+            onClick={() => setMediaSubTab('shot')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold transition-all ${
+              mediaSubTab === 'shot'
+                ? 'bg-emerald-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+            }`}
+            type="button"
+          >
+            <Film size={14} />
+            多镜头分镜
+          </button>
+          <button
+            onClick={() => setMediaSubTab('copy')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold transition-all ${
+              mediaSubTab === 'copy'
+                ? 'bg-amber-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+            }`}
+            type="button"
+          >
+            <FileSignature size={14} />
+            <span>文案成片</span>
+            <span className="text-[9px] px-1 bg-amber-700/50 text-amber-200 rounded">NEW</span>
+          </button>
+        </div>
+      </div>
+
+      {/* 文案成片模式：直接渲染 CopyBasedPanel，其他编辑器全部隐藏 */}
+      {mediaSubTab === 'copy' ? (
+        <CopyBasedPanel apiKey={apiKey} runningHubApiKey={runningHubApiKey} />
+      ) : (
+      <>
       {/* 顶部操作栏 */}
       <div className="flex flex-col gap-4 bg-slate-800/50 p-4 rounded-xl border border-slate-800">
         <div className="flex items-center justify-between">
-          <h2 className="text-xl font-bold text-emerald-400 flex items-center gap-2">
-            <Video size={24} />
-            媒体生成
-          </h2>
+          <div className="text-sm text-slate-400 font-semibold">分镜列表与生成工具</div>
           <div className="flex items-center gap-2 flex-wrap justify-end">
             <div className="flex items-end gap-1.5 mr-1 border-r border-slate-700 pr-2">
               <div>
@@ -7591,6 +7631,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           onClose={() => setShowVoiceLibrary(false)}
           onVoicesChange={() => setVoiceLibraryEpoch((e) => e + 1)}
         />
+      )}
+      </>
       )}
     </div>
   );
