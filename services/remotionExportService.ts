@@ -354,6 +354,7 @@ async function pollForRemotionResult(
   const POLL_INTERVAL = 3000;
 
   let lastProgress = 0;
+  let lastSignature = ''; // v1.7：用于 (progress, message) dedup，避免日志重复
   for (let i = 0; i < MAX_POLL; i++) {
     await sleep(POLL_INTERVAL);
 
@@ -378,11 +379,18 @@ async function pollForRemotionResult(
         throw new Error(`轮询失败: HTTP ${statusRes.status}`);
       }
       const status = await statusRes.json();
-      if (status.progress !== undefined && status.progress > lastProgress) {
+      // 去重：同一 progress + message 在轮询里只触发一次 onProgress，避免日志无限重复
+      const incomingMessage = status.message || '渲染中...';
+      const sig = `${status.progress ?? lastProgress}|${incomingMessage}`;
+      if (sig === lastSignature) {
+        // 同状态跳过；保持心跳（不调 onProgress）
+      } else if (status.progress !== undefined && status.progress > lastProgress) {
         lastProgress = status.progress;
-        onProgress?.(status.progress, status.message || '渲染中...');
+        lastSignature = sig;
+        onProgress?.(status.progress, incomingMessage);
       } else if (status.message) {
-        onProgress?.(lastProgress, status.message);
+        lastSignature = sig;
+        onProgress?.(lastProgress, incomingMessage);
       }
 
       if (status.status === 'success') {
