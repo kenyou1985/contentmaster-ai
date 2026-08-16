@@ -66,6 +66,8 @@ export interface SubtitleFullConfig extends SubtitleStyleConfig {
   fadeOutFrames?: number;
   maxCharsPerLine?: number;
   cues?: SubtitleCue[];
+  /** v1.10：字幕切分模式（默认 sentence） */
+  chunking?: 'sentence' | 'word' | 'none';
 }
 
 /**
@@ -155,8 +157,23 @@ export function buildSubtitleCues(
   durationInFrames: number,
   fps: number,
   gapFrames: number = Math.max(2, Math.round(fps * 0.2)),
+  /**
+   * v1.10：字幕切分模式
+   * - 'sentence'（默认）：按中英文标点切句（业界标准）
+   * - 'word'：按空格 / 单词切分（适合英文 ASR / 卡拉 OK）
+   * - 'none'：整段字幕作为单个 cue
+   */
+  chunking: 'sentence' | 'word' | 'none' = 'sentence',
 ): SubtitleCue[] {
-  const sentences = splitCaptionToSentences(text);
+  // 根据 chunking 模式选择切分器
+  let sentences: string[];
+  if (chunking === 'none') {
+    sentences = text.trim() ? [text.trim()] : [];
+  } else if (chunking === 'word') {
+    sentences = splitTextToWords(text);
+  } else {
+    sentences = splitCaptionToSentences(text);
+  }
   if (sentences.length === 0 || durationInFrames <= 0) return [];
   if (sentences.length === 1) {
     return [{ text: sentences[0], startFrame: 0, endFrame: durationInFrames }];

@@ -26,5 +26,8 @@ echo "[start] 启动 Remotion 渲染服务 (端口 $PORT)..."
 echo "[start] 项目根目录: $PROJECT_ROOT"
 echo "[start] Remotion 项目: $PROJECT_ROOT/remotion"
 
-PORT="$PORT" REMOTION_OUTPUT_DIR="${REMOTION_OUTPUT_DIR:-/tmp/remotion-out}" \
+# v1.9：强制注入 REMOTION_PROJECT_ROOT，避免 server.mjs fallback 到 /app/remotion
+PORT="$PORT" \
+  REMOTION_PROJECT_ROOT="$PROJECT_ROOT/remotion" \
+  REMOTION_OUTPUT_DIR="${REMOTION_OUTPUT_DIR:-/tmp/remotion-out}" \
   node server.mjs

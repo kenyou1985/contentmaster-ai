@@ -6155,6 +6155,33 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                           </button>
                         )}
                       </div>
+                      {/* v1.10：字幕切分模式选择器（按句 / 按词 / 不分） */}
+                      {remotionConfig.subtitle.enabled && (
+                        <div className="flex items-center gap-1.5 pl-2">
+                          <span className="text-[9px] text-slate-400">切分模式</span>
+                          <div className="flex gap-0.5 ml-auto">
+                            {(['sentence', 'word', 'none'] as const).map((mode) => (
+                              <button
+                                key={mode}
+                                type="button"
+                                onClick={() => setRemotionConfig(c => ({ ...c, subtitle: { ...c.subtitle, chunking: mode } }))}
+                                className={`px-1.5 py-0.5 text-[9px] rounded transition-colors ${
+                                  (remotionConfig.subtitle.chunking ?? 'sentence') === mode
+                                    ? 'bg-emerald-600 text-white'
+                                    : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                                }`}
+                                title={
+                                  mode === 'sentence' ? '按句切分（中文/英文标点，业界默认）'
+                                    : mode === 'word' ? '按词切分（适合英文 ASR / 卡拉 OK）'
+                                    : '不切分（整段字幕，适合标题卡片）'
+                                }
+                              >
+                                {mode === 'sentence' ? '按句' : mode === 'word' ? '按词' : '不分'}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                       {remotionConfig.subtitle.enabled && (
                         <div className="flex flex-col gap-1.5 pl-2">
                           {/* M2 #7：字幕防遮挡开关 */}

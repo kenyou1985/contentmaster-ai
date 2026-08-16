@@ -110,6 +110,17 @@ export interface RemotionSubtitleConfig {
   altColor?: string;            // 默认 #ffe600
   /** TikTok 入场动画类型 */
   preset?: 'none' | 'spring';
+
+  // ── v1.10 新增：字幕切分模式 ──
+  /**
+   * 字幕切分模式（决定每行字幕显示几个字 / 几秒一切）：
+   * - 'sentence'（按句切分）：按中英文标点切句 + 字符权重 → 业界标准默认
+   * - 'word'（按词切分）：按空格 / 单词切分 → 适合英文 ASR / 卡拉 OK 字幕
+   * - 'none'（不切分）：整段字幕显示一行 → 适合标题卡片 / 引导语
+   *
+   * 不设置时：默认 'sentence'（保持旧行为）
+   */
+  chunking?: 'sentence' | 'word' | 'none';
 }
 
 export interface RemotionTemplateConfig {
@@ -156,7 +167,25 @@ export interface RemotionExportConfig {
   bgm: RemotionBGMConfig;
   subtitle: RemotionSubtitleConfig;
   /** 过渡（每个镜头之间） */
-  transition?: { type: 'none' | 'fade' | 'slide' | 'zoom'; duration: number };
+  transition?: {
+    type:
+      | 'none'
+      | 'fade'
+      | 'slide'
+      | 'zoom'
+      | 'wipe'
+      | 'flip'
+      | 'clockWipe'
+      | 'iris'
+      | 'zoomBlur'
+      | 'dreamyZoom'
+      | 'crossZoom'
+      | 'filmBurn'
+      | 'ripple'
+      | 'pushCut'
+      | 'dissolve';
+    duration: number;
+  };
   /** 输出方式 */
   output: {
     target: 'browser' | 'download';
@@ -175,6 +204,27 @@ export interface RemotionExportConfig {
   motion?: 'none' | 'kenBurns' | 'kenBurnsStrong' | 'kenBurnsSlow' | 'zoomIn' | 'zoomOut' | 'panLeft' | 'panRight' | 'panUp' | 'panDown' | 'push' | 'pull';
   /** M2 #7：字幕防遮挡 - 自动检测图片安全区，让字幕避开主体 */
   safeZoneDetection?: boolean;
+  /**
+   * 全局视频滤镜（图片/视频镜头均生效）
+   * - blur: 模糊半径 0~20（默认 0）
+   * - brightness: 亮度 0.3~2（默认 1）
+   * - contrast: 对比度 0.3~2（默认 1）
+   * - saturation: 饱和度 0~2（默认 1）
+   * - exposure: 曝光 -2~2（默认 0）
+   * - grayscale: 黑白 0~1（默认 0）
+   * - temperature: 色温 0~1（默认 0.5）
+   * - hue: 色相旋转 0~360（默认 0）
+   */
+  videoFilter?: {
+    blur?: number;
+    brightness?: number;
+    contrast?: number;
+    saturation?: number;
+    exposure?: number;
+    grayscale?: number;
+    temperature?: number;
+    hue?: number;
+  };
   /** 预留字段 */
   intro?: {
     style?: string;

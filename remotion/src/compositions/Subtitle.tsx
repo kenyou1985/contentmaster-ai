@@ -39,8 +39,8 @@ export const Subtitle: React.FC<SubtitleProps> = ({
   }
 
   const cues = useMemo(
-    () => externalCues ?? buildSubtitleCues(text, durationInFrames, fps),
-    [externalCues, text, durationInFrames, fps],
+    () => externalCues ?? buildSubtitleCues(text, durationInFrames, fps, undefined, config.chunking),
+    [externalCues, text, durationInFrames, fps, config.chunking],
   );
 
   if (cues.length === 0) {

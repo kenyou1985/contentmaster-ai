@@ -62,8 +62,8 @@ const RAW_ENV_ROOT = process.env.REMOTION_PROJECT_ROOT;
 const CANDIDATE_ROOTS = [
   RAW_ENV_ROOT ? RAW_ENV_ROOT.replace(/[\r\n\s]+$/g, '').trim() : null,
   '/app/remotion',
-  // server.mjs 在 /app/remotion-server/
-  join(__dirname, '..', 'remotion'),
+  // server.mjs 在 <repo>/server/remotion-server/，所以需要跳两层
+  join(__dirname, '..', '..', 'remotion'),
 ].filter(Boolean);
 
 const SEEN = new Set();
@@ -72,7 +72,13 @@ const REMOTION_PROJECT_ROOT =
     if (SEEN.has(p)) return false;
     SEEN.add(p);
     return existsSync(join(p, 'src', 'index.tsx'));
-  }) || CANDIDATE_ROOTS[0] || '/app/remotion';
+  }) ||
+  // v1.9 兜底：本地开发常见路径（用户 clone 仓库后的可能位置）
+  ['./remotion', './../remotion', '../remotion', './../../remotion']
+    .map((p) => join(process.cwd(), p))
+    .find((p) => existsSync(join(p, 'src', 'index.tsx'))) ||
+  CANDIDATE_ROOTS[0] ||
+  '/app/remotion';
 
 const REMOTION_PROJECT_ENTRY = join(REMOTION_PROJECT_ROOT, 'src', 'index.tsx');
 
@@ -455,6 +461,177 @@ function cleanupTempDir(tempDir) {
   } catch {}
 }
 
+// ── 子进程渲染（独立 Node 进程跑 render-worker.mjs；主进程不会被卡死）────────────────────
+/**
+ * v1.8 重构：渲染任务在独立 Node 子进程中跑，避免 selectComposition / renderMedia
+ * 内部 hang 时把整个 Express 主进程事件循环拖死，导致 /health、/render/status、/render/sse
+ * 全部 500。子进程通过 stdin 接收 payload、通过 stdout 输出 JSON 进度。
+ *
+ * 即便 worker 进程 hang/卡死，主进程仍能：
+ *  - 响应健康检查（前端能拿到 service: 'ok'）
+ *  - 推送 SSE 失败状态（前端立刻看到 'failed'）
+ *  - 提供 /render/status 和 /render/queue
+ */
+function runRenderInWorker(payload, taskId) {
+  const task = renderTasks.get(taskId);
+  if (!task) return Promise.resolve();
+
+  const logPath = join(LOG_DIR, `${taskId}.log`);
+  const workerScript = join(__dirname, 'render-worker.mjs');
+
+  // log 辅助：写日志文件 + 主进程 console
+  const log = (msg) => {
+    try {
+      const line = `[${new Date().toISOString()}] ${msg}\n`;
+      fs.writeFile(logPath, line, { flag: 'a' }).catch(() => {});
+      console.log(msg);
+    } catch {}
+  };
+
+  log(`== 渲染任务开始（子进程模式）: ${taskId} ==`);
+  log(`worker 脚本: ${workerScript}`);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let stdoutBuf = '';
+    let busyTimer = null;
+
+    const markDone = (outcome) => {
+      if (settled) return;
+      settled = true;
+      if (busyTimer) clearTimeout(busyTimer);
+      try { child.kill('SIGTERM'); } catch {}
+      // 兜底：SIGTERM 不一定响应，5s 后强制杀
+      setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch {}
+      }, 5_000);
+      resolve(outcome);
+    };
+
+    // v1.8：硬超时 35 分钟（>30min renderMedia 上限 + 5min buffer）
+    const HARD_TIMEOUT_MS = 35 * 60 * 1000;
+    const hardTimer = setTimeout(() => {
+      log(`❌ [worker] 硬超时（>${HARD_TIMEOUT_MS / 60000} 分钟），强制 kill`);
+      updateTask(taskId, {
+        status: 'failed',
+        error: `Remotion 渲染超过 ${HARD_TIMEOUT_MS / 60000} 分钟被强制终止`,
+        message: '渲染超时被强制终止',
+      });
+      markDone('timeout');
+    }, HARD_TIMEOUT_MS);
+
+    const child = spawn(process.execPath, [
+      '--enable-source-maps',
+      workerScript,
+    ], {
+      cwd: __dirname,
+      env: {
+        ...process.env,
+        REMOTION_PROJECT_ROOT: process.env.REMOTION_PROJECT_ROOT || REMOTION_PROJECT_ROOT,
+        REMOTION_OUTPUT_DIR: process.env.REMOTION_OUTPUT_DIR || OUTPUT_DIR,
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    child.on('error', (err) => {
+      log(`❌ [worker] spawn 失败: ${err.message}`);
+      clearTimeout(hardTimer);
+      if (!settled) {
+        updateTask(taskId, {
+          status: 'failed',
+          error: `子进程启动失败: ${err.message}`,
+          message: '渲染启动失败',
+        });
+      }
+      markDone('spawn_error');
+    });
+
+    child.stderr.on('data', (chunk) => {
+      const s = chunk.toString('utf-8');
+      log(`[stderr] ${s.trimEnd()}`);
+      updateTask(taskId, {
+        logs: [...(task.logs || []).slice(-490), { time: Date.now(), message: `[stderr] ${s.trimEnd()}` }],
+      });
+    });
+
+    child.stdout.on('data', (chunk) => {
+      stdoutBuf += chunk.toString('utf-8');
+      let nl;
+      while ((nl = stdoutBuf.indexOf('\n')) >= 0) {
+        const line = stdoutBuf.slice(0, nl).trim();
+        stdoutBuf = stdoutBuf.slice(nl + 1);
+        if (!line) continue;
+        try {
+          const msg = JSON.parse(line);
+          if (msg.type === 'progress') {
+            updateTask(taskId, {
+              progress: msg.progress ?? task.progress,
+              message: msg.message || task.message,
+              frame: msg.frame,
+              totalFrames: msg.totalFrames,
+              fps: msg.fps,
+            });
+          } else if (msg.type === 'done') {
+            log(`✅ [worker] 渲染完成: ${msg.result?.outputPath || taskId}`);
+            updateTask(taskId, {
+              status: 'success',
+              progress: 100,
+              message: '渲染完成',
+              result: msg.result,
+            });
+            clearTimeout(hardTimer);
+            markDone('success');
+          } else if (msg.type === 'failed') {
+            log(`❌ [worker] 渲染失败: ${msg.error || 'unknown'}`);
+            updateTask(taskId, {
+              status: 'failed',
+              error: msg.error || 'unknown',
+              message: msg.message || '渲染失败',
+            });
+            clearTimeout(hardTimer);
+            markDone('failed');
+          }
+        } catch {
+          // 非 JSON 行：忽略（worker 内部 writeLog 是异步的，stdout 干扰忽略）
+        }
+      }
+    });
+
+    child.on('exit', (code, signal) => {
+      log(`[worker] 退出 code=${code} signal=${signal}`);
+      clearTimeout(hardTimer);
+      if (!settled) {
+        const cur = renderTasks.get(taskId);
+        if (cur?.status !== 'success' && cur?.status !== 'failed') {
+          updateTask(taskId, {
+            status: 'failed',
+            error: `Worker 进程异常退出 (code=${code}, signal=${signal})`,
+            message: `渲染进程退出 (code=${code})`,
+          });
+        }
+      }
+      markDone('exit');
+    });
+
+    // 通过 stdin 传 payload（worker 一次性读取直到 EOF）
+    try {
+      child.stdin.write(JSON.stringify({ payload, taskId }));
+      child.stdin.end();
+    } catch (e) {
+      log(`❌ [worker] stdin 写入失败: ${e.message}`);
+      clearTimeout(hardTimer);
+      if (!settled) {
+        updateTask(taskId, {
+          status: 'failed',
+          error: `Worker stdin 写入失败: ${e.message}`,
+          message: '渲染启动失败',
+        });
+      }
+      markDone('stdin_error');
+    }
+  });
+}
+
 // ── 主进程渲染（直接执行，不使用子进程）────────────────────
 async function runRenderInProcess(payload, taskId) {
   const task = renderTasks.get(taskId);
@@ -474,16 +651,27 @@ async function runRenderInProcess(payload, taskId) {
   const outputPath = join(OUTPUT_DIR, `${taskId}.mp4`);
   const logPath = join(LOG_DIR, `${taskId}.log`);
 
-  // log 函数必须在 try 之外定义，以便 catch 块也能使用
-  const log = (msg) => {
-    try {
-      const line = `[${new Date().toISOString()}] ${msg}\n`;
-      writeFileSync(logPath, line, { flag: 'a' });
-      console.log(msg);
-    } catch {}
-  };
+    // log 函数必须在 try 之外定义，以便 catch 块也能使用
+    // v1.7：使用异步 writeFile（不阻塞渲染主线程）
+    const log = (msg) => {
+      try {
+        const line = `[${new Date().toISOString()}] ${msg}\n`;
+        // 异步写入：避免 writeFileSync 阻塞渲染/CPU 关键路径
+        fs.writeFile(logPath, line, { flag: 'a' }).catch(() => {});
+        console.log(msg);
+      } catch {}
+    };
 
-  try {
+    // v1.7：给单个步骤加硬超时（避免 hang 死）
+    const withTimeout = (promise, ms, label) =>
+      Promise.race([
+        promise,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`${label} 超时（>${Math.round(ms / 1000)}s）`)), ms)
+        ),
+      ]);
+
+    try {
     log(`== 渲染任务开始: ${taskId} ==`);
     log(`PROJECT_ROOT: ${REMOTION_PROJECT_ROOT}`);
     log(`ENTRY_FILE: ${REMOTION_PROJECT_ENTRY}`);
@@ -520,16 +708,21 @@ async function runRenderInProcess(payload, taskId) {
     };
     const inputProps = { shots: shots, config: safeConfig };
 
-    const composition = await renderer.selectComposition({
-      serveUrl: bundleLocation,
-      id: 'MyVideo',
-      inputProps,
-    });
+    // v1.7：给 selectComposition 加 90s 超时（避免 Remotion 内部 hang 死循环）
+    const composition = await withTimeout(
+      renderer.selectComposition({
+        serveUrl: bundleLocation,
+        id: 'MyVideo',
+        inputProps,
+      }),
+      90_000,
+      'selectComposition'
+    );
 
     log(`Composition: ${composition.width}x${composition.height} @ ${composition.fps}fps, ${composition.durationInFrames} 帧`);
 
-    updateTask(taskId, { 
-      progress: 20, 
+    updateTask(taskId, {
+      progress: 20,
       message: '开始渲染视频...',
       totalFrames: composition.durationInFrames,
       fps: composition.fps,
@@ -542,31 +735,36 @@ async function runRenderInProcess(payload, taskId) {
       return totalMemGB >= 16 ? 2 : 1;
     };
 
-    await renderer.renderMedia({
-      composition,
-      serveUrl: bundleLocation,
-      codec: config.codec === 'h265' ? 'h265' : 'h264',
-      outputLocation: outputPath,
-      inputProps,
-      concurrency: getConcurrency(),
-      chromiumOptions: {
-        args: [
-          '--no-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-setuid-sandbox',
-          '--disable-gpu',
-        ],
-      },
-      onProgress: ({ progress, renderedFrames, totalFrames }) => {
-        const overall = 20 + Math.round(progress * 75);
-        updateTask(taskId, {
-          progress: overall,
-          frame: renderedFrames,
-          totalFrames,
-          message: `渲染中 (${renderedFrames}/${totalFrames} 帧, ${Math.round(progress * 100)}%)`,
-        });
-      },
-    });
+    // v1.7：renderMedia 加 30 分钟超时（兜底；长视频走 batch-renderer 分批）
+    await withTimeout(
+      renderer.renderMedia({
+        composition,
+        serveUrl: bundleLocation,
+        codec: config.codec === 'h265' ? 'h265' : 'h264',
+        outputLocation: outputPath,
+        inputProps,
+        concurrency: getConcurrency(),
+        chromiumOptions: {
+          args: [
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-setuid-sandbox',
+            '--disable-gpu',
+          ],
+        },
+        onProgress: ({ progress, renderedFrames, totalFrames }) => {
+          const overall = 20 + Math.round(progress * 75);
+          updateTask(taskId, {
+            progress: overall,
+            frame: renderedFrames,
+            totalFrames,
+            message: `渲染中 (${renderedFrames}/${totalFrames} 帧, ${Math.round(progress * 100)}%)`,
+          });
+        },
+      }),
+      30 * 60 * 1000,
+      'renderMedia'
+    );
 
     if (!existsSync(outputPath)) {
       throw new Error('渲染完成后输出文件不存在');
@@ -714,7 +912,7 @@ app.post('/render/start', async (req, res) => {
 
     renderQueue.push({
       taskId: task.taskId,
-      run: () => runRenderInProcess(normalizedPayload, task.taskId),
+      run: () => runRenderInWorker(normalizedPayload, task.taskId),
     });
     scheduleQueueTick();
 
@@ -839,7 +1037,7 @@ app.post('/render/sync', async (req, res) => {
     const normalizedPayload = { ...payload, shots: shotsWithHttpUrls, _tempDir: tempDir };
 
     try {
-      await runRenderInProcess(normalizedPayload, task.taskId);
+      await runRenderInWorker(normalizedPayload, task.taskId);
       const result = renderTasks.get(task.taskId)?.result;
       cleanupTempDir(tempDir);
       if (result) {
