@@ -3901,7 +3901,7 @@ export const COPY_ANALYSIS_PROMPT = `
 2. **基于原文主题**：3 套方案都从原文出发，主题保持一致，但切入角度不同；
 3. **三段式爆款标题**：标题包含「人物 + 冲突 + 钩子」，25-40 字，含真实人物名（来自原文）；
 4. **强情绪风格**：3 套方案使用 3 种不同风格（震惊悬念 / 冲突博弈 / 洞察揭示 等），不重复；
-5. **封面提示词**：英文文生图 prompt，重点突出人物面部特写 + 文字叠加效果。
+5. **封面提示词**：英文文生图 prompt，**完整、一字不漏地把中文标题写进画面**（禁止简化、禁止缩减、禁止拆分成几个无关词）。
 
 # 输出格式（严格 JSON）
 {
@@ -3918,25 +3918,10 @@ export const COPY_ANALYSIS_PROMPT = `
       "styleTag": "震惊悬念",
       "title": "三段式爆款标题（25-40 字，含人物名）",
       "styleKeywords": ["暗色调", "强光", "特写", "新闻感", "震撼"],
-      "coverPromptEn": "英文文生图 prompt（人物面部占主视觉 60%+，上方文字叠加标题 2-3 个关键词）",
+      "coverPromptEn": "英文文生图 prompt，必须显式包含 'TEXT: 「完整中文标题一字不漏」' 让模型知道要画哪些文字",
       "coverDescriptionZh": "中文封面描述（10-15 字）"
     },
-    {
-      "emoji": "⚔️",
-      "styleTag": "冲突博弈",
-      "title": "...",
-      "styleKeywords": ["..."],
-      "coverPromptEn": "...",
-      "coverDescriptionZh": "..."
-    },
-    {
-      "emoji": "💡",
-      "styleTag": "洞察揭示",
-      "title": "...",
-      "styleKeywords": ["..."],
-      "coverPromptEn": "...",
-      "coverDescriptionZh": "..."
-    }
+    { "...": "另外两套，结构相同，风格标签 + emoji 不同" }
   ]
 }
 
@@ -3949,19 +3934,32 @@ export const COPY_ANALYSIS_PROMPT = `
 - 数字/金额/时间/地点必须具体，禁止「很多」「不少」「最近」
 - 25-40 字，含事件核心冲突
 
-# 封面提示词铁律（coverPromptEn）
-- 主体：人物面部特写（占画面 60%+），表情强烈
-- 风格：暗调强对比 / 新闻感 / 电影感
-- 文字叠加：上方或下方放「2-3 个关键词」（中文或英文），半透明黑底
-- 构图：人物眼睛看向镜头外（引导视线），强烈眼神
-- 镜头：85mm 镜头，虚化背景
-- 画质：8K，超写实
+# 🔥 封面提示词铁律（coverPromptEn）— 这是最关键的部分
+**❌ 错误示范**：不要让 AI 在画面上只显示几个无关的关键词（如「三线围堵」），这是**严重的简化错误**！
+**✅ 正确示范**：必须让 AI 完整显示中文标题。模板如下（请严格遵循结构，标题部分用真实标题替换）：
+
+"A cinematic news-style YouTube thumbnail, ultra-realistic photograph.
+Center: a strong close-up of [人物视觉描述], expression [主导情绪], eyes piercing toward the viewer.
+Lighting: [暗调/强对比] cinematic lighting, 85mm lens, shallow depth of field.
+**OVERLAY TEXT (must be EXACTLY these Chinese characters, do NOT summarize, do NOT shorten)**:
+Top banner: '完整中文标题第一部分（如三段式第一段）'
+Bottom banner: '完整中文标题剩余部分'
+All overlay text must be in bold white Chinese characters with thick black outline, high contrast against the scene.
+Composition: text occupies top 20% and bottom 15% of frame, character face occupies the central 60%.
+Style: photojournalistic, dramatic, Breaking News mood, 8K resolution."
+
+# 铁律总结
+1. **coverPromptEn 必须包含完整中文标题**（一字不漏，禁止简化）
+2. **必须显式标注 'TEXT: 「...」'** 让模型识别需要画文字
+3. **强调 'do NOT summarize, do NOT shorten'** 防止 AI 简化
+4. **必须指出文字位置**（顶部/底部横幅）和样式（粗体白字+黑描边）
 
 # 严禁
 - 严禁输出 markdown 代码块
 - 严禁在 title 中加入「#」「-」「数字序号」前缀
 - 严禁重复某个事件，杜撰原文没有的内容
 - 严禁输出少于 3 套方案
+- **严禁在封面提示词中只写几个无关关键词代替完整标题**（这是常见错误！）
 
 # 输入文案
 请基于下方 input 字段的文案进行解析。
