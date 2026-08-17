@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Remotion Bundle 缓存管理（M2 #11）
  *

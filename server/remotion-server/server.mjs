@@ -549,9 +549,17 @@ async function runRenderInProcess(payload, taskId) {
     log('步骤 4/4: 渲染 MP4...');
 
     const getConcurrency = () => {
+      const cpuCount = Math.max(1, os.cpus()?.length || 1);
       const totalMemGB = Math.round(os.totalmem() / 1024 / 1024 / 1024);
-      return totalMemGB >= 16 ? 2 : 1;
+      const concurrencyByCpu = Math.max(1, Math.floor(cpuCount * 0.6));
+      const concurrencyByMem = Math.max(1, Math.floor(totalMemGB / 3));
+      return Math.min(16, concurrencyByCpu, concurrencyByMem);
     };
+
+    const concurrency = getConcurrency();
+    const offthreadThreads = Math.min(8, Math.max(2, Math.floor((os.cpus()?.length || 4) / 4)));
+    log(`[render] concurrency=${concurrency} offthreadVideoThreads=${offthreadThreads}`);
+    log(`[render] shots=${shots.length} resolution=${config.resolution || '1920x1080'} duration=${composition.durationInFrames}f @ ${composition.fps}fps`);
 
     await renderer.renderMedia({
       composition,
@@ -559,15 +567,21 @@ async function runRenderInProcess(payload, taskId) {
       codec: config.codec === 'h265' ? 'h265' : 'h264',
       outputLocation: outputPath,
       inputProps,
-      concurrency: getConcurrency(),
+      concurrency,
       chromiumOptions: {
         args: [
           '--no-sandbox',
           '--disable-dev-shm-usage',
           '--disable-setuid-sandbox',
-          '--disable-gpu',
+          '--enable-gpu',
+          '--use-gl=swiftshader',
+          '--enable-features=Vulkan',
+          '--ignore-gpu-blocklist',
         ],
       },
+      offthreadVideoThreads: offthreadThreads,
+      x264Preset: 'ultrafast',
+      parallelEncoding: true,
       onProgress: ({ progress, renderedFrames, totalFrames }) => {
         const overall = 20 + Math.round(progress * 75);
         updateTask(taskId, {
