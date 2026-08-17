@@ -455,36 +455,49 @@ async function strategyServerExtract(
   opts.onProgress(0.20);
 
   // 调用服务端（vite proxy → /api/remotion/audio/extract → 127.0.0.1:18093/audio/extract）
-  // 长超时：285MB 文件上传 ~10 秒，转码 ~10-30 秒（取决于 ffmpeg-static 和 CPU）
-  const resp = await fetch('/api/remotion/audio/extract', {
-    method: 'POST',
-    body: fd,
-    // 注意：不设 Content-Type，让浏览器自动加 boundary
+  // 长超时：285MB 文件上传 ~10-30 秒，转码 ~10-30 秒（取决于 ffmpeg-static 和 CPU）
+  // 用 XMLHttpRequest 而非 fetch，因为 XHR 支持 upload.onprogress
+  const wavDataUrl = await new Promise<string>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/remotion/audio/extract', true);
+    xhr.timeout = 600_000; // 10 分钟（极保守，285MB + 转码 + 网络抖动）
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        const pct = (e.loaded / e.total * 0.5).toFixed(1); // 上传占 0-50%
+        opts.onProgress(0.45 + parseFloat(pct) / 100);  // 0.45 → 0.95
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const json = JSON.parse(xhr.responseText);
+          if (json.success && json.wavDataUrl) {
+            resolve(json.wavDataUrl);
+          } else {
+            reject(new Error(json.error || '服务端返回失败'));
+          }
+        } catch (e) {
+          reject(new Error(`服务端返回非 JSON: ${xhr.responseText.slice(0, 200)}`));
+        }
+      } else {
+        reject(new Error(`服务端 HTTP ${xhr.status}: ${xhr.responseText.slice(0, 300)}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('网络错误（服务端未响应或断网）'));
+    xhr.ontimeout = () => reject(new Error(`服务端超时（${xhr.timeout / 1000}s），请确认 remotion-server 在 18093 运行`));
+    xhr.send(fd);
   });
-  opts.onProgress(0.70);
+  opts.onProgress(0.95);
 
-  if (!resp.ok) {
-    const errText = await resp.text().catch(() => '');
-    throw new Error(`服务端 HTTP ${resp.status}: ${errText.slice(0, 300)}`);
-  }
-
-  const json = await resp.json();
-  if (!json.success) {
-    throw new Error(json.error || '服务端返回失败');
-  }
-  if (!json.wavDataUrl) {
-    throw new Error('服务端未返回 wavDataUrl');
-  }
-  opts.onProgress(0.90);
-
+  // 数据已经在 XHR onload 解析，直接处理
   // data URL → Blob
-  const m = json.wavDataUrl.match(/^data:([^;]+);base64,(.*)$/);
+  const m = wavDataUrl.match(/^data:([^;]+);base64,(.*)$/);
   if (!m) throw new Error('服务端 wavDataUrl 格式错误');
   const bin = atob(m[2]);
   const wavBytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) wavBytes[i] = bin.charCodeAt(i);
   const wavBlob = new Blob([wavBytes], { type: m[1] || 'audio/wav' });
-  console.log(`[audioExtractor] 服务端返回: ${(wavBlob.size / 1024).toFixed(1)} KB (${json.elapsedMs || '?'}ms, usedExtractor=${json.usedExtractor || '?'})`);
+  console.log(`[audioExtractor] 服务端返回: ${(wavBlob.size / 1024).toFixed(1)} KB`);
 
   if (wavBlob.size < 1000) {
     throw new Error(`服务端返回过小（${wavBlob.size} bytes），视频可能无音轨`);
