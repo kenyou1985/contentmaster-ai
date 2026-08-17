@@ -20,11 +20,8 @@ import {
   ArrowDown,
   GripVertical,
   Volume2,
-  Music,
-  Mic,
-  Loader2,
-  AlertCircle,
   FileText,
+  Film,
 } from 'lucide-react';
 
 // ── 单个素材（图片或视频）────────────────────────────────
