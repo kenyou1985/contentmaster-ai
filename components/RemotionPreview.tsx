@@ -82,6 +82,7 @@ export const RemotionPreview = forwardRef<RemotionPreviewRef, RemotionPreviewPro
     const INTRO_DURATIONS: Record<string, number> = {
       fade_in: 2.5, slide_up: 2.0, typewriter: 3.5,
       glitch: 2.0, zoom_in: 2.0, split: 2.5,
+      slide_left: 2.0, rotate_in: 2.2, blur_focus: 2.4, flash_white: 1.8,
     };
     const introSec = config.intro?.style && config.intro.style !== 'none'
       ? (config.intro.duration ?? INTRO_DURATIONS[config.intro.style] ?? 2.0)

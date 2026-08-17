@@ -332,6 +332,175 @@ const SplitIntro: React.FC<{
   );
 };
 
+/** slide_left: 从左侧横向滑入 */
+const SlideLeftIntro: React.FC<{
+  text: string; introStyle: IntroStyle; introConfig?: IntroLayerProps['introConfig'];
+  fps: number; width: number; durationFrames: number;
+}> = ({ text, introStyle, introConfig, fps, width, durationFrames }) => {
+  const frame = useCurrentFrame();
+  const slideIn = spring({ frame, fps, config: { damping: 14, stiffness: 140, mass: 0.9 } });
+  const fadeIn = interpolate(frame, [0, Math.round(durationFrames * 0.3)], [0, 1], { extrapolateRight: 'clamp' });
+  const fadeOut = interpolate(frame, [Math.round(durationFrames * 0.75), durationFrames], [1, 0], { extrapolateRight: 'clamp' });
+  const opacity = Math.min(fadeIn, fadeOut);
+  const translateX = interpolate(slideIn, [0, 1], [-width * 0.6, 0]);
+  const bgColor = introConfig?.bgColor ?? introStyle.bgColor;
+  const color = introConfig?.textColor ?? introStyle.textColor;
+  const fontSize = introConfig?.fontSize ?? Math.round(width / 18);
+  const fontFamily = introConfig?.fontFamily ?? introStyle.fontFamily;
+  const fontWeight = introConfig?.fontWeight ?? introStyle.fontWeight;
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: bgColor, justifyContent: 'center', alignItems: 'center', overflow: 'hidden' }}>
+      <div style={{ opacity, transform: `translateX(${translateX}px)` }}>
+        {text && (
+          <div style={{
+            color,
+            fontSize,
+            fontFamily,
+            fontWeight,
+            textAlign: 'center',
+            maxWidth: '85%',
+            textShadow: `0 4px 20px rgba(0,0,0,0.9)`,
+            letterSpacing: 2,
+          }}>
+            {text}
+          </div>
+        )}
+      </div>
+    </AbsoluteFill>
+  );
+};
+
+/** rotate_in: 旋转放大入场 */
+const RotateIntro: React.FC<{
+  text: string; introStyle: IntroStyle; introConfig?: IntroLayerProps['introConfig'];
+  fps: number; width: number; durationFrames: number;
+}> = ({ text, introStyle, introConfig, fps, width, durationFrames }) => {
+  const frame = useCurrentFrame();
+  const rotateIn = spring({ frame, fps, config: { damping: 16, stiffness: 120, mass: 1.0 } });
+  const fadeIn = interpolate(frame, [0, Math.round(durationFrames * 0.3)], [0, 1], { extrapolateRight: 'clamp' });
+  const fadeOut = interpolate(frame, [Math.round(durationFrames * 0.75), durationFrames], [1, 0], { extrapolateRight: 'clamp' });
+  const opacity = Math.min(fadeIn, fadeOut);
+  const rotate = interpolate(rotateIn, [0, 1], [-180, 0]);
+  const scale = interpolate(rotateIn, [0, 1], [0.3, 1.0]);
+  const bgColor = introConfig?.bgColor ?? introStyle.bgColor;
+  const color = introConfig?.textColor ?? introStyle.textColor;
+  const fontSize = introConfig?.fontSize ?? Math.round(width / 20);
+  const fontFamily = introConfig?.fontFamily ?? introStyle.fontFamily;
+  const fontWeight = introConfig?.fontWeight ?? introStyle.fontWeight;
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: bgColor, justifyContent: 'center', alignItems: 'center', overflow: 'hidden' }}>
+      <div style={{
+        opacity,
+        transform: `rotate(${rotate}deg) scale(${scale})`,
+        transformOrigin: 'center center',
+      }}>
+        {text && (
+          <div style={{
+            color,
+            fontSize,
+            fontFamily,
+            fontWeight,
+            textAlign: 'center',
+            maxWidth: '85%',
+            textShadow: `0 4px 24px rgba(0,0,0,0.9)`,
+            letterSpacing: 3,
+          }}>
+            {text}
+          </div>
+        )}
+      </div>
+    </AbsoluteFill>
+  );
+};
+
+/** blur_focus: 模糊到清晰 */
+const BlurFocusIntro: React.FC<{
+  text: string; introStyle: IntroStyle; introConfig?: IntroLayerProps['introConfig'];
+  fps: number; width: number; durationFrames: number;
+}> = ({ text, introStyle, introConfig, fps, width, durationFrames }) => {
+  const frame = useCurrentFrame();
+  const blur = interpolate(frame, [0, Math.round(durationFrames * 0.7)], [20, 0], { extrapolateRight: 'clamp' });
+  const fadeIn = interpolate(frame, [0, Math.round(durationFrames * 0.4)], [0, 1], { extrapolateRight: 'clamp' });
+  const fadeOut = interpolate(frame, [Math.round(durationFrames * 0.75), durationFrames], [1, 0], { extrapolateRight: 'clamp' });
+  const opacity = Math.min(fadeIn, fadeOut);
+  const bgColor = introConfig?.bgColor ?? introStyle.bgColor;
+  const color = introConfig?.textColor ?? introStyle.textColor;
+  const fontSize = introConfig?.fontSize ?? Math.round(width / 20);
+  const fontFamily = introConfig?.fontFamily ?? introStyle.fontFamily;
+  const fontWeight = introConfig?.fontWeight ?? introStyle.fontWeight;
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: bgColor, justifyContent: 'center', alignItems: 'center' }}>
+      <div style={{ opacity, filter: `blur(${blur}px)` }}>
+        {text && (
+          <div style={{
+            color,
+            fontSize,
+            fontFamily,
+            fontWeight,
+            textAlign: 'center',
+            maxWidth: '85%',
+            textShadow: `0 2px 12px rgba(0,0,0,0.8)`,
+            letterSpacing: 4,
+          }}>
+            {text}
+          </div>
+        )}
+      </div>
+    </AbsoluteFill>
+  );
+};
+
+/** flash_white: 白闪入场 */
+const FlashWhiteIntro: React.FC<{
+  text: string; introStyle: IntroStyle; introConfig?: IntroLayerProps['introConfig'];
+  fps: number; width: number; durationFrames: number;
+}> = ({ text, introStyle, introConfig, fps, width, durationFrames }) => {
+  const frame = useCurrentFrame();
+  // 前 1/4：白屏闪一下（cover from white）
+  const flashDuration = Math.round(durationFrames * 0.25);
+  const flashOpacity = frame < flashDuration
+    ? interpolate(frame, [0, flashDuration * 0.4, flashDuration], [1, 1, 0], { extrapolateRight: 'clamp' })
+    : 0;
+  // 文字：从大变小 + 渐显
+  const textProgress = spring({ frame, fps, config: { damping: 18, stiffness: 140, mass: 0.9 } });
+  const textFadeIn = interpolate(frame, [flashDuration * 0.4, flashDuration], [0, 1], { extrapolateRight: 'clamp' });
+  const fadeOut = interpolate(frame, [Math.round(durationFrames * 0.75), durationFrames], [1, 0], { extrapolateRight: 'clamp' });
+  const textOpacity = Math.min(textFadeIn, fadeOut);
+  const textScale = interpolate(textProgress, [0, 1], [1.4, 1.0]);
+  const bgColor = introConfig?.bgColor ?? introStyle.bgColor;
+  const color = introConfig?.textColor ?? introStyle.textColor;
+  const fontSize = introConfig?.fontSize ?? Math.round(width / 18);
+  const fontFamily = introConfig?.fontFamily ?? introStyle.fontFamily;
+  const fontWeight = introConfig?.fontWeight ?? introStyle.fontWeight;
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: bgColor, justifyContent: 'center', alignItems: 'center' }}>
+      {/* 白闪遮罩 */}
+      <AbsoluteFill style={{ backgroundColor: '#ffffff', opacity: flashOpacity }} />
+      {/* 文字 */}
+      <div style={{ opacity: textOpacity, transform: `scale(${textScale})` }}>
+        {text && (
+          <div style={{
+            color,
+            fontSize,
+            fontFamily,
+            fontWeight,
+            textAlign: 'center',
+            maxWidth: '85%',
+            textShadow: `0 2px 8px rgba(255,255,255,0.5)`,
+            letterSpacing: 4,
+          }}>
+            {text}
+          </div>
+        )}
+      </div>
+    </AbsoluteFill>
+  );
+};
+
 // ── 渲染器注册表（必须在所有组件定义之后）──────────────────────
 
 const INTRO_RENDERERS = {
@@ -341,6 +510,10 @@ const INTRO_RENDERERS = {
   glitch: GlitchIntro,
   zoom_in: ZoomIntro,
   split: SplitIntro,
+  slide_left: SlideLeftIntro,
+  rotate_in: RotateIntro,
+  blur_focus: BlurFocusIntro,
+  flash_white: FlashWhiteIntro,
 } as const;
 
 /**

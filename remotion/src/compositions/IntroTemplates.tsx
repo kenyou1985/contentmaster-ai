@@ -8,6 +8,10 @@
  * - glitch:        故障风（抖动感）
  * - zoom_in:       从小放大淡入
  * - split:         分裂入场
+ * - slide_left:    从左侧横向滑入
+ * - rotate_in:     旋转入场
+ * - blur_focus:    模糊到清晰
+ * - flash_white:   闪白入场
  *
  * 每个片头包含：
  * - duration:      片头持续秒数
@@ -127,6 +131,54 @@ export const INTRO_STYLES: IntroStyle[] = [
     fontSize: 72,
     fontFamily: '"PingFang SC","Microsoft YaHei",sans-serif',
     fontWeight: 700,
+  },
+  {
+    id: 'slide_left',
+    name: '左侧滑入',
+    desc: '从左侧横向滑入，时尚节奏感',
+    duration: 2.0,
+    hasText: true,
+    bgColor: '#0f1419',
+    textColor: '#00d4ff',
+    fontSize: 76,
+    fontFamily: '"PingFang SC","Microsoft YaHei",sans-serif',
+    fontWeight: 700,
+  },
+  {
+    id: 'rotate_in',
+    name: '旋转入场',
+    desc: '文字旋转放大入场，有视觉冲击',
+    duration: 2.2,
+    hasText: true,
+    bgColor: '#0a0e27',
+    textColor: '#ffd600',
+    fontSize: 72,
+    fontFamily: '"PingFang SC","Microsoft YaHei",sans-serif',
+    fontWeight: 800,
+  },
+  {
+    id: 'blur_focus',
+    name: '模糊到清晰',
+    desc: '从模糊到清晰，电影感开场',
+    duration: 2.4,
+    hasText: true,
+    bgColor: '#000000',
+    textColor: '#ffffff',
+    fontSize: 68,
+    fontFamily: '"PingFang SC","Microsoft YaHei",sans-serif',
+    fontWeight: 500,
+  },
+  {
+    id: 'flash_white',
+    name: '闪白入场',
+    desc: '白闪过渡，戏剧感强',
+    duration: 1.8,
+    hasText: true,
+    bgColor: '#ffffff',
+    textColor: '#000000',
+    fontSize: 80,
+    fontFamily: '"PingFang SC","Microsoft YaHei",sans-serif',
+    fontWeight: 900,
   },
 ];
 

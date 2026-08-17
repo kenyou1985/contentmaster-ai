@@ -5670,12 +5670,16 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
                           className="w-full bg-slate-700 border border-slate-600 text-slate-200 text-[11px] rounded px-2 py-1"
                         >
                           <option value="none">无片头</option>
-                          <option value="fade_in">纯色淡入</option>
-                          <option value="slide_up">底部滑入</option>
-                          <option value="typewriter">打字机</option>
-                          <option value="glitch">故障风</option>
-                          <option value="zoom_in">从大变小</option>
-                          <option value="split">分裂入场</option>
+                          <option value="fade_in">纯色淡入（黑底渐显）</option>
+                          <option value="slide_up">底部滑入（黄色）</option>
+                          <option value="typewriter">打字机（蓝色）</option>
+                          <option value="glitch">故障风（赛博）</option>
+                          <option value="zoom_in">从大变小（冲击感）</option>
+                          <option value="split">分裂入场（左右合拢）</option>
+                          <option value="slide_left">左侧滑入（电光蓝）</option>
+                          <option value="rotate_in">旋转入场（黄色）</option>
+                          <option value="blur_focus">模糊到清晰（电影感）</option>
+                          <option value="flash_white">闪白入场（戏剧感）</option>
                         </select>
                         {(remotionConfig.intro?.style ?? 'none') !== 'none' && (
                           <input

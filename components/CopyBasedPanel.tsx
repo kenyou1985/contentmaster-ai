@@ -3293,6 +3293,66 @@ const RemotionSettingsPanel: React.FC<{
         )}
       </div>
 
+      {/* ─────── 片头设置（与多镜头分镜同步）─────── */}
+      <div className="border-t border-slate-700 pt-2">
+        <div className="text-[10px] text-slate-500 mb-1">片头（与多镜头分镜同步）</div>
+        <div className="flex flex-col gap-1.5">
+          <select
+            value={config.intro?.style ?? 'none'}
+            onChange={(e) => onChange({ ...config, intro: { ...(config.intro ?? {}), style: e.target.value } })}
+            className="w-full bg-slate-950 border border-slate-700 rounded text-[11px] text-slate-200 px-2 py-1 focus:outline-none focus:border-emerald-500"
+          >
+            <option value="none">无片头</option>
+            <option value="fade_in">纯色淡入（黑底渐显标题）</option>
+            <option value="slide_up">底部滑入（黄色强调）</option>
+            <option value="typewriter">打字机（蓝色等宽，逐字打出）</option>
+            <option value="glitch">故障风（赛博抖动感）</option>
+            <option value="zoom_in">从大变小（冲击感）</option>
+            <option value="split">分裂入场（左右合拢）</option>
+            <option value="slide_left">左侧滑入（电光蓝，时尚节奏）</option>
+            <option value="rotate_in">旋转入场（黄色，旋转放大）</option>
+            <option value="blur_focus">模糊到清晰（电影感）</option>
+            <option value="flash_white">闪白入场（戏剧感强）</option>
+          </select>
+          {(config.intro?.style ?? 'none') !== 'none' && (
+            <input
+              type="text"
+              value={config.intro?.text ?? ''}
+              onChange={(e) => onChange({ ...config, intro: { ...(config.intro ?? {}), text: e.target.value } })}
+              placeholder="片头文字（可空）"
+              className="w-full bg-slate-950 border border-slate-700 rounded text-[10px] text-slate-200 px-2 py-1"
+            />
+          )}
+          {(config.intro?.style ?? 'none') !== 'none' && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-[9px] text-slate-500">时长</span>
+              <input
+                type="number"
+                min="0.5"
+                max="10"
+                step="0.1"
+                value={config.intro?.duration ?? ''}
+                placeholder="默认"
+                onChange={(e) =>
+                  onChange({
+                    ...config,
+                    intro: {
+                      ...(config.intro ?? {}),
+                      duration: e.target.value ? Number(e.target.value) : undefined,
+                    },
+                  })
+                }
+                className="flex-1 bg-slate-950 border border-slate-700 rounded text-[11px] text-slate-200 px-2 py-1"
+              />
+              <span className="text-[9px] text-slate-500">秒</span>
+            </div>
+          )}
+          <div className="text-[9px] text-slate-500 leading-relaxed">
+            💡 片头会加在视频最前面，独占帧时长（不影响镜头顺序）
+          </div>
+        </div>
+      </div>
+
       {/* ─────── 背景音乐 BGM ─────── */}
       <div className="border-t border-slate-700 pt-2">
         <button

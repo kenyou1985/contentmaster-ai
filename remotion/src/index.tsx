@@ -66,6 +66,10 @@ const calculateMetadata: CalculateMetadataFunction<RemotionInputProps> = async (
       glitch: 2.0,
       zoom_in: 2.0,
       split: 2.5,
+      slide_left: 2.0,
+      rotate_in: 2.2,
+      blur_focus: 2.4,
+      flash_white: 1.8,
     };
     introDurationSec = intro?.duration ?? PRESET_DURATIONS[introStyle] ?? 2.0;
   }

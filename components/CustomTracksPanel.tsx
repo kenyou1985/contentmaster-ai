@@ -239,6 +239,7 @@ export const CustomTracksPanel: React.FC<CustomTracksPanelProps> = ({
 
   // ── 拖拽状态 ─────────────────────────────────────────
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
+  const [isDropzoneHover, setIsDropzoneHover] = useState<boolean>(false);
 
   // ── 添加图片 / 视频 ─────────────────────────────────
   const mediaInputRef = useRef<HTMLInputElement>(null);
@@ -327,11 +328,16 @@ export const CustomTracksPanel: React.FC<CustomTracksPanelProps> = ({
   const audioInputRef = useRef<HTMLInputElement>(null);
   const handleAddAudio = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    const file = files[0];
-    if (!file.type.startsWith('audio/')) {
-      log('WARN', `音频格式不支持: ${file.name} (${file.type})`);
+    // 多选时取第一个有效的音频文件（其余日志提示）
+    const audios = Array.from(files).filter((f) => f.type.startsWith('audio/'));
+    if (audios.length === 0) {
+      log('WARN', `音频格式不支持: ${Array.from(files).map((f) => f.name).join(', ')}`);
       return;
     }
+    if (audios.length > 1) {
+      log('INFO', `检测到 ${audios.length} 个音频文件，使用第一个: ${audios[0].name}`);
+    }
+    const file = audios[0];
     const url = URL.createObjectURL(file);
     const durationSec = await probeAudioDuration(url);
     onChange({
@@ -436,22 +442,46 @@ export const CustomTracksPanel: React.FC<CustomTracksPanelProps> = ({
 
         {state.videoItems.length === 0 ? (
           <div
-            onDragOver={(e) => e.preventDefault()}
+            onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
+            onDragEnter={(e) => { e.preventDefault(); setIsDropzoneHover(true); }}
+            onDragLeave={(e) => { if (e.currentTarget === e.target) setIsDropzoneHover(false); }}
             onDrop={(e) => {
               e.preventDefault();
+              setIsDropzoneHover(false);
               handleAddMedia(e.dataTransfer.files);
             }}
-            className="border-2 border-dashed border-slate-600 rounded-lg p-6 text-center text-slate-500 hover:border-blue-500 hover:text-blue-400 transition-colors cursor-pointer"
+            className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors cursor-pointer ${
+              isDropzoneHover ? 'border-blue-400 text-blue-400 bg-blue-950/30' : 'border-slate-600 text-slate-500 hover:border-blue-500 hover:text-blue-400'
+            }`}
             onClick={() => mediaInputRef.current?.click()}
           >
             <Upload size={24} className="mx-auto mb-1 opacity-50" />
-            <div className="text-xs">拖拽图片/视频到此处，或点击上传</div>
+            <div className="text-xs">拖拽图片/视频到此处，或点击上传（支持批量多选）</div>
             <div className="text-[10px] text-slate-600 mt-1">
-              支持 jpg / png / webp / mp4 / mov / webm
+              支持 jpg / png / webp / mp4 / mov / webm（可一次性选多个）
             </div>
           </div>
         ) : (
-          <div className="space-y-1.5">
+          <>
+            {/* 始终显示的紧凑拖拽条（已有素材时也支持继续批量添加） */}
+            <div
+              onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
+              onDragEnter={(e) => { e.preventDefault(); setIsDropzoneHover(true); }}
+              onDragLeave={(e) => { if (e.currentTarget === e.target) setIsDropzoneHover(false); }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setIsDropzoneHover(false);
+                handleAddMedia(e.dataTransfer.files);
+              }}
+              className={`border-2 border-dashed rounded-lg p-2 text-center text-[11px] transition-colors cursor-pointer flex items-center justify-center gap-2 ${
+                isDropzoneHover ? 'border-blue-400 text-blue-400 bg-blue-950/30' : 'border-slate-700 text-slate-500 hover:border-blue-500 hover:text-blue-400'
+              }`}
+              onClick={() => mediaInputRef.current?.click()}
+            >
+              <Upload size={14} />
+              <span>拖拽图片/视频批量添加，或点击选择（支持多选）</span>
+            </div>
+            <div className="space-y-1.5">
             {state.videoItems.map((it, idx) => (
               <div
                 key={it.id}
@@ -541,7 +571,8 @@ export const CustomTracksPanel: React.FC<CustomTracksPanelProps> = ({
                 </button>
               </div>
             ))}
-          </div>
+            </div>
+          </>
         )}
       </div>
 
@@ -588,6 +619,7 @@ export const CustomTracksPanel: React.FC<CustomTracksPanelProps> = ({
               ref={audioInputRef}
               type="file"
               accept="audio/*"
+              multiple
               hidden
               onChange={(e) => {
                 handleAddAudio(e.target.files);
