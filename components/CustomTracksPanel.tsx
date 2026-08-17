@@ -389,6 +389,8 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
 // ── 上传音频 / 视频（支持视频文件自动提取音轨）───
   const audioInputRef = useRef<HTMLInputElement>(null);
   const [asrLoading, setAsrLoading] = useState<boolean>(false);
+  const [audioStage, setAudioStage] = useState<'idle' | 'extracting' | 'asr' | 'converting'>('idle');
+  const [audioProgress, setAudioProgress] = useState<number>(0);  // 0-1
   const handleAddAudio = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     // 多选时取第一个有效的文件（支持音频 + 视频）；其余日志提示
@@ -406,6 +408,7 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
     const file = validFiles[0];
     const isVideo = isVideoFile(file);
     log('INFO', `📥 音频轨道收到 ${isVideo ? '视频' : '音频'}：${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
+    console.log(`[CustomTracks] 收到 ${isVideo ? '视频' : '音频'}：${file.name}, mime=${file.type}, size=${file.size}`);
 
     let url: string;
     let durationSec: number;
@@ -413,18 +416,24 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
     if (isVideo) {
       // 视频文件：提取音轨为 WAV（16kHz mono PCM，Whisper 推荐格式）
       log('AUDIO', `▸ 检测到视频文件，正在提取音轨（WAV 16kHz mono）…`);
+      setAudioStage('extracting');
+      setAudioProgress(0);
       let wavBlob: Blob;
       try {
         wavBlob = await extractAudioFromVideo(file, {
           targetSampleRate: 16000,
           targetChannels: 1,
           onProgress: (p) => {
+            setAudioProgress(p);
             if (p >= 0.25 && p < 0.3) log('AUDIO', `  音轨提取进度：${Math.round(p * 100)}%`);
           },
         });
         log('AUDIO', `✓ 音轨提取完成：${(wavBlob.size / 1024).toFixed(1)} KB WAV`);
+        console.log(`[CustomTracks] 音轨提取完成: ${wavBlob.size} bytes (${file.name})`);
       } catch (e: any) {
         log('ERROR', `视频音轨提取失败: ${e.message}`);
+        setAudioStage('idle');
+        setAudioProgress(0);
         return;
       }
       url = URL.createObjectURL(wavBlob);
@@ -450,6 +459,8 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
     // 自动触发 Whisper ASR（无自定义字幕文件时）
     if (!hasCustomSubtitle && durationSec > 0.5) {
       setAsrLoading(true);
+      setAudioStage('asr');
+      setAudioProgress(0);
       log('ASR', `▸ 开始 Whisper ASR 识别（音频 ${durationSec.toFixed(1)}s）…`);
       try {
         // blob: URL → data: URL（服务端 fetch 不到 blob URL）
@@ -503,9 +514,17 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
         log('ASR', `✗ Whisper 请求失败: ${e.message}`);
       } finally {
         setAsrLoading(false);
+        setAudioStage('idle');
+        setAudioProgress(0);
       }
     } else if (hasCustomSubtitle) {
       log('TRACK', `  检测到用户已上传字幕文件，跳过 ASR`);
+      setAudioStage('idle');
+      setAudioProgress(0);
+    } else {
+      // 没触发 ASR 也清掉 stage
+      setAudioStage('idle');
+      setAudioProgress(0);
     }
   }, [state.subtitleCues, state.subtitleFileName, onChange, log]);
 
@@ -779,6 +798,38 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
               </span>
             </div>
             <audio controls src={state.audioUrl} className="w-full h-8" />
+          </div>
+        ) : audioStage !== 'idle' ? (
+          // 处理中状态（视频提取 / ASR / 转换）
+          <div className="bg-slate-950/60 border border-amber-700/40 rounded p-3 space-y-2">
+            <div className="flex items-center gap-2 text-xs">
+              <Loader2 size={12} className="text-amber-400 animate-spin" />
+              <span className="text-amber-200 font-medium">
+                {audioStage === 'extracting'
+                  ? `🎬 正在提取音轨…`
+                  : audioStage === 'asr'
+                    ? `🗣️  Whisper 识别中…`
+                    : audioStage === 'converting'
+                      ? `🔄 繁简转换中…`
+                      : `处理中…`}
+              </span>
+              <span className="text-[10px] text-slate-500">
+                {audioStage === 'extracting'
+                  ? '需要播放完整个视频才能提取完整音轨'
+                  : audioStage === 'asr'
+                    ? `音频 ${state.audioDurationSec?.toFixed(1) ?? '?'}s，模型可能加载较慢`
+                    : ''}
+              </span>
+            </div>
+            <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+              <div
+                className="bg-amber-500 h-full transition-all duration-300 ease-out"
+                style={{ width: `${Math.round(audioProgress * 100)}%` }}
+              />
+            </div>
+            <div className="text-[10px] text-slate-500 text-center">
+              {Math.round(audioProgress * 100)}%
+            </div>
           </div>
         ) : (
           <div

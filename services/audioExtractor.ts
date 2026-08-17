@@ -55,11 +55,25 @@ export async function extractAudioFromVideo(
   const url = URL.createObjectURL(file);
 
   // 1. 加载视频到 <video> 元素
+  //    关键：video.muted 必须保持 false，否则浏览器会跳过音频解码，
+  //    导致 MediaRecorder 录到的是静音！
+  //    用 GainNode(volume=0) 接到 destination 来"无声播放"，避免听到原声。
   const video = document.createElement('video');
   video.crossOrigin = 'anonymous';
-  video.muted = true;  // 必须 muted 才能用 Web Audio API 解码
+  video.muted = false;  // ⚠️ 不要 muted，否则音频不会被解码
   video.preload = 'auto';
+  video.volume = 0;     // HTML 音量也设为 0，避免播放声音
   video.src = url;
+  video.setAttribute('playsinline', 'true');  // iOS Safari 兼容
+  video.setAttribute('webkit-playsinline', 'true');
+  // 视觉隐藏 + 不占布局空间
+  video.style.position = 'fixed';
+  video.style.left = '-9999px';
+  video.style.top = '-9999px';
+  video.style.width = '1px';
+  video.style.height = '1px';
+  video.style.pointerEvents = 'none';
+  document.body.appendChild(video);
 
   // 等待元数据
   await new Promise<void>((resolve, reject) => {
@@ -70,28 +84,29 @@ export async function extractAudioFromVideo(
   onProgress?.(0.15);
   const duration = video.duration;
   if (!isFinite(duration) || duration <= 0) {
-    URL.revokeObjectURL(url);
+    cleanup(video, url);
     throw new Error('无法获取视频时长');
   }
 
-  // 2. 用实时 AudioContext + MediaElementSource 捕获音频流
-  //    然后用 MediaRecorder 把音频流录下来，存为 webm blob
-  //    再用 decodeAudioData + OfflineAudioContext 离线重采样到目标格式
-  //    注意：OfflineAudioContext 没有 createMediaElementSource，
-  //    所以第一步必须用 AudioContext（实时）
+  // 2. 创建 AudioContext（实时），用 GainNode(volume=0) 静音播放音频
+  //    浏览器要求 video 元素"实际播放"才会解码音频，所以不能 muted=true
   let audioCtx: AudioContext;
   try {
     audioCtx = new AudioContext({ sampleRate: 48000 });
   } catch {
     audioCtx = new AudioContext();
   }
-  const source = audioCtx.createMediaElementSource(video);
-  const dest = audioCtx.createMediaStreamDestination();
-  source.connect(dest);
-  // 同时接到 ctx.destination 让 video 静音播放（Safari 需要）
-  source.connect(audioCtx.destination);
 
-  // 用 MediaRecorder 录制为 webm
+  const source = audioCtx.createMediaElementSource(video);
+  const silentGain = audioCtx.createGain();
+  silentGain.gain.value = 0;  // 静音输出
+  source.connect(silentGain);
+  silentGain.connect(audioCtx.destination);
+
+  // 3. 录制到 MediaStreamDestination
+  const dest = audioCtx.createMediaStreamDestination();
+  source.connect(dest);  // 不经过 GainNode，让 MediaRecorder 拿到完整音量
+
   const recorder = new MediaRecorder(dest.stream, {
     mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
       ? 'audio/webm;codecs=opus'
@@ -108,15 +123,30 @@ export async function extractAudioFromVideo(
       try {
         onProgress?.(0.7);
         const webmBlob = new Blob(chunks, { type: 'audio/webm' });
+        const webmSize = webmBlob.size;
+        console.log(`[audioExtractor] MediaRecorder 输出: ${webmSize} bytes (${duration.toFixed(1)}s)`);
 
-        // 把 webm 解码为 AudioBuffer，再用 OfflineAudioContext 重采样到目标格式
+        // 把 webm 解码为 AudioBuffer
         const arrayBuf = await webmBlob.arrayBuffer();
-        // Safari 上 decodeAudioData 必须是回调风格（旧版）
         const audioBuf: AudioBuffer = await new Promise((res, rej) => {
           const p = audioCtx.decodeAudioData(arrayBuf.slice(0), res, rej);
           if (p && typeof (p as any).then === 'function') (p as any).then(res, rej);
         });
-        URL.revokeObjectURL(url);
+
+        cleanup(video, url);
+
+        // 校验是否真的是静音
+        let maxAbs = 0;
+        for (let ch = 0; ch < audioBuf.numberOfChannels; ch++) {
+          const data = audioBuf.getChannelData(ch);
+          for (let i = 0; i < Math.min(data.length, 10000); i++) {
+            if (Math.abs(data[i]) > maxAbs) maxAbs = Math.abs(data[i]);
+          }
+        }
+        console.log(`[audioExtractor] 解码后音频最大幅值: ${maxAbs.toFixed(4)}（< 0.001 视为静音）`);
+        if (maxAbs < 0.001) {
+          console.warn(`[audioExtractor] ⚠️ 提取的音频疑似静音，请检查视频文件是否有音轨`);
+        }
 
         onProgress?.(0.85);
 
@@ -130,30 +160,56 @@ export async function extractAudioFromVideo(
         onProgress?.(1.0);
         resolve(wav);
       } catch (e: any) {
-        URL.revokeObjectURL(url);
+        cleanup(video, url);
         reject(e);
       }
     };
     recorder.onerror = (e: any) => {
-      URL.revokeObjectURL(url);
+      cleanup(video, url);
       reject(new Error(`录制失败: ${e?.message || 'unknown'}`));
     };
 
     video.currentTime = 0;
-    video.muted = true;
+    // video.muted 保持 false！音量由 video.volume = 0 + GainNode(0) 控制
     recorder.start();
     video.play().then(() => {
       onProgress?.(0.3);
-      video.onended = () => recorder.stop();
-      // 兜底超时：视频播放结束事件可能丢失，设置 video.duration + 2s 后强制停止
+      // 实时进度（按播放时间比例）
+      const progressTimer = setInterval(() => {
+        if (video.duration > 0 && !video.paused) {
+          const p = 0.30 + (video.currentTime / video.duration) * 0.40;
+          onProgress?.(p);
+        }
+      }, 200);
+      video.onended = () => {
+        clearInterval(progressTimer);
+        recorder.stop();
+      };
+      // 兜底超时：视频播放结束事件可能丢失
       setTimeout(() => {
+        clearInterval(progressTimer);
         if (recorder.state === 'recording') recorder.stop();
       }, (duration + 2) * 1000);
     }).catch((playErr) => {
-      URL.revokeObjectURL(url);
-      reject(new Error(`视频播放失败: ${playErr.message}`));
+      cleanup(video, url);
+      reject(new Error(`视频播放失败（请确保浏览器支持自动播放或先与页面交互）: ${playErr.message}`));
     });
   });
+}
+
+/**
+ * 清理 video 元素和 blob URL
+ */
+function cleanup(video: HTMLVideoElement, url: string) {
+  try {
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+    if (video.parentNode) video.parentNode.removeChild(video);
+  } catch {}
+  try {
+    URL.revokeObjectURL(url);
+  } catch {}
 }
 
 /**
