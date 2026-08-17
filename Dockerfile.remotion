@@ -22,8 +22,8 @@ WORKDIR /app
 # 复制 Remotion 项目源码
 COPY remotion/ ./remotion/
 
-# 复制 remotion-server 代码
-COPY server/remotion-server/server.mjs ./remotion-server/
+# 复制 remotion-server 代码（包含 server.mjs + render-worker.mjs + 所有辅助模块）
+COPY server/remotion-server/ ./remotion-server/
 
 # 创建 package.json（使用 cat heredoc 避免引号问题）
 WORKDIR /app/remotion-server

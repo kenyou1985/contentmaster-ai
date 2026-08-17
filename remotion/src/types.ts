@@ -129,6 +129,8 @@ export interface RemotionInputSubtitle {
   fadeOutFrames?: number;
   altColor?: string;
   preset?: 'none' | 'spring';
+  /** v1.10：字幕切分模式（默认 'sentence'） */
+  chunking?: 'sentence' | 'word' | 'none';
 }
 
 export interface RemotionInputConfig {

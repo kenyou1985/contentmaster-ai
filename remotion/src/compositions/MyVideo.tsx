@@ -170,6 +170,10 @@ export const MyVideo: React.FC<RemotionInputProps> = ({ shots, config }) => {
     fadeOutFrames: config.subtitle?.fadeOutFrames,
     altColor: config.subtitle?.altColor,
     preset: (config.subtitle?.preset || 'spring') as 'none' | 'spring',
+    /** v1.10：字幕切分模式（'sentence' | 'word' | 'none'） */
+    chunking: (config.subtitle?.chunking || 'sentence') as 'sentence' | 'word' | 'none',
+    /** 字幕安全区（自动避开主体/重要物品） */
+    safeZone: (config.subtitle as any)?.safeZone,
   };
 
   return (
