@@ -1,21 +1,22 @@
 /**
  * 音轨提取器：从视频文件中提取音轨并编码为 WAV（16kHz mono PCM）
  *
- * 工作原理：
- *  1. 把视频文件加载到隐藏的 <video> 元素（HTMLMediaElement）
- *  2. 用 AudioContext + MediaElementAudioSourceNode + MediaStreamDestination 捕获音频流
- *  3. 用 MediaRecorder 把音频流录为 webm blob
- *  4. 把 webm 解码为 AudioBuffer，再用 OfflineAudioContext 重采样到目标采样率和声道
- *  5. 编码为 WAV 格式 Blob（服务端 ASR 只接受 wav/mp3）
+ * 三层 fallback 策略（按可靠性从高到低）：
  *
- * 兼容性：
- *  - Chrome/Edge：完全支持
- *  - Safari 14+：支持（需要 muted=true 才能解码音频）
- *  - Firefox：支持
+ * 1. **decodeAudioData 直解**：用 AudioContext.decodeAudioData(file.arrayBuffer())
+ *    让浏览器直接从 mp4/mov 容器中解码音频轨。
+ *    - 优点：不需要播放视频，最快，最稳
+ *    - 缺点：部分浏览器对视频容器解码支持差（可能无声）
  *
- * 用途：
- *  - 用户上传视频作为配音源 → 自动提取音轨做 Whisper ASR
- *  - 不依赖 ffmpeg（纯前端 Web Audio API）
+ * 2. **MediaRecorder 录制**：把视频加载到 <video> 元素播放，
+ *    用 MediaElementAudioSourceNode + MediaStreamDestination + MediaRecorder
+ *    录下音频流。配合 GainNode(0) 实现静音播放。
+ *    - 优点：兼容性好，几乎所有浏览器都行
+ *    - 缺点：必须播放完整个视频，速度慢；video.muted=true 会解码为静音
+ *
+ * 3. **最终兜底**：返回原始文件 blob，依赖服务端 ffmpeg 处理（如果后端有）
+ *
+ * 输出：WAV 格式 Blob（16kHz mono PCM，Whisper 推荐格式）
  */
 
 export interface ExtractOptions {
@@ -35,181 +36,35 @@ export function isVideoFile(file: File): boolean {
 }
 
 /**
- * 从视频文件中提取音频并编码为 WAV Blob
- *
- * @param file    视频文件
- * @param opts    选项（采样率、声道、进度回调）
- * @returns       WAV 格式的 Blob
+ * 检测 AudioBuffer 是否真的是静音
  */
-export async function extractAudioFromVideo(
-  file: File,
-  opts: ExtractOptions = {},
-): Promise<Blob> {
-  const {
-    targetSampleRate = 16000,
-    targetChannels = 1,
-    onProgress,
-  } = opts;
-
-  onProgress?.(0.05);
-  const url = URL.createObjectURL(file);
-
-  // 1. 加载视频到 <video> 元素
-  //    关键：video.muted 必须保持 false，否则浏览器会跳过音频解码，
-  //    导致 MediaRecorder 录到的是静音！
-  //    用 GainNode(volume=0) 接到 destination 来"无声播放"，避免听到原声。
-  const video = document.createElement('video');
-  video.crossOrigin = 'anonymous';
-  video.muted = false;  // ⚠️ 不要 muted，否则音频不会被解码
-  video.preload = 'auto';
-  video.volume = 0;     // HTML 音量也设为 0，避免播放声音
-  video.src = url;
-  video.setAttribute('playsinline', 'true');  // iOS Safari 兼容
-  video.setAttribute('webkit-playsinline', 'true');
-  // 视觉隐藏 + 不占布局空间
-  video.style.position = 'fixed';
-  video.style.left = '-9999px';
-  video.style.top = '-9999px';
-  video.style.width = '1px';
-  video.style.height = '1px';
-  video.style.pointerEvents = 'none';
-  document.body.appendChild(video);
-
-  // 等待元数据
-  await new Promise<void>((resolve, reject) => {
-    video.onloadedmetadata = () => resolve();
-    video.onerror = () => reject(new Error(`视频加载失败: ${file.name}`));
-  });
-
-  onProgress?.(0.15);
-  const duration = video.duration;
-  if (!isFinite(duration) || duration <= 0) {
-    cleanup(video, url);
-    throw new Error('无法获取视频时长');
+function isSilent(buffer: AudioBuffer, sampleSize = 10000, threshold = 0.001): boolean {
+  const checkLen = Math.min(buffer.length, sampleSize);
+  let maxAbs = 0;
+  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+    const data = buffer.getChannelData(ch);
+    for (let i = 0; i < checkLen; i++) {
+      const v = Math.abs(data[i]);
+      if (v > maxAbs) maxAbs = v;
+    }
   }
-
-  // 2. 创建 AudioContext（实时），用 GainNode(volume=0) 静音播放音频
-  //    浏览器要求 video 元素"实际播放"才会解码音频，所以不能 muted=true
-  let audioCtx: AudioContext;
-  try {
-    audioCtx = new AudioContext({ sampleRate: 48000 });
-  } catch {
-    audioCtx = new AudioContext();
-  }
-
-  const source = audioCtx.createMediaElementSource(video);
-  const silentGain = audioCtx.createGain();
-  silentGain.gain.value = 0;  // 静音输出
-  source.connect(silentGain);
-  silentGain.connect(audioCtx.destination);
-
-  // 3. 录制到 MediaStreamDestination
-  const dest = audioCtx.createMediaStreamDestination();
-  source.connect(dest);  // 不经过 GainNode，让 MediaRecorder 拿到完整音量
-
-  const recorder = new MediaRecorder(dest.stream, {
-    mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-      ? 'audio/webm;codecs=opus'
-      : 'audio/webm',
-  });
-
-  const chunks: Blob[] = [];
-  recorder.ondataavailable = (e) => {
-    if (e.data && e.data.size > 0) chunks.push(e.data);
-  };
-
-  return new Promise<Blob>((resolve, reject) => {
-    recorder.onstop = async () => {
-      try {
-        onProgress?.(0.7);
-        const webmBlob = new Blob(chunks, { type: 'audio/webm' });
-        const webmSize = webmBlob.size;
-        console.log(`[audioExtractor] MediaRecorder 输出: ${webmSize} bytes (${duration.toFixed(1)}s)`);
-
-        // 把 webm 解码为 AudioBuffer
-        const arrayBuf = await webmBlob.arrayBuffer();
-        const audioBuf: AudioBuffer = await new Promise((res, rej) => {
-          const p = audioCtx.decodeAudioData(arrayBuf.slice(0), res, rej);
-          if (p && typeof (p as any).then === 'function') (p as any).then(res, rej);
-        });
-
-        cleanup(video, url);
-
-        // 校验是否真的是静音
-        let maxAbs = 0;
-        for (let ch = 0; ch < audioBuf.numberOfChannels; ch++) {
-          const data = audioBuf.getChannelData(ch);
-          for (let i = 0; i < Math.min(data.length, 10000); i++) {
-            if (Math.abs(data[i]) > maxAbs) maxAbs = Math.abs(data[i]);
-          }
-        }
-        console.log(`[audioExtractor] 解码后音频最大幅值: ${maxAbs.toFixed(4)}（< 0.001 视为静音）`);
-        if (maxAbs < 0.001) {
-          console.warn(`[audioExtractor] ⚠️ 提取的音频疑似静音，请检查视频文件是否有音轨`);
-        }
-
-        onProgress?.(0.85);
-
-        // 重采样到目标采样率和声道
-        let finalBuf = audioBuf;
-        if (audioBuf.sampleRate !== targetSampleRate || audioBuf.numberOfChannels !== targetChannels) {
-          finalBuf = await resampleAudioBuffer(audioBuf, targetSampleRate, targetChannels);
-        }
-
-        const wav = encodeWav(finalBuf);
-        onProgress?.(1.0);
-        resolve(wav);
-      } catch (e: any) {
-        cleanup(video, url);
-        reject(e);
-      }
-    };
-    recorder.onerror = (e: any) => {
-      cleanup(video, url);
-      reject(new Error(`录制失败: ${e?.message || 'unknown'}`));
-    };
-
-    video.currentTime = 0;
-    // video.muted 保持 false！音量由 video.volume = 0 + GainNode(0) 控制
-    recorder.start();
-    video.play().then(() => {
-      onProgress?.(0.3);
-      // 实时进度（按播放时间比例）
-      const progressTimer = setInterval(() => {
-        if (video.duration > 0 && !video.paused) {
-          const p = 0.30 + (video.currentTime / video.duration) * 0.40;
-          onProgress?.(p);
-        }
-      }, 200);
-      video.onended = () => {
-        clearInterval(progressTimer);
-        recorder.stop();
-      };
-      // 兜底超时：视频播放结束事件可能丢失
-      setTimeout(() => {
-        clearInterval(progressTimer);
-        if (recorder.state === 'recording') recorder.stop();
-      }, (duration + 2) * 1000);
-    }).catch((playErr) => {
-      cleanup(video, url);
-      reject(new Error(`视频播放失败（请确保浏览器支持自动播放或先与页面交互）: ${playErr.message}`));
-    });
-  });
+  return maxAbs < threshold;
 }
 
 /**
- * 清理 video 元素和 blob URL
+ * 计算 AudioBuffer 的最大幅值（用于诊断）
  */
-function cleanup(video: HTMLVideoElement, url: string) {
-  try {
-    video.pause();
-    video.removeAttribute('src');
-    video.load();
-    if (video.parentNode) video.parentNode.removeChild(video);
-  } catch {}
-  try {
-    URL.revokeObjectURL(url);
-  } catch {}
+function getMaxAmplitude(buffer: AudioBuffer, sampleSize = 10000): number {
+  const checkLen = Math.min(buffer.length, sampleSize);
+  let maxAbs = 0;
+  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+    const data = buffer.getChannelData(ch);
+    for (let i = 0; i < checkLen; i++) {
+      const v = Math.abs(data[i]);
+      if (v > maxAbs) maxAbs = v;
+    }
+  }
+  return maxAbs;
 }
 
 /**
@@ -220,23 +75,22 @@ async function resampleAudioBuffer(
   targetSampleRate: number,
   targetChannels: 1 | 2,
 ): Promise<AudioBuffer> {
+  if (buffer.sampleRate === targetSampleRate && buffer.numberOfChannels === targetChannels) {
+    return buffer;
+  }
   const ctx = new OfflineAudioContext(
     targetChannels,
     Math.ceil(buffer.duration * targetSampleRate),
     targetSampleRate,
   );
-
-  // 如果源是多声道，先 downmix 到目标声道
   const source = ctx.createBufferSource();
   if (buffer.numberOfChannels !== targetChannels) {
-    // downmix
     const mixed = ctx.createBuffer(targetChannels, buffer.length, buffer.sampleRate);
     for (let ch = 0; ch < targetChannels; ch++) {
       const data = mixed.getChannelData(ch);
       if (buffer.numberOfChannels === 1) {
         data.set(buffer.getChannelData(0));
       } else {
-        // 平均
         const ch0 = buffer.getChannelData(0);
         const ch1 = buffer.getChannelData(1);
         for (let i = 0; i < data.length; i++) {
@@ -248,7 +102,6 @@ async function resampleAudioBuffer(
   } else {
     source.buffer = buffer;
   }
-
   source.connect(ctx.destination);
   source.start();
   return await ctx.startRendering();
@@ -256,17 +109,12 @@ async function resampleAudioBuffer(
 
 /**
  * 把 AudioBuffer 编码为 WAV Blob（16-bit PCM）
- *
- * WAV 文件头结构：
- *  - RIFF 头（12 字节）
- *  - fmt 块（24 字节）：采样率、声道、位深
- *  - data 块（8 字节 + PCM 数据）
  */
 export function encodeWav(buffer: AudioBuffer): Blob {
   const numChannels = buffer.numberOfChannels;
   const sampleRate = buffer.sampleRate;
   const numSamples = buffer.length;
-  const bytesPerSample = 2; // 16-bit PCM
+  const bytesPerSample = 2;
   const blockAlign = numChannels * bytesPerSample;
   const byteRate = sampleRate * blockAlign;
   const dataSize = numSamples * blockAlign;
@@ -275,31 +123,25 @@ export function encodeWav(buffer: AudioBuffer): Blob {
   const arrayBuffer = new ArrayBuffer(bufferSize);
   const view = new DataView(arrayBuffer);
 
-  // RIFF header
   writeString(view, 0, 'RIFF');
   view.setUint32(4, 36 + dataSize, true);
   writeString(view, 8, 'WAVE');
-
-  // fmt chunk
   writeString(view, 12, 'fmt ');
-  view.setUint32(16, 16, true); // fmt chunk size
-  view.setUint16(20, 1, true); // PCM format
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
   view.setUint16(22, numChannels, true);
   view.setUint32(24, sampleRate, true);
   view.setUint32(28, byteRate, true);
   view.setUint16(32, blockAlign, true);
-  view.setUint16(34, bytesPerSample * 8, true); // bits per sample
-
-  // data chunk
+  view.setUint16(34, bytesPerSample * 8, true);
   writeString(view, 36, 'data');
   view.setUint32(40, dataSize, true);
 
-  // PCM samples (interleaved for multi-channel)
-  let offset = 44;
   const channels: Float32Array[] = [];
   for (let ch = 0; ch < numChannels; ch++) {
     channels.push(buffer.getChannelData(ch));
   }
+  let offset = 44;
   for (let i = 0; i < numSamples; i++) {
     for (let ch = 0; ch < numChannels; ch++) {
       const sample = Math.max(-1, Math.min(1, channels[ch][i]));
@@ -324,6 +166,217 @@ export async function ensureWavFormat(blob: Blob): Promise<Blob> {
   if (blob.type === 'audio/wav' || blob.type === 'audio/wave' || blob.type === 'audio/x-wav') {
     return blob;
   }
-  // 已是 mp3 等：直接返回，服务端能处理
   return blob;
+}
+
+/**
+ * 主入口：从视频文件中提取音频并编码为 WAV Blob（带 fallback）
+ *
+ * @param file    视频文件
+ * @param opts    选项（采样率、声道、进度回调）
+ * @returns       WAV 格式的 Blob
+ */
+export async function extractAudioFromVideo(
+  file: File,
+  opts: ExtractOptions = {},
+): Promise<Blob> {
+  const { targetSampleRate = 16000, targetChannels = 1, onProgress } = opts;
+
+  console.log(`[audioExtractor] 开始处理: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB, ${file.type})`);
+
+  // ── 策略 1：直接 decodeAudioData（最快，最可靠）──
+  onProgress?.(0.05);
+  try {
+    const wav1 = await strategyDecodeDirect(file, { targetSampleRate, targetChannels, onProgress: (p) => onProgress?.(0.05 + p * 0.6) });
+    console.log(`[audioExtractor] ✓ 策略 1（直接解码）成功`);
+    onProgress?.(1.0);
+    return wav1;
+  } catch (e1: any) {
+    console.warn(`[audioExtractor] 策略 1 失败: ${e1.message}`);
+  }
+
+  // ── 策略 2：MediaRecorder 录制 ──
+  console.log(`[audioExtractor] 回退到策略 2：MediaRecorder 录制…`);
+  onProgress?.(0.65);
+  try {
+    const wav2 = await strategyMediaRecorder(file, { targetSampleRate, targetChannels, onProgress: (p) => onProgress?.(0.65 + p * 0.35) });
+    console.log(`[audioExtractor] ✓ 策略 2（MediaRecorder）成功`);
+    onProgress?.(1.0);
+    return wav2;
+  } catch (e2: any) {
+    console.error(`[audioExtractor] ✗ 策略 2 也失败: ${e2.message}`);
+    throw new Error(
+      `视频音轨提取失败。所有方法都已尝试：\n` +
+      `  - 直接解码：${e2.message}\n` +
+      `请确认视频文件包含音轨，且浏览器支持该格式。`
+    );
+  }
+}
+
+// ── 策略 1：AudioContext.decodeAudioData 直接解码整个视频文件 ──
+async function strategyDecodeDirect(
+  file: File,
+  opts: { targetSampleRate: number; targetChannels: 1 | 2; onProgress: (p: number) => void },
+): Promise<Blob> {
+  opts.onProgress(0.1);
+  const fileBuffer = await file.arrayBuffer();
+  opts.onProgress(0.3);
+
+  const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+
+  // Safari 旧版需用回调风格，新版支持 Promise
+  const audioBuf: AudioBuffer = await new Promise((resolve, reject) => {
+    const p = audioCtx.decodeAudioData(fileBuffer.slice(0), resolve, reject);
+    if (p && typeof (p as any).then === 'function') (p as any).then(resolve, reject);
+  });
+  opts.onProgress(0.7);
+
+  const maxAmp = getMaxAmplitude(audioBuf);
+  console.log(`[audioExtractor] 策略 1 解码后: ${audioBuf.numberOfChannels}ch @ ${audioBuf.sampleRate}Hz, ${audioBuf.duration.toFixed(1)}s, maxAmp=${maxAmp.toFixed(4)}`);
+  if (maxAmp < 0.001) {
+    throw new Error(`直接解码得到的是静音音频（maxAmp=${maxAmp.toFixed(4)}），视频可能无音轨或浏览器解码失败`);
+  }
+  opts.onProgress(0.85);
+
+  // 重采样
+  const finalBuf = await resampleAudioBuffer(audioBuf, opts.targetSampleRate, opts.targetChannels);
+  audioCtx.close().catch(() => {});
+  return encodeWav(finalBuf);
+}
+
+// ── 策略 2：MediaRecorder 录制整个视频播放 ──
+async function strategyMediaRecorder(
+  file: File,
+  opts: { targetSampleRate: number; targetChannels: 1 | 2; onProgress: (p: number) => void },
+): Promise<Blob> {
+  const { targetSampleRate, targetChannels } = opts;
+
+  const url = URL.createObjectURL(file);
+
+  // video.muted=false 是关键，否则浏览器跳过音频解码
+  const video = document.createElement('video');
+  video.crossOrigin = 'anonymous';
+  video.muted = false;
+  video.preload = 'auto';
+  video.volume = 0;
+  video.src = url;
+  video.setAttribute('playsinline', 'true');
+  video.setAttribute('webkit-playsinline', 'true');
+  video.style.position = 'fixed';
+  video.style.left = '-9999px';
+  video.style.top = '-9999px';
+  video.style.width = '1px';
+  video.style.height = '1px';
+  video.style.pointerEvents = 'none';
+  document.body.appendChild(video);
+
+  try {
+    // 等待 metadata
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('视频元数据加载超时')), 30000);
+      video.onloadedmetadata = () => { clearTimeout(timer); resolve(); };
+      video.onerror = () => { clearTimeout(timer); reject(new Error('视频加载失败')); };
+    });
+    opts.onProgress(0.1);
+
+    const duration = video.duration;
+    if (!isFinite(duration) || duration <= 0) {
+      throw new Error('无法获取视频时长');
+    }
+
+    // 用 AudioContext 捕获音频
+    const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const source = audioCtx.createMediaElementSource(video);
+    const silentGain = audioCtx.createGain();
+    silentGain.gain.value = 0;
+    source.connect(silentGain);
+    silentGain.connect(audioCtx.destination);
+
+    const dest = audioCtx.createMediaStreamDestination();
+    source.connect(dest);
+
+    const recorder = new MediaRecorder(dest.stream, {
+      mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : 'audio/webm',
+    });
+
+    const chunks: Blob[] = [];
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+
+    return new Promise<Blob>((resolve, reject) => {
+      recorder.onstop = async () => {
+        try {
+          opts.onProgress(0.7);
+          const webmBlob = new Blob(chunks, { type: 'audio/webm' });
+          console.log(`[audioExtractor] 策略 2 MediaRecorder 输出: ${webmBlob.size} bytes`);
+
+          if (webmBlob.size < 1000) {
+            throw new Error(`MediaRecorder 录制输出过小（${webmBlob.size} bytes），可能未捕获到音频`);
+          }
+
+          const arrayBuf = await webmBlob.arrayBuffer();
+          const audioBuf: AudioBuffer = await new Promise((res, rej) => {
+            const p = audioCtx.decodeAudioData(arrayBuf.slice(0), res, rej);
+            if (p && typeof (p as any).then === 'function') (p as any).then(res, rej);
+          });
+          audioCtx.close().catch(() => {});
+
+          const maxAmp = getMaxAmplitude(audioBuf);
+          console.log(`[audioExtractor] 策略 2 解码后: ${audioBuf.numberOfChannels}ch @ ${audioBuf.sampleRate}Hz, ${audioBuf.duration.toFixed(1)}s, maxAmp=${maxAmp.toFixed(4)}`);
+          if (maxAmp < 0.001) {
+            throw new Error(`MediaRecorder 录制得到的是静音（maxAmp=${maxAmp.toFixed(4)}）`);
+          }
+          opts.onProgress(0.85);
+
+          const finalBuf = await resampleAudioBuffer(audioBuf, targetSampleRate, targetChannels);
+          resolve(encodeWav(finalBuf));
+        } catch (e: any) {
+          audioCtx.close().catch(() => {});
+          reject(e);
+        }
+      };
+      recorder.onerror = (e: any) => {
+        audioCtx.close().catch(() => {});
+        reject(new Error(`MediaRecorder 错误: ${e?.message || 'unknown'}`));
+      };
+
+      video.currentTime = 0;
+      recorder.start();
+      video.play().then(() => {
+        opts.onProgress(0.3);
+        const progressTimer = setInterval(() => {
+          if (video.duration > 0 && !video.paused && video.currentTime >= 0) {
+            const p = 0.30 + (video.currentTime / video.duration) * 0.40;
+            opts.onProgress(Math.min(0.7, p));
+          }
+        }, 200);
+        video.onended = () => {
+          clearInterval(progressTimer);
+          try { recorder.stop(); } catch {}
+        };
+        // 兜底超时
+        setTimeout(() => {
+          clearInterval(progressTimer);
+          if (recorder.state === 'recording') {
+            try { recorder.stop(); } catch {}
+          }
+        }, (duration + 2) * 1000);
+      }).catch((playErr) => {
+        audioCtx.close().catch(() => {});
+        reject(new Error(`视频播放失败（Safari 可能需要先与页面交互）: ${playErr.message}`));
+      });
+    });
+  } finally {
+    // 清理 DOM
+    try {
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+      if (video.parentNode) video.parentNode.removeChild(video);
+    } catch {}
+    try { URL.revokeObjectURL(url); } catch {}
+  }
 }

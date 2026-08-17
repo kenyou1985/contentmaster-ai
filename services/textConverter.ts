@@ -19,16 +19,33 @@ let s2tPromise: Promise<Converter> | null = null;
 
 /**
  * 懒加载 opencc-js 并创建繁体→简体转换器（全局单例）
+ *
+ * opencc-js 1.4 API：
+ *   import { Converter } from 'opencc-js';
+ *   const t2s = Converter({ from: 'tw', to: 'cn' });  // 返回一个函数
+ *   t2s('繁體')  // → '繁体'
+ *
+ * Converter 本身是一个预配置好 locale preset 的高阶函数，
+ * 直接调用即得到目标 locale 的转换函数（不需要 new）
  */
 export function getTraditionalToSimplified(): Promise<Converter> {
   if (t2sPromise) return t2sPromise;
   t2sPromise = (async () => {
     try {
       const mod: any = await import('opencc-js');
-      const Converter = mod.Converter || mod.default?.Converter || mod.default;
-      if (!Converter) throw new Error('opencc-js Converter not found');
-      const converter = new Converter({ from: 'tw', to: 'cn' });
-      return (text: string) => converter.convert(text);
+      // opencc-js 1.4+ 命名导出 `Converter` 是高阶函数：Converter({from,to}) → function
+      // 旧版（极少）可能有 default 导出，兜底支持
+      const ConverterFn = mod.Converter || mod.default?.Converter;
+      if (!ConverterFn) throw new Error('opencc-js Converter not found');
+      if (typeof ConverterFn !== 'function') {
+        throw new Error('opencc-js Converter is not a function, got: ' + typeof ConverterFn);
+      }
+      const t2s = ConverterFn({ from: 'tw', to: 'cn' });
+      if (typeof t2s !== 'function') {
+        throw new Error('Converter({from,to}) should return a function, got: ' + typeof t2s);
+      }
+      console.log('[textConverter] ✓ opencc-js t2s 转换器就绪');
+      return t2s;
     } catch (e: any) {
       console.warn('[textConverter] opencc-js 加载失败:', e?.message);
       t2sPromise = null;
@@ -46,10 +63,13 @@ export function getSimplifiedToTraditional(): Promise<Converter> {
   s2tPromise = (async () => {
     try {
       const mod: any = await import('opencc-js');
-      const Converter = mod.Converter || mod.default?.Converter || mod.default;
-      if (!Converter) throw new Error('opencc-js Converter not found');
-      const converter = new Converter({ from: 'cn', to: 'tw' });
-      return (text: string) => converter.convert(text);
+      const ConverterFn = mod.Converter || mod.default?.Converter;
+      if (!ConverterFn) throw new Error('opencc-js Converter not found');
+      if (typeof ConverterFn !== 'function') throw new Error('opencc-js Converter is not a function');
+      const s2t = ConverterFn({ from: 'cn', to: 'tw' });
+      if (typeof s2t !== 'function') throw new Error('Converter({from,to}) should return a function');
+      console.log('[textConverter] ✓ opencc-js s2t 转换器就绪');
+      return s2t;
     } catch (e: any) {
       console.warn('[textConverter] opencc-js 加载失败:', e?.message);
       s2tPromise = null;
