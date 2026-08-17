@@ -5001,10 +5001,11 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         </div>
       </div>
 
-      {/* 文案成片模式：直接渲染 CopyBasedPanel，其他编辑器全部隐藏 */}
-      {mediaSubTab === 'copy' ? (
-        <CopyBasedPanel apiKey={apiKey} runningHubApiKey={runningHubApiKey} />
-      ) : (
+      {/* 文案成片模式：始终挂载（key 固定为 'copy-based'），切换 tab 时不 unmount，保留所有状态 */}
+      <div className={mediaSubTab === 'copy' ? '' : 'hidden'}>
+        <CopyBasedPanel key="copy-based" apiKey={apiKey} runningHubApiKey={runningHubApiKey} />
+      </div>
+      {mediaSubTab !== 'copy' && (
       <>
       {/* 顶部操作栏 */}
       <div className="flex flex-col gap-4 bg-slate-800/50 p-4 rounded-xl border border-slate-800">

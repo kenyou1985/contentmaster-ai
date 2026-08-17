@@ -86,6 +86,8 @@ import type {
   RemotionShot,
   SubtitleCue,
 } from '../services/remotionRenderTypes';
+// v1.10：复用 remotion 模块的字幕切分工具（支持 sentence/word/none 三种模式）
+import { buildSubtitleCues } from '../remotion/src/compositions/subtitleCues';
 
 const SCRIPT_MAX_LEN = 8000; // 文案成片文案上限
 
@@ -142,7 +144,7 @@ const COVER_RATIOS = [
 
 type CoverRatioId = (typeof COVER_RATIOS)[number]['id'];
 
-// ── Remotion 模板（与 MediaGenerator 的 RemotionTemplates 对齐） ────────
+// ── Remotion 模板（与 services/remotionTemplates.ts 对齐，共 10 种） ────────
 type RemotionTemplateId =
   | 'landscape_default'
   | 'vertical_default'
@@ -164,7 +166,7 @@ interface RemotionTemplateInfo {
   fontFamily: string;
   defaultSubtitlePosition: 'top' | 'middle' | 'bottom';
   fontSizeScale: number;
-  recommendedMotion: 'kenBurns' | 'kenBurnsSlow' | 'zoomIn' | 'push';
+  recommendedMotion: 'kenBurns' | 'kenBurnsStrong' | 'kenBurnsSlow' | 'zoomIn' | 'push';
 }
 
 const REMOTION_TEMPLATES: RemotionTemplateInfo[] = [
@@ -191,6 +193,17 @@ const REMOTION_TEMPLATES: RemotionTemplateInfo[] = [
     recommendedMotion: 'kenBurns',
   },
   {
+    id: 'square_default',
+    name: '方形（1080×1080）',
+    resolution: '1080x1080',
+    defaultFontSize: 50,
+    defaultColor: '#ffffff',
+    fontFamily: '"PingFang SC","Microsoft YaHei",sans-serif',
+    defaultSubtitlePosition: 'bottom',
+    fontSizeScale: 1.05,
+    recommendedMotion: 'kenBurns',
+  },
+  {
     id: 'cinema_wide',
     name: '电影宽幅（2560×1080）',
     resolution: '2560x1080',
@@ -200,6 +213,28 @@ const REMOTION_TEMPLATES: RemotionTemplateInfo[] = [
     defaultSubtitlePosition: 'bottom',
     fontSizeScale: 1.05,
     recommendedMotion: 'kenBurnsSlow',
+  },
+  {
+    id: 'reels',
+    name: 'Instagram Reels（1080×1920）',
+    resolution: '1080x1920',
+    defaultFontSize: 60,
+    defaultColor: '#ffffff',
+    fontFamily: '"Inter","Helvetica Neue","PingFang SC",sans-serif',
+    defaultSubtitlePosition: 'middle',
+    fontSizeScale: 1.3,
+    recommendedMotion: 'kenBurnsStrong',
+  },
+  {
+    id: 'tiktok',
+    name: 'TikTok（1080×1920）',
+    resolution: '1080x1920',
+    defaultFontSize: 62,
+    defaultColor: '#ffffff',
+    fontFamily: '"PingFang SC","Microsoft YaHei",sans-serif',
+    defaultSubtitlePosition: 'middle',
+    fontSizeScale: 1.35,
+    recommendedMotion: 'kenBurnsStrong',
   },
   {
     id: 'youtube_shorts',
@@ -221,6 +256,28 @@ const REMOTION_TEMPLATES: RemotionTemplateInfo[] = [
     fontFamily: '"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif',
     defaultSubtitlePosition: 'bottom',
     fontSizeScale: 1.05,
+    recommendedMotion: 'kenBurnsSlow',
+  },
+  {
+    id: 'magazine',
+    name: '杂志感（1080×1080）',
+    resolution: '1080x1080',
+    defaultFontSize: 52,
+    defaultColor: '#ffffff',
+    fontFamily: '"Helvetica Neue","PingFang SC",sans-serif',
+    defaultSubtitlePosition: 'bottom',
+    fontSizeScale: 1.05,
+    recommendedMotion: 'kenBurns',
+  },
+  {
+    id: 'chinese_ink',
+    name: '国风水墨（1920×1080）',
+    resolution: '1920x1080',
+    defaultFontSize: 50,
+    defaultColor: '#f8f4e3',
+    fontFamily: '"STKaiti","KaiTi","Songti SC",serif',
+    defaultSubtitlePosition: 'bottom',
+    fontSizeScale: 1.0,
     recommendedMotion: 'kenBurnsSlow',
   },
 ];
@@ -1391,8 +1448,13 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
     // 文案成片是「一镜到底」：把整个封面作为单一镜头，配音时长 = 总时长
     // 字幕支持两种模式：
     // (1) ASR 开启：使用 Whisper 生成词级时间戳（支持卡拉OK字幕）
-    // (2) ASR 关闭：按句号切分均分到时长上
-    let cues: SubtitleCue[] = buildSubtitleCuesFromText(rawCopy, totalDuration, remotionConfig.fps);
+    // (2) ASR 关闭：按用户选择的切分模式（sentence/word/none）
+    let cues: SubtitleCue[] = buildSubtitleCuesFromText(
+      rawCopy,
+      totalDuration,
+      remotionConfig.fps,
+      remotionConfig.subtitle.chunking ?? 'sentence',
+    );
 
     if (whisperEnabled && ttsResult.mergedAudioUrl) {
       try {
@@ -1657,6 +1719,37 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                   key={r.id}
                   onClick={() => {
                     setCoverRatio(r.id);
+                    // v1.10：封面比例联动视频模板分辨率
+                    const ratioToRes: Record<string, string> = {
+                      '9:16': '1080x1920',
+                      '3:4': '1080x1920',
+                      '4:3': '1080x1080',
+                      '16:9': '1920x1080',
+                    };
+                    const newRes = ratioToRes[r.id];
+                    if (newRes) {
+                      setRemotionConfig((c) => {
+                        const tpl = REMOTION_TEMPLATES.find((t) => t.resolution === newRes);
+                        return {
+                          ...c,
+                          resolution: newRes,
+                          template: tpl
+                            ? {
+                                ...c.template,
+                                id: tpl.id,
+                                name: tpl.name,
+                                resolution: tpl.resolution,
+                                defaultFontSize: tpl.defaultFontSize,
+                                defaultColor: tpl.defaultColor,
+                                fontFamily: tpl.fontFamily,
+                                defaultSubtitlePosition: tpl.defaultSubtitlePosition,
+                                fontSizeScale: tpl.fontSizeScale,
+                                recommendedMotion: tpl.recommendedMotion,
+                              }
+                            : c.template,
+                        };
+                      });
+                    }
                     appendLog('IMG', `切换封面比例 → ${r.label}（${r.w}×${r.h}）`);
                   }}
                   className={`text-[10px] px-2 py-1 rounded font-semibold ${
@@ -3267,6 +3360,7 @@ function buildDefaultRemotionConfig(): RemotionExportConfig {
       fadeOutFrames: 9,
       altColor: '#ffe600',
       preset: 'spring',
+      chunking: 'sentence',
     },
     transition: { type: 'none', duration: 0.4 },
     motion: 'kenBurns',
@@ -3277,30 +3371,18 @@ function buildDefaultRemotionConfig(): RemotionExportConfig {
 }
 
 // ──────────────────────────────────────────────
-// 字幕 cue 构建（按句号/问号/感叹号切分，均分到总时长）
+// 字幕 cue 构建（v1.10：支持 sentence/word/none 三种切分模式）
 // ──────────────────────────────────────────────
-function buildSubtitleCuesFromText(text: string, totalSec: number, fps: number) {
-  const trimmed = text.trim();
-  if (!trimmed) return [];
-  const hasChinese = /[\u4e00-\u9fff]/.test(trimmed);
-  const splitter = hasChinese ? /(?<=[。！？；\n])/ : /(?<=[.!?;\n])/g;
-  const sentences = trimmed.split(splitter).map((s) => s.trim()).filter(Boolean);
-  if (sentences.length === 0) return [];
-
-  const totalChars = sentences.reduce((s, x) => s + x.length, 0);
+function buildSubtitleCuesFromText(
+  text: string,
+  totalSec: number,
+  fps: number,
+  chunking: 'sentence' | 'word' | 'none' = 'sentence',
+): SubtitleCue[] {
   const totalFrames = Math.round(totalSec * fps);
-  let accFrames = 0;
-  return sentences.map((s) => {
-    const ratio = s.length / totalChars;
-    const frames = Math.max(1, Math.round(totalFrames * ratio));
-    const cue = {
-      text: s,
-      startFrame: accFrames,
-      endFrame: accFrames + frames,
-    };
-    accFrames += frames;
-    return cue;
-  });
+  if (!text.trim() || totalFrames <= 0) return [];
+  // 复用 remotion 模块的 buildSubtitleCues（支持三种切分模式 + gapFrames 间隔）
+  return buildSubtitleCues(text, totalFrames, fps, undefined, chunking);
 }
 
 export default CopyBasedPanel;
