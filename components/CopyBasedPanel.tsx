@@ -53,6 +53,12 @@ import {
   Music,
   Filter,
   Palette,
+  Plus,
+  GripVertical,
+  FileVideo,
+  FileAudio,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
 import { useToast } from './Toast';
 import { VoiceLibrary } from './VoiceLibrary';
@@ -81,6 +87,11 @@ import {
   type BgmCacheEntry,
 } from '../services/bgmUploadService';
 import { transcribeShots } from '../services/localAsrService';
+import {
+  CustomTracksPanel,
+  createEmptyCustomTracksState,
+  type CustomTracksState,
+} from './CustomTracksPanel';
 import type {
   RemotionExportConfig,
   RemotionShot,
@@ -335,6 +346,29 @@ interface PersistedState {
   } | null;
   // v1.4 新增：勾选参与封面生成的人物（默认解析时按标题自动勾选；用户可手动调整）
   selectedCharacterNames: string[];
+  // v1.10 新增：模式开关 + 自定义素材轨道（blob URL 不能序列化，仅持久化字幕文本）
+  mode?: 'ai' | 'custom';
+  customTracks?: {
+    videoItems: Array<{
+      id: string;
+      kind: 'image' | 'video';
+      url: string;
+      name: string;
+      mime: string;
+      size: number;
+      durationSec?: number;
+      width?: number;
+      height?: number;
+      overrideDurationSec?: number;
+      caption?: string;
+    }>;
+    audioUrl?: string;
+    audioName?: string;
+    audioDurationSec?: number;
+    subtitleCues: Array<{ startSec: number; endSec: number; text: string }>;
+    subtitleFileName?: string;
+    subtitleEnabled: boolean;
+  };
 }
 
 function loadPersisted(): Partial<PersistedState> {
@@ -398,6 +432,15 @@ const CopyBasedPanel: React.FC<{
   // ──────────────────────────────────────────────
   // 状态
   // ──────────────────────────────────────────────
+  // ── v1.10 模式开关：'ai' = AI 一键成片；'custom' = 自定义素材成片 ──
+  const [mode, setMode] = useState<'ai' | 'custom'>(() => {
+    return (initial.mode as 'ai' | 'custom') || 'ai';
+  });
+  // ── 自定义素材成片状态（仅 mode='custom' 时使用）──
+  const [customTracks, setCustomTracks] = useState<CustomTracksState>(() => {
+    return initial.customTracks || createEmptyCustomTracksState();
+  });
+
   const [rawCopy, setRawCopy] = useState<string>(initial.rawCopy ?? '');
   const [analysisResult, setAnalysisResult] = useState<CopyAnalysisResult | null>(null);
   const [analyzing, setAnalyzing] = useState<boolean>(false);
@@ -572,6 +615,21 @@ const CopyBasedPanel: React.FC<{
       generatedCovers: coversArr,
       ttsResult: ttsPersist,
       selectedCharacterNames,
+      mode,
+      // 仅持久化字幕文本与时长；blob URL 不可序列化，重新上传即可
+      customTracks: {
+        videoItems: customTracks.videoItems.map((it) => ({
+          ...it,
+          // 清掉 blob URL（重启后失效）
+          url: it.url.startsWith('blob:') ? '' : it.url,
+        })),
+        audioUrl: customTracks.audioUrl?.startsWith('blob:') ? '' : customTracks.audioUrl,
+        audioName: customTracks.audioName,
+        audioDurationSec: customTracks.audioDurationSec,
+        subtitleCues: customTracks.subtitleCues,
+        subtitleFileName: customTracks.subtitleFileName,
+        subtitleEnabled: customTracks.subtitleEnabled,
+      },
     });
 
     // v1.10：大块数据（base64 封面/音频）单独写 module-level cache + sessionStorage
@@ -595,6 +653,8 @@ const CopyBasedPanel: React.FC<{
     generatedCovers,
     ttsResult,
     selectedCharacterNames,
+    mode,
+    customTracks,
   ]);
 
   // ──────────────────────────────────────────────
@@ -1461,18 +1521,115 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
   };
 
   // ──────────────────────────────────────────────
-  // MP4 导出（Remotion 渲染）— 单 shot：封面 + 配音
+  // 自定义素材成片 — shots 构建
+  // ──────────────────────────────────────────────
+  /**
+   * 把 CustomTracksState 转换为 RemotionShot[]
+   * - 每个 videoItem 单独一个 shot
+   * - 时长按 effectiveItemDuration 算；总时长对齐到音频时长
+   * - 字幕优先用 subtitleCues（用户上传的）；否则走 ASR 或 sentence-split
+   */
+  const buildCustomShots = useCallback(
+    (
+      tracks: CustomTracksState,
+      totalDurationSec: number,
+    ): RemotionShot[] => {
+      const items = tracks.videoItems;
+      if (items.length === 0) return [];
+      const shots: RemotionShot[] = [];
+
+      // 视频轨道总时长
+      const videoTotalActual = items.reduce((s, it) => {
+        if (typeof it.overrideDurationSec === 'number' && it.overrideDurationSec > 0) {
+          return s + it.overrideDurationSec;
+        }
+        if (it.kind === 'video' && it.durationSec && it.durationSec > 0) {
+          return s + it.durationSec;
+        }
+        return s + 4; // 图片兜底 4s
+      }, 0);
+
+      // 取音频与视频轨道长者，并按比例拉伸每个 shot
+      const targetTotal = Math.max(videoTotalActual, totalDurationSec);
+      const scale = videoTotalActual > 0 ? targetTotal / videoTotalActual : 1;
+
+      let cursorSec = 0;
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        const baseDur =
+          typeof it.overrideDurationSec === 'number' && it.overrideDurationSec > 0
+            ? it.overrideDurationSec
+            : it.kind === 'video' && it.durationSec
+            ? it.durationSec
+            : 4;
+        const dur = baseDur * scale;
+        const caption = (it.caption || it.name || `镜头 ${i + 1}`).trim();
+        // 取该 shot 时间窗口内的字幕 cues
+        const winEnd = cursorSec + dur;
+        const shotCues: SubtitleCue[] = tracks.subtitleCues
+          .filter((c) => c.endSec > cursorSec && c.startSec < winEnd)
+          .map((c) => ({
+            startFrame: Math.max(0, Math.round((c.startSec - cursorSec) * remotionConfig.fps)),
+            endFrame: Math.min(
+              Math.round(dur * remotionConfig.fps),
+              Math.round((c.endSec - cursorSec) * remotionConfig.fps),
+            ),
+            text: c.text,
+          }))
+          .filter((c) => c.endFrame > c.startFrame);
+        shots.push({
+          id: `custom_${i}_${it.id}`,
+          number: i + 1,
+          caption,
+          text: caption,
+          imageUrl: it.kind === 'image' ? it.url : undefined,
+          imageUrls: it.kind === 'image' ? [it.url] : undefined,
+          videoUrl: it.kind === 'video' ? it.url : undefined,
+          audioUrl: tracks.audioUrl,
+          voiceoverAudioUrl: tracks.audioUrl,
+          audioDurationSec: tracks.audioDurationSec,
+          audioDurationExact: tracks.audioDurationSec,
+          duration: dur,
+          textCues: tracks.subtitleEnabled ? shotCues : undefined,
+          motion: remotionConfig.motion ?? 'kenBurns',
+        });
+        cursorSec = winEnd;
+      }
+      return shots;
+    },
+    [remotionConfig.fps, remotionConfig.motion]
+  );
+
+  // ──────────────────────────────────────────────
+  // MP4 导出（Remotion 渲染）— 双模式分发
   // ──────────────────────────────────────────────
   const handleExportMp4 = useCallback(async () => {
-    if (!finalCover) {
-      toast.error('请先选定终封面', 3000);
-      return;
+    // ── 模式分流 ──
+    if (mode === 'custom') {
+      // 自定义素材成片：必须有视频素材 + 音频；字幕可选
+      if (customTracks.videoItems.length === 0) {
+        toast.error('请先上传视频/图片素材', 3000);
+        return;
+      }
+      if (!customTracks.audioUrl) {
+        toast.error('请先上传音频', 3000);
+        return;
+      }
+      appendLog('EXPORT', `▶ 准备 MP4 导出（自定义素材成片 · ${customTracks.videoItems.length} 镜头 · 字幕=${customTracks.subtitleEnabled ? (customTracks.subtitleFileName || 'Whisper') : 'OFF'}）`);
+    } else {
+      // AI 模式：保持原有逻辑
+      if (!finalCover) {
+        toast.error('请先选定终封面', 3000);
+        return;
+      }
+      if (!ttsResult) {
+        toast.error('请先生成配音', 3000);
+        return;
+      }
+      appendLog('EXPORT', '▶ 准备 MP4 导出（Remotion 单镜头：封面 + 配音）');
     }
-    if (!ttsResult) {
-      toast.error('请先生成配音', 3000);
-      return;
-    }
-    appendLog('EXPORT', '▶ 准备 MP4 导出（Remotion 单镜头：封面 + 配音）');
+
+    // Remotion 健康检查
     try {
       appendLog('EXPORT', '检查 Remotion 服务可用性...');
       const health = await checkRemotionHealth();
@@ -1497,45 +1654,87 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
     setVideoMessage('准备渲染...');
     setVideoUrl('');
 
-    const totalDuration = ttsResult.totalDuration || 5;
-    const caption = finalCover.title;
+    // ── 构建 shots 数组 + 字幕 cues ──
+    let shots: RemotionShot[] = [];
+    let asrAudioUrl: string | undefined;
 
-    // 文案成片是「一镜到底」：把整个封面作为单一镜头，配音时长 = 总时长
-    // 字幕支持两种模式：
-    // (1) ASR 开启：使用 Whisper 生成词级时间戳（支持卡拉OK字幕）
-    // (2) ASR 关闭：按用户选择的切分模式（sentence/word/none）
-    let cues: SubtitleCue[] = buildSubtitleCuesFromText(
-      rawCopy,
-      totalDuration,
-      remotionConfig.fps,
-      remotionConfig.subtitle.chunking ?? 'sentence',
-    );
+    if (mode === 'custom') {
+      const totalDur = customTracks.audioDurationSec || 5;
+      shots = buildCustomShots(customTracks, totalDur);
+      asrAudioUrl = customTracks.audioUrl;
+      // 自定义模式：用户已上传字幕 → 直接用；否则走 ASR
+      if (customTracks.subtitleEnabled && customTracks.subtitleCues.length === 0 && whisperEnabled) {
+        // ASR 路径在下面统一处理
+      }
+    } else {
+      const totalDuration = ttsResult!.totalDuration || 5;
+      const caption = finalCover!.title;
+      // AI 模式默认字幕切分
+      const fallbackCues = buildSubtitleCuesFromText(
+        rawCopy,
+        totalDuration,
+        remotionConfig.fps,
+        remotionConfig.subtitle.chunking ?? 'sentence',
+      );
+      shots = [
+        {
+          id: 'copy_based_main',
+          number: 1,
+          caption,
+          text: caption,
+          imageUrl: finalCover!.url,
+          imageUrls: [finalCover!.url],
+          videoUrl: undefined,
+          audioUrl: ttsResult!.mergedAudioUrl,
+          voiceoverAudioUrl: ttsResult!.mergedAudioUrl,
+          audioDurationSec: totalDuration,
+          audioDurationExact: totalDuration,
+          duration: totalDuration,
+          textCues: fallbackCues,
+          motion: remotionConfig.motion ?? 'kenBurns',
+        },
+      ];
+      asrAudioUrl = ttsResult!.mergedAudioUrl;
+    }
 
-    if (whisperEnabled && ttsResult.mergedAudioUrl) {
+    // ── Whisper ASR（仅当启用字幕 & 字幕 cues 为空）──
+    const shouldAsr =
+      whisperEnabled &&
+      asrAudioUrl &&
+      ((mode === 'ai') ||
+        (mode === 'custom' && customTracks.subtitleEnabled && customTracks.subtitleCues.length === 0));
+    if (shouldAsr && asrAudioUrl) {
       try {
         setWhisperRunning(true);
-        setWhisperProgress({ done: 0, total: 1, current: 'whisper' });
+        setWhisperProgress({ done: 0, total: shots.length, current: 'whisper' });
         setVideoMessage('正在分析音频（Whisper ASR）...');
-        appendLog('EXPORT', '▶ 启动 Whisper ASR 生成词级时间戳（支持卡拉OK字幕）');
+        appendLog('EXPORT', `▶ 启动 Whisper ASR 生成词级时间戳（${shots.length} 个镜头）`);
+        const asrShots = shots.map((s) => ({
+          shotId: s.id,
+          audioUrl: asrAudioUrl!,
+          caption: s.caption || '',
+          durationInFrames: Math.round((s.duration || 5) * remotionConfig.fps),
+          fps: remotionConfig.fps,
+        }));
         const asrCues = await transcribeShots(
-          [
-            {
-              shotId: 'copy_based_main',
-              audioUrl: ttsResult.mergedAudioUrl,
-              caption: rawCopy,
-              durationInFrames: Math.round(totalDuration * remotionConfig.fps),
-              fps: remotionConfig.fps,
-            },
-          ],
+          asrShots,
           (done, total, current) => {
             setWhisperProgress({ done, total, current });
             setVideoMessage(`ASR 进度 ${done}/${total}`);
           }
         );
-        if (asrCues['copy_based_main'] && asrCues['copy_based_main'].length > 0) {
-          cues = asrCues['copy_based_main'];
-          appendLog('EXPORT', `✓ ASR 完成：${cues.length} 个字幕片段（含词级时间戳）`);
-          toast.success(`ASR 完成：${cues.length} 个字幕片段`, 2000);
+        let asrCount = 0;
+        shots = shots.map((s) => {
+          const cs = asrCues[s.id];
+          if (cs && cs.length > 0) {
+            asrCount += cs.length;
+            return { ...s, textCues: cs };
+          }
+          return s;
+        });
+        if (asrCount > 0) {
+          appendLog('EXPORT', `✓ ASR 完成：${asrCount} 个字幕片段（含词级时间戳）`);
+          toast.success(`ASR 完成：${asrCount} 个字幕片段`, 2000);
         } else {
           appendLog('WARN', 'ASR 未返回有效 cues，使用按句均分方案');
         }
@@ -1548,26 +1747,16 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
       }
     }
 
-    const shot: RemotionShot = {
-      id: 'copy_based_main',
-      number: 1,
-      caption,
-      text: caption,
-      imageUrl: finalCover.url,
-      imageUrls: [finalCover.url],
-      videoUrl: undefined,
-      audioUrl: ttsResult.mergedAudioUrl,
-      voiceoverAudioUrl: ttsResult.mergedAudioUrl,
-      audioDurationSec: totalDuration,
-      audioDurationExact: totalDuration,
-      duration: totalDuration,
-      textCues: cues,
-      motion: remotionConfig.motion ?? 'kenBurns',
-    };
+    // ── 字幕开关过滤 ──
+    if (mode === 'custom' && !customTracks.subtitleEnabled) {
+      shots = shots.map((s) => ({ ...s, textCues: undefined }));
+    }
 
+    // ── 日志 + 渲染 ──
+    const totalDuration = shots.reduce((s, x) => s + (x.duration || 0), 0);
     appendLog(
       'EXPORT',
-      `提交渲染 · 模板：${remotionConfig.template.name} · ${remotionConfig.resolution} · ${totalDuration.toFixed(1)}秒`
+      `提交渲染 · ${shots.length} 个镜头 · ${totalDuration.toFixed(1)}秒 · 模板：${remotionConfig.template.name} · ${remotionConfig.resolution}`
     );
     if (remotionConfig.bgm.enabled) {
       appendLog('EXPORT', `♪ BGM 已启用：音量=${Math.round((remotionConfig.bgm.volume ?? 0.3) * 100)}% 淡入=${remotionConfig.bgm.fadeIn ?? 1}s 淡出=${remotionConfig.bgm.fadeOut ?? 1}s`);
@@ -1580,7 +1769,7 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
       const result = await renderRemotionVideo(
         {
           draftName: `copybased_${Date.now()}`,
-          shots: [shot],
+          shots,
           config: remotionConfig,
         },
         (progress, message) => {
@@ -1616,7 +1805,18 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
     } finally {
       setVideoGenerating(false);
     }
-  }, [finalCover, ttsResult, remotionConfig, rawCopy, toast, appendLog, whisperEnabled]);
+  }, [
+    mode,
+    finalCover,
+    ttsResult,
+    customTracks,
+    remotionConfig,
+    rawCopy,
+    toast,
+    appendLog,
+    whisperEnabled,
+    buildCustomShots,
+  ]);
 
   // ──────────────────────────────────────────────
   // 重置
@@ -1639,6 +1839,8 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
     setVideoUrl('');
     setAnalysisError(null);
     setRawCopy('');
+    setMode('ai');
+    setCustomTracks(createEmptyCustomTracksState());
     clearPersisted();
     toast.success('已重置', 1500);
   }, [appendLog, toast]);
@@ -1648,7 +1850,34 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
   // ──────────────────────────────────────────────
   return (
     <div className="space-y-4">
+      {/* ═══════════════ 模式切换 ═══════════════ */}
+      <div className="flex items-center gap-1 bg-slate-900/70 border border-slate-700 rounded-lg p-1 w-fit">
+        <button
+          onClick={() => setMode('ai')}
+          className={`px-4 py-2 text-sm font-bold rounded-md flex items-center gap-2 transition-all ${
+            mode === 'ai'
+              ? 'bg-emerald-600 text-white shadow-md'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+          type="button"
+        >
+          <Sparkles size={14} /> AI 一键成片
+        </button>
+        <button
+          onClick={() => setMode('custom')}
+          className={`px-4 py-2 text-sm font-bold rounded-md flex items-center gap-2 transition-all ${
+            mode === 'custom'
+              ? 'bg-blue-600 text-white shadow-md'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+          type="button"
+        >
+          <ImageIcon size={14} /> 自定义素材成片
+        </button>
+      </div>
+
       {/* ═══════════════ 顶部 ═══════════════ */}
+      {mode === 'ai' ? (
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* ───────────── 左栏：文案输入 + 角色参考图 ───────────── */}
         <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700 space-y-4">
@@ -2254,6 +2483,26 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
           )}
         </div>
       </div>
+      ) : (
+        /* ═══════════════ 自定义素材成片模式 ═══════════════ */
+        <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700 space-y-3">
+          <div className="flex items-center gap-2">
+            <ImageIcon size={18} className="text-blue-400" />
+            <h3 className="text-lg font-bold text-blue-300">自定义素材成片</h3>
+            <span className="text-xs text-slate-500">
+              自由上传图片/视频 + 音频 → Remotion 多镜头渲染 → MP4
+            </span>
+            <span className="ml-auto text-[10px] text-blue-500/70 bg-blue-500/10 px-2 py-0.5 rounded">
+              v1.10 · 自定义素材轨道
+            </span>
+          </div>
+          <CustomTracksPanel
+            state={customTracks}
+            onChange={setCustomTracks}
+            onLog={appendLog}
+          />
+        </div>
+      )}
 
       {/* ═══════════════ 中部：5 段并行配音 ═══════════════ */}
       {analysisResult && (
@@ -2467,10 +2716,27 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
           {/* MP4 导出按钮 */}
           <button
             onClick={handleExportMp4}
-            disabled={!finalCover || !ttsResult || videoGenerating}
+            disabled={
+              videoGenerating ||
+              (mode === 'ai'
+                ? !finalCover || !ttsResult
+                : customTracks.videoItems.length === 0 || !customTracks.audioUrl)
+            }
             className="w-full px-3 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-2 disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed transition-all"
             type="button"
-            title={!finalCover ? '请先选定终封面' : !ttsResult ? '请先生成配音' : '导出 MP4'}
+            title={
+              mode === 'ai'
+                ? !finalCover
+                  ? '请先选定终封面'
+                  : !ttsResult
+                  ? '请先生成配音'
+                  : '导出 MP4'
+                : customTracks.videoItems.length === 0
+                ? '请先上传视频/图片素材'
+                : !customTracks.audioUrl
+                ? '请先上传音频'
+                : '导出 MP4'
+            }
           >
             {videoGenerating ? (
               <>
@@ -2478,7 +2744,7 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
               </>
             ) : (
               <>
-                <Film size={14} /> 导出 MP4（Remotion 渲染）
+                <Film size={14} /> 导出 MP4（{mode === 'ai' ? `${(finalCover?.title || '').slice(0, 16)}` : `${customTracks.videoItems.length} 镜头`} · Remotion 渲染）
               </>
             )}
           </button>
