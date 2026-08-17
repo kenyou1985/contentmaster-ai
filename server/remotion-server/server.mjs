@@ -9,6 +9,7 @@
  *   GET  /render/status/:id            → 轮询状态
  *   GET  /render/result/:id            → 获取最终 MP4
  *   POST /render/sync                  → 同步短路（仅供本地短镜头）
+ *   POST /asr/transcribe              → 本地 Whisper WASM 提取字幕（零外网费用）
  *   GET  /render/sse/:id               → SSE 实时进度
  *   GET  /download/:file               → 下载渲染好的 MP4
  *
@@ -879,6 +880,80 @@ app.post('/render/sync', async (req, res) => {
   } catch (e) {
     console.error('[remotion] render/sync 失败:', e);
     res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ── ASR 字幕提取（本地 Whisper WASM）────────────────────
+/**
+ * POST /asr/transcribe
+ * Body: { audioUrl: string (http/data URL) }
+ * Returns: { success, cues: [{startSec, endSec, text}], durationSec, error? }
+ *
+ * 工作流：
+ * 1. 接收 audioUrl（支持 data: URL 或 http://localhost:18093/media/...）
+ * 2. 保存到 /tmp/whisper_audio_*.mp3
+ * 3. 调用 transcribeAudio()（本地 WASM whisper，无外网调用）
+ * 4. 清理临时文件
+ */
+app.post('/asr/transcribe', async (req, res) => {
+  try {
+    const { audioUrl, language = 'zh' } = req.body || {};
+    if (!audioUrl) {
+      return res.status(400).json({ success: false, error: 'audioUrl 不能为空' });
+    }
+
+    const tempFile = `/tmp/whisper_audio_${Date.now()}.mp3`;
+    try {
+      let audioData;
+      if (audioUrl.startsWith('data:')) {
+        // data: URL → 直接解码
+        const base64 = audioUrl.replace(/^data:[^;]+;base64,/, '');
+        const { writeFileSync } = await import('fs');
+        const buffer = Buffer.from(base64, 'base64');
+        writeFileSync(tempFile, buffer);
+      } else {
+        // http(s) URL → 下载
+        const response = await fetch(audioUrl);
+        if (!response.ok) {
+          return res.status(400).json({ success: false, error: `下载音频失败: HTTP ${response.status}` });
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        const { writeFileSync } = await import('fs');
+        writeFileSync(tempFile, Buffer.from(arrayBuffer));
+      }
+
+      // 懒加载 ASR 服务（首次调用时才初始化模型）
+      const { transcribeAudio } = await import('./asr-service.mjs');
+      const result = await transcribeAudio(tempFile, language);
+
+      if (!result.ok) {
+        return res.json({
+          success: false,
+          error: result.error || 'ASR 识别失败',
+          durationSec: result.durationSec ?? 0,
+        });
+      }
+
+      return res.json({
+        success: true,
+        durationSec: result.durationSec ?? 0,
+        text: result.text ?? '',
+        cues: (result.words ?? []).map((w) => ({
+          startSec: (w.startMs ?? 0) / 1000,
+          endSec: (w.endMs ?? 0) / 1000,
+          text: w.text ?? '',
+        })),
+      });
+    } finally {
+      // 清理临时文件
+      try {
+        const { unlinkSync } = await import('fs');
+        unlinkSync(tempFile);
+      } catch {}
+    }
+  } catch (e) {
+    console.error('[asr] /transcribe error:', e);
+    res.status(500).json({ success: false, error: e.message ?? String(e) });
   }
 });
 

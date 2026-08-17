@@ -22,6 +22,7 @@ import {
   Volume2,
   FileText,
   Film,
+  Loader2,
 } from 'lucide-react';
 
 // ── 单个素材（图片或视频）────────────────────────────────
@@ -75,7 +76,12 @@ export interface CustomTracksState {
 interface CustomTracksPanelProps {
   /** 受控 state */
   state: CustomTracksState;
-  onChange: (state: CustomTracksState) => void;
+  /**
+   * 受控更新（支持函数式更新以避免闭包捕获旧 state）：
+   *   onChange(newState)           — 直接替换
+   *   onChange((prev) => newState) — 函数式更新（推荐批量场景）
+   */
+  onChange: (state: CustomTracksState | ((prev: CustomTracksState) => CustomTracksState)) => void;
   /** 字幕来源说明：'whisper' | 'upload' | 'none' */
   onLog?: (prefix: string, message: string) => void;
 }
@@ -186,9 +192,27 @@ function probeAudioDuration(url: string): Promise<number> {
   return new Promise((resolve) => {
     const a = document.createElement('audio');
     a.preload = 'metadata';
-    a.onloadedmetadata = () => resolve(isFinite(a.duration) ? a.duration : 0);
-    a.onerror = () => resolve(0);
+    a.muted = true;
+    let settled = false;
+    const settle = (n: number) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      a.src = '';
+      resolve(n);
+    };
+    a.onloadedmetadata = () => {
+      settle(isFinite(a.duration) && a.duration > 0 ? a.duration : 0);
+    };
+    a.onerror = () => settle(0);
+    a.onloadeddata = () => {
+      // fallback：loadeddata 时也尝试拿 duration（某些格式 metadata 不触发）
+      if (a.duration && isFinite(a.duration)) settle(a.duration);
+    };
     a.src = url;
+    a.load();
+    // 超时兜底（某些浏览器 blob URL metadata 加载慢）
+    const timer = setTimeout(() => settle(0), 8000);
   });
 }
 
@@ -283,49 +307,53 @@ export const CustomTracksPanel: React.FC<CustomTracksPanelProps> = ({
       }
     }
     if (newItems.length === 0) return;
-    onChange({ ...state, videoItems: [...state.videoItems, ...newItems] });
+    // 使用函数式更新，避免 handleAddMedia 内部闭包捕获旧 state
+    // （批量上传时多个 Promise.all 并发完成，若用 onChange({...state,...}) 会读到同一份旧 state）
+    onChange((prev) => ({ ...prev, videoItems: [...prev.videoItems, ...newItems] }));
     log('TRACK', `✓ 添加 ${newItems.length} 个素材（图片/视频）到视频轨道`);
-  }, [state, onChange, log]);
+  }, [onChange, log]);
 
   // ── 删除素材 ─────────────────────────────────────────
   const handleRemoveItem = useCallback((id: string) => {
-    const next = state.videoItems.filter((it) => it.id !== id);
-    onChange({ ...state, videoItems: next });
-  }, [state, onChange]);
+    onChange((prev) => ({ ...prev, videoItems: prev.videoItems.filter((it) => it.id !== id) }));
+  }, [onChange]);
 
   // ── 上下移动素材 ─────────────────────────────────────
   const handleMoveItem = useCallback((id: string, dir: -1 | 1) => {
-    const idx = state.videoItems.findIndex((it) => it.id === id);
-    if (idx < 0) return;
-    const newIdx = idx + dir;
-    if (newIdx < 0 || newIdx >= state.videoItems.length) return;
-    const next = [...state.videoItems];
-    [next[idx], next[newIdx]] = [next[newIdx], next[idx]];
-    onChange({ ...state, videoItems: next });
-  }, [state, onChange]);
+    onChange((prev) => {
+      const idx = prev.videoItems.findIndex((it) => it.id === id);
+      if (idx < 0) return prev;
+      const newIdx = idx + dir;
+      if (newIdx < 0 || newIdx >= prev.videoItems.length) return prev;
+      const next = [...prev.videoItems];
+      [next[idx], next[newIdx]] = [next[newIdx], next[idx]];
+      return { ...prev, videoItems: next };
+    });
+  }, [onChange]);
 
   // ── 修改素材时长 ─────────────────────────────────────
   const handleChangeDuration = useCallback((id: string, sec: number) => {
-    onChange({
-      ...state,
-      videoItems: state.videoItems.map((it) =>
+    onChange((prev) => ({
+      ...prev,
+      videoItems: prev.videoItems.map((it) =>
         it.id === id ? { ...it, overrideDurationSec: sec > 0 ? sec : undefined } : it
       ),
-    });
-  }, [state, onChange]);
+    }));
+  }, [onChange]);
 
   // ── 修改字幕文本 ─────────────────────────────────────
   const handleChangeCaption = useCallback((id: string, text: string) => {
-    onChange({
-      ...state,
-      videoItems: state.videoItems.map((it) =>
+    onChange((prev) => ({
+      ...prev,
+      videoItems: prev.videoItems.map((it) =>
         it.id === id ? { ...it, caption: text } : it
       ),
-    });
-  }, [state, onChange]);
+    }));
+  }, [onChange]);
 
   // ── 上传音频 ─────────────────────────────────────────
   const audioInputRef = useRef<HTMLInputElement>(null);
+  const [asrLoading, setAsrLoading] = useState<boolean>(false);
   const handleAddAudio = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     // 多选时取第一个有效的音频文件（其余日志提示）
@@ -340,23 +368,58 @@ export const CustomTracksPanel: React.FC<CustomTracksPanelProps> = ({
     const file = audios[0];
     const url = URL.createObjectURL(file);
     const durationSec = await probeAudioDuration(url);
-    onChange({
-      ...state,
+    const hasCustomSubtitle = state.subtitleCues.length > 0 && state.subtitleFileName;
+    onChange((prev) => ({
+      ...prev,
       audioUrl: url,
       audioName: file.name,
       audioDurationSec: durationSec,
-    });
+      // 若无用户上传字幕文件，自动触发 Whisper ASR
+      subtitleCues: hasCustomSubtitle ? prev.subtitleCues : [],
+      subtitleFileName: hasCustomSubtitle ? prev.subtitleFileName : undefined,
+    }));
     log('TRACK', `✓ 音频轨道：${file.name} · ${durationSec.toFixed(1)}s · ${(file.size / 1024).toFixed(1)} KB`);
-  }, [state, onChange, log]);
+    // 自动触发 Whisper ASR（无自定义字幕文件时）
+    if (!hasCustomSubtitle && durationSec > 0.5) {
+      setAsrLoading(true);
+      log('ASR', `▸ 开始 Whisper ASR 识别（音频 ${durationSec.toFixed(1)}s）…`);
+      try {
+        const baseUrl = (window as any).__REMOTION_SERVER_URL__ || `${window.location.protocol}//${window.location.hostname}:18093`;
+        const resp = await fetch(`${baseUrl}/asr/transcribe`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ audioUrl: url, language: 'zh' }),
+        });
+        const data = await resp.json();
+        if (data.success && data.cues?.length > 0) {
+          onChange((prev) => ({
+            ...prev,
+            subtitleCues: data.cues,
+            subtitleFileName: undefined,
+            subtitleEnabled: true,
+          }));
+          log('ASR', `✓ Whisper 识别完成：${data.cues.length} 条字幕（${data.durationSec?.toFixed(1)}s）`);
+        } else {
+          log('ASR', `⚠ Whisper 识别失败: ${data.error || '未知错误'}`);
+        }
+      } catch (e: any) {
+        log('ASR', `✗ Whisper 请求失败: ${e.message}`);
+      } finally {
+        setAsrLoading(false);
+      }
+    } else if (hasCustomSubtitle) {
+      log('TRACK', `  检测到用户已上传字幕文件，跳过 ASR`);
+    }
+  }, [state.subtitleCues, state.subtitleFileName, onChange, log]);
 
   const handleRemoveAudio = useCallback(() => {
-    onChange({
-      ...state,
+    onChange((prev) => ({
+      ...prev,
       audioUrl: undefined,
       audioName: undefined,
       audioDurationSec: undefined,
-    });
-  }, [state, onChange]);
+    }));
+  }, [onChange]);
 
   // ── 上传字幕文件 ─────────────────────────────────────
   const subtitleInputRef = useRef<HTMLInputElement>(null);
@@ -367,25 +430,25 @@ export const CustomTracksPanel: React.FC<CustomTracksPanelProps> = ({
       const text = await file.text();
       const cues = parseSubtitleFile(file.name, text);
       if (cues.length === 0) throw new Error('字幕文件解析后为 0 条，请检查格式');
-      onChange({
-        ...state,
+      onChange((prev) => ({
+        ...prev,
         subtitleCues: cues,
         subtitleFileName: file.name,
         subtitleEnabled: true,
-      });
+      }));
       log('TRACK', `✓ 字幕：${file.name} · ${cues.length} 条 cue`);
     } catch (e: any) {
       log('ERROR', `字幕解析失败: ${e.message}`);
     }
-  }, [state, onChange, log]);
+  }, [onChange, log]);
 
   const handleRemoveSubtitle = useCallback(() => {
-    onChange({
-      ...state,
+    onChange((prev) => ({
+      ...prev,
       subtitleCues: [],
       subtitleFileName: undefined,
-    });
-  }, [state, onChange]);
+    }));
+  }, [onChange]);
 
   return (
     <div className="space-y-4">
@@ -491,11 +554,14 @@ export const CustomTracksPanel: React.FC<CustomTracksPanelProps> = ({
                 onDrop={(e) => {
                   e.preventDefault();
                   if (draggingIndex === null || draggingIndex === idx) return;
-                  const next = [...state.videoItems];
-                  const [moved] = next.splice(draggingIndex, 1);
-                  next.splice(idx, 0, moved);
-                  onChange({ ...state, videoItems: next });
+                  const currentDragIdx = draggingIndex;
                   setDraggingIndex(null);
+                  onChange((prev) => {
+                    const next = [...prev.videoItems];
+                    const [moved] = next.splice(currentDragIdx, 1);
+                    next.splice(idx, 0, moved);
+                    return { ...prev, videoItems: next };
+                  });
                 }}
                 onDragEnd={() => setDraggingIndex(null)}
                 className={`flex items-center gap-2 bg-slate-950/60 border rounded p-2 ${
@@ -637,9 +703,11 @@ export const CustomTracksPanel: React.FC<CustomTracksPanelProps> = ({
             <FileText size={16} className="text-purple-400" />
             <h4 className="text-sm font-bold text-purple-300">字幕</h4>
             <span className="text-[10px] text-slate-500">
-              {state.subtitleCues.length > 0
-                ? `${state.subtitleCues.length} 条（${state.subtitleFileName}）`
-                : '默认 Whisper ASR 自动生成'}
+              {asrLoading
+                ? '🔄 Whisper 识别中…'
+                : state.subtitleCues.length > 0
+                  ? `${state.subtitleCues.length} 条${state.subtitleFileName ? `（${state.subtitleFileName}）` : '（自动生成）'}`
+                  : '默认 Whisper ASR 自动生成'}
             </span>
           </div>
           {state.subtitleCues.length > 0 && (
@@ -671,11 +739,46 @@ export const CustomTracksPanel: React.FC<CustomTracksPanelProps> = ({
               e.target.value = '';
             }}
           />
+          {state.audioUrl && (
+            <button
+              onClick={async () => {
+                if (!state.audioUrl) return;
+                setAsrLoading(true);
+                log('ASR', `▸ 重新 Whisper ASR 识别…`);
+                try {
+                  const baseUrl = (window as any).__REMOTION_SERVER_URL__ || `${window.location.protocol}//${window.location.hostname}:18093`;
+                  const resp = await fetch(`${baseUrl}/asr/transcribe`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ audioUrl: state.audioUrl, language: 'zh' }),
+                  });
+                  const data = await resp.json();
+                  if (data.success && data.cues?.length > 0) {
+                    onChange((prev) => ({ ...prev, subtitleCues: data.cues, subtitleFileName: undefined, subtitleEnabled: true }));
+                    log('ASR', `✓ 重新识别完成：${data.cues.length} 条字幕`);
+                  } else {
+                    log('ASR', `⚠ 识别失败: ${data.error || '未知错误'}`);
+                  }
+                } catch (e: any) {
+                  log('ASR', `✗ 请求失败: ${e.message}`);
+                } finally {
+                  setAsrLoading(false);
+                }
+              }}
+              disabled={asrLoading || !state.audioUrl}
+              className="text-[11px] px-2.5 py-1 bg-cyan-600 hover:bg-cyan-500 text-white rounded flex items-center gap-1 disabled:opacity-40"
+              type="button"
+              title="用 Whisper 重新识别音频"
+            >
+              {asrLoading ? <Loader2 size={12} className="animate-spin" /> : null}
+              {asrLoading ? '识别中…' : '🔄 重新识别'}
+            </button>
+          )}
           <label className="flex items-center gap-1 text-[10px] text-slate-300">
             <input
               type="checkbox"
               checked={state.subtitleEnabled}
-              onChange={(e) => onChange({ ...state, subtitleEnabled: e.target.checked })}
+              onChange={(e) => onChange((prev) => ({ ...prev, subtitleEnabled: e.target.checked }))}
               className="accent-purple-500"
             />
             启用字幕
