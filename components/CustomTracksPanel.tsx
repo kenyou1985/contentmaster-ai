@@ -33,6 +33,7 @@ import {
 import {
   isVideoFile,
   extractAudioFromVideo,
+  prewarmFfmpeg,
 } from '../services/audioExtractor';
 
 // ── 单个素材（图片或视频）────────────────────────────────
@@ -262,6 +263,11 @@ export const CustomTracksPanel: React.FC<CustomTracksPanelProps> = ({
     (prefix: string, msg: string) => onLog?.(prefix, msg),
     [onLog]
   );
+
+  // ── 预热 ffmpeg.wasm（组件挂载就开始下载 32MB WASM） ──
+  useEffect(() => {
+    prewarmFfmpeg();
+  }, []);
 
   // ── 计算总时长（用于 UI 显示）────────────────────────
   const totalDuration = useMemo(() => {

@@ -87,6 +87,7 @@ import {
   type BgmCacheEntry,
 } from '../services/bgmUploadService';
 import { transcribeShots } from '../services/localAsrService';
+import { prewarmFfmpeg } from '../services/audioExtractor';
 import {
   CustomTracksPanel,
   createEmptyCustomTracksState,
@@ -676,6 +677,12 @@ const CopyBasedPanel: React.FC<{
     tick();
     const id = setInterval(tick, 500);
     return () => clearInterval(id);
+  }, []);
+
+  // ── 预热 ffmpeg.wasm（用户进入页面时就开始下载 32MB WASM） ──
+  //    等用户真的上传视频时，ffmpeg 已经在内存中，无需等待
+  useEffect(() => {
+    prewarmFfmpeg();
   }, []);
 
   // ──────────────────────────────────────────────
@@ -2263,7 +2270,7 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                               <img
                                 src={generatedCovers.get(idx)!.url}
                                 alt={`封面 ${idx + 1}`}
-                                className={`w-full block transition-opacity duration-300 ${
+                                className={`absolute inset-0 w-full h-full object-cover block transition-opacity duration-300 ${
                                   isGenerating ? 'opacity-30' : 'opacity-100'
                                 }`}
                               />

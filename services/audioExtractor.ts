@@ -226,15 +226,31 @@ export async function extractAudioFromVideo(
 let ffmpegInstance: any = null;
 let ffmpegLoadingPromise: Promise<any> | null = null;
 
+/**
+ * 预热 ffmpeg.wasm（不阻塞调用方）
+ * 建议在用户进入"文案成片"页面时就调用，借助 requestIdleCallback 避开首屏
+ */
+export function prewarmFfmpeg(): void {
+  if (ffmpegInstance || ffmpegLoadingPromise) return;
+  const idle = (window as any).requestIdleCallback || ((cb: any) => setTimeout(cb, 1000));
+  idle(() => {
+    getFfmpegInstance().catch((e) => {
+      console.warn('[audioExtractor] 预热失败（不影响功能）：', e?.message?.slice(0, 100));
+    });
+  });
+}
+
 async function getFfmpegInstance(onLog?: (msg: string) => void): Promise<any> {
   if (ffmpegInstance) return ffmpegInstance;
   if (ffmpegLoadingPromise) return ffmpegLoadingPromise;
 
   ffmpegLoadingPromise = (async () => {
-    console.log('[audioExtractor] 加载 @ffmpeg/ffmpeg（WASM，首次约 5-15 秒）…');
     const t0 = performance.now();
+    console.log('[audioExtractor] ═══ 加载 @ffmpeg/ffmpeg WASM（首次约 5-15 秒）═══');
+    console.log('[audioExtractor]   步骤 1/3: 导入 @ffmpeg/ffmpeg 模块...');
     const { FFmpeg } = await import('@ffmpeg/ffmpeg');
-    const { toBlobURL } = await import('@ffmpeg/util');
+    console.log('[audioExtractor]   步骤 2/3: 导入 @ffmpeg/util helper...');
+    const { toBlobURL, fetchFile } = await import('@ffmpeg/util');
 
     const ffmpeg = new FFmpeg();
     if (onLog) {
@@ -250,8 +266,35 @@ async function getFfmpegInstance(onLog?: (msg: string) => void): Promise<any> {
     // @ffmpeg/core@0.12.10 dist/umd/ffmpeg-core.{js,wasm}
     const CORE_VERSION = '0.12.10';
     const baseURL = `/node_modules/@ffmpeg/core/dist/umd`;
-    const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
-    const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
+    console.log(`[audioExtractor]   步骤 3/3: 下载 ffmpeg-core.wasm (32MB) + 编译...`);
+    console.log(`[audioExtractor]   从 vite serve: ${baseURL}/ffmpeg-core.{js,wasm}`);
+
+    // 用 XHR 显式下载（fetch 流式 API 不能显示进度）
+    const xhrProgress = (url: string, mime: string): Promise<string> => new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', url, true);
+      xhr.responseType = 'blob';
+      xhr.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = (e.loaded / e.total * 100).toFixed(1);
+          console.log(`[audioExtractor]   下载 ${url.split('/').pop()}: ${pct}% (${(e.loaded / 1024 / 1024).toFixed(1)}/${(e.total / 1024 / 1024).toFixed(1)} MB)`);
+        }
+      };
+      xhr.onload = () => {
+        if (xhr.status === 200) {
+          const blobUrl = URL.createObjectURL(xhr.response);
+          resolve(blobUrl);
+        } else {
+          reject(new Error(`HTTP ${xhr.status}`));
+        }
+      };
+      xhr.onerror = () => reject(new Error('网络错误'));
+      xhr.send();
+    });
+
+    const coreURL = await xhrProgress(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
+    const wasmURL = await xhrProgress(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
+    console.log(`[audioExtractor]   WASM 下载完成，编译中（Web Worker 编译可能需要 5-10 秒）...`);
 
     await ffmpeg.load({ coreURL, wasmURL });
     const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
