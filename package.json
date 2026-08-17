@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@audio/decode": "^3.12.0",
     "@google/genai": "latest",
     "@remotion/bundler": "^4.0.250",
     "@remotion/player": "^4.0.250",
