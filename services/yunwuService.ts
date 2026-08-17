@@ -707,6 +707,119 @@ function convertSizeForDalle3(size?: string): string {
   return '1792x1024'; // 横屏
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// 全局图片生成限流器（解决上游 429 雪崩）
+// ─────────────────────────────────────────────────────────────────────────
+// 设计动机：
+//   批量 6 张封面并发跑时，若上游分组进入"负载饱和"状态，会一起 429。
+//   每个 fetchWithRetry 内部各自重试 → 反而在同一时间窗口再次撞 429，
+//   最终全部失败。这里加一层全局协调：
+//     1. 滑动窗口：默认 60s 内最多 4 个并发槽位
+//     2. 任意一次 429：触发全局 cooldown（默认 8s，可叠加），所有等待者串行唤醒
+//     3. 30s 内无 429：自动恢复窗口 = 4
+//     4. cooldown 期间最大并发降为 1（避免再撞）
+// 调用方只需 await acquireImageGenSlot() 即可，零侵入。
+type Waiter = { resolve: () => void; rejected: boolean };
+class GlobalImageGenLimiter {
+  private windowMs = 60_000;
+  private maxConcurrent = 4;
+  private cooldownMs = 0;            // 当前剩余冷却（ms）
+  private cooldownTimer: any = null;
+  private recoveryTimer: any = null; // 无 429 自动恢复窗口定时器
+  private recentHits: number[] = []; // 时间戳
+  private waiters: Waiter[] = [];
+  private inFlight = 0;
+
+  /** 获取一个生成槽位（自动等待冷却 / 串行化） */
+  acquire(): Promise<void> {
+    // 还在 cooldown 内：排队等唤醒
+    if (this.cooldownMs > 0 || this.inFlight >= this.maxConcurrent) {
+      return new Promise<void>((resolve) => {
+        this.waiters.push({ resolve, rejected: false });
+      });
+    }
+    this.inFlight++;
+    return Promise.resolve();
+  }
+
+  /** 调用方完成一次图片生成（成功或最终失败都调用，释放槽位） */
+  release(_isRateLimit = false): void {
+    this.inFlight = Math.max(0, this.inFlight - 1);
+    this.drainWaiters();
+  }
+
+  /** 上游命中限流（429），由 fetchWithRetry 调用方报告 */
+  reportRateLimited(retryAfterSec?: number): void {
+    // 优先用上游 Retry-After header，否则指数叠加：8s → 16s → 32s，最多 60s
+    const now = Date.now();
+    const lastHit = this.recentHits[this.recentHits.length - 1] || 0;
+    this.recentHits.push(now);
+    // 60s 内只保留最近的命中
+    this.recentHits = this.recentHits.filter((t) => now - t < 60_000);
+
+    const baseCooldown = retryAfterSec && retryAfterSec > 0 ? retryAfterSec * 1000 : 8000;
+    // 60s 内连续命中 → 退避翻倍（最多 60s）
+    const consecutive = this.recentHits.length;
+    const escalator = Math.min(8, Math.pow(2, Math.max(0, consecutive - 1))); // 1, 2, 4, 8
+    const nextCooldown = Math.min(60_000, baseCooldown * escalator);
+
+    this.cooldownMs = Math.max(this.cooldownMs, nextCooldown);
+    // cooldown 期间最大并发降为 1
+    this.maxConcurrent = 1;
+    if (this.cooldownTimer) clearTimeout(this.cooldownTimer);
+    this.cooldownTimer = setTimeout(() => {
+      this.cooldownMs = 0;
+      // 30s 内不再命中 → 恢复窗口 4
+      if (this.recoveryTimer) clearTimeout(this.recoveryTimer);
+      this.recoveryTimer = setTimeout(() => {
+        if (this.recentHits.length === 0) {
+          this.maxConcurrent = 4;
+        }
+      }, 30_000);
+      this.drainWaiters();
+    }, this.cooldownMs);
+
+    console.warn(
+      `[ImageGenLimiter] 触发限流冷却 · ${(this.cooldownMs / 1000).toFixed(1)}s · 60s 内累计命中 ${consecutive} 次 · 并发降为 1`
+    );
+  }
+
+  /** 成功后清理最近命中记录（让恢复定时器尽快生效） */
+  reportSuccess(): void {
+    // 60s 之前的命中视为陈旧，丢弃
+    const cutoff = Date.now() - 60_000;
+    this.recentHits = this.recentHits.filter((t) => t > cutoff);
+    // 如果当前不是 cooldown 且没有最近命中，且窗口被压到 1，恢复到 4
+    if (this.cooldownMs === 0 && this.recentHits.length === 0 && this.maxConcurrent !== 4) {
+      this.maxConcurrent = 4;
+    }
+  }
+
+  private drainWaiters(): void {
+    while (this.waiters.length > 0 && this.cooldownMs === 0 && this.inFlight < this.maxConcurrent) {
+      const w = this.waiters.shift()!;
+      if (w.rejected) continue;
+      this.inFlight++;
+      w.resolve();
+    }
+  }
+
+  /** 调试用 */
+  stats() {
+    return {
+      inFlight: this.inFlight,
+      cooldownMs: this.cooldownMs,
+      maxConcurrent: this.maxConcurrent,
+      waiters: this.waiters.length,
+      recentHits: this.recentHits.length,
+    };
+  }
+}
+
+export const imageGenLimiter = new GlobalImageGenLimiter();
+/** 兼容旧调用方（可省略）：直接 await acquireImageGenSlot() */
+export const acquireImageGenSlot = () => imageGenLimiter.acquire();
+
 /**
  * 生成图片
  */
@@ -774,6 +887,10 @@ async function fetchWithRetry(
         const baseDelay = retryAfterSec > 0 ? retryAfterSec * 1000 : 2000 * Math.pow(2, attempt - 1);
         const jitter = Math.random() * 2000;
         const wait = baseDelay + jitter;
+        // 通知全局限流器：本次命中 429（让其他并发请求自动串行冷却）
+        if (resp.status === 429) {
+          imageGenLimiter.reportRateLimited(retryAfterSec);
+        }
         console.warn(`[OpenLuxService] ${label} HTTP ${resp.status}，${Math.round(wait)}ms 后重试 (${attempt}/${maxRetries - 1})`);
         await new Promise((r) => setTimeout(r, wait));
         continue;
@@ -804,6 +921,22 @@ async function fetchWithRetry(
 }
 
 export const generateImage = async (
+  apiKey: string,
+  options: ImageGenerationOptions
+): Promise<GenerationResult> => {
+  // 全局限流：先获取一个槽位，避免批量撞 429
+  await imageGenLimiter.acquire();
+  try {
+    const result = await generateImageInner(apiKey, options);
+    // 成功时清掉最近命中记录（让 30s 恢复定时器尽快生效）
+    if (result?.success) imageGenLimiter.reportSuccess();
+    return result;
+  } finally {
+    imageGenLimiter.release();
+  }
+};
+
+const generateImageInner = async (
   apiKey: string,
   options: ImageGenerationOptions
 ): Promise<GenerationResult> => {
@@ -1198,6 +1331,12 @@ async function yunwuOpenAiImageOnce(
       // 可重试错误：503/502/429/504
       if (isRetryable(response.status) && attempt < MAX_RETRIES - 1) {
         const delayMs = Math.min(2000 * Math.pow(2, attempt), 30_000);
+        // 429 命中：通知全局限流器（让其他并发请求自动串行冷却）
+        if (response.status === 429) {
+          const raRaw = response.headers.get('Retry-After');
+          const raSec = raRaw ? Math.max(1, parseInt(raRaw, 10) || 0) : 0;
+          imageGenLimiter.reportRateLimited(raSec);
+        }
         console.warn(`[OpenLuxService] ${modelId} 尝试 ${attempt + 1} 失败 (HTTP ${response.status})，${delayMs}ms 后重试...`);
         await new Promise((r) => setTimeout(r, delayMs));
         continue;
@@ -1208,6 +1347,8 @@ async function yunwuOpenAiImageOnce(
       const errorMessage = errorData.error?.message || `HTTP ${response.status}: ${response.statusText}`;
       const isUpstreamSaturated = /上游.*负载|负载.*饱和|upstream.*busy|upstream.*saturated/i.test(errorMessage);
       if (isUpstreamSaturated && attempt < MAX_RETRIES - 1) {
+        // 业务体里说"上游饱和"也视作限流信号
+        imageGenLimiter.reportRateLimited(0);
         const delayMs = Math.min(3000 * Math.pow(2, attempt), 45_000);
         console.warn(`[OpenLuxService] ${modelId} 上游饱和 (${errorMessage.slice(0, 60)})，${delayMs}ms 后重试...`);
         await new Promise((r) => setTimeout(r, delayMs));

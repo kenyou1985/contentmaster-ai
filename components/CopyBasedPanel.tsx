@@ -62,7 +62,7 @@ import {
 } from 'lucide-react';
 import { useToast } from './Toast';
 import { VoiceLibrary } from './VoiceLibrary';
-import { generateImage } from '../services/yunwuService';
+import { generateImage, imageGenLimiter } from '../services/yunwuService';
 import {
   analyzeCopyWithLlm,
   type CopyAnalysisResult,
@@ -510,6 +510,14 @@ const CopyBasedPanel: React.FC<{
   const [coversGenerating, setCoversGenerating] = useState<Set<number>>(new Set());
   const [coverErrors, setCoverErrors] = useState<Map<number, string>>(new Map());
 
+  // 全局限流状态（轮询 imageGenLimiter.stats() 用于 UI 显示）
+  const [limiterState, setLimiterState] = useState<{
+    cooldownMs: number;
+    inFlight: number;
+    waiters: number;
+    maxConcurrent: number;
+  }>({ cooldownMs: 0, inFlight: 0, waiters: 0, maxConcurrent: 4 });
+
   const [ttsProgress, setTtsProgress] = useState<ParallelTtsProgress | null>(null);
   const [ttsGenerating, setTtsGenerating] = useState<boolean>(false);
   /** v1.3：从持久化中恢复（去掉 mergedAudioBlob 字段，播放时仍可用 blob URL）
@@ -656,6 +664,19 @@ const CopyBasedPanel: React.FC<{
     mode,
     customTracks,
   ]);
+
+  // 全局限流状态轮询（用于 UI 显示冷却进度）
+  useEffect(() => {
+    const tick = () => {
+      try {
+        const stats = imageGenLimiter.stats();
+        setLimiterState(stats);
+      } catch {}
+    };
+    tick();
+    const id = setInterval(tick, 500);
+    return () => clearInterval(id);
+  }, []);
 
   // ──────────────────────────────────────────────
   // 日志
@@ -2445,6 +2466,26 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
           {/* 批量生成封面按钮 */}
           {analysisResult && (
             <div className="space-y-2">
+              {/* 全局限流状态条（仅在冷却或等待时显示） */}
+              {(limiterState.cooldownMs > 0 || limiterState.waiters > 0) && (
+                <div className="bg-orange-900/30 border border-orange-700 rounded p-2 text-[10px] text-orange-200 space-y-1">
+                  {limiterState.cooldownMs > 0 && (
+                    <div className="flex items-center gap-1.5">
+                      <Loader2 size={10} className="animate-spin" />
+                      <span>上游限流冷却中 · 剩余 {(limiterState.cooldownMs / 1000).toFixed(1)}s · 已自动串行化后续请求</span>
+                    </div>
+                  )}
+                  {limiterState.waiters > 0 && limiterState.cooldownMs === 0 && (
+                    <div className="flex items-center gap-1.5">
+                      <Loader2 size={10} className="animate-spin" />
+                      <span>排队等待槽位 · {limiterState.waiters} 个 / 最大并发 {limiterState.maxConcurrent}</span>
+                    </div>
+                  )}
+                  <div className="text-orange-400/70">
+                    当前并发 {limiterState.inFlight}/{limiterState.maxConcurrent}
+                  </div>
+                </div>
+              )}
               <button
                 onClick={handleGenerateAllCovers}
                 disabled={
