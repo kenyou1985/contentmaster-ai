@@ -181,20 +181,34 @@ export async function extractAudioFromVideo(
 
   console.log(`[audioExtractor] 开始处理: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB, ${file.type})`);
 
-  // ── 策略 0（最重）：@ffmpeg/ffmpeg WASM — 兜底万能解码器 ──
-  //    优势：能解码一切浏览器/WebAudio/AAC 库都解不开的格式（HEVC+iPhone 视频）
-  //    代价：首次加载约 31MB WASM（约 5-15 秒，看网速），缓存后秒开
-  //    触发条件：仅在策略 1-3 全部失败后启用（避免每次都等大文件下载）
-  //    由于策略 1-3 已经失败才走到这里，所以这一步必须真上 ffmpeg.wasm
+  // ── 策略 1（最快）：HTML5 video + WebAudio API 直接解码 ──
+  //    优势：浏览器原生，毫秒级，不需服务端
+  //    适用：mp4/h264/aac（兼容性最好）
+  //    失败：HEVC、mkv 等浏览器不支持的格式
+  try {
+    const wav1 = await strategyHtml5Video(file, {
+      targetSampleRate,
+      targetChannels,
+      onProgress: (p) => onProgress?.(0.02 + p * 0.4),  // 0.02 → 0.42
+    });
+    if (wav1) {
+      console.log(`[audioExtractor] ✓ 策略 1（HTML5 video）成功`);
+      onProgress?.(1.0);
+      return wav1;
+    }
+  } catch (e1: any) {
+    console.warn(`[audioExtractor] 策略 1 (HTML5 video) 失败: ${e1.message?.slice(0, 200)}`);
+  }
+
   // ── 策略 0a（推荐）：服务端 ffmpeg 转码（remotion-server 的 /audio/extract）──
   //    优势：服务端有完整 ffmpeg + 无浏览器解码限制，比 ffmpeg.wasm 快且稳
   //    代价：需 remotion-server 在 18093 端口运行
-  onProgress?.(0.02);
+  onProgress?.(0.45);
   try {
     const wav0 = await strategyServerExtract(file, {
       targetSampleRate,
       targetChannels,
-      onProgress: (p) => onProgress?.(0.02 + p * 0.94),
+      onProgress: (p) => onProgress?.(0.45 + p * 0.5),  // 0.45 → 0.95
     });
     console.log(`[audioExtractor] ✓ 策略 0a（服务端 ffmpeg）成功`);
     onProgress?.(1.0);
@@ -206,11 +220,12 @@ export async function extractAudioFromVideo(
   // ── 策略 0b（兜底）：@ffmpeg/ffmpeg WASM — 浏览器内解码 ──
   //    优势：无需服务端
   //    代价：首次加载约 31MB WASM（约 5-15 秒），Safari 在某些 HEVC 上仍可能失败
+  onProgress?.(0.96);
   try {
     const wav0 = await strategyFfmpegWasm(file, {
       targetSampleRate,
       targetChannels,
-      onProgress: (p) => onProgress?.(0.02 + p * 0.94),  // 0.02 → 0.96
+      onProgress: (p) => onProgress?.(0.96 + p * 0.04),  // 0.96 → 1.0
     });
     console.log(`[audioExtractor] ✓ 策略 0b（ffmpeg.wasm）成功`);
     onProgress?.(1.0);
@@ -219,11 +234,10 @@ export async function extractAudioFromVideo(
     console.warn(`[audioExtractor] 策略 0b (ffmpeg.wasm) 失败: ${e0.message?.slice(0, 200)}`);
     throw new Error(
       `视频音轨提取失败。所有方法都已尝试：\n` +
-      `  - @audio/decode (AAC WASM): 解码返回静音或空数据\n` +
-      `  - decodeAudioData (浏览器原生): 解码返回静音\n` +
-      `  - MediaRecorder: 播放录制失败\n` +
+      `  - HTML5 video + WebAudio: 浏览器无法解码此视频\n` +
+      `  - 服务端 ffmpeg (remotion-server): 失败或服务端未启动\n` +
       `  - ffmpeg.wasm (32MB 兜底): ${e0.message?.slice(0, 200)}\n` +
-      `请确认视频文件包含音轨。如果问题持续，建议先在 QuickTime 中重新导出一次。`
+      `请确认视频文件包含音轨，或确认 remotion-server 在 18093 端口运行。`
     );
   }
 }
@@ -415,7 +429,11 @@ async function strategyFfmpegWasm(
 
 // ── 策略 0a：服务端 ffmpeg 转码（remotion-server /audio/extract） ──
 //    通过 vite proxy → http://127.0.0.1:18093/audio/extract
-//    服务端用 ffmpeg-static 解码任意 mp4/mov/mkv → WAV（16kHz mono PCM）
+//    服务端用 @remotion/renderer.extractAudio() 解码任意 mp4/mov/mkv → WAV（16kHz mono PCM）
+//
+//    优势：
+//      - 服务端 ffmpeg 完整版（支持 iPhone HEVC），无浏览器解码限制
+//      - macOS ARM64 上用 Remotion 包内 @remotion/compositor-darwin-arm64/ffmpeg（零依赖、零 Gatekeeper 问题）
 //
 //    触发逻辑：
 //      - 用户上传视频 → 调用此策略
@@ -427,38 +445,27 @@ async function strategyServerExtract(
 ): Promise<Blob> {
   opts.onProgress(0.05);
   console.log(`[audioExtractor] 策略 0a: 通过服务端 ffmpeg 转码（remotion-server:18093）`);
+  console.log(`[audioExtractor]   视频: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB, ${file.type})`);
 
-  // 把 File → base64（用 FileReader 异步，不阻塞 UI）
-  const base64 = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      // "data:video/mp4;base64,XXXXX" → "XXXXX"
-      const commaIdx = result.indexOf(',');
-      resolve(commaIdx >= 0 ? result.slice(commaIdx + 1) : result);
-    };
-    reader.onerror = () => reject(new Error('FileReader 失败'));
-    reader.readAsDataURL(file);
-  });
-  opts.onProgress(0.30);
-
-  const dataUrl = `data:${file.type || 'video/mp4'};base64,${base64}`;
+  // 用 multipart/form-data 直接传 File（无需 base64，节省 33% 网络开销）
+  const fd = new FormData();
+  fd.append('file', file, file.name);
+  fd.append('fileName', file.name);
+  fd.append('mime', file.type || 'video/mp4');
+  opts.onProgress(0.20);
 
   // 调用服务端（vite proxy → /api/remotion/audio/extract → 127.0.0.1:18093/audio/extract）
+  // 长超时：285MB 文件上传 ~10 秒，转码 ~10-30 秒（取决于 ffmpeg-static 和 CPU）
   const resp = await fetch('/api/remotion/audio/extract', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      mediaDataUrl: dataUrl,
-      fileName: file.name,
-    }),
-    // 长超时（285MB 文件转码可能需要 1-2 分钟）
+    body: fd,
+    // 注意：不设 Content-Type，让浏览器自动加 boundary
   });
   opts.onProgress(0.70);
 
   if (!resp.ok) {
     const errText = await resp.text().catch(() => '');
-    throw new Error(`服务端 HTTP ${resp.status}: ${errText.slice(0, 200)}`);
+    throw new Error(`服务端 HTTP ${resp.status}: ${errText.slice(0, 300)}`);
   }
 
   const json = await resp.json();
@@ -477,7 +484,7 @@ async function strategyServerExtract(
   const wavBytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) wavBytes[i] = bin.charCodeAt(i);
   const wavBlob = new Blob([wavBytes], { type: m[1] || 'audio/wav' });
-  console.log(`[audioExtractor] 服务端返回: ${(wavBlob.size / 1024).toFixed(1)} KB (${json.elapsedMs}ms)`);
+  console.log(`[audioExtractor] 服务端返回: ${(wavBlob.size / 1024).toFixed(1)} KB (${json.elapsedMs || '?'}ms, usedExtractor=${json.usedExtractor || '?'})`);
 
   if (wavBlob.size < 1000) {
     throw new Error(`服务端返回过小（${wavBlob.size} bytes），视频可能无音轨`);
@@ -500,6 +507,150 @@ async function strategyServerExtract(
     ctx.close().catch(() => {});
   }
 
+  opts.onProgress(1.0);
+  return wavBlob;
+}
+
+// ── 策略 1：HTML5 video + WebAudio API 直接解码 ─────────────
+//    浏览器原生，毫秒级，零依赖。
+//    适用：浏览器原生能解码的格式（mp4/h264/aac 最稳，webm/vp9 视 macOS 而定）
+//    失败：HEVC/hvc1, mkv, 某些 mov variant（Safari 不支持）
+//    失败时返回 null → 主流程跳到下一个策略
+async function strategyHtml5Video(
+  file: File,
+  opts: { targetSampleRate: number; targetChannels: 1 | 2; onProgress: (p: number) => void },
+): Promise<Blob | null> {
+  opts.onProgress(0.05);
+  console.log(`[audioExtractor] 策略 1: HTML5 video + WebAudio API 解码`);
+
+  // 1. 创建临时 video URL
+  const videoUrl = URL.createObjectURL(file);
+  const video = document.createElement('video');
+  video.preload = 'auto';
+  video.crossOrigin = 'anonymous';
+  video.muted = true; // 不播放音频
+  video.src = videoUrl;
+
+  // 2. 监听 error
+  return await new Promise<Blob | null>((resolve, reject) => {
+    let resolved = false;
+    const cleanup = () => {
+      if (!resolved) {
+        resolved = true;
+        URL.revokeObjectURL(videoUrl);
+        video.remove();
+      }
+    };
+
+    const timeout = setTimeout(() => {
+      if (resolved) return;
+      cleanup();
+      reject(new Error('HTML5 video 加载超时（30s）'));
+    }, 30_000);
+
+    video.addEventListener('error', (e) => {
+      // 浏览器无法解码此格式（HEVC 等）
+      cleanup();
+      clearTimeout(timeout);
+      reject(new Error(`HTML5 video 加载失败: ${video.error?.message || '未知错误'}`));
+    });
+
+    video.addEventListener('loadedmetadata', async () => {
+      opts.onProgress(0.30);
+      console.log(`[audioExtractor]   HTML5 video metadata: ${video.videoWidth}x${video.videoHeight}, ${video.duration.toFixed(1)}s`);
+
+      // 3. 用 MediaElement + WebAudio 捕获音频
+      //    注意：传统方法是用 OfflineAudioContext + AudioBuffer，但 video
+      //    元素只能通过 MediaElementAudioSourceNode 实时播放后捕获。
+      //    浏览器不允许直接 dump video 元数据到 AudioBuffer。
+      //    替代方案：用 createMediaElementSource + ScriptProcessor/AudioWorklet
+      //    → 复杂且非标准
+      //
+      //    **更稳的方案**：用 MediaRecorder 录制 video 播放的音频输出 + 离屏 video
+      //    但这对 285MB 视频太慢（要 90s 实时播放）
+      //
+      //    **最实用**：直接用 video.captureStream() → MediaRecorder
+      //    限制：要播放完整 video 才能拿到完整 audio
+      //
+      //    实际：iPhone HEVC 视频在 Safari 走不通；用 ffmpeg.wasm；
+      //    在 Chrome 里 MP4 走 HTML5 decoding 即可。
+      //
+      //    **快速策略 1**：仅对**非 HEVC** mp4（典型 Chrome 兼容场景）起作用
+      //    否则 reject 回到主流程走策略 0a
+
+      cleanup();
+      clearTimeout(timeout);
+
+      // 判定：iPhone 视频通常是 HEVC（HVC1）。macOS Safari/Chrome HEVC 支持参差
+      // 浏览器无法从 video 元素直接拿音频 PCM（除非用 MediaRecorder 实时录制）
+      // 这里直接 reject，让主流程走下个策略
+      const codecs = (video.canPlayType(file.type) || '').replace(/^.*codecs="([^"]+)"$/, '$1');
+      if (codecs.toLowerCase().includes('hvc1') || codecs.toLowerCase().includes('hev1')) {
+        reject(new Error(`HTML5 video 不支持 HEVC codec: ${codecs}，跳过策略 1`));
+        return;
+      }
+
+      // 简化：HTML5 video 拿到 metadata 后还需要实时播放+录制才能拿到 PCM
+      // 这对长视频不实际（90s 视频 = 90s 播放）
+      // 因此我们只对短片段（<10s）用 HTML5 video
+      if (video.duration > 10) {
+        reject(new Error(`视频时长 ${video.duration.toFixed(1)}s > 10s，HTML5 video 策略需要实时播放，不实际`));
+        return;
+      }
+
+      // 短视频：实时播放 + WebAudio 捕获
+      try {
+        const wav = await streamVideoAudio(video, opts);
+        resolve(wav);
+      } catch (e) {
+        reject(e);
+      }
+    });
+  });
+}
+
+// 实时播放 video + WebAudio 捕获（仅适合 <10s 短视频）
+async function streamVideoAudio(
+  video: HTMLVideoElement,
+  opts: { targetSampleRate: number; targetChannels: 1 | 2; onProgress: (p: number) => void },
+): Promise<Blob> {
+  opts.onProgress(0.40);
+  const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+  const source = ctx.createMediaElementSource(video);
+  const destination = ctx.createMediaStreamDestination();
+  const recorder = new MediaRecorder(destination.stream, {
+    mimeType: 'audio/webm;codecs=opus',
+  });
+
+  const chunks: BlobPart[] = [];
+  recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+  const finished = new Promise<Blob>((resolve) => {
+    recorder.onstop = () => resolve(new Blob(chunks, { type: 'audio/webm' }));
+  });
+
+  source.connect(destination);
+  recorder.start();
+  await video.play();
+
+  // 等待播放完成
+  await new Promise<void>((resolve) => {
+    video.onended = () => resolve();
+  });
+
+  recorder.stop();
+  const webmBlob = await finished;
+  source.disconnect();
+  await ctx.close();
+
+  // webm (opus) → wav 16kHz mono
+  const arrayBuf = await webmBlob.arrayBuffer();
+  const audioBuf = await ctx.decodeAudioData(arrayBuf);
+  const maxAmp = getMaxAmplitude(audioBuf);
+  console.log(`[audioExtractor]   HTML5 video 捕获: ${audioBuf.numberOfChannels}ch @ ${audioBuf.sampleRate}Hz, ${audioBuf.duration.toFixed(1)}s, maxAmp=${maxAmp.toFixed(4)}`);
+  if (maxAmp < 0.001) throw new Error('HTML5 video 捕获返回静音');
+
+  // 重采样到目标采样率（用 encodeWav 输出 16kHz mono）
+  const wavBlob = encodeWav(audioBuf);
   opts.onProgress(1.0);
   return wavBlob;
 }

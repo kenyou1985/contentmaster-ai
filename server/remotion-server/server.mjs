@@ -25,6 +25,7 @@ import { fileURLToPath } from 'url';
 import { promises as fs } from 'fs';
 import { Readable } from 'stream';
 import os from 'os';
+import multer from 'multer';
 import { createRequire } from 'module';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -714,20 +715,47 @@ app.post('/upload-media', async (req, res) => {
   }
 });
 
-// ── 服务端音轨提取（ffmpeg-static） ─────────────────────
+// ── 服务端音轨提取（Remotion 官方 extractAudio） ─────────────────────
 // 兜底方案：前端浏览器无法解码 iPhone HEVC 视频时，
 // 由服务端用完整 ffmpeg 提取音轨为 WAV（16kHz mono PCM）。
+//
+// 支持两种请求格式（前端优先用 multipart）：
+//   A. multipart/form-data: file=<File>, fileName=<string>, mime=<string>
+//   B. application/json:    { mediaDataUrl: "data:..." , fileName: "..." }  // 兼容旧版
 app.post('/audio/extract', async (req, res) => {
   const startedAt = Date.now();
   try {
-    const { mediaDataUrl, fileName } = req.body || {};
-    if (typeof mediaDataUrl !== 'string' || !mediaDataUrl.startsWith('data:')) {
-      return res.status(400).json({ success: false, error: 'mediaDataUrl 必须是 data URL' });
+    let bytes;
+    let fileName = 'input.mp4';
+    let mime = 'video/mp4';
+
+    // 兼容 multipart（来自 FormData 上传）
+    const contentType = req.headers['content-type'] || '';
+    if (contentType.includes('multipart/form-data')) {
+      const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1024 * 1024 * 1024 } }).single('file');
+      await new Promise((resolve, reject) => {
+        upload(req, res, (err) => {
+          if (err) reject(err); else resolve();
+        });
+      });
+      const f = req.file;
+      if (!f) return res.status(400).json({ success: false, error: 'multipart 缺少 file 字段' });
+      bytes = f.buffer;
+      fileName = f.originalname || fileName;
+      mime = f.mimetype || mime;
+    } else {
+      // JSON 兼容
+      const { mediaDataUrl } = req.body || {};
+      if (typeof mediaDataUrl !== 'string' || !mediaDataUrl.startsWith('data:')) {
+        return res.status(400).json({ success: false, error: '缺少 file（multipart）或 mediaDataUrl（JSON）' });
+      }
+      const m = mediaDataUrl.match(/^data:([^;]+);base64,(.*)$/);
+      if (!m) return res.status(400).json({ success: false, error: 'data URL 格式错误' });
+      bytes = Buffer.from(m[2], 'base64');
+      mime = m[1];
+      fileName = req.body.fileName || fileName;
     }
-    const m = mediaDataUrl.match(/^data:([^;]+);base64,(.*)$/);
-    if (!m) return res.status(400).json({ success: false, error: 'data URL 格式错误' });
-    const bytes = Buffer.from(m[2], 'base64');
-    console.log(`[remotion] /audio/extract 收到 ${(bytes.length / 1024 / 1024).toFixed(2)} MB (${m[1]})`);
+    console.log(`[remotion] /audio/extract 收到 ${(bytes.length / 1024 / 1024).toFixed(2)} MB (${mime}, ${fileName})`);
 
     // 优先：Remotion 官方 @remotion/renderer.extractAudio()
     //   用包内 @remotion/compositor-darwin-arm64/ffmpeg（macOS ARM64 专用编译版，
