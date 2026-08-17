@@ -373,6 +373,12 @@ interface CoverImageEntry {
   schemeId?: 'A' | 'B' | 'C' | 'D' | 'E' | 'F';
   /** v1.4：方案中文名 */
   schemeName?: string;
+  /** 监控用：生成时的封面比例 ID（'16:9' | '9:16' | ...） */
+  ratio?: string;
+  /** 监控用：base64 解码头读出的实际像素宽（null = 远程 URL） */
+  actualWidth?: number | null;
+  /** 监控用：base64 解码头读出的实际像素高（null = 远程 URL） */
+  actualHeight?: number | null;
 }
 
 interface LogEntry {
@@ -1066,6 +1072,16 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
       });
 
       const size = `${currentRatio.w}x${currentRatio.h}`;
+      // ── 监控点 #1：coverRatio 状态溯源 ──
+      console.log('[封面比例监控]', {
+        coverRatio,                                              // React state 值
+        currentRatioId: currentRatio.id,                          // 查表匹配结果
+        currentRatioW: currentRatio.w,                            // 宽度
+        currentRatioH: currentRatio.h,                            // 高度
+        size,                                                     // "WxH" 字符串
+        promptAspectRatio: currentRatio.id,                       // prompt 里写的比例指令
+        aspectRatioClass: COVER_RATIO_CLASSES[coverRatio] ?? 'aspect-video', // UI 容器类名
+      });
       appendLog(
         'IMG',
         `▶ 生成封面 方案${optionIdx + 1} [${option.styleTag}] · ${layout.name}（${schemeKey}）：${size}（${currentRatio.label}）`
@@ -1107,6 +1123,32 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
         const url = r.url;
         if (!url) throw new Error('生图返回无 URL');
 
+        // ── 监控点 #2：拿到图片后的实际尺寸（base64 解码头获取真实尺寸）──
+        let actualW: number | null = null;
+        let actualH: number | null = null;
+        if (url.startsWith('data:image/png;base64,')) {
+          try {
+            const b64 = url.slice('data:image/png;base64,'.length);
+            const buf = Buffer.from(b64, 'base64');
+            // PNG IHDR at offset 16: width (4 bytes BE) + height (4 bytes BE)
+            if (buf.length >= 24) {
+              actualW = buf.readUInt32BE(16);
+              actualH = buf.readUInt32BE(20);
+            }
+          } catch (e) { /* ignore */ }
+        }
+        console.log('[封面比例监控] API 返回图片', {
+          urlPrefix: url.slice(0, 30),
+          isDataUrl: url.startsWith('data:'),
+          actualWidth: actualW,
+          actualHeight: actualH,
+          actualRatio: actualW && actualH ? `${actualW}:${actualH}` : null,
+          requestedSize: size,
+          requestedRatio: `${currentRatio.w}:${currentRatio.h}`,
+          coverRatio,
+          ratioMatch: actualW === currentRatio.w && actualH === currentRatio.h,
+        });
+
         const entry: CoverImageEntry = {
           index: optionIdx,
           url,
@@ -1115,6 +1157,9 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
           styleTag: option.styleTag,
           schemeId: option.schemeId,
           schemeName: option.schemeName,
+          ratio: coverRatio,
+          actualWidth: actualW,
+          actualHeight: actualH,
         };
         setGeneratedCovers((prev) => {
           const next = new Map(prev);
@@ -1728,6 +1773,12 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                 <button
                   key={r.id}
                   onClick={() => {
+                    // ── 监控点 #0：用户点击比例按钮 ──
+                    console.log('[封面比例监控] 用户切换比例', {
+                      from: coverRatio,
+                      to: r.id,
+                      willTriggerReset: true, // setGeneratedCovers(new Map()) 会清空旧的
+                    });
                     setCoverRatio(r.id);
                     // v1.10：封面比例联动视频模板分辨率
                     const ratioToRes: Record<string, string> = {
@@ -1952,6 +2003,9 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                             className={`relative border-2 rounded-lg overflow-hidden bg-slate-950 ${
                               isFinal ? 'border-emerald-400' : 'border-slate-600'
                             } ${COVER_RATIO_CLASSES[coverRatio] ?? 'aspect-video'}`}
+                            data-cover-ratio={coverRatio}
+                            data-generated-ratio={generatedCovers.get(idx)?.ratio || 'unknown'}
+                            title={`coverRatio=${coverRatio} | generated=${generatedCovers.get(idx)?.ratio || '?'}`}
                           >
                             {hasCover && (
                               <img
