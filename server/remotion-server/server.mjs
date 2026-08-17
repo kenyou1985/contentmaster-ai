@@ -729,6 +729,12 @@ app.post('/audio/extract', async (req, res) => {
     const bytes = Buffer.from(m[2], 'base64');
     console.log(`[remotion] /audio/extract 收到 ${(bytes.length / 1024 / 1024).toFixed(2)} MB (${m[1]})`);
 
+    // 优先：Remotion 官方 @remotion/renderer.extractAudio()
+    //   用包内 @remotion/compositor-darwin-arm64/ffmpeg（macOS ARM64 专用编译版，
+    //   同包 spawn，dylib 解析正常，无需 DYLD_LIBRARY_PATH）
+    let ffmpegOk = false;
+    let ffmpegVersion = null;
+    let usedExtractor = 'unknown';
     const tempDir = join('/tmp', `audio_extract_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
     mkdirSync(tempDir, { recursive: true });
     const safeName = (fileName || 'input.mp4').replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -736,72 +742,69 @@ app.post('/audio/extract', async (req, res) => {
     const outPath = join(tempDir, safeName.replace(/\.[^.]+$/, '') + '.wav');
     writeFileSync(inPath, bytes);
 
-    // 用 ffmpeg-static（包内已带二进制，无需 PATH）
-    let ffmpegBin;
+    // 路径 1：Remotion 官方 extractAudio（自动找包内 ffmpeg，零依赖）
     try {
-      ffmpegBin = require('ffmpeg-static');
-      // 验证 binary 可执行（macOS ARM64 上 ffmpeg-static 可能被 Gatekeeper SIGKILL）
-      try {
-        execSync(`"${ffmpegBin}" -version`, { timeout: 3000, stdio: 'pipe' });
-      } catch (e) {
-        if (e.signal === 'SIGKILL' || e.status === 137) {
-          console.warn(`[remotion] ffmpeg-static 被 macOS Gatekeeper 拦截 (SIGKILL)，尝试其他 binary`);
-          ffmpegBin = null;
-        } else {
-          throw e;
-        }
-      }
-    } catch {
-      ffmpegBin = null;
-    }
+      const { extractAudio: remotionExtractAudio } = require('@remotion/renderer');
+      console.log(`[remotion] 使用 @remotion/renderer.extractAudio() 提取音轨`);
+      await remotionExtractAudio({
+        videoSource: inPath,
+        audioOutput: outPath,
+        logLevel: 'error',
+      });
+      usedExtractor = 'remotion.extractAudio';
+      ffmpegOk = true;
+      ffmpegVersion = '@remotion/compositor-darwin-arm64 (bundle)';
+    } catch (e1) {
+      console.warn(`[remotion] @remotion/renderer.extractAudio 失败: ${e1.message?.slice(0, 300)}`);
+      // 路径 2：fallback 到用户机器上的 ffmpeg binary
+      const candidates = [];
+      try { candidates.push(require('ffmpeg-static')); } catch {}
+      candidates.push('/Applications/小V猫.app/Contents/Resources/app/ffmpeg');
+      candidates.push('/Applications/易剪媒.app/Contents/Resources/extraResources/ffmpeg/mac/ffmpeg');
+      candidates.push('/Applications/剪映专业版5.9.app/Contents/Resources/ffmpeg');
+      candidates.push('/opt/homebrew/bin/ffmpeg');
+      candidates.push('/usr/local/bin/ffmpeg');
 
-    if (!ffmpegBin) {
-      // 兜底：用户机器上常见的 ffmpeg binary 位置
-      const fallbacks = [
-        '/Applications/小V猫.app/Contents/Resources/app/ffmpeg',
-        '/Applications/易剪媒.app/Contents/Resources/extraResources/ffmpeg/mac/ffmpeg',
-        '/Applications/剪映专业版5.9.app/Contents/Resources/ffmpeg',
-      ];
-      for (const p of fallbacks) {
+      for (const p of candidates) {
+        if (!p) continue;
+        if (!existsSync(p)) continue;
         try {
-          if (existsSync(p)) {
-            execSync(`"${p}" -version`, { timeout: 3000, stdio: 'pipe' });
-            ffmpegBin = p;
-            console.log(`[remotion] 用 fallback ffmpeg: ${p}`);
-            break;
-          }
-        } catch {}
+          // 验证可执行
+          execSync(`"${p}" -version`, { timeout: 3000, stdio: 'pipe' });
+        } catch (verifyErr) {
+          console.warn(`[remotion] ffmpeg ${p} 不可执行: ${verifyErr.message?.slice(0, 100)}`);
+          continue;
+        }
+        console.log(`[remotion] 用 fallback ffmpeg: ${p}`);
+        ffmpegVersion = execSync(`"${p}" -version 2>&1 | head -1`).toString().trim();
+        await new Promise((resolve, reject) => {
+          execFile(p, [
+            '-i', inPath,
+            '-vn',
+            '-acodec', 'pcm_s16le',
+            '-ac', '1',
+            '-ar', '16000',
+            '-f', 'wav',
+            '-y',
+            outPath,
+          ], { timeout: 120_000 }, (err, _stdout, stderr) => {
+            if (err) reject(new Error(stderr?.toString()?.slice(0, 300) || err.message));
+            else resolve();
+          });
+        });
+        usedExtractor = `shell-ffmpeg(${p})`;
+        ffmpegOk = true;
+        break;
       }
     }
 
-    if (!ffmpegBin) {
+    if (!ffmpegOk) {
       rmSync(tempDir, { recursive: true, force: true });
       return res.status(503).json({
         success: false,
-        error: '服务端未找到可执行的 ffmpeg binary（请安装 ffmpeg-static 或 brew install ffmpeg）'
+        error: '服务端所有 ffmpeg 路径都失败（@remotion/renderer.extractAudio + 所有 fallback binary）',
       });
     }
-
-    // ffmpeg -i input.mp4 -vn -acodec pcm_s16le -ac 1 -ar 16000 -f wav -y output.wav
-    await new Promise((resolve, reject) => {
-      execFile(ffmpegBin, [
-        '-i', inPath,
-        '-vn',
-        '-acodec', 'pcm_s16le',
-        '-ac', '1',
-        '-ar', '16000',
-        '-f', 'wav',
-        '-y',
-        outPath,
-      ], { timeout: 120_000 }, (err, _stdout, stderr) => {
-        if (err) {
-          console.error('[remotion] ffmpeg 失败:', stderr?.toString().slice(0, 500));
-          reject(new Error(stderr?.toString() || err.message));
-        } else {
-          resolve();
-        }
-      });
-    });
 
     const wavBytes = readFileSync(outPath);
     const wavSizeKB = (wavBytes.length / 1024).toFixed(1);
