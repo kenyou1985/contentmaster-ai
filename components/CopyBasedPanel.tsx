@@ -134,12 +134,13 @@ function pickCharactersMentionedInTitles(
   return mentioned;
 }
 
-// ── 封面比例 ───────────────────────────
+// ── 封面比例（与 CoverDesign.tsx 的 COVER_ASPECT_OPTIONS 完全对齐） ───
 const COVER_RATIOS = [
-  { id: '16:9', label: '16:9 横屏', w: 1280, h: 720 },
-  { id: '9:16', label: '9:16 竖屏', w: 720, h: 1280 },
-  { id: '4:3', label: '4:3 标屏', w: 1280, h: 960 },
-  { id: '3:4', label: '3:4 海报', w: 960, h: 1280 },
+  { id: '16:9', label: '16:9 横屏', w: 1920, h: 1080 },
+  { id: '9:16', label: '9:16 竖屏', w: 1080, h: 1920 },
+  { id: '1:1', label: '1:1 方图', w: 1080, h: 1080 },
+  { id: '4:3', label: '4:3 标屏', w: 1440, h: 1080 },
+  { id: '3:4', label: '3:4 海报', w: 1080, h: 1440 },
 ] as const;
 
 type CoverRatioId = (typeof COVER_RATIOS)[number]['id'];
@@ -1043,7 +1044,7 @@ ${
 ===
 
 === ⭐ MANDATORY · High-CTR Thumbnail Enforcement（与封面模版赛道 1:1 对齐）===
-YouTube thumbnail, ${currentRatio.label} aspect ratio, bold readable main title, high CTR composition.
+YouTube thumbnail, ${currentRatio.id} aspect ratio, bold readable main title, high CTR composition.
 Mandatory: all Chinese on-image text must be in Traditional Chinese script only (繁體中文); no simplified Chinese forms; no English or other languages.
 Mandatory: the title "${option.title}" MUST appear on the image verbatim, split into 2-4 color blocks using {white #FFFFFF, red #FF1744, yellow #FFD600, blue #00D4FF}; each block bold weight 900, 6-10px black outline, slight tilt (-3° to +5°), semi-transparent black plate behind.
 Mandatory: include at least one high-CTR visual accent — bright red arrow, yellow highlight ring, or red-yellow warning strip.===`;
