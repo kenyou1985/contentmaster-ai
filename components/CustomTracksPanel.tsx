@@ -309,8 +309,14 @@ export const CustomTracksPanel: React.FC<CustomTracksPanelProps> = ({
     if (newItems.length === 0) return;
     // 使用函数式更新，避免 handleAddMedia 内部闭包捕获旧 state
     // （批量上传时多个 Promise.all 并发完成，若用 onChange({...state,...}) 会读到同一份旧 state）
-    onChange((prev) => ({ ...prev, videoItems: [...prev.videoItems, ...newItems] }));
-    log('TRACK', `✓ 添加 ${newItems.length} 个素材（图片/视频）到视频轨道`);
+    const itemsToAdd = newItems;
+    onChange((prev) => ({ ...prev, videoItems: [...prev.videoItems, ...itemsToAdd] }));
+    if (itemsToAdd.length === 1) {
+      log('TRACK', `✓ 添加 1 个素材（图片/视频）到视频轨道`);
+      log('INFO', `💡 多选提示：按住 ⌘ (Cmd) 键可同时选多个文件；或直接拖拽多个文件到上传区`);
+    } else {
+      log('TRACK', `✓ 批量添加 ${itemsToAdd.length} 个素材（图片/视频）到视频轨道`);
+    }
   }, [onChange, log]);
 
   // ── 删除素材 ─────────────────────────────────────────
@@ -351,7 +357,19 @@ export const CustomTracksPanel: React.FC<CustomTracksPanelProps> = ({
     }));
   }, [onChange]);
 
-  // ── 上传音频 ─────────────────────────────────────────
+  // ── 把 Blob URL 转 data: URL（用于上传到 /asr/transcribe）────────
+function blobUrlToDataUrl(blobUrl: string): Promise<string> {
+  return fetch(blobUrl).then((r) => r.blob()).then((blob) => {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(String(reader.result));
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  });
+}
+
+// ── 上传音频 ─────────────────────────────────────────
   const audioInputRef = useRef<HTMLInputElement>(null);
   const [asrLoading, setAsrLoading] = useState<boolean>(false);
   const handleAddAudio = useCallback(async (files: FileList | null) => {
@@ -384,11 +402,13 @@ export const CustomTracksPanel: React.FC<CustomTracksPanelProps> = ({
       setAsrLoading(true);
       log('ASR', `▸ 开始 Whisper ASR 识别（音频 ${durationSec.toFixed(1)}s）…`);
       try {
+        // blob: URL → data: URL（服务端 fetch 不到 blob URL）
+        const dataUrl = await blobUrlToDataUrl(url);
         const baseUrl = (window as any).__REMOTION_SERVER_URL__ || `${window.location.protocol}//${window.location.hostname}:18093`;
         const resp = await fetch(`${baseUrl}/asr/transcribe`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ audioUrl: url, language: 'zh' }),
+          body: JSON.stringify({ audioUrl: dataUrl, language: 'zh' }),
         });
         const data = await resp.json();
         if (data.success && data.cues?.length > 0) {
@@ -746,11 +766,12 @@ export const CustomTracksPanel: React.FC<CustomTracksPanelProps> = ({
                 setAsrLoading(true);
                 log('ASR', `▸ 重新 Whisper ASR 识别…`);
                 try {
+                  const dataUrl = await blobUrlToDataUrl(state.audioUrl);
                   const baseUrl = (window as any).__REMOTION_SERVER_URL__ || `${window.location.protocol}//${window.location.hostname}:18093`;
                   const resp = await fetch(`${baseUrl}/asr/transcribe`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ audioUrl: state.audioUrl, language: 'zh' }),
+                    body: JSON.stringify({ audioUrl: dataUrl, language: 'zh' }),
                   });
                   const data = await resp.json();
                   if (data.success && data.cues?.length > 0) {
