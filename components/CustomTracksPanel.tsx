@@ -23,7 +23,17 @@ import {
   FileText,
   Film,
   Loader2,
+  Music,
 } from 'lucide-react';
+import {
+  traditionalToSimplified,
+  convertCuesTexts,
+  looksLikeTraditional,
+} from '../services/textConverter';
+import {
+  isVideoFile,
+  extractAudioFromVideo,
+} from '../services/audioExtractor';
 
 // ── 单个素材（图片或视频）────────────────────────────────
 export interface CustomMediaTrackItem {
@@ -267,23 +277,26 @@ export const CustomTracksPanel: React.FC<CustomTracksPanelProps> = ({
 
   // ── 添加图片 / 视频 ─────────────────────────────────
   const mediaInputRef = useRef<HTMLInputElement>(null);
-  const handleAddMedia = useCallback(async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
+  const handleAddMedia = useCallback(async (filesIn: FileList | File[] | null) => {
+    // 把 FileList 立即转成普通数组（避免后续异步处理中 FileList 被 GC / 变 live 状态）
+    const files: File[] = Array.from(filesIn ?? []);
+    if (files.length === 0) return;
+    log('INFO', `📥 handleAddMedia 收到 ${files.length} 个文件：${files.map((f) => f.name).join(', ')}`);
     const newItems: CustomMediaTrackItem[] = [];
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
+    // 用 Promise.all 并行探测尺寸（图片快得多）；视频仍串行避免抢浏览器 video decoder
+    const imageProbes = files.map(async (file, i) => {
       const isVideo = file.type.startsWith('video/');
       const isImage = file.type.startsWith('image/');
       if (!isVideo && !isImage) {
         log('WARN', `跳过不支持的文件: ${file.name} (${file.type})`);
-        continue;
+        return null;
       }
       const url = URL.createObjectURL(file);
       if (isVideo) {
         const meta = await probeVideoDuration(url);
-        newItems.push({
+        return {
           id: `m_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 8)}`,
-          kind: 'video',
+          kind: 'video' as const,
           url,
           name: file.name,
           mime: file.type,
@@ -291,29 +304,33 @@ export const CustomTracksPanel: React.FC<CustomTracksPanelProps> = ({
           durationSec: meta.durationSec,
           width: meta.width,
           height: meta.height,
-        });
-      } else {
-        const dim = await probeImageDimensions(url);
-        newItems.push({
-          id: `m_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 8)}`,
-          kind: 'image',
-          url,
-          name: file.name,
-          mime: file.type,
-          size: file.size,
-          width: dim.width,
-          height: dim.height,
-        });
+        };
       }
+      const dim = await probeImageDimensions(url);
+      return {
+        id: `m_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 8)}`,
+        kind: 'image' as const,
+        url,
+        name: file.name,
+        mime: file.type,
+        size: file.size,
+        width: dim.width,
+        height: dim.height,
+      };
+    });
+    const results = await Promise.all(imageProbes);
+    for (const r of results) if (r) newItems.push(r);
+    if (newItems.length === 0) {
+      log('ERROR', `所有 ${files.length} 个文件均未通过校验（不是图片/视频？）`);
+      return;
     }
-    if (newItems.length === 0) return;
+    log('INFO', `📊 探测完成：${files.length} 个输入 → ${newItems.length} 个有效素材`);
     // 使用函数式更新，避免 handleAddMedia 内部闭包捕获旧 state
     // （批量上传时多个 Promise.all 并发完成，若用 onChange({...state,...}) 会读到同一份旧 state）
     const itemsToAdd = newItems;
     onChange((prev) => ({ ...prev, videoItems: [...prev.videoItems, ...itemsToAdd] }));
     if (itemsToAdd.length === 1) {
       log('TRACK', `✓ 添加 1 个素材（图片/视频）到视频轨道`);
-      log('INFO', `💡 多选提示：按住 ⌘ (Cmd) 键可同时选多个文件；或直接拖拽多个文件到上传区`);
     } else {
       log('TRACK', `✓ 批量添加 ${itemsToAdd.length} 个素材（图片/视频）到视频轨道`);
     }
@@ -369,34 +386,67 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
   });
 }
 
-// ── 上传音频 ─────────────────────────────────────────
+// ── 上传音频 / 视频（支持视频文件自动提取音轨）───
   const audioInputRef = useRef<HTMLInputElement>(null);
   const [asrLoading, setAsrLoading] = useState<boolean>(false);
   const handleAddAudio = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    // 多选时取第一个有效的音频文件（其余日志提示）
-    const audios = Array.from(files).filter((f) => f.type.startsWith('audio/'));
-    if (audios.length === 0) {
-      log('WARN', `音频格式不支持: ${Array.from(files).map((f) => f.name).join(', ')}`);
+    // 多选时取第一个有效的文件（支持音频 + 视频）；其余日志提示
+    const allFiles = Array.from(files);
+    const validFiles = allFiles.filter((f) =>
+      f.type.startsWith('audio/') || isVideoFile(f)
+    );
+    if (validFiles.length === 0) {
+      log('WARN', `音频/视频格式不支持: ${allFiles.map((f) => `${f.name}(${f.type || '?'})`).join(', ')}`);
       return;
     }
-    if (audios.length > 1) {
-      log('INFO', `检测到 ${audios.length} 个音频文件，使用第一个: ${audios[0].name}`);
+    if (validFiles.length > 1) {
+      log('INFO', `检测到 ${validFiles.length} 个文件，使用第一个: ${validFiles[0].name}`);
     }
-    const file = audios[0];
-    const url = URL.createObjectURL(file);
-    const durationSec = await probeAudioDuration(url);
+    const file = validFiles[0];
+    const isVideo = isVideoFile(file);
+    log('INFO', `📥 音频轨道收到 ${isVideo ? '视频' : '音频'}：${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
+
+    let url: string;
+    let durationSec: number;
+
+    if (isVideo) {
+      // 视频文件：提取音轨为 WAV（16kHz mono PCM，Whisper 推荐格式）
+      log('AUDIO', `▸ 检测到视频文件，正在提取音轨（WAV 16kHz mono）…`);
+      let wavBlob: Blob;
+      try {
+        wavBlob = await extractAudioFromVideo(file, {
+          targetSampleRate: 16000,
+          targetChannels: 1,
+          onProgress: (p) => {
+            if (p >= 0.25 && p < 0.3) log('AUDIO', `  音轨提取进度：${Math.round(p * 100)}%`);
+          },
+        });
+        log('AUDIO', `✓ 音轨提取完成：${(wavBlob.size / 1024).toFixed(1)} KB WAV`);
+      } catch (e: any) {
+        log('ERROR', `视频音轨提取失败: ${e.message}`);
+        return;
+      }
+      url = URL.createObjectURL(wavBlob);
+      durationSec = await probeAudioDuration(url);
+    } else {
+      url = URL.createObjectURL(file);
+      durationSec = await probeAudioDuration(url);
+    }
+
     const hasCustomSubtitle = state.subtitleCues.length > 0 && state.subtitleFileName;
+    const displayName = isVideo ? `${file.name}（已提取音轨）` : file.name;
+
     onChange((prev) => ({
       ...prev,
       audioUrl: url,
-      audioName: file.name,
+      audioName: displayName,
       audioDurationSec: durationSec,
       // 若无用户上传字幕文件，自动触发 Whisper ASR
       subtitleCues: hasCustomSubtitle ? prev.subtitleCues : [],
       subtitleFileName: hasCustomSubtitle ? prev.subtitleFileName : undefined,
     }));
-    log('TRACK', `✓ 音频轨道：${file.name} · ${durationSec.toFixed(1)}s · ${(file.size / 1024).toFixed(1)} KB`);
+    log('TRACK', `✓ 音频轨道：${displayName} · ${durationSec.toFixed(1)}s · ${(file.size / 1024).toFixed(1)} KB`);
     // 自动触发 Whisper ASR（无自定义字幕文件时）
     if (!hasCustomSubtitle && durationSec > 0.5) {
       setAsrLoading(true);
@@ -412,13 +462,40 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
         });
         const data = await resp.json();
         if (data.success && data.cues?.length > 0) {
-          onChange((prev) => ({
-            ...prev,
-            subtitleCues: data.cues,
-            subtitleFileName: undefined,
-            subtitleEnabled: true,
-          }));
-          log('ASR', `✓ Whisper 识别完成：${data.cues.length} 条字幕（${data.durationSec?.toFixed(1)}s）`);
+          // Whisper 输出默认为繁体中文 → 自动转简体
+          const cuesText = data.cues.map((c: any) => c.text).join(' ');
+          if (looksLikeTraditional(cuesText)) {
+            log('ASR', `▸ 检测到繁体字幕，正在转换为简体…`);
+            try {
+              const convertedCues = await convertCuesTexts(data.cues, 't2s');
+              onChange((prev) => ({
+                ...prev,
+                subtitleCues: convertedCues,
+                subtitleFileName: undefined,
+                subtitleEnabled: true,
+              }));
+              log('ASR', `✓ Whisper 识别完成：${convertedCues.length} 条字幕（${data.durationSec?.toFixed(1)}s）· 已转简体`);
+            } catch (convErr: any) {
+              // 转换失败保留原文
+              log('WARN', `繁简转换失败: ${convErr.message}，保留原始字幕`);
+              onChange((prev) => ({
+                ...prev,
+                subtitleCues: data.cues,
+                subtitleFileName: undefined,
+                subtitleEnabled: true,
+              }));
+              log('ASR', `✓ Whisper 识别完成：${data.cues.length} 条字幕（${data.durationSec?.toFixed(1)}s）`);
+            }
+          } else {
+            // 已经是简体，直接写入
+            onChange((prev) => ({
+              ...prev,
+              subtitleCues: data.cues,
+              subtitleFileName: undefined,
+              subtitleEnabled: true,
+            }));
+            log('ASR', `✓ Whisper 识别完成：${data.cues.length} 条字幕（${data.durationSec?.toFixed(1)}s）`);
+          }
         } else {
           log('ASR', `⚠ Whisper 识别失败: ${data.error || '未知错误'}`);
         }
@@ -450,13 +527,25 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
       const text = await file.text();
       const cues = parseSubtitleFile(file.name, text);
       if (cues.length === 0) throw new Error('字幕文件解析后为 0 条，请检查格式');
+      // 检测字幕是否包含繁体字，若是则自动转简体
+      const cuesText = cues.map((c) => c.text).join(' ');
+      let finalCues = cues;
+      if (looksLikeTraditional(cuesText)) {
+        log('TRACK', `▸ 检测到繁体字幕，正在转换为简体…`);
+        try {
+          finalCues = await convertCuesTexts(cues, 't2s');
+          log('TRACK', `✓ 繁体→简体转换完成`);
+        } catch (e: any) {
+          log('WARN', `繁简转换失败: ${e.message}，保留原始字幕`);
+        }
+      }
       onChange((prev) => ({
         ...prev,
-        subtitleCues: cues,
+        subtitleCues: finalCues,
         subtitleFileName: file.name,
         subtitleEnabled: true,
       }));
-      log('TRACK', `✓ 字幕：${file.name} · ${cues.length} 条 cue`);
+      log('TRACK', `✓ 字幕：${file.name} · ${finalCues.length} 条 cue`);
     } catch (e: any) {
       log('ERROR', `字幕解析失败: ${e.message}`);
     }
@@ -697,14 +786,14 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
             className="border-2 border-dashed border-slate-600 rounded-lg p-4 text-center text-slate-500 hover:border-amber-500 hover:text-amber-400 transition-colors cursor-pointer"
           >
             <Upload size={20} className="mx-auto mb-1 opacity-50" />
-            <div className="text-xs">点击上传音频（mp3 / wav / m4a）</div>
+            <div className="text-xs">点击上传音频/视频（mp3 / wav / m4a / mp4 / mov）</div>
             <div className="text-[10px] text-slate-600 mt-1">
-              不上传时将仅导出视频轨道（无声）
+              上传视频时将自动提取音轨用于 Whisper ASR 字幕识别
             </div>
             <input
               ref={audioInputRef}
               type="file"
-              accept="audio/*"
+              accept="audio/*,video/*"
               multiple
               hidden
               onChange={(e) => {
@@ -775,8 +864,19 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
                   });
                   const data = await resp.json();
                   if (data.success && data.cues?.length > 0) {
-                    onChange((prev) => ({ ...prev, subtitleCues: data.cues, subtitleFileName: undefined, subtitleEnabled: true }));
-                    log('ASR', `✓ 重新识别完成：${data.cues.length} 条字幕`);
+                    // 重新识别时也做繁→简转换
+                    const cuesText = data.cues.map((c: any) => c.text).join(' ');
+                    let finalCues = data.cues;
+                    if (looksLikeTraditional(cuesText)) {
+                      log('ASR', `▸ 检测到繁体字幕，正在转换为简体…`);
+                      try {
+                        finalCues = await convertCuesTexts(data.cues, 't2s');
+                      } catch (e: any) {
+                        log('WARN', `繁简转换失败: ${e.message}`);
+                      }
+                    }
+                    onChange((prev) => ({ ...prev, subtitleCues: finalCues, subtitleFileName: undefined, subtitleEnabled: true }));
+                    log('ASR', `✓ 重新识别完成：${finalCues.length} 条字幕`);
                   } else {
                     log('ASR', `⚠ 识别失败: ${data.error || '未知错误'}`);
                   }

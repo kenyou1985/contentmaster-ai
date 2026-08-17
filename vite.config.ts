@@ -363,11 +363,12 @@ export default defineConfig(({ mode }) => {
       build: {
         rollupOptions: {
           output: {
-            manualChunks: {
-              'vendor-react': ['react', 'react-dom'],
-              'vendor-lucide': ['lucide-react'],
-              'vendor-utils': ['jszip'],
-            },
+manualChunks: {
+          'vendor-react': ['react', 'react-dom'],
+          'vendor-lucide': ['lucide-react'],
+          'vendor-utils': ['jszip'],
+          'vendor-opencc': ['opencc-js'],
+        },
           },
         },
         chunkSizeWarningLimit: 600,
