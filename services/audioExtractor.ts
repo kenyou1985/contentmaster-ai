@@ -294,9 +294,11 @@ async function getFfmpegInstance(onLog?: (msg: string) => void): Promise<any> {
 
     const coreURL = await xhrProgress(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
     const wasmURL = await xhrProgress(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
+    // worker.js 也需要显式 URL（vite 6 不能自动解析 ffmpeg 包内的 module worker）
+    const workerURL = await xhrProgress(`/node_modules/@ffmpeg/ffmpeg/dist/esm/worker.js`, 'text/javascript');
     console.log(`[audioExtractor]   WASM 下载完成，编译中（Web Worker 编译可能需要 5-10 秒）...`);
 
-    await ffmpeg.load({ coreURL, wasmURL });
+    await ffmpeg.load({ coreURL, wasmURL, classWorkerURL: workerURL });
     const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
     console.log(`[audioExtractor] ✓ @ffmpeg/ffmpeg 加载完成（${elapsed}s）`);
     ffmpegInstance = ffmpeg;

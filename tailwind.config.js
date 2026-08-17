@@ -32,6 +32,17 @@ export default {
     },
   },
   darkMode: 'class',
+  safelist: [
+    // 任意值 aspect ratio（不会从 Record<string,string> 自动提取，必须 safelist）
+    'aspect-[3/4]',
+    'aspect-[9/16]',
+    'aspect-[4/3]',
+    'aspect-[1/1]',
+    'aspect-[2/3]',
+    'aspect-[3/2]',
+    'aspect-[9/18]',
+    'aspect-[16/9]',
+  ],
   theme: {
     extend: {
       fontFamily: {

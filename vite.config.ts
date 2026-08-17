@@ -350,6 +350,16 @@ export default defineConfig(({ mode }) => {
           },
         },
       },
+      optimizeDeps: {
+        exclude: [
+          '@ffmpeg/ffmpeg',
+          '@ffmpeg/util',
+          '@ffmpeg/core',
+        ],
+      },
+      worker: {
+        format: 'es',
+      },
       plugins: [
         react(),
         compression({ algorithm: 'gzip', threshold: 1024 }),
