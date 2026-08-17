@@ -1584,7 +1584,9 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
             ? it.durationSec
             : 4;
         const dur = baseDur * scale;
-        const caption = (it.caption || it.name || `镜头 ${i + 1}`).trim();
+        // caption 优先级：用户输入 > 自动 caption > 通用占位
+        // 不使用 it.name（文件名），避免如 "cover_1.png" 这种带下划线的文件名被作为字幕文本
+        const caption = (it.caption && it.caption.trim()) || `镜头 ${i + 1}`;
         // 取该 shot 时间窗口内的字幕 cues
         const winEnd = cursorSec + dur;
         const shotCues: SubtitleCue[] = tracks.subtitleCues

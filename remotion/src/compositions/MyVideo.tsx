@@ -63,6 +63,26 @@ export const MyVideo: React.FC<RemotionInputProps> = ({ shots, config }) => {
   //     * 代价：B 音频比 B 视频晚 leadIn_B 帧开始（约 0.4s），
   //       因为视频提前了 leadIn 帧做视觉转场，而音频在前一个镜头音频结束后才开始
   //     * 听感上：视频画面先出现 ~0.4s 后才有新镜头音频，可接受
+  //
+  // v1.10：自定义素材成片模式（custom tracks）下，多个镜头共享同一个 audioUrl
+  //   （用户上传一整段音频）。如果对每个镜头都播一遍同一个音频，会出现重复播放。
+  //   检测方法：所有 shots 的 audioUrl 都相同 → 视为「共享音频」，改为全局单次播放。
+  //   - isSharedAudio = true：用 SharedAudioLayer 在 frame 0 播放一次，duration = 全长
+  //   - isSharedAudio = false：保持原有 per-shot 行为
+  const isSharedAudio = useMemo(() => {
+    const urls = shots.map((s) => s.audioUrl).filter(Boolean);
+    if (urls.length < 2) return false;
+    const first = urls[0];
+    return urls.every((u) => u === first);
+  }, [shots]);
+
+  // 共享音频的总时长（用第一个 shot 的 audioDurationSec，或最后一个 shot 的结束时间）
+  const sharedAudioDurationSec = useMemo(() => {
+    if (!isSharedAudio) return 0;
+    const first = shots[0];
+    return (first as any).audioDurationSec || (first as any).audioDurationExact || 0;
+  }, [isSharedAudio, shots]);
+
   const segments = useMemo(() => {
     type Segment = {
       shot: typeof shots[0];
@@ -201,17 +221,37 @@ export const MyVideo: React.FC<RemotionInputProps> = ({ shots, config }) => {
 
       {/* 音频层（独立 Sequence，每个镜头音频在前一个镜头音频结束后立即开始，
           不参与视频 leadIn 重叠 — 避免末尾和开头音频重叠） */}
-      {segments.map(({ shot, audioStartFrame, audioDurationFrames }) => {
-        if (!shot.audioUrl) return null;
-        return (
-          <ShotAudioLayer
-            key={`audio-${shot.id}`}
-            url={shot.audioUrl}
-            startFrame={audioStartFrame}
-            audioDurationFrames={audioDurationFrames}
+      {/* v1.10：当所有 shots 共享同一音频 URL（自定义素材成片），
+          改为全局单次播放，避免每个镜头都从头重复播放同一个音频。 */}
+      {isSharedAudio && shots[0]?.audioUrl && sharedAudioDurationSec > 0 ? (
+        <Sequence
+          key="shared-audio"
+          from={0}
+          durationInFrames={Math.max(
+            1,
+            Math.round(sharedAudioDurationSec * fps) +
+              // 加点 buffer 防止尾部被截断
+              Math.round(0.5 * fps)
+          )}
+        >
+          <SharedAudioLayer
+            url={shots[0].audioUrl}
+            volume={1}
           />
-        );
-      })}
+        </Sequence>
+      ) : (
+        segments.map(({ shot, audioStartFrame, audioDurationFrames }) => {
+          if (!shot.audioUrl) return null;
+          return (
+            <ShotAudioLayer
+              key={`audio-${shot.id}`}
+              url={shot.audioUrl}
+              startFrame={audioStartFrame}
+              audioDurationFrames={audioDurationFrames}
+            />
+          );
+        })
+      )}
 
       {/* 镜头序列（视频画面 + 转场） */}
       {/* sequenceFrom = startFrame - leadInFrames：让本镜头在视觉上提前覆盖到上一镜头尾部，
@@ -266,6 +306,20 @@ export const MyVideo: React.FC<RemotionInputProps> = ({ shots, config }) => {
       )}
     </AbsoluteFill>
   );
+};
+
+/**
+ * 共享音频层（v1.10）
+ * - 适用于「自定义素材成片」场景：多个镜头共享同一个 audioUrl（用户上传一整段音频）
+ * - 与 ShotAudioLayer 的区别：ShotAudioLayer 每个 shot 都从头播放同一份音频（导致重复）
+ * - 本组件只在 frame 0 播放一次，覆盖整个视频时长
+ */
+const SharedAudioLayer: React.FC<{
+  url: string;
+  volume?: number;
+}> = ({ url, volume = 1 }) => {
+  const src = resolveMediaUrl(url) || url;
+  return <Audio src={src} volume={volume} />;
 };
 
 /**
