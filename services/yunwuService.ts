@@ -707,6 +707,43 @@ function convertSizeForDalle3(size?: string): string {
   return '1792x1024'; // 横屏
 }
 
+/**
+ * 将 size 转换为 gpt-image-2 支持的尺寸
+ * gpt-image-2 官方支持: 1024x1024 (1:1), 1024x1536 (2:3), 1536x1024 (3:2),
+ *                     1024x1792 (9:16), 1792x1024 (16:9)
+ * 用户传的任意 WxH（1080x1440 / 720x1280 等）会被后端静默忽略或回退为默认 16:9，
+ * 必须在此处强制转换到最近的合法尺寸。
+ *
+ * 映射规则：
+ *   1:1  (aspectRatio ≈ 1)       → 1024x1024
+ *   2:3  (0.65-0.7, 比如 3:4)   → 1024x1536
+ *   9:16 (0.55-0.65, 比如 9:16) → 1024x1792
+ *   3:2  (1.4-1.6, 比如 3:2)    → 1536x1024
+ *   16:9 (1.7+, 比如 16:9)      → 1792x1024
+ */
+function convertSizeForGptImage2(size?: string): string {
+  if (!size) return '1024x1024';
+  const aspectRatioMatch = size.match(/^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/);
+  let aspectRatio = 1;
+  if (aspectRatioMatch) {
+    aspectRatio = parseFloat(aspectRatioMatch[1]) / parseFloat(aspectRatioMatch[2]);
+  } else {
+    const [w, h] = size.split('x').map(Number);
+    if (!w || !h) return '1024x1024';
+    aspectRatio = w / h;
+  }
+  // 1:1 方图
+  if (Math.abs(aspectRatio - 1) < 0.1) return '1024x1024';
+  // 竖屏（aspectRatio < 1）
+  if (aspectRatio < 1) {
+    if (aspectRatio < 0.6) return '1024x1792'; // 极竖（9:16 ≈ 0.5625）
+    return '1024x1536'; // 中等竖（2:3 ≈ 0.667，3:4 = 0.75 也归这里）
+  }
+  // 横屏（aspectRatio > 1）
+  if (aspectRatio > 1.6) return '1792x1024'; // 16:9 ≈ 1.778
+  return '1536x1024'; // 中等横（3:2 = 1.5）
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // 全局图片生成限流器（解决上游 429 雪崩）
 // ─────────────────────────────────────────────────────────────────────────
@@ -1271,8 +1308,12 @@ async function yunwuOpenAiImageOnce(
           formData.append('image', new Blob([arr], { type: mime }), 'reference.png');
         }
         if (options.size) {
-          // gpt-image-2：只发 size；aspect_ratio 在 Yunwu 后端不被支持（会返回 400 Provider API error: Unknown parameter）
-          formData.append('size', options.size);
+          // gpt-image-2 官方只支持 5 个尺寸: 1024x1024, 1024x1536 (2:3), 1536x1024 (3:2), 1024x1792 (9:16), 1792x1024 (16:9)
+          // 用户传的 1080x1440 (3:4) 会被静默忽略或回退成 16:9（之前 bug）
+          // 转换到最接近 gpt-image-2 支持的尺寸
+          const gptSize = convertSizeForGptImage2(options.size);
+          formData.append('size', gptSize);
+          console.log(`[OpenLuxService] gpt-image-2 size: ${options.size} → ${gptSize}`);
         }
         if (options.quality) formData.append('quality', options.quality);
         if (options.n) formData.append('n', String(options.n));
@@ -1299,7 +1340,8 @@ async function yunwuOpenAiImageOnce(
         const body: Record<string, unknown> = { model: modelId, prompt: finalPrompt };
         if (options.size) {
           // Yunwu 后端只支持 size 参数（"WxH" 像素），不支持 aspect_ratio（会 400 报错）
-          body.size = options.size;
+          // gpt-image-2 官方只支持 5 个尺寸，其他会被静默忽略
+          body.size = convertSizeForGptImage2(options.size);
         }
         if (options.quality) body.quality = options.quality;
         if (options.n) body.n = options.n;

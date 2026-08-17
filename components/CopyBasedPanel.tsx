@@ -1217,11 +1217,15 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
         if (url.startsWith('data:image/png;base64,')) {
           try {
             const b64 = url.slice('data:image/png;base64,'.length);
-            const buf = Buffer.from(b64, 'base64');
+            // 浏览器环境没有 Node.js Buffer，用 Uint8Array + atob 替代
+            const binary = atob(b64);
+            const buf = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
             // PNG IHDR at offset 16: width (4 bytes BE) + height (4 bytes BE)
             if (buf.length >= 24) {
-              actualW = buf.readUInt32BE(16);
-              actualH = buf.readUInt32BE(20);
+              const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+              actualW = view.getUint32(16, false);
+              actualH = view.getUint32(20, false);
             }
           } catch (e) { /* ignore */ }
         }
@@ -2263,6 +2267,10 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                               isFinal ? 'border-emerald-400' : 'border-slate-600'
                             } ${COVER_RATIO_CLASSES[coverRatio] ?? 'aspect-video'}`}
                             data-cover-ratio={coverRatio}
+                            data-actual-size={(() => {
+                              const e = generatedCovers.get(idx);
+                              return e?.actualWidth && e?.actualHeight ? `${e.actualWidth}x${e.actualHeight}` : 'unknown';
+                            })()}
                             data-generated-ratio={generatedCovers.get(idx)?.ratio || 'unknown'}
                             title={`coverRatio=${coverRatio} | generated=${generatedCovers.get(idx)?.ratio || '?'}`}
                           >
@@ -2270,7 +2278,7 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                               <img
                                 src={generatedCovers.get(idx)!.url}
                                 alt={`封面 ${idx + 1}`}
-                                className={`absolute inset-0 w-full h-full object-cover block transition-opacity duration-300 ${
+                                className={`absolute inset-0 w-full h-full object-contain block transition-opacity duration-300 ${
                                   isGenerating ? 'opacity-30' : 'opacity-100'
                                 }`}
                               />

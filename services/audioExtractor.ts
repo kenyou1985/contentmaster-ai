@@ -186,18 +186,37 @@ export async function extractAudioFromVideo(
   //    代价：首次加载约 31MB WASM（约 5-15 秒，看网速），缓存后秒开
   //    触发条件：仅在策略 1-3 全部失败后启用（避免每次都等大文件下载）
   //    由于策略 1-3 已经失败才走到这里，所以这一步必须真上 ffmpeg.wasm
+  // ── 策略 0a（推荐）：服务端 ffmpeg 转码（remotion-server 的 /audio/extract）──
+  //    优势：服务端有完整 ffmpeg + 无浏览器解码限制，比 ffmpeg.wasm 快且稳
+  //    代价：需 remotion-server 在 18093 端口运行
   onProgress?.(0.02);
+  try {
+    const wav0 = await strategyServerExtract(file, {
+      targetSampleRate,
+      targetChannels,
+      onProgress: (p) => onProgress?.(0.02 + p * 0.94),
+    });
+    console.log(`[audioExtractor] ✓ 策略 0a（服务端 ffmpeg）成功`);
+    onProgress?.(1.0);
+    return wav0;
+  } catch (e0a: any) {
+    console.warn(`[audioExtractor] 策略 0a (服务端) 失败: ${e0a.message?.slice(0, 200)}`);
+  }
+
+  // ── 策略 0b（兜底）：@ffmpeg/ffmpeg WASM — 浏览器内解码 ──
+  //    优势：无需服务端
+  //    代价：首次加载约 31MB WASM（约 5-15 秒），Safari 在某些 HEVC 上仍可能失败
   try {
     const wav0 = await strategyFfmpegWasm(file, {
       targetSampleRate,
       targetChannels,
       onProgress: (p) => onProgress?.(0.02 + p * 0.94),  // 0.02 → 0.96
     });
-    console.log(`[audioExtractor] ✓ 策略 0（ffmpeg.wasm）成功`);
+    console.log(`[audioExtractor] ✓ 策略 0b（ffmpeg.wasm）成功`);
     onProgress?.(1.0);
     return wav0;
   } catch (e0: any) {
-    console.warn(`[audioExtractor] 策略 0 (ffmpeg.wasm) 失败: ${e0.message?.slice(0, 200)}`);
+    console.warn(`[audioExtractor] 策略 0b (ffmpeg.wasm) 失败: ${e0.message?.slice(0, 200)}`);
     throw new Error(
       `视频音轨提取失败。所有方法都已尝试：\n` +
       `  - @audio/decode (AAC WASM): 解码返回静音或空数据\n` +
@@ -250,7 +269,7 @@ async function getFfmpegInstance(onLog?: (msg: string) => void): Promise<any> {
     console.log('[audioExtractor]   步骤 1/3: 导入 @ffmpeg/ffmpeg 模块...');
     const { FFmpeg } = await import('@ffmpeg/ffmpeg');
     console.log('[audioExtractor]   步骤 2/3: 导入 @ffmpeg/util helper...');
-    const { toBlobURL, fetchFile } = await import('@ffmpeg/util');
+    const { toBlobURL: toBlobURLFn, fetchFile } = await import('@ffmpeg/util');
 
     const ffmpeg = new FFmpeg();
     if (onLog) {
@@ -262,43 +281,38 @@ async function getFfmpegInstance(onLog?: (msg: string) => void): Promise<any> {
       });
     }
 
-    // 加载 core（自托管，避免依赖 unpkg CDN）
-    // @ffmpeg/core@0.12.10 dist/umd/ffmpeg-core.{js,wasm}
+    // 加载 core（CDN 版本，避免 vite 解析 ffmpeg 包内部动态 import 失败）
+    // @ffmpeg/core@0.12.10 UMD 版
+    // 用 unpkg CDN，因为本地 vite 解析 module worker 的 dynamic import 会失败
     const CORE_VERSION = '0.12.10';
-    const baseURL = `/node_modules/@ffmpeg/core/dist/umd`;
-    console.log(`[audioExtractor]   步骤 3/3: 下载 ffmpeg-core.wasm (32MB) + 编译...`);
-    console.log(`[audioExtractor]   从 vite serve: ${baseURL}/ffmpeg-core.{js,wasm}`);
+    const CDN_BASE = `https://unpkg.com/@ffmpeg/core@${CORE_VERSION}/dist/umd`;
+    const LOCAL_BASE = `/node_modules/@ffmpeg/core/dist/umd`;
 
-    // 用 XHR 显式下载（fetch 流式 API 不能显示进度）
-    const xhrProgress = (url: string, mime: string): Promise<string> => new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open('GET', url, true);
-      xhr.responseType = 'blob';
-      xhr.onprogress = (e) => {
-        if (e.lengthComputable) {
-          const pct = (e.loaded / e.total * 100).toFixed(1);
-          console.log(`[audioExtractor]   下载 ${url.split('/').pop()}: ${pct}% (${(e.loaded / 1024 / 1024).toFixed(1)}/${(e.total / 1024 / 1024).toFixed(1)} MB)`);
-        }
-      };
-      xhr.onload = () => {
-        if (xhr.status === 200) {
-          const blobUrl = URL.createObjectURL(xhr.response);
-          resolve(blobUrl);
-        } else {
-          reject(new Error(`HTTP ${xhr.status}`));
-        }
-      };
-      xhr.onerror = () => reject(new Error('网络错误'));
-      xhr.send();
-    });
+    // 用 toBlobURL 跨域代理（解决 CORS）
+    const tryLoad = async (base: string): Promise<{ coreURL: string; wasmURL: string }> => {
+      const coreURL = await toBlobURLFn(`${base}/ffmpeg-core.js`, 'text/javascript');
+      const wasmURL = await toBlobURLFn(`${base}/ffmpeg-core.wasm`, 'application/wasm');
+      return { coreURL, wasmURL };
+    };
 
-    const coreURL = await xhrProgress(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
-    const wasmURL = await xhrProgress(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
-    // worker.js 也需要显式 URL（vite 6 不能自动解析 ffmpeg 包内的 module worker）
-    const workerURL = await xhrProgress(`/node_modules/@ffmpeg/ffmpeg/dist/esm/worker.js`, 'text/javascript');
+    let coreURL: string;
+    let wasmURL: string;
+    try {
+      console.log(`[audioExtractor]   尝试 CDN: ${CDN_BASE}`);
+      const r = await tryLoad(CDN_BASE);
+      coreURL = r.coreURL;
+      wasmURL = r.wasmURL;
+      console.log(`[audioExtractor]   ✓ CDN core/wasm 已转 Blob URL（绕过 CORS）`);
+    } catch (e: any) {
+      console.warn(`[audioExtractor]   CDN 失败（${e.message?.slice(0, 100)}），回退本地 vite serve: ${LOCAL_BASE}`);
+      const r = await tryLoad(LOCAL_BASE);
+      coreURL = r.coreURL;
+      wasmURL = r.wasmURL;
+      console.log(`[audioExtractor]   ✓ 本地 core/wasm 已转 Blob URL`);
+    }
     console.log(`[audioExtractor]   WASM 下载完成，编译中（Web Worker 编译可能需要 5-10 秒）...`);
 
-    await ffmpeg.load({ coreURL, wasmURL, classWorkerURL: workerURL });
+    await ffmpeg.load({ coreURL, wasmURL });
     const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
     console.log(`[audioExtractor] ✓ @ffmpeg/ffmpeg 加载完成（${elapsed}s）`);
     ffmpegInstance = ffmpeg;
@@ -397,4 +411,95 @@ async function strategyFfmpegWasm(
     try { await ffmpeg.deleteFile(inputName); } catch {}
     try { await ffmpeg.deleteFile(outputName); } catch {}
   }
+}
+
+// ── 策略 0a：服务端 ffmpeg 转码（remotion-server /audio/extract） ──
+//    通过 vite proxy → http://127.0.0.1:18093/audio/extract
+//    服务端用 ffmpeg-static 解码任意 mp4/mov/mkv → WAV（16kHz mono PCM）
+//
+//    触发逻辑：
+//      - 用户上传视频 → 调用此策略
+//      - 服务端返回 wavDataUrl → 转 Blob 返回
+//      - 服务端挂了/不存在 → throw，fallback 到 ffmpeg.wasm
+async function strategyServerExtract(
+  file: File,
+  opts: { targetSampleRate: number; targetChannels: 1 | 2; onProgress: (p: number) => void },
+): Promise<Blob> {
+  opts.onProgress(0.05);
+  console.log(`[audioExtractor] 策略 0a: 通过服务端 ffmpeg 转码（remotion-server:18093）`);
+
+  // 把 File → base64（用 FileReader 异步，不阻塞 UI）
+  const base64 = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // "data:video/mp4;base64,XXXXX" → "XXXXX"
+      const commaIdx = result.indexOf(',');
+      resolve(commaIdx >= 0 ? result.slice(commaIdx + 1) : result);
+    };
+    reader.onerror = () => reject(new Error('FileReader 失败'));
+    reader.readAsDataURL(file);
+  });
+  opts.onProgress(0.30);
+
+  const dataUrl = `data:${file.type || 'video/mp4'};base64,${base64}`;
+
+  // 调用服务端（vite proxy → /api/remotion/audio/extract → 127.0.0.1:18093/audio/extract）
+  const resp = await fetch('/api/remotion/audio/extract', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      mediaDataUrl: dataUrl,
+      fileName: file.name,
+    }),
+    // 长超时（285MB 文件转码可能需要 1-2 分钟）
+  });
+  opts.onProgress(0.70);
+
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => '');
+    throw new Error(`服务端 HTTP ${resp.status}: ${errText.slice(0, 200)}`);
+  }
+
+  const json = await resp.json();
+  if (!json.success) {
+    throw new Error(json.error || '服务端返回失败');
+  }
+  if (!json.wavDataUrl) {
+    throw new Error('服务端未返回 wavDataUrl');
+  }
+  opts.onProgress(0.90);
+
+  // data URL → Blob
+  const m = json.wavDataUrl.match(/^data:([^;]+);base64,(.*)$/);
+  if (!m) throw new Error('服务端 wavDataUrl 格式错误');
+  const bin = atob(m[2]);
+  const wavBytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) wavBytes[i] = bin.charCodeAt(i);
+  const wavBlob = new Blob([wavBytes], { type: m[1] || 'audio/wav' });
+  console.log(`[audioExtractor] 服务端返回: ${(wavBlob.size / 1024).toFixed(1)} KB (${json.elapsedMs}ms)`);
+
+  if (wavBlob.size < 1000) {
+    throw new Error(`服务端返回过小（${wavBlob.size} bytes），视频可能无音轨`);
+  }
+
+  // 验证不是静音（解码看 maxAmp）
+  const arrayBuf = await wavBlob.arrayBuffer();
+  const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+  try {
+    const audioBuf: AudioBuffer = await new Promise((res, rej) => {
+      const p = ctx.decodeAudioData(arrayBuf.slice(0), res, rej);
+      if (p && typeof (p as any).then === 'function') (p as any).then(res, rej);
+    });
+    const maxAmp = getMaxAmplitude(audioBuf);
+    console.log(`[audioExtractor] 服务端 WAV 解码后: ${audioBuf.numberOfChannels}ch @ ${audioBuf.sampleRate}Hz, ${audioBuf.duration.toFixed(1)}s, maxAmp=${maxAmp.toFixed(4)}`);
+    if (maxAmp < 0.001) {
+      throw new Error(`服务端返回静音（maxAmp=${maxAmp.toFixed(4)}），视频可能无音轨`);
+    }
+  } finally {
+    ctx.close().catch(() => {});
+  }
+
+  opts.onProgress(1.0);
+  return wavBlob;
 }

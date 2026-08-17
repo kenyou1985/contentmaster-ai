@@ -18,14 +18,13 @@
  */
 import express from 'express';
 import cors from 'cors';
-import { spawn } from 'child_process';
-import { existsSync, mkdirSync, writeFileSync, createReadStream, statSync } from 'fs';
+import { spawn, execFile, execSync } from 'child_process';
+import { existsSync, mkdirSync, writeFileSync, createReadStream, statSync, readFileSync, rmSync } from 'fs';
 import { join, dirname, basename, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { promises as fs } from 'fs';
 import { Readable } from 'stream';
 import os from 'os';
-import { execSync } from 'child_process';
 import { createRequire } from 'module';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -711,6 +710,119 @@ app.post('/upload-media', async (req, res) => {
     res.json({ success: true, paths, tempDir, count: paths.length });
   } catch (e) {
     console.error('[remotion] upload-media 失败:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ── 服务端音轨提取（ffmpeg-static） ─────────────────────
+// 兜底方案：前端浏览器无法解码 iPhone HEVC 视频时，
+// 由服务端用完整 ffmpeg 提取音轨为 WAV（16kHz mono PCM）。
+app.post('/audio/extract', async (req, res) => {
+  const startedAt = Date.now();
+  try {
+    const { mediaDataUrl, fileName } = req.body || {};
+    if (typeof mediaDataUrl !== 'string' || !mediaDataUrl.startsWith('data:')) {
+      return res.status(400).json({ success: false, error: 'mediaDataUrl 必须是 data URL' });
+    }
+    const m = mediaDataUrl.match(/^data:([^;]+);base64,(.*)$/);
+    if (!m) return res.status(400).json({ success: false, error: 'data URL 格式错误' });
+    const bytes = Buffer.from(m[2], 'base64');
+    console.log(`[remotion] /audio/extract 收到 ${(bytes.length / 1024 / 1024).toFixed(2)} MB (${m[1]})`);
+
+    const tempDir = join('/tmp', `audio_extract_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    mkdirSync(tempDir, { recursive: true });
+    const safeName = (fileName || 'input.mp4').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const inPath = join(tempDir, safeName);
+    const outPath = join(tempDir, safeName.replace(/\.[^.]+$/, '') + '.wav');
+    writeFileSync(inPath, bytes);
+
+    // 用 ffmpeg-static（包内已带二进制，无需 PATH）
+    let ffmpegBin;
+    try {
+      ffmpegBin = require('ffmpeg-static');
+      // 验证 binary 可执行（macOS ARM64 上 ffmpeg-static 可能被 Gatekeeper SIGKILL）
+      try {
+        execSync(`"${ffmpegBin}" -version`, { timeout: 3000, stdio: 'pipe' });
+      } catch (e) {
+        if (e.signal === 'SIGKILL' || e.status === 137) {
+          console.warn(`[remotion] ffmpeg-static 被 macOS Gatekeeper 拦截 (SIGKILL)，尝试其他 binary`);
+          ffmpegBin = null;
+        } else {
+          throw e;
+        }
+      }
+    } catch {
+      ffmpegBin = null;
+    }
+
+    if (!ffmpegBin) {
+      // 兜底：用户机器上常见的 ffmpeg binary 位置
+      const fallbacks = [
+        '/Applications/小V猫.app/Contents/Resources/app/ffmpeg',
+        '/Applications/易剪媒.app/Contents/Resources/extraResources/ffmpeg/mac/ffmpeg',
+        '/Applications/剪映专业版5.9.app/Contents/Resources/ffmpeg',
+      ];
+      for (const p of fallbacks) {
+        try {
+          if (existsSync(p)) {
+            execSync(`"${p}" -version`, { timeout: 3000, stdio: 'pipe' });
+            ffmpegBin = p;
+            console.log(`[remotion] 用 fallback ffmpeg: ${p}`);
+            break;
+          }
+        } catch {}
+      }
+    }
+
+    if (!ffmpegBin) {
+      rmSync(tempDir, { recursive: true, force: true });
+      return res.status(503).json({
+        success: false,
+        error: '服务端未找到可执行的 ffmpeg binary（请安装 ffmpeg-static 或 brew install ffmpeg）'
+      });
+    }
+
+    // ffmpeg -i input.mp4 -vn -acodec pcm_s16le -ac 1 -ar 16000 -f wav -y output.wav
+    await new Promise((resolve, reject) => {
+      execFile(ffmpegBin, [
+        '-i', inPath,
+        '-vn',
+        '-acodec', 'pcm_s16le',
+        '-ac', '1',
+        '-ar', '16000',
+        '-f', 'wav',
+        '-y',
+        outPath,
+      ], { timeout: 120_000 }, (err, _stdout, stderr) => {
+        if (err) {
+          console.error('[remotion] ffmpeg 失败:', stderr?.toString().slice(0, 500));
+          reject(new Error(stderr?.toString() || err.message));
+        } else {
+          resolve();
+        }
+      });
+    });
+
+    const wavBytes = readFileSync(outPath);
+    const wavSizeKB = (wavBytes.length / 1024).toFixed(1);
+    console.log(`[remotion] ffmpeg 输出: ${wavSizeKB} KB (${Date.now() - startedAt}ms)`);
+
+    if (wavBytes.length < 1000) {
+      rmSync(tempDir, { recursive: true, force: true });
+      return res.status(422).json({ success: false, error: 'ffmpeg 输出过小，视频可能无音轨' });
+    }
+
+    const wavDataUrl = `data:audio/wav;base64,${wavBytes.toString('base64')}`;
+    rmSync(tempDir, { recursive: true, force: true });
+
+    res.json({
+      success: true,
+      wavDataUrl,
+      sizeBytes: wavBytes.length,
+      elapsedMs: Date.now() - startedAt,
+    });
+  } catch (e) {
+    console.error('[remotion] /audio/extract 失败:', e);
     res.status(500).json({ success: false, error: e.message });
   }
 });
