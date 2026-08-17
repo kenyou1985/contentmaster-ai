@@ -1506,6 +1506,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         voiceoverAudioUrl: audioUrl,
         audioDurationSec: s.audioDurationSec,
         audioDurationExact: s.audioDurationExact,
+        duration: s.audioDurationExact ?? s.audioDurationSec, // getShotDuration 第1优先级
         text: exportCaption,
         textCues,
         // 运动：镜头级 > 全局预设 > 默认 kenBurns

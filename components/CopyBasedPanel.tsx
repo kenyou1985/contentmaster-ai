@@ -143,6 +143,15 @@ const COVER_RATIOS = [
   { id: '3:4', label: '3:4 海报', w: 1080, h: 1440 },
 ] as const;
 
+// Tailwind aspect ratio class（用于封面图容器，匹配生图尺寸）
+const COVER_RATIO_CLASSES: Record<string, string> = {
+  '16:9': 'aspect-video',
+  '9:16': 'aspect-[9/16]',
+  '1:1': 'aspect-square',
+  '4:3': 'aspect-[4/3]',
+  '3:4': 'aspect-[3/4]',
+};
+
 type CoverRatioId = (typeof COVER_RATIOS)[number]['id'];
 
 // ── Remotion 模板（与 services/remotionTemplates.ts 对齐，共 10 种） ────────
@@ -1942,8 +1951,7 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                           <div
                             className={`relative border-2 rounded-lg overflow-hidden bg-slate-950 ${
                               isFinal ? 'border-emerald-400' : 'border-slate-600'
-                            }`}
-                            style={{ minHeight: '120px' }}
+                            } ${COVER_RATIO_CLASSES[coverRatio] ?? 'aspect-video'}`}
                           >
                             {hasCover && (
                               <img
