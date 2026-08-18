@@ -2672,7 +2672,7 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                     onClick={async () => {
                       if (!ttsResult) return;
                       try {
-                        const baseUrl = (window as any).__REMOTION_SERVER_URL__ || `${window.location.protocol}//${window.location.hostname}:18093`;
+                        const baseUrl = (window as any).__REMOTION_SERVER_URL__ || getRemotionApiBase();
                         // 将 blob URL 转为 data URL
                         const res = await fetch(ttsResult.mergedAudioUrl);
                         const blob = await res.blob();

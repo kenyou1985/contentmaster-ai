@@ -220,7 +220,9 @@ export async function extractAudioFromVideo(
 
   // ── 策略 0a（推荐）：服务端 ffmpeg 转码（remotion-server 的 /audio/extract）──
   //    优势：服务端有完整 ffmpeg + 无浏览器解码限制，比 ffmpeg.wasm 快且稳
-  //    代价：需 remotion-server 在 18093 端口运行
+  //    触发逻辑：
+  //      - 本地环境 → /api/remotion/audio/extract (vite proxy)
+  //      - 线上环境 → VITE_REMITION_API_BASE (Railway)
   onProgress?.(0.45);
   try {
     const wav0 = await strategyServerExtract(file, {
@@ -255,7 +257,7 @@ export async function extractAudioFromVideo(
       `  - HTML5 video + WebAudio: 浏览器无法解码此视频\n` +
       `  - 服务端 ffmpeg (remotion-server): 失败或服务端未启动\n` +
       `  - ffmpeg.wasm (32MB 兜底): ${e0.message?.slice(0, 200)}\n` +
-      `请确认视频文件包含音轨，或确认 remotion-server 在 18093 端口运行。`
+      `请确认视频文件包含音轨，或确认 remotion-server 服务已启动。`
     );
   }
 }
@@ -453,6 +455,33 @@ async function strategyFfmpegWasm(
   }
 }
 
+/**
+ * 检测是否为本地环境（localhost / 127.0.0.1）
+ */
+function isLocalSiteOrigin(): boolean {
+  if (typeof window === 'undefined') return false;
+  const h = window.location.hostname;
+  if (h === 'localhost' || h === '127.0.0.1' || h === '[::1]') return true;
+  if (/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(h)) return true;
+  return false;
+}
+
+/**
+ * 获取 Remotion API Base URL
+ * - 本地环境 → /api/remotion (vite proxy)
+ * - 线上环境 → VITE_REMITION_API_BASE 环境变量
+ */
+function getApiBase(): string {
+  if (isLocalSiteOrigin()) {
+    return '/api/remotion';
+  }
+  // 动态读取 VITE_REMITION_API_BASE（前端构建时注入）
+  const envBase = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_REMITION_API_BASE) as string | undefined;
+  if (envBase) return envBase.replace(/\/$/, '');
+  // fallback 到公共 Railway URL
+  return 'https://remotion-production-3c9f.up.railway.app';
+}
+
 // ── 策略 0a：服务端 ffmpeg 转码（remotion-server /audio/extract） ──
 //    通过 vite proxy → http://127.0.0.1:18093/audio/extract
 //    服务端用 @remotion/renderer.extractAudio() 解码任意 mp4/mov/mkv → WAV（16kHz mono PCM）
@@ -470,7 +499,7 @@ async function strategyServerExtract(
   opts: { targetSampleRate: number; targetChannels: 1 | 2; onProgress: (p: number) => void },
 ): Promise<Blob> {
   opts.onProgress(0.05);
-  console.log(`[audioExtractor] 策略 0a: 通过服务端 ffmpeg 转码（remotion-server:18093）`);
+  console.log(`[audioExtractor] 策略 0a: 通过服务端 ffmpeg 转码（${getApiBase()}）`);
   console.log(`[audioExtractor]   视频: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB, ${file.type})`);
 
   // 用 multipart/form-data 直接传 File（无需 base64，节省 33% 网络开销）
@@ -480,12 +509,12 @@ async function strategyServerExtract(
   fd.append('mime', file.type || 'video/mp4');
   opts.onProgress(0.20);
 
-  // 调用服务端（vite proxy → /api/remotion/audio/extract → 127.0.0.1:18093/audio/extract）
+  // 调用服务端（本地 vite proxy 或线上 Railway）
   // 长超时：285MB 文件上传 ~10-30 秒，转码 ~10-30 秒（取决于 ffmpeg-static 和 CPU）
   // 用 XMLHttpRequest 而非 fetch，因为 XHR 支持 upload.onprogress
   const wavDataUrl = await new Promise<string>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/remotion/audio/extract', true);
+    xhr.open('POST', `${getApiBase()}/audio/extract`, true);
     xhr.timeout = 600_000; // 10 分钟（极保守，285MB + 转码 + 网络抖动）
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) {
@@ -510,7 +539,7 @@ async function strategyServerExtract(
       }
     };
     xhr.onerror = () => reject(new Error('网络错误（服务端未响应或断网）'));
-    xhr.ontimeout = () => reject(new Error(`服务端超时（${xhr.timeout / 1000}s），请确认 remotion-server 在 18093 运行`));
+    xhr.ontimeout = () => reject(new Error(`服务端超时（${xhr.timeout / 1000}s），请确认 remotion-server 已启动`));
     xhr.send(fd);
   });
   opts.onProgress(0.95);

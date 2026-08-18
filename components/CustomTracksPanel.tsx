@@ -36,6 +36,7 @@ import {
   extractAudioFromVideo,
   prewarmFfmpeg,
 } from '../services/audioExtractor';
+import { getRemotionApiBase } from '../services/remotionExportService';
 
 // ── 字幕辅助函数 ──────────────────────────────────────────
 
@@ -496,7 +497,7 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
       try {
         // blob: URL → data: URL（服务端 fetch 不到 blob URL）
         const dataUrl = await blobUrlToDataUrl(url);
-        const baseUrl = (window as any).__REMOTION_SERVER_URL__ || `${window.location.protocol}//${window.location.hostname}:18093`;
+        const baseUrl = (window as any).__REMOTION_SERVER_URL__ || getRemotionApiBase();
         const resp = await fetch(`${baseUrl}/asr/transcribe`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -978,7 +979,7 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
                 log('ASR', `▸ 重新 Whisper ASR 识别…`);
                 try {
                   const dataUrl = await blobUrlToDataUrl(state.audioUrl);
-                  const baseUrl = (window as any).__REMOTION_SERVER_URL__ || `${window.location.protocol}//${window.location.hostname}:18093`;
+                  const baseUrl = (window as any).__REMOTION_SERVER_URL__ || getRemotionApiBase();
                   const resp = await fetch(`${baseUrl}/asr/transcribe`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
