@@ -599,45 +599,48 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
           if (looksLikeTraditional(cuesText)) {
             log('ASR', `▸ 检测到繁体字幕，正在转换为简体…`);
             try {
-              const convertedCues = await convertCuesTexts(data.cues, 't2s');
+              const convertedCues: CustomSubtitleCue[] = await convertCuesTexts<CustomSubtitleCue>(data.cues, 't2s');
+              onChange((prev) => ({
+                ...prev,
+                subtitleCues: convertedCues,
+                subtitleFileName: undefined,
+                subtitleEnabled: true,
+              }));
+              log('ASR', `✓ Whisper 识别完成：${convertedCues.length} 条字幕（${data.durationSec?.toFixed(1)}s）· 已转简体`);
+              // 自动 AI 优化
+              if (autoOptimize && convertedCues.length > 0) {
+                triggerAutoOptimize(convertedCues, log, onChange, setOptimizingSubtitles);
+              }
+            } catch (convErr: any) {
+              // 转换失败保留原文
+              log('WARN', `繁简转换失败: ${convErr.message}，保留原始字幕`);
+              const rawCues: CustomSubtitleCue[] = data.cues;
+              onChange((prev) => ({
+                ...prev,
+                subtitleCues: rawCues,
+                subtitleFileName: undefined,
+                subtitleEnabled: true,
+              }));
+              log('ASR', `✓ Whisper 识别完成：${rawCues.length} 条字幕（${data.durationSec?.toFixed(1)}s）`);
+              // 自动 AI 优化
+              if (autoOptimize && rawCues.length > 0) {
+                triggerAutoOptimize(rawCues, log, onChange, setOptimizingSubtitles);
+              }
+            }
+          } else {
+            // 已经是简体，直接写入
+            const directCues: CustomSubtitleCue[] = data.cues;
             onChange((prev) => ({
               ...prev,
-              subtitleCues: convertedCues,
+              subtitleCues: directCues,
               subtitleFileName: undefined,
               subtitleEnabled: true,
             }));
-            log('ASR', `✓ Whisper 识别完成：${convertedCues.length} 条字幕（${data.durationSec?.toFixed(1)}s）· 已转简体`);
+            log('ASR', `✓ Whisper 识别完成：${directCues.length} 条字幕（${data.durationSec?.toFixed(1)}s）`);
             // 自动 AI 优化
-            if (autoOptimize && convertedCues.length > 0) {
-              triggerAutoOptimize(convertedCues, log, onChange, setOptimizingSubtitles);
+            if (autoOptimize && directCues.length > 0) {
+              triggerAutoOptimize(directCues, log, onChange, setOptimizingSubtitles);
             }
-          } catch (convErr: any) {
-            // 转换失败保留原文
-            log('WARN', `繁简转换失败: ${convErr.message}，保留原始字幕`);
-            onChange((prev) => ({
-              ...prev,
-              subtitleCues: data.cues,
-              subtitleFileName: undefined,
-              subtitleEnabled: true,
-            }));
-            log('ASR', `✓ Whisper 识别完成：${data.cues.length} 条字幕（${data.durationSec?.toFixed(1)}s）`);
-            // 自动 AI 优化
-            if (autoOptimize && data.cues.length > 0) {
-              triggerAutoOptimize(data.cues, log, onChange, setOptimizingSubtitles);
-            }
-          }
-        } else if (data.cues?.length > 0) {
-          // 已经是简体，直接写入
-          onChange((prev) => ({
-            ...prev,
-            subtitleCues: data.cues,
-            subtitleFileName: undefined,
-            subtitleEnabled: true,
-          }));
-          log('ASR', `✓ Whisper 识别完成：${data.cues.length} 条字幕（${data.durationSec?.toFixed(1)}s）`);
-          // 自动 AI 优化
-          if (autoOptimize && data.cues.length > 0) {
-            triggerAutoOptimize(data.cues, log, onChange, setOptimizingSubtitles);
           }
         } else {
           log('ASR', `⚠ Whisper 识别失败: ${data.error || '未知错误'}`);

@@ -783,11 +783,11 @@ const CopyBasedPanel: React.FC<{
     setOptimizingSubtitles(true);
     appendLog('ASR', `▸ AI 优化字幕中…`);
     import('../services/subtitleOptimizer').then(({ optimizeSubtitles }) => {
-      optimizeSubtitles(cues, apiKey, (cur, total) => {
+      optimizeSubtitles(cues as any, apiKey, (cur, total) => {
         appendLog('ASR', `  AI 优化: ${cur}/${total}`);
       }).then((result) => {
         if (result.success) {
-          setCustomTracks((prev) => ({ ...prev, subtitleCues: result.optimizedCues as SubtitleCue[] }));
+          setCustomTracks((prev) => ({ ...prev, subtitleCues: result.optimizedCues as unknown as SubtitleCue[] }));
           appendLog('ASR', `✓ AI 优化完成：${result.correctedCount ? `纠正了 ${result.correctedCount} 条` : '无明显错误'} · ${result.optimizedCues.length} 条`);
         } else {
           appendLog('ASR', `⚠ 自动优化失败: ${result.error}`);
@@ -1866,7 +1866,7 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
           toast.success(`ASR 完成：${asrCount} 个字幕片段`, 2000);
           // 自动 AI 优化字幕
           if (autoOptimize && asrShots.length > 0) {
-            const allCues = asrShots.flatMap((s: any) => s.textCues || []);
+            const allCues: SubtitleCue[] = asrShots.flatMap((s: any) => s.textCues || []) as SubtitleCue[];
             if (allCues.length > 0) {
               setCustomTracks((prev) => ({ ...prev, subtitleCues: allCues }));
               triggerAutoOptimize(allCues);
@@ -2909,6 +2909,74 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
             />
           )}
 
+          {(customTracks.subtitleCues?.length ?? 0) > 0 && (
+            <div className="flex items-center gap-2 mt-2 px-2">
+              <label className="flex items-center gap-1 text-[10px] text-slate-400 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={autoOptimize}
+                  onChange={(e) => {
+                    setAutoOptimize(e.target.checked);
+                    localStorage.setItem('AUTO_OPTIMIZE_SUBTITLE', String(e.target.checked));
+                  }}
+                  className="accent-emerald-500"
+                />
+                ASR 后自动 AI 优化字幕
+              </label>
+            </div>
+          )}
+
+          {/* 手动 AI 优化字幕按钮 */}
+          {(customTracks.subtitleCues?.length ?? 0) > 0 && (
+            <button
+              onClick={async () => {
+                if (!customTracks.subtitleCues?.length) return;
+                const effectiveKey = typeof window !== 'undefined'
+                  ? (window.localStorage.getItem('API_KEY_yunwu')
+                      || window.localStorage.getItem('API_KEY_google')
+                      || window.localStorage.getItem('API_KEY_runninghub')
+                      || window.localStorage.getItem('YUNWU_API_KEY')
+                      || window.localStorage.getItem('GEMINI_API_KEY')
+                      || window.localStorage.getItem('OPENLUX_API_KEY')
+                      || (window as any).localStorage.getItem('OPENAI_API_KEY'))
+                  : null;
+                if (!effectiveKey) {
+                  appendLog('ASR', `⚠ 请先在设置中配置 AI API Key`);
+                  toast.error('请先在设置中配置 AI API Key', 4000);
+                  return;
+                }
+                setWhisperRunning(true);
+                appendLog('ASR', `▸ AI 优化字幕中…`);
+                try {
+                  const result = await optimizeSubtitles(customTracks.subtitleCues, effectiveKey, (cur, total) => {
+                    appendLog('ASR', `  AI 优化: ${cur}/${total}`);
+                  });
+                  if (result.success) {
+                    setCustomTracks((prev) => ({
+                      ...prev,
+                      subtitleCues: result.optimizedCues,
+                      subtitleFileName: undefined,
+                    }));
+                    appendLog('ASR', `✓ AI 优化完成：${result.optimizedCues.length} 条字幕`);
+                  } else {
+                    appendLog('ASR', `⚠ AI 优化失败: ${result.error}`);
+                    alert('AI 优化失败: ' + (result.error || '未知错误'));
+                  }
+                } catch (e: any) {
+                  appendLog('ASR', `✗ AI 优化出错: ${e.message}`);
+                  alert('AI 优化出错: ' + e.message);
+                } finally {
+                  setWhisperRunning(false);
+                }
+              }}
+              disabled={whisperRunning || !(customTracks.subtitleCues?.length ?? 0)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] rounded border bg-emerald-600 border-emerald-500 text-white hover:bg-emerald-500 disabled:opacity-40 transition-all"
+              type="button"
+            >
+              ✨ AI 优化字幕
+            </button>
+          )}
+
           {/* ASR 进度提示框（导出 MP4 时显示） */}
           {whisperRunning && (
             <div className="bg-purple-900/30 border border-purple-700 rounded p-2 text-[10px] text-purple-300 flex items-center gap-1.5">
@@ -3775,70 +3843,6 @@ const RemotionSettingsPanel: React.FC<{
               <Sparkles size={10} />
               {whisperEnabled ? 'Whisper ASR 已开启（词级时间戳）' : '开启 Whisper ASR（词级时间戳）'}
             </button>
-            {/* 自动优化开关 */}
-            {(customTracks.subtitleCues?.length ?? 0) > 0 && (
-              <label className="flex items-center gap-1 text-[10px] text-slate-400 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={autoOptimize}
-                  onChange={(e) => {
-                    setAutoOptimize(e.target.checked);
-                    localStorage.setItem('AUTO_OPTIMIZE_SUBTITLE', String(e.target.checked));
-                  }}
-                  className="accent-emerald-500"
-                />
-                自动
-              </label>
-            )}
-            {/* AI 优化字幕按钮 */}
-            {(customTracks.subtitleCues?.length ?? 0) > 0 && (
-              <button
-                onClick={async () => {
-                  if (!customTracks.subtitleCues?.length) return;
-                  const effectiveKey = typeof window !== 'undefined'
-                    ? (window.localStorage.getItem('API_KEY_yunwu')
-                        || window.localStorage.getItem('API_KEY_google')
-                        || window.localStorage.getItem('API_KEY_runninghub')
-                        || window.localStorage.getItem('YUNWU_API_KEY')
-                        || window.localStorage.getItem('GEMINI_API_KEY')
-                        || window.localStorage.getItem('OPENLUX_API_KEY')
-                        || (window as any).localStorage.getItem('OPENAI_API_KEY'))
-                    : null;
-                  if (!effectiveKey) {
-                    appendLog('ASR', `⚠ 请先在设置中配置 AI API Key`);
-                    toast.error('请先在设置中配置 AI API Key', 4000);
-                    return;
-                  }
-                  setWhisperRunning(true);
-                  appendLog('ASR', `▸ AI 优化字幕中…`);
-                  try {
-                    const result = await optimizeSubtitles(customTracks.subtitleCues, effectiveKey, (cur, total) => {
-                      appendLog('ASR', `  AI 优化: ${cur}/${total}`);
-                    });
-                    if (result.success) {
-                      setCustomTracks((prev) => ({
-                        ...prev,
-                        subtitleCues: result.optimizedCues,
-                        subtitleFileName: undefined,
-                      }));
-                      appendLog('ASR', `✓ AI 优化完成：${result.optimizedCues.length} 条字幕`);
-                    } else {
-                      appendLog('ASR', `⚠ AI 优化失败: ${result.error}`);
-                      alert('AI 优化失败: ' + (result.error || '未知错误'));
-                    }
-                  } catch (e: any) {
-                    appendLog('ASR', `✗ AI 优化出错: ${e.message}`);
-                    alert('AI 优化出错: ' + e.message);
-                  } finally {
-                    setWhisperRunning(false);
-                  }
-                }}
-                disabled={whisperRunning || !(customTracks.subtitleCues?.length ?? 0)}
-                className="flex items-center gap-1.5 px-2 py-1 text-[10px] rounded border bg-emerald-600 border-emerald-500 text-white hover:bg-emerald-500 disabled:opacity-40 transition-all"
-              >
-                ✨ AI 优化字幕
-              </button>
-            )}
             {/* 字幕样式详情 */}
             {subtitleStyleOpen && (
               <div className="flex flex-col gap-1.5 bg-slate-900/40 rounded p-2">
