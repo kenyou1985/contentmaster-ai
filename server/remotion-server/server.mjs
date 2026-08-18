@@ -724,6 +724,8 @@ app.post('/upload-media', async (req, res) => {
 //   B. application/json:    { mediaDataUrl: "data:..." , fileName: "..." }  // 兼容旧版
 app.post('/audio/extract', async (req, res) => {
   const startedAt = Date.now();
+  let wavBytes = null;
+
   try {
     let bytes;
     let fileName = 'input.mp4';
@@ -757,22 +759,22 @@ app.post('/audio/extract', async (req, res) => {
     }
     console.log(`[remotion] /audio/extract 收到 ${(bytes.length / 1024 / 1024).toFixed(2)} MB (${mime}, ${fileName})`);
 
-    // 优先：Remotion 官方 @remotion/renderer.extractAudio()
-    //   用包内 @remotion/compositor-darwin-arm64/ffmpeg（macOS ARM64 专用编译版，
-    //   同包 spawn，dylib 解析正常，无需 DYLD_LIBRARY_PATH）
-    let ffmpegOk = false;
-    let ffmpegVersion = null;
-    let usedExtractor = 'unknown';
     const tempDir = join('/tmp', `audio_extract_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
     mkdirSync(tempDir, { recursive: true });
-    const safeName = (fileName || 'input.mp4').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
     const inPath = join(tempDir, safeName);
     const outPath = join(tempDir, safeName.replace(/\.[^.]+$/, '') + '.wav');
     writeFileSync(inPath, bytes);
 
-    // 路径 1：Remotion 官方 extractAudio（自动找包内 ffmpeg，零依赖）
+    let usedExtractor = 'unknown';
+    let ffmpegVersion = 'unknown';
+
+    // ── 路径 1：Remotion 官方 extractAudio（ESM 动态 import）──
     try {
-      const { extractAudio: remotionExtractAudio } = require('@remotion/renderer');
+      // ESM 模块用动态 import，不用 require（require 在 ESM 里不存在）
+      const mod = await import('@remotion/renderer');
+      const remotionExtractAudio = mod.extractAudio;
+      if (typeof remotionExtractAudio !== 'function') throw new Error(`@remotion/renderer.extractAudio 不是函数`);
       console.log(`[remotion] 使用 @remotion/renderer.extractAudio() 提取音轨`);
       await remotionExtractAudio({
         videoSource: inPath,
@@ -780,31 +782,30 @@ app.post('/audio/extract', async (req, res) => {
         logLevel: 'error',
       });
       usedExtractor = 'remotion.extractAudio';
-      ffmpegOk = true;
-      ffmpegVersion = '@remotion/compositor-darwin-arm64 (bundle)';
+      ffmpegVersion = '@remotion/compositor-darwin-arm64';
     } catch (e1) {
       console.warn(`[remotion] @remotion/renderer.extractAudio 失败: ${e1.message?.slice(0, 300)}`);
-      // 路径 2：fallback 到用户机器上的 ffmpeg binary
-      const candidates = [];
-      try { candidates.push(require('ffmpeg-static')); } catch {}
-      candidates.push('/Applications/小V猫.app/Contents/Resources/app/ffmpeg');
-      candidates.push('/Applications/易剪媒.app/Contents/Resources/extraResources/ffmpeg/mac/ffmpeg');
-      candidates.push('/Applications/剪映专业版5.9.app/Contents/Resources/ffmpeg');
-      candidates.push('/opt/homebrew/bin/ffmpeg');
-      candidates.push('/usr/local/bin/ffmpeg');
+      // ── 路径 2：fallback 到用户机器上的 ffmpeg binary ──
+      const candidates = [
+        { path: '/opt/homebrew/bin/ffmpeg', label: 'homebrew' },
+        { path: '/usr/local/bin/ffmpeg', label: 'usr/local' },
+        { path: '/Applications/小V猫.app/Contents/Resources/app/ffmpeg', label: '小V猫' },
+        { path: '/Applications/剪映专业版5.9.app/Contents/Resources/ffmpeg', label: '剪映' },
+        { path: '/Applications/易剪媒.app/Contents/Resources/extraResources/ffmpeg/mac/ffmpeg', label: '易剪媒' },
+      ];
 
-      for (const p of candidates) {
-        if (!p) continue;
+      let found = false;
+      for (const { path: p, label } of candidates) {
         if (!existsSync(p)) continue;
         try {
-          // 验证可执行
+          // 验证：只运行 -version，看 exit code
           execSync(`"${p}" -version`, { timeout: 3000, stdio: 'pipe' });
-        } catch (verifyErr) {
-          console.warn(`[remotion] ffmpeg ${p} 不可执行: ${verifyErr.message?.slice(0, 100)}`);
+        } catch (_ve) {
+          // shell exec 失败（如 SIGKILL），跳过
+          console.warn(`[remotion] ffmpeg ${label}(${p}) shell 不可执行，跳过`);
           continue;
         }
-        console.log(`[remotion] 用 fallback ffmpeg: ${p}`);
-        ffmpegVersion = execSync(`"${p}" -version 2>&1 | head -1`).toString().trim();
+        console.log(`[remotion] 用 fallback ffmpeg: ${label} (${p})`);
         await new Promise((resolve, reject) => {
           execFile(p, [
             '-i', inPath,
@@ -816,27 +817,44 @@ app.post('/audio/extract', async (req, res) => {
             '-y',
             outPath,
           ], { timeout: 120_000 }, (err, _stdout, stderr) => {
-            if (err) reject(new Error(stderr?.toString()?.slice(0, 300) || err.message));
-            else resolve();
+            if (err) {
+              const msg = stderr?.toString()?.slice(0, 300) || err.message;
+              console.warn(`[remotion] ffmpeg ${label} 转码失败: ${msg}`);
+              reject(new Error(msg));
+            } else {
+              resolve();
+            }
           });
         });
-        usedExtractor = `shell-ffmpeg(${p})`;
-        ffmpegOk = true;
+        usedExtractor = `shell-ffmpeg(${label})`;
+        // 取版本信息（execSync 不再用管道，用 node 读取）
+        try {
+          const vOut = execSync(`"${p}" -version`, { timeout: 3000, stdio: 'pipe' }).toString().trim();
+          ffmpegVersion = vOut.split('\n')[0];
+        } catch (_ve2) {
+          ffmpegVersion = `${label} (unavailable)`;
+        }
+        found = true;
         break;
+      }
+
+      if (!found) {
+        rmSync(tempDir, { recursive: true, force: true });
+        return res.status(503).json({
+          success: false,
+          error: `服务端所有 ffmpeg 都失败（@remotion/renderer: ${e1.message?.slice(0, 200)}）`,
+        });
       }
     }
 
-    if (!ffmpegOk) {
+    if (!existsSync(outPath)) {
       rmSync(tempDir, { recursive: true, force: true });
-      return res.status(503).json({
-        success: false,
-        error: '服务端所有 ffmpeg 路径都失败（@remotion/renderer.extractAudio + 所有 fallback binary）',
-      });
+      return res.status(500).json({ success: false, error: 'ffmpeg 未生成输出文件' });
     }
 
-    const wavBytes = readFileSync(outPath);
+    wavBytes = readFileSync(outPath);
     const wavSizeKB = (wavBytes.length / 1024).toFixed(1);
-    console.log(`[remotion] ffmpeg 输出: ${wavSizeKB} KB (${Date.now() - startedAt}ms)`);
+    console.log(`[remotion] ffmpeg 输出: ${wavSizeKB} KB (${Date.now() - startedAt}ms, extractor=${usedExtractor})`);
 
     if (wavBytes.length < 1000) {
       rmSync(tempDir, { recursive: true, force: true });
@@ -851,6 +869,8 @@ app.post('/audio/extract', async (req, res) => {
       wavDataUrl,
       sizeBytes: wavBytes.length,
       elapsedMs: Date.now() - startedAt,
+      usedExtractor,
+      ffmpegVersion,
     });
   } catch (e) {
     console.error('[remotion] /audio/extract 失败:', e);
