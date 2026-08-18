@@ -103,6 +103,27 @@ export interface GeneratedContent {
   content: string;
 }
 
+/** Thinking log phase */
+export type ThinkingPhase = 'idle' | 'phase1' | 'phase2' | 'phase3' | 'phase4' | 'done';
+
+/** Single line in the terminal thinking log */
+export interface ThoughtLine {
+  id: string;
+  phase: ThinkingPhase;
+  content: string;
+  ts: number;
+}
+
+/** Phase label map */
+export const THINKING_PHASE_LABELS: Record<ThinkingPhase, string> = {
+  idle: '',
+  phase1: 'Phase 1',
+  phase2: 'Phase 2',
+  phase3: 'Phase 3',
+  phase4: 'Phase 4',
+  done: '终稿统计',
+};
+
 export enum ToolMode {
   REWRITE = 'REWRITE',
   EXPAND = 'EXPAND',

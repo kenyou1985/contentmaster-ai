@@ -828,6 +828,8 @@ import {
   LifeDungeonSubModeId,
   NewsSubModeId,
   LifeDungeonLength,
+  type ThoughtLine,
+  type ThinkingPhase,
 } from '../types';
 import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, LIFE_DUNGEON_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT, YI_JING_SHORT_SCRIPT_PROMPT, HISTORICAL_FIGURE_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH, applyTopicCountToPrompt, NEWS_SHORT_SCRIPT_DOUYIN, NEWS_LONG_SCRIPT_DOUYIN } from '../constants';
 import { NicheSelector } from './NicheSelector';
@@ -1388,7 +1390,7 @@ function buildContinueToTargetCharsPrompt(
 3. 必须接在已写完的内容后面自然衔接，承接上一段最后一个论点的思路继续深挖。
 4. 续写 ${need} 字左右，写到 ${targetChars} 字附近为止。
 5. 续写完成后，**必须**以「咱们下期见。」结尾（这是终稿，结尾只出现这一次）。
-6. 续写时仍须遵循：香香人设、口语化、多维度词汇、全文不重复段落。
+6. 续写时仍须遵循：口语化、多维度词汇、全文不重复段落。
 7. 续写完成后立即停笔，绝不输出「咱们下期见。」以外的任何收尾相关文字。
 
 【输出格式】
@@ -1798,6 +1800,10 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const [inputVal, setInputVal] = useState('');
   const [topics, setTopics] = useState<Topic[]>([]);
   const [status, setStatus] = useState<GenerationStatus>(GenerationStatus.IDLE);
+
+  /** Thinking log lines for news/general output (实时思考流) */
+  const [thinkingLines, setThinkingLines] = useState<ThoughtLine[]>([]);
+
   // Adaptation mode: store adapted content
   const [adaptedContent, setAdaptedContent] = useState('');
   const [isAdapting, setIsAdapting] = useState(false);
@@ -3514,6 +3520,17 @@ ${segmentSourceText}
     setYiJingPipelineLogs((prev) => [...prev.slice(-220), `[${ts}] ${line}`]);
   }, []);
 
+  /** Push a line to the thinking log panel */
+  const pushThinkingLine = useCallback((phase: ThinkingPhase, content: string) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setThinkingLines((prev) => [...prev, { id, phase, content, ts: Date.now() }]);
+  }, []);
+
+  /** Reset thinking log (called at start of a new generation) */
+  const resetThinkingLines = useCallback(() => {
+    setThinkingLines([]);
+  }, []);
+
   const collectStreamText = useCallback(
     async (prompt: string, systemInstruction: string, maxTokens?: number): Promise<string> => {
       let acc = '';
@@ -3542,6 +3559,118 @@ ${segmentSourceText}
     setActiveIndices(new Set([0]));
     setViewIndex(0);
     setBatchProgress({ current: 0, total: 100, hint: '正在初始化一次性长文生成…' });
+    resetThinkingLines();
+
+    // ── Thinking 流解析器（状态机，按行解析）──────────────────────────────
+    type PhaseTag = { tag: string; phase: ThinkingPhase };
+    const PHASE_TAGS: PhaseTag[] = [
+      { tag: '【Phase 1', phase: 'phase1' },
+      { tag: '【Phase 2', phase: 'phase2' },
+      { tag: '【Phase 3', phase: 'phase3' },
+      { tag: '【Phase 4', phase: 'phase4' },
+      { tag: '【稿件统计', phase: 'done' },
+    ];
+    // 正文标签：跳过 Phase 标签后开始输出正文
+    const BODY_TAG = '【正文】';
+
+    let currentPhase: ThinkingPhase = 'idle';
+    let thinkingBuf = '';    // 正在拼凑中的行内容
+    let liveContentClean = ''; // 去掉 Phase 标签后的正文
+
+    const flushThinkingBuf = () => {
+      const trimmed = thinkingBuf.trim();
+      if (currentPhase !== 'idle' && trimmed) {
+        pushThinkingLine(currentPhase, trimmed);
+      }
+      thinkingBuf = '';
+    };
+
+    /** 解析 chunk：提取 Phase 标签，累积正文，实时更新 UI */
+    const parseThinkingChunk = (chunk: string) => {
+      let text = chunk;
+
+      // 1. 如果处于 Thinking 阶段但本 chunk 以【Phase/【正文开头 → 先 flush
+      if (currentPhase !== 'idle') {
+        const nextPhase = PHASE_TAGS.find((p) => text.startsWith(p.tag));
+        const isBodyStart = text.startsWith(BODY_TAG);
+        if (nextPhase || isBodyStart) {
+          flushThinkingBuf();
+          currentPhase = 'idle';
+        }
+      }
+
+      // 2. 扫描本 chunk 中的所有 Phase/正文 标签位置
+      const allMarkers: { tag: string; phase: ThinkingPhase | 'body'; index: number }[] = [];
+      for (const p of PHASE_TAGS) {
+        let idx = 0;
+        while (true) {
+          const pos = text.indexOf(p.tag, idx);
+          if (pos === -1) break;
+          allMarkers.push({ tag: p.tag, phase: p.phase, index: pos });
+          idx = pos + p.tag.length;
+        }
+      }
+      allMarkers.push({ tag: BODY_TAG, phase: 'body', index: text.indexOf(BODY_TAG) });
+      const bodyIdx = text.indexOf(BODY_TAG);
+      if (bodyIdx !== -1) {
+        allMarkers.push({ tag: BODY_TAG, phase: 'body', index: bodyIdx });
+      }
+
+      // 按位置排序，去掉重复
+      const sorted = allMarkers
+        .filter((m) => m.index !== -1)
+        .sort((a, b) => a.index - b.index)
+        .filter((m, i, arr) => i === 0 || m.index !== arr[i - 1].index);
+
+      if (sorted.length === 0) {
+        // 无标记：本 chunk 全是正文内容或 thinking 内容
+        if (currentPhase !== 'idle') {
+          thinkingBuf += text;
+        } else {
+          liveContentClean += text;
+        }
+        return;
+      }
+
+      // 3. 逐段处理
+      let cursor = 0;
+      for (const marker of sorted) {
+        const before = text.slice(cursor, marker.index);
+        if (before) {
+          if (currentPhase !== 'idle') {
+            thinkingBuf += before;
+          } else {
+            liveContentClean += before;
+          }
+        }
+        // 遇到新标签：flush 旧的，切换 phase
+        if (marker.phase === 'body') {
+          flushThinkingBuf();
+          currentPhase = 'idle';
+          // 正文标签本身不输出
+          cursor = marker.index + BODY_TAG.length;
+        } else {
+          flushThinkingBuf();
+          currentPhase = marker.phase;
+          // 去掉标签前缀，取标签后内容作为第一行
+          const labelText = text.slice(marker.index + marker.tag.length + 1).replace(/^】/, '');
+          if (labelText) thinkingBuf = labelText;
+          cursor = marker.index + marker.tag.length + 1 + labelText.length + 1;
+          // cursor 已越界，下个 marker 会正确截断
+        }
+      }
+
+      // 4. 处理末尾剩余内容
+      const tail = text.slice(cursor);
+      if (tail) {
+        if (currentPhase !== 'idle') {
+          thinkingBuf += tail;
+        } else {
+          liveContentClean += tail;
+        }
+      }
+    };
+    // ─────────────────────────────────────────────────────────────────────
 
     const topic = sel[0];
     const config = NICHES[niche];
@@ -3560,7 +3689,6 @@ ${segmentSourceText}
       : config?.systemInstruction || '';
 
     try {
-      let liveContent = '';
       let progressValue = 8;
       setBatchProgress({ current: progressValue, total: 100, hint: '模型已启动，正在生成正文…' });
 
@@ -3568,11 +3696,12 @@ ${segmentSourceText}
         prompt,
         systemInstruction,
         (chunk) => {
-          liveContent += chunk;
-          setGeneratedContents([{ topic: topic.title, content: liveContent }]);
-          setYiJingMergedOutput(liveContent);
-          setTcmMergedOutput(liveContent);
-          const visibleChars = liveContent.trim().length;
+          // 解析 Phase 标签，实时更新 thinking log 和正文
+          parseThinkingChunk(chunk);
+          setGeneratedContents([{ topic: topic.title, content: liveContentClean }]);
+          setYiJingMergedOutput(liveContentClean);
+          setTcmMergedOutput(liveContentClean);
+          const visibleChars = liveContentClean.trim().length;
           // 渐进式进度：根据字符数估算当前进度，最高 92%（剩余 8% 留给收尾处理）
           const charBasedProgress = Math.min(92, 10 + Math.floor(visibleChars / 45));
           const incrementalProgress = Math.max(1, Math.floor(chunk.length / 120));
@@ -3591,16 +3720,18 @@ ${segmentSourceText}
               : scriptLengthMode === 'SHORT'
                 ? 4096
                 : 32768,
-          // 长文场景：流式空闲超时从默认 180s 缩短到 60s，避免卡死
           idleTimeoutMs: 60000,
           firstChunkTimeoutMs: 90000,
         }
       );
 
+      // 流结束后：flush 剩余的 thinking 行
+      flushThinkingBuf();
+
       // 流结束后立即推进进度条到 95%
       setBatchProgress({ current: 95, total: 100, hint: '正文生成完成，正在整理最终文案…' });
 
-      let content = applyOneShotPostProcessing(liveContent, niche, scriptLengthMode, greatPowerLanguage, scriptWordCountMin);
+      let content = applyOneShotPostProcessing(liveContentClean, niche, scriptLengthMode, greatPowerLanguage, scriptWordCountMin);
 
       // 字数校准：长文不足 minChars 时，自动续写补齐
       if (niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG' && content) {
@@ -3701,7 +3832,67 @@ ${segmentSourceText}
     }
     initializeGemini(apiKey, { provider });
 
+    // ── 为并发任务创建独立的 thinking 解析器 ─────────────────────────────────
+    const makeThinkingParser = (topicTitle: string) => {
+      let phase: ThinkingPhase = 'idle';
+      let buf = '';
+      return {
+        parse: (chunk: string) => {
+          let text = chunk;
+          const markers: { tag: string; ph: ThinkingPhase | 'body'; idx: number }[] = [
+            { tag: '【Phase 1', ph: 'phase1', idx: text.indexOf('【Phase 1') },
+            { tag: '【Phase 2', ph: 'phase2', idx: text.indexOf('【Phase 2') },
+            { tag: '【Phase 3', ph: 'phase3', idx: text.indexOf('【Phase 3') },
+            { tag: '【Phase 4', ph: 'phase4', idx: text.indexOf('【Phase 4') },
+            { tag: '【稿件统计', ph: 'done', idx: text.indexOf('【稿件统计') },
+          ];
+          const bodyIdx = text.indexOf('【正文】');
+          if (bodyIdx !== -1) markers.push({ tag: '【正文】', ph: 'body', idx: bodyIdx });
+
+          const sorted = markers.filter(m => m.idx !== -1).sort((a, b) => a.idx - b.idx);
+
+          if (sorted.length === 0) {
+            if (phase !== 'idle') {
+              buf += text;
+            }
+            return;
+          }
+
+          let cursor = 0;
+          for (const m of sorted) {
+            const before = text.slice(cursor, m.idx);
+            if (before) {
+              if (phase !== 'idle') buf += before;
+            }
+            if (m.ph === 'body') {
+              if (phase !== 'idle' && buf.trim()) pushThinkingLine(phase, `[${topicTitle}] ${buf.trim()}`);
+              phase = 'idle';
+              buf = '';
+              cursor = m.idx + 4;
+            } else {
+              if (phase !== 'idle' && buf.trim()) pushThinkingLine(phase, `[${topicTitle}] ${buf.trim()}`);
+              phase = m.ph;
+              const after = text.slice(m.idx + m.tag.length + 1);
+              buf = after.replace(/^】/, '');
+              cursor = text.length;
+            }
+          }
+          const tail = text.slice(cursor);
+          if (tail) {
+            if (phase !== 'idle') buf += tail;
+          }
+        },
+        flush: () => {
+          if (phase !== 'idle' && buf.trim()) pushThinkingLine(phase, `[${topicTitle}] ${buf.trim()}`);
+          buf = '';
+          phase = 'idle';
+        },
+      };
+    };
+    // ─────────────────────────────────────────────────────────────────────
+
     const topicIds = sel.map((t) => t.id);
+    resetThinkingLines();
     setConcurrentLongFormBusy(true);
     setConcurrentLongFormProgress(Object.fromEntries(topicIds.map((id) => [id, 0])));
     setConcurrentLongFormErrors(Object.fromEntries(topicIds.map((id) => [id, ''])));
@@ -3750,6 +3941,7 @@ ${segmentSourceText}
               : config?.systemInstruction || '';
 
             try {
+              const parser = makeThinkingParser(topic.title);
               let liveContent = '';
               setConcurrentLongFormProgress((prev) => ({ ...prev, [topicId]: 5 }));
 
@@ -3757,6 +3949,7 @@ ${segmentSourceText}
                 prompt,
                 systemInstruction,
                 (chunk) => {
+                  parser.parse(chunk);
                   liveContent += chunk;
                   setGeneratedContents((prev) => {
                     const next = [...prev];
@@ -3776,6 +3969,8 @@ ${segmentSourceText}
                         : 32768,
                 }
               );
+
+              parser.flush();
 
               const content = applyOneShotPostProcessing(liveContent, niche, scriptLengthMode, greatPowerLanguage, scriptWordCountMin);
 
@@ -9625,6 +9820,76 @@ ${segmentSourceText}
             </div>
           </div>
       </section>
+
+      {/* Terminal Thinking Log — 新闻热点赛道输出时显示 */}
+      {niche === NicheType.GENERAL_VIRAL && thinkingLines.length > 0 && (
+        <div className="mb-4 bg-slate-950 border border-slate-700 rounded-xl overflow-hidden animate-in fade-in duration-300">
+          {/* Header */}
+          <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-slate-900/80">
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+              <span className="text-xs font-mono text-slate-400">【 实时思考流 】</span>
+            </div>
+            <span className="text-[10px] text-slate-600 font-mono">{thinkingLines.length} 行</span>
+          </div>
+          {/* Lines */}
+          <div
+            className="h-[320px] overflow-y-auto px-4 py-3 space-y-1 custom-scrollbar"
+            ref={(el) => { if (el) setTimeout(() => { el.scrollTop = el.scrollHeight; }, 50); }}
+          >
+            {thinkingLines.map((line) => {
+              const isPhase = line.phase !== 'idle' && line.phase !== 'done';
+              const isDone = line.phase === 'done';
+              const isBody = line.phase === 'idle';
+              const borderColor = isDone
+                ? 'border-amber-400'
+                : line.phase === 'phase1' ? 'border-cyan-400'
+                : line.phase === 'phase2' ? 'border-emerald-400'
+                : line.phase === 'phase3' ? 'border-purple-400'
+                : line.phase === 'phase4' ? 'border-pink-400'
+                : 'border-slate-700';
+              const labelText = isDone ? '终稿'
+                : line.phase === 'phase1' ? 'Phase 1'
+                : line.phase === 'phase2' ? 'Phase 2'
+                : line.phase === 'phase3' ? 'Phase 3'
+                : line.phase === 'phase4' ? 'Phase 4'
+                : '';
+              const labelBg = isDone ? 'bg-amber-500/20 text-amber-300'
+                : line.phase === 'phase1' ? 'bg-cyan-500/20 text-cyan-300'
+                : line.phase === 'phase2' ? 'bg-emerald-500/20 text-emerald-300'
+                : line.phase === 'phase3' ? 'bg-purple-500/20 text-purple-300'
+                : line.phase === 'phase4' ? 'bg-pink-500/20 text-pink-300'
+                : 'bg-slate-700/50 text-slate-400';
+
+              if (isDone) {
+                // 终稿统计：特殊展示
+                return (
+                  <div key={line.id} className={`border-l-2 ${borderColor} pl-3 py-2 rounded-r bg-amber-500/5`}>
+                    <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${labelBg}`}>{labelText}</span>
+                    <p className="text-[11px] text-slate-200 mt-1.5 leading-relaxed whitespace-pre-wrap font-mono">{line.content}</p>
+                  </div>
+                );
+              }
+
+              return (
+                <div key={line.id} className="flex items-start gap-2">
+                  <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded shrink-0 mt-0.5 ${labelBg}`}>{labelText}</span>
+                  <p className={`text-[11px] leading-relaxed whitespace-pre-wrap font-mono ${isBody ? 'text-slate-500 italic' : 'text-slate-300'}`}>
+                    {line.content}
+                  </p>
+                </div>
+              );
+            })}
+            {/* Cursor blink when generating */}
+            {status === GenerationStatus.GENERATING && (
+              <div className="flex items-center gap-2 text-slate-500 text-[11px] font-mono">
+                <span className="inline-block w-2 h-3 bg-cyan-400 animate-pulse" />
+                <span>正在生成…</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* 3. Output Section */}
       {(status === GenerationStatus.WRITING || status === GenerationStatus.COMPLETED || generatedContents.length > 0) && (
