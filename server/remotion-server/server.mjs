@@ -776,15 +776,34 @@ app.post('/audio/extract', async (req, res) => {
     //    浏览器 decodeAudioData() 无法解码。改用 ffmpeg-static 直接转 PCM。
     //    execFile spawn 绕开 shell，不会触发 macOS Gatekeeper SIGKILL。
     //
-    // 注意：用 localRequire('ffmpeg-static') 获取二进制路径，不要用 resolve
-    // （resolve 返回 index.js 文件本身，不是模块 export 的路径）
+    // 优先级：ffmpeg-static（完整解码器）> 小V猫 > 其他
+    // 注意：hardcode 路径，避免 ESM 中 require() 动态 resolve 的坑
+    const nodeModulesDir = localRequire.resolve('ffmpeg-static').replace('/index.js', '');
     const candidates = [
-      { path: localRequire('ffmpeg-static'), label: 'ffmpeg-static' },
-      { path: '/Applications/小V猫.app/Contents/Resources/app/ffmpeg', label: '小V猫' },
-      { path: '/Applications/剪映专业版5.9.app/Contents/Resources/ffmpeg', label: '剪映' },
-      { path: '/Applications/易剪媒.app/Contents/Resources/extraResources/ffmpeg/mac/ffmpeg', label: '易剪媒' },
-      { path: '/opt/homebrew/bin/ffmpeg', label: 'homebrew' },
-      { path: '/usr/local/bin/ffmpeg', label: 'usr/local' },
+      {
+        path: join(nodeModulesDir, 'ffmpeg'),
+        label: 'ffmpeg-static',
+      },
+      {
+        path: '/Applications/小V猫.app/Contents/Resources/app/ffmpeg',
+        label: '小V猫',
+      },
+      {
+        path: '/Applications/剪映专业版5.9.app/Contents/Resources/ffmpeg',
+        label: '剪映',
+      },
+      {
+        path: '/Applications/易剪媒.app/Contents/Resources/extraResources/ffmpeg/mac/ffmpeg',
+        label: '易剪媒',
+      },
+      {
+        path: '/opt/homebrew/bin/ffmpeg',
+        label: 'homebrew',
+      },
+      {
+        path: '/usr/local/bin/ffmpeg',
+        label: 'usr/local',
+      },
     ];
 
     let ffmpegOk = false;
@@ -813,10 +832,16 @@ app.post('/audio/extract', async (req, res) => {
           });
         });
         usedExtractor = `ffmpeg-${label}`;
-        // 取版本信息
+        // 取版本信息（用 execFile，不用 execSync shell）
         try {
-          const vOut = execSync(`"${p}" -version 2>&1 | head -1`, { timeout: 3000 }).toString().trim();
-          ffmpegVersion = vOut.split('\n')[0];
+          const vOut = await new Promise(res => {
+            const v = spawn(p, ['-version'], { timeout: 3000 });
+            let out = '';
+            v.stdout.on('data', d => out += d.toString());
+            v.on('close', () => res(out.split('\n')[0]));
+            v.on('error', () => res(''));
+          });
+          ffmpegVersion = vOut.trim() || label;
         } catch (_ve) {
           ffmpegVersion = label;
         }
