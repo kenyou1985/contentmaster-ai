@@ -1060,7 +1060,7 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
                 ✨ AI 优化
               </button>
             )}
-          )}
+          </div>
           <label className="flex items-center gap-1 text-[10px] text-slate-300">
             <input
               type="checkbox"
