@@ -973,94 +973,96 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
             }}
           />
           {state.audioUrl && (
-            <button
-              onClick={async () => {
-                if (!state.audioUrl) return;
-                setAsrLoading(true);
-                log('ASR', `▸ 重新 Whisper ASR 识别…`);
-                try {
-                  const dataUrl = await blobUrlToDataUrl(state.audioUrl);
-                  const baseUrl = (window as any).__REMOTION_SERVER_URL__ || getRemotionApiBase();
-                  const resp = await fetch(`${baseUrl}/asr/transcribe`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ audioUrl: dataUrl, language: 'zh' }),
-                  });
-                  const data = await resp.json();
-                  if (data.success && data.cues?.length > 0) {
-                    // 重新识别时也做繁→简转换
-                    const cuesText = data.cues.map((c: any) => c.text).join(' ');
-                    let finalCues = data.cues;
-                    if (looksLikeTraditional(cuesText)) {
-                      log('ASR', `▸ 检测到繁体字幕，正在转换为简体…`);
-                      try {
-                        finalCues = await convertCuesTexts(data.cues, 't2s');
-                      } catch (e: any) {
-                        log('WARN', `繁简转换失败: ${e.message}`);
-                      }
-                    }
-                    onChange((prev) => ({ ...prev, subtitleCues: finalCues, subtitleFileName: undefined, subtitleEnabled: true }));
-                    log('ASR', `✓ 重新识别完成：${finalCues.length} 条字幕`);
-                  } else {
-                    log('ASR', `⚠ 识别失败: ${data.error || '未知错误'}`);
-                  }
-                } catch (e: any) {
-                  log('ASR', `✗ 请求失败: ${e.message}`);
-                } finally {
-                  setAsrLoading(false);
-                }
-              }}
-              disabled={asrLoading || !state.audioUrl}
-              className="text-[11px] px-2.5 py-1 bg-cyan-600 hover:bg-cyan-500 text-white rounded flex items-center gap-1 disabled:opacity-40"
-              type="button"
-              title="用 Whisper 重新识别音频"
-            >
-              {asrLoading ? <Loader2 size={12} className="animate-spin" /> : null}
-              {asrLoading ? '识别中…' : '🔄 重新识别'}
-            </button>
-            {/* AI 优化按钮 */}
-            {state.subtitleCues.length > 0 && (
+            <>
               <button
                 onClick={async () => {
-                  if (!state.subtitleCues.length) return;
-                  const hasApiKey = typeof window !== 'undefined' && !!window.localStorage.getItem('GEMINI_API_KEY');
-                  if (!hasApiKey) {
-                    alert('请先在设置中配置 AI API Key（Gemini / Yunwu）');
-                    return;
-                  }
+                  if (!state.audioUrl) return;
                   setAsrLoading(true);
-                  log('ASR', `▸ AI 优化字幕中…`);
+                  log('ASR', `▸ 重新 Whisper ASR 识别…`);
                   try {
-                    const result = await optimizeSubtitles(state.subtitleCues, (cur, total) => {
-                      log('ASR', `  AI 优化: ${cur}/${total}`);
+                    const dataUrl = await blobUrlToDataUrl(state.audioUrl);
+                    const baseUrl = (window as any).__REMOTION_SERVER_URL__ || getRemotionApiBase();
+                    const resp = await fetch(`${baseUrl}/asr/transcribe`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ audioUrl: dataUrl, language: 'zh' }),
                     });
-                    if (result.success) {
-                      onChange((prev) => ({
-                        ...prev,
-                        subtitleCues: result.optimizedCues,
-                        subtitleFileName: undefined,
-                      }));
-                      log('ASR', `✓ AI 优化完成：${result.optimizedCues.length} 条字幕`);
+                    const data = await resp.json();
+                    if (data.success && data.cues?.length > 0) {
+                      // 重新识别时也做繁→简转换
+                      const cuesText = data.cues.map((c: any) => c.text).join(' ');
+                      let finalCues = data.cues;
+                      if (looksLikeTraditional(cuesText)) {
+                        log('ASR', `▸ 检测到繁体字幕，正在转换为简体…`);
+                        try {
+                          finalCues = await convertCuesTexts(data.cues, 't2s');
+                        } catch (e: any) {
+                          log('WARN', `繁简转换失败: ${e.message}`);
+                        }
+                      }
+                      onChange((prev) => ({ ...prev, subtitleCues: finalCues, subtitleFileName: undefined, subtitleEnabled: true }));
+                      log('ASR', `✓ 重新识别完成：${finalCues.length} 条字幕`);
                     } else {
-                      log('ASR', `⚠ AI 优化失败: ${result.error}`);
-                      alert('AI 优化失败: ' + (result.error || '未知错误'));
+                      log('ASR', `⚠ 识别失败: ${data.error || '未知错误'}`);
                     }
                   } catch (e: any) {
-                    log('ASR', `✗ AI 优化出错: ${e.message}`);
-                    alert('AI 优化出错: ' + e.message);
+                    log('ASR', `✗ 请求失败: ${e.message}`);
                   } finally {
                     setAsrLoading(false);
                   }
                 }}
-                disabled={asrLoading || !state.subtitleCues.length}
-                className="text-[11px] px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded flex items-center gap-1 disabled:opacity-40"
+                disabled={asrLoading || !state.audioUrl}
+                className="text-[11px] px-2.5 py-1 bg-cyan-600 hover:bg-cyan-500 text-white rounded flex items-center gap-1 disabled:opacity-40"
                 type="button"
-                title="使用 AI 根据上下文语境优化字幕"
+                title="用 Whisper 重新识别音频"
               >
-                ✨ AI 优化
+                {asrLoading ? <Loader2 size={12} className="animate-spin" /> : null}
+                {asrLoading ? '识别中…' : '🔄 重新识别'}
               </button>
-            )}
-          </div>
+              {/* AI 优化按钮 */}
+              {state.subtitleCues.length > 0 && (
+                <button
+                  onClick={async () => {
+                    if (!state.subtitleCues.length) return;
+                    const hasApiKey = typeof window !== 'undefined' && !!window.localStorage.getItem('GEMINI_API_KEY');
+                    if (!hasApiKey) {
+                      alert('请先在设置中配置 AI API Key（Gemini / Yunwu）');
+                      return;
+                    }
+                    setAsrLoading(true);
+                    log('ASR', `▸ AI 优化字幕中…`);
+                    try {
+                      const result = await optimizeSubtitles(state.subtitleCues, (cur, total) => {
+                        log('ASR', `  AI 优化: ${cur}/${total}`);
+                      });
+                      if (result.success) {
+                        onChange((prev) => ({
+                          ...prev,
+                          subtitleCues: result.optimizedCues,
+                          subtitleFileName: undefined,
+                        }));
+                        log('ASR', `✓ AI 优化完成：${result.optimizedCues.length} 条字幕`);
+                      } else {
+                        log('ASR', `⚠ AI 优化失败: ${result.error}`);
+                        alert('AI 优化失败: ' + (result.error || '未知错误'));
+                      }
+                    } catch (e: any) {
+                      log('ASR', `✗ AI 优化出错: ${e.message}`);
+                      alert('AI 优化出错: ' + e.message);
+                    } finally {
+                      setAsrLoading(false);
+                    }
+                  }}
+                  disabled={asrLoading || !state.subtitleCues.length}
+                  className="text-[11px] px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded flex items-center gap-1 disabled:opacity-40"
+                  type="button"
+                  title="使用 AI 根据上下文语境优化字幕"
+                >
+                  ✨ AI 优化
+                </button>
+              )}
+            </>
+          )}
           <label className="flex items-center gap-1 text-[10px] text-slate-300">
             <input
               type="checkbox"
