@@ -25,48 +25,86 @@ export interface OptimizationResult {
   success: boolean;
   optimizedCues: SubtitleCue[];
   error?: string;
+  correctedCount?: number; // 实际被修改的字幕条数
 }
 
 /**
- * 调用 AI 优化单条字幕
+ * 从 localStorage 获取 API Key
  */
-async function optimizeSingleCue(
-  originalText: string,
-  contextBefore: string,
-  contextAfter: string,
+function getApiKey(): string | null {
+  if (typeof window === 'undefined') return null;
+  // 兼容多种 key 名称
+  return (
+    localStorage.getItem('GEMINI_API_KEY') ||
+    localStorage.getItem('YUNWU_API_KEY') ||
+    localStorage.getItem('OPENAI_API_KEY')
+  );
+}
+
+/**
+ * 调用 AI（单次批量），返回整段响应文本
+ */
+async function callAI(
+  prompt: string,
+  systemInstruction: string,
   apiCall: (prompt: string, systemInstruction: string) => Promise<string>
 ): Promise<string> {
-  const systemInstruction = `你是一个专业的中文语音转文字纠错专家。
-
-任务：根据上下文语境，纠正语音识别（ASR）产生的字幕错误。
-
-纠错范围：
-1. 同音字错误：如"万安"误识别、"讲万安"应为"蒋万安"等
-2. 人名纠正：根据上下文识别说话者提到的人物姓名
-3. 专业术语：行业专业词汇的准确识别
-4. 语句通顺：修正因口音、连读、吞音导致的语句不通顺
-5. 繁简转换：保留原文的简体或繁体风格
-
-重要原则：
-- 只修改明显错误，保持原文风格和语义
-- 不要过度修改，不要添加原文没有的内容
-- 人名地名等专有名词要结合上下文判断
-- 保持原句长度大致不变`;
-
-  const userPrompt = `请纠正以下字幕中的错误：
-
-上一句：${contextBefore || '（无）'}
-当前字幕：${originalText}
-下一句：${contextAfter || '（无）'}
-
-请只返回纠正后的字幕文本，不要解释，不要添加任何标记。`;
-
-  const result = await apiCall(userPrompt, systemInstruction);
-  return result.trim();
+  return apiCall(prompt, systemInstruction);
 }
 
 /**
- * 批量优化字幕
+ * 解析 AI 返回的批量字幕结果
+ * 支持多种格式：
+ * 1. JSON 数组（推荐）
+ * 2. 每行一个字幕
+ * 3. 用编号分隔
+ */
+function parseBatchResult(content: string, originalCues: SubtitleCue[]): SubtitleCue[] {
+  const trimmed = content.trim();
+
+  // 尝试解析 JSON 数组
+  const jsonMatch = trimmed.match(/\[[\s\S]*\]/);
+  if (jsonMatch) {
+    try {
+      const arr = JSON.parse(jsonMatch[0]);
+      if (Array.isArray(arr) && arr.length > 0) {
+        return originalCues.map((cue, idx) => {
+          const item = arr[idx];
+          if (typeof item === 'string') {
+            return { ...cue, text: item };
+          }
+          if (item && typeof item === 'object' && item.text) {
+            return { ...cue, text: item.text };
+          }
+          return cue;
+        });
+      }
+    } catch (e) {
+      // 继续尝试其他格式
+    }
+  }
+
+  // 尝试按行解析（每行一个字幕）
+  const lines = trimmed.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length >= originalCues.length * 0.8) {
+    return originalCues.map((cue, idx) => {
+      // 优先使用对应的行；如果多出一行可能是说明文字
+      const line = lines[idx];
+      if (line) {
+        // 清理可能的前缀（数字编号、方括号等）
+        const cleaned = line.replace(/^[\d]+[\.、:：\s]+/, '').replace(/^[\[\(][^\]]+[\]\)]\s*/, '');
+        return { ...cue, text: cleaned };
+      }
+      return cue;
+    });
+  }
+
+  // 最后兜底：返回原文
+  return originalCues;
+}
+
+/**
+ * 批量优化字幕（单次 AI 调用，性能更好）
  *
  * @param cues 原始字幕数组（按时间顺序）
  * @param onProgress 进度回调 (current, total)
@@ -74,49 +112,60 @@ async function optimizeSingleCue(
  */
 export async function optimizeSubtitles(
   cues: SubtitleCue[],
-  onProgress?: (current: number, total: number) => void
+  onProgress?: (current: number, total: number) => Promise<void> | void
 ): Promise<OptimizationResult> {
   if (!cues || cues.length === 0) {
-    return { success: true, optimizedCues: [] };
+    return { success: true, optimizedCues: [], correctedCount: 0 };
   }
 
-  // 动态导入 AI 服务（避免循环依赖）
-  let apiCall: (prompt: string, systemInstruction: string) => Promise<string>;
-  let apiKey: string | null = null;
-
-  // 从 localStorage 获取 API Key
-  if (typeof window !== 'undefined') {
-    apiKey = localStorage.getItem('GEMINI_API_KEY');
-  }
-
+  // 检查 API Key
+  const apiKey = getApiKey();
   if (!apiKey) {
     return {
       success: false,
       optimizedCues: cues,
-      error: '请先在设置中配置 AI API Key',
+      error: '请先在设置中配置 AI API Key（GEMINI_API_KEY / YUNWU_API_KEY）',
     };
   }
 
+  let apiCall: (prompt: string, systemInstruction: string) => Promise<string>;
   try {
     const { streamContentGeneration } = await import('../services/geminiService');
 
-    // 非流式调用的包装函数
-    apiCall = async (prompt: string, systemInstruction: string): Promise<string> => {
+    apiCall = (prompt: string, systemInstruction: string): Promise<string> => {
       return new Promise((resolve, reject) => {
         let fullContent = '';
+        let aborted = false;
+
+        // 设置超时（120 秒）
+        const timeoutId = setTimeout(() => {
+          if (!aborted) {
+            aborted = true;
+            reject(new Error('AI 优化超时（120秒），请稍后重试或减少字幕条数'));
+          }
+        }, 120_000);
+
         streamContentGeneration(
           prompt,
           systemInstruction,
           (chunk) => {
-            fullContent += chunk;
+            if (!aborted) fullContent += chunk;
           },
           undefined,
-          { temperature: 0.3, maxTokens: 4096 }
+          { temperature: 0.3, maxTokens: 8192 }
         )
           .then(() => {
-            resolve(fullContent.trim());
+            if (!aborted) {
+              clearTimeout(timeoutId);
+              resolve(fullContent.trim());
+            }
           })
-          .catch(reject);
+          .catch((err) => {
+            if (!aborted) {
+              clearTimeout(timeoutId);
+              reject(err);
+            }
+          });
       });
     };
   } catch (e) {
@@ -127,40 +176,67 @@ export async function optimizeSubtitles(
     };
   }
 
-  const optimizedCues: SubtitleCue[] = [];
-  const total = cues.length;
+  // 报告初始进度
+  onProgress?.(0, cues.length);
 
   try {
-    // 分批处理，每批 5 条（避免 prompt 过长）
-    const batchSize = 5;
-    for (let i = 0; i < total; i += batchSize) {
-      const batch = cues.slice(i, Math.min(i + batchSize, total));
-      const batchPromises = batch.map((cue, idx) => {
-        const actualIdx = i + idx;
-        const prevCue = actualIdx > 0 ? cues[actualIdx - 1] : null;
-        const nextCue = actualIdx < total - 1 ? cues[actualIdx + 1] : null;
+    const systemInstruction = `你是一个专业的中文语音转文字纠错专家。
 
-        const contextBefore = prevCue?.text || '';
-        const contextAfter = nextCue?.text || '';
+任务：根据上下文语境，一次性纠正给定的所有 ASR 字幕错误。
 
-        return optimizeSingleCue(cue.text, contextBefore, contextAfter, apiCall)
-          .then((corrected) => ({
-            ...cue,
-            text: corrected,
-          }));
-      });
+纠错范围：
+1. 同音字错误：如"在干嘛"误识别为"再干嘛"、"曾杰凯"误识别等
+2. 人名纠正：根据上下文识别说话者提到的人物姓名（如根据时事背景纠正"蒋万安"vs"姜万安"）
+3. 专业术语：行业专业词汇的准确识别
+4. 语句通顺：修正因口音、连读、吞音导致的语句不通顺
+5. 繁简统一：保留原文的简体或繁体风格
 
-      const batchResults = await Promise.all(batchPromises);
-      optimizedCues.push(...batchResults);
+重要原则：
+- 只修改明显的错误，保持原文风格和语义
+- 不要过度修改，不要添加原文没有的内容
+- 人名地名等专有名词要结合上下文判断
+- 如果某条字幕没有明显错误，原样返回
 
-      onProgress?.(Math.min(i + batchSize, total), total);
-    }
+输出格式：
+- 你必须输出一个 JSON 数组，每个元素对应原始字幕的纠正后文本
+- 数组长度必须等于输入字幕条数
+- 只输出 JSON，不要包含其他说明文字
+- 示例：[ "纠正后的第1条", "纠正后的第2条", ... ]`;
 
-    return { success: true, optimizedCues };
+    // 构造批量输入
+    const numberedOriginal = cues.map((c, i) => `${i + 1}. ${c.text}`).join('\n');
+    const userPrompt = `请纠正以下 ${cues.length} 条字幕中的错误（基于上下文语境）：
+
+${numberedOriginal}
+
+请只返回 JSON 数组，格式如：[ "纠正后的第1条", "纠正后的第2条", ... ]
+数组长度必须等于 ${cues.length}，不要修改其他内容。`;
+
+    const result = await callAI(userPrompt, systemInstruction, apiCall);
+
+    // 报告 80% 进度（解析前）
+    onProgress?.(Math.floor(cues.length * 0.8), cues.length);
+
+    const optimizedCues = parseBatchResult(result, cues);
+
+    // 统计实际修改数量
+    let correctedCount = 0;
+    optimizedCues.forEach((opt, idx) => {
+      if (opt.text !== cues[idx].text) correctedCount++;
+    });
+
+    // 报告 100% 进度
+    onProgress?.(cues.length, cues.length);
+
+    return {
+      success: true,
+      optimizedCues,
+      correctedCount,
+    };
   } catch (e) {
     return {
       success: false,
-      optimizedCues,
+      optimizedCues: cues,
       error: '优化失败: ' + (e instanceof Error ? e.message : String(e)),
     };
   }
@@ -172,10 +248,9 @@ export async function optimizeSubtitles(
 export function detectLikelyErrors(text: string): string[] {
   const errors: string[] = [];
 
-  // 检测明显的 ASR 错误模式
   const patterns = [
-    { regex: /[a-zA-Z]{3,}/g, desc: '可能包含未翻译的英文' }, // 连续3个以上英文字母
-    { regex: /\d{5,}/g, desc: '可能包含错误的数字' }, // 连续5位以上数字
+    { regex: /[a-zA-Z]{3,}/g, desc: '可能包含未翻译的英文' },
+    { regex: /\d{5,}/g, desc: '可能包含错误的数字' },
     { regex: /[。！？，、；：""''（）【】]{2,}/g, desc: '标点符号重复' },
     { regex: /^\s*[的得地]/g, desc: '可能开头有语气词' },
   ];
@@ -197,12 +272,7 @@ export async function quickOptimize(
   subtitleText: string,
   context?: string
 ): Promise<string> {
-  let apiKey: string | null = null;
-
-  if (typeof window !== 'undefined') {
-    apiKey = localStorage.getItem('GEMINI_API_KEY');
-  }
-
+  const apiKey = getApiKey();
   if (!apiKey) {
     throw new Error('请先在设置中配置 AI API Key');
   }
@@ -218,6 +288,10 @@ export async function quickOptimize(
 
   return new Promise((resolve, reject) => {
     let fullContent = '';
+    const timeoutId = setTimeout(() => {
+      reject(new Error('AI 调用超时'));
+    }, 60_000);
+
     streamContentGeneration(
       userPrompt,
       systemInstruction,
@@ -228,8 +302,12 @@ export async function quickOptimize(
       { temperature: 0.3, maxTokens: 2048 }
     )
       .then(() => {
+        clearTimeout(timeoutId);
         resolve(fullContent.trim());
       })
-      .catch(reject);
+      .catch((err) => {
+        clearTimeout(timeoutId);
+        reject(err);
+      });
   });
 }
