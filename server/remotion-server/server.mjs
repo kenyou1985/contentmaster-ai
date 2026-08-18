@@ -26,7 +26,9 @@ import { promises as fs } from 'fs';
 import { Readable } from 'stream';
 import os from 'os';
 import multer from 'multer';
+// ESM 文件中创建本地 require，用于解析 ffmpeg-static 等 CommonJS 模块
 import { createRequire } from 'module';
+const localRequire = createRequire(import.meta.url);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -769,43 +771,24 @@ app.post('/audio/extract', async (req, res) => {
     let usedExtractor = 'unknown';
     let ffmpegVersion = 'unknown';
 
-    // ── 路径 1：Remotion 官方 extractAudio（ESM 动态 import）──
-    try {
-      // ESM 模块用动态 import，不用 require（require 在 ESM 里不存在）
-      const mod = await import('@remotion/renderer');
-      const remotionExtractAudio = mod.extractAudio;
-      if (typeof remotionExtractAudio !== 'function') throw new Error(`@remotion/renderer.extractAudio 不是函数`);
-      console.log(`[remotion] 使用 @remotion/renderer.extractAudio() 提取音轨`);
-      await remotionExtractAudio({
-        videoSource: inPath,
-        audioOutput: outPath,
-        logLevel: 'error',
-      });
-      usedExtractor = 'remotion.extractAudio';
-      ffmpegVersion = '@remotion/compositor-darwin-arm64';
-    } catch (e1) {
-      console.warn(`[remotion] @remotion/renderer.extractAudio 失败: ${e1.message?.slice(0, 300)}`);
-      // ── 路径 2：fallback 到用户机器上的 ffmpeg binary ──
-      const candidates = [
-        { path: '/opt/homebrew/bin/ffmpeg', label: 'homebrew' },
-        { path: '/usr/local/bin/ffmpeg', label: 'usr/local' },
-        { path: '/Applications/小V猫.app/Contents/Resources/app/ffmpeg', label: '小V猫' },
-        { path: '/Applications/剪映专业版5.9.app/Contents/Resources/ffmpeg', label: '剪映' },
-        { path: '/Applications/易剪媒.app/Contents/Resources/extraResources/ffmpeg/mac/ffmpeg', label: '易剪媒' },
-      ];
+    // ── 提取音频（直接用 ffmpeg-static 转标准 PCM WAV）──
+    //    @remotion/renderer.extractAudio() 输出 audioFormat:255（WAVE_FORMAT_EXTENSIBLE），
+    //    浏览器 decodeAudioData() 无法解码。改用 ffmpeg-static 直接转 PCM。
+    //    execFile spawn 绕开 shell，不会触发 macOS Gatekeeper SIGKILL。
+    const candidates = [
+      { path: localRequire.resolve('ffmpeg-static'), label: 'ffmpeg-static' },
+      { path: '/Applications/小V猫.app/Contents/Resources/app/ffmpeg', label: '小V猫' },
+      { path: '/Applications/剪映专业版5.9.app/Contents/Resources/ffmpeg', label: '剪映' },
+      { path: '/Applications/易剪媒.app/Contents/Resources/extraResources/ffmpeg/mac/ffmpeg', label: '易剪媒' },
+      { path: '/opt/homebrew/bin/ffmpeg', label: 'homebrew' },
+      { path: '/usr/local/bin/ffmpeg', label: 'usr/local' },
+    ];
 
-      let found = false;
-      for (const { path: p, label } of candidates) {
-        if (!existsSync(p)) continue;
-        try {
-          // 验证：只运行 -version，看 exit code
-          execSync(`"${p}" -version`, { timeout: 3000, stdio: 'pipe' });
-        } catch (_ve) {
-          // shell exec 失败（如 SIGKILL），跳过
-          console.warn(`[remotion] ffmpeg ${label}(${p}) shell 不可执行，跳过`);
-          continue;
-        }
-        console.log(`[remotion] 用 fallback ffmpeg: ${label} (${p})`);
+    let ffmpegOk = false;
+    for (const { path: p, label } of candidates) {
+      if (!p || !existsSync(p)) continue;
+      console.log(`[remotion] 用 ffmpeg: ${label} (${p})`);
+      try {
         await new Promise((resolve, reject) => {
           execFile(p, [
             '-i', inPath,
@@ -816,35 +799,37 @@ app.post('/audio/extract', async (req, res) => {
             '-f', 'wav',
             '-y',
             outPath,
-          ], { timeout: 120_000 }, (err, _stdout, stderr) => {
+          ], { timeout: 180_000 }, (err, _stdout, stderr) => {
             if (err) {
               const msg = stderr?.toString()?.slice(0, 300) || err.message;
-              console.warn(`[remotion] ffmpeg ${label} 转码失败: ${msg}`);
+              console.warn(`[remotion] ffmpeg ${label} 失败: ${msg}`);
               reject(new Error(msg));
             } else {
               resolve();
             }
           });
         });
-        usedExtractor = `shell-ffmpeg(${label})`;
-        // 取版本信息（execSync 不再用管道，用 node 读取）
+        usedExtractor = `ffmpeg-${label}`;
+        // 取版本信息
         try {
-          const vOut = execSync(`"${p}" -version`, { timeout: 3000, stdio: 'pipe' }).toString().trim();
+          const vOut = execSync(`"${p}" -version 2>&1 | head -1`, { timeout: 3000 }).toString().trim();
           ffmpegVersion = vOut.split('\n')[0];
-        } catch (_ve2) {
-          ffmpegVersion = `${label} (unavailable)`;
+        } catch (_ve) {
+          ffmpegVersion = label;
         }
-        found = true;
+        ffmpegOk = true;
         break;
+      } catch (_e) {
+        // try next candidate
       }
+    }
 
-      if (!found) {
-        rmSync(tempDir, { recursive: true, force: true });
-        return res.status(503).json({
-          success: false,
-          error: `服务端所有 ffmpeg 都失败（@remotion/renderer: ${e1.message?.slice(0, 200)}）`,
-        });
-      }
+    if (!ffmpegOk) {
+      rmSync(tempDir, { recursive: true, force: true });
+      return res.status(503).json({
+        success: false,
+        error: '服务端所有 ffmpeg 都失败',
+      });
     }
 
     if (!existsSync(outPath)) {
