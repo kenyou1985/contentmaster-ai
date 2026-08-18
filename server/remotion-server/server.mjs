@@ -1089,7 +1089,7 @@ app.post('/render/sync', async (req, res) => {
  *
  * 工作流：
  * 1. 接收 audioUrl（支持 data: URL 或 http://localhost:18093/media/...）
- * 2. 保存到 /tmp/whisper_audio_*.mp3
+ * 2. 根据 MIME 类型/URL 扩展名保存为对应格式（wav/mp3/m4a/ogg）
  * 3. 调用 transcribeAudio()（本地 WASM whisper，无外网调用）
  * 4. 清理临时文件
  */
@@ -1100,14 +1100,35 @@ app.post('/asr/transcribe', async (req, res) => {
       return res.status(400).json({ success: false, error: 'audioUrl 不能为空' });
     }
 
-    const tempFile = `/tmp/whisper_audio_${Date.now()}.mp3`;
+    // 从 data URL 的 MIME 类型推断文件扩展名，支持 wav/mp3/m4a/ogg 等格式
+    let audioExt = '.mp3'; // 默认 mp3
+    if (audioUrl.startsWith('data:')) {
+      const mimeMatch = audioUrl.match(/^data:([^;]+)/);
+      if (mimeMatch) {
+        const mime = mimeMatch[1].toLowerCase();
+        if (mime.includes('wav')) audioExt = '.wav';
+        else if (mime.includes('mp3') || mime.includes('mpeg')) audioExt = '.mp3';
+        else if (mime.includes('m4a')) audioExt = '.m4a';
+        else if (mime.includes('ogg')) audioExt = '.ogg';
+        else if (mime.includes('flac')) audioExt = '.flac';
+      }
+    } else {
+      // http(s) URL：根据路径扩展名判断
+      const urlMatch = audioUrl.match(/\.([a-z0-9]+)(\?|$)/i);
+      if (urlMatch) audioExt = '.' + urlMatch[1].toLowerCase();
+    }
+    const tempFile = `/tmp/whisper_audio_${Date.now()}${audioExt}`;
     try {
       let audioData;
+      let mimeType = 'audio/wav';
       if (audioUrl.startsWith('data:')) {
         // data: URL → 直接解码
         const base64 = audioUrl.replace(/^data:[^;]+;base64,/, '');
+        const mimeMatch = audioUrl.match(/^data:([^;]+)/);
+        mimeType = mimeMatch ? mimeMatch[1] : 'audio/wav';
         const { writeFileSync } = await import('fs');
         const buffer = Buffer.from(base64, 'base64');
+        console.log(`[ASR] 接收 data: URL, MIME=${mimeType}, 大小=${buffer.length} bytes, 扩展名=${audioExt}`);
         writeFileSync(tempFile, buffer);
       } else {
         // http(s) URL → 下载
@@ -1151,6 +1172,90 @@ app.post('/asr/transcribe', async (req, res) => {
     }
   } catch (e) {
     console.error('[asr] /transcribe error:', e);
+    res.status(500).json({ success: false, error: e.message ?? String(e) });
+  }
+});
+
+// ── 音频格式转换（WAV → MP3）────────────────────
+/**
+ * POST /audio/convert-to-mp3
+ * Body: { audioUrl: string (data: URL 或 http URL) }
+ * Returns: { success, mp3Url: string (data URL), size: number }
+ *
+ * 使用 ffmpeg 将音频转换为 MP3 格式
+ */
+app.post('/audio/convert-to-mp3', async (req, res) => {
+  try {
+    const { audioUrl } = req.body || {};
+    if (!audioUrl) {
+      return res.status(400).json({ success: false, error: 'audioUrl 不能为空' });
+    }
+
+    const tempWav = `/tmp/convert_to_mp3_${Date.now()}.wav`;
+    const tempMp3 = `/tmp/convert_to_mp3_${Date.now()}.mp3`;
+
+    try {
+      // 下载音频文件
+      if (audioUrl.startsWith('data:')) {
+        const base64 = audioUrl.replace(/^data:[^;]+;base64,/, '');
+        const buffer = Buffer.from(base64, 'base64');
+        writeFileSync(tempWav, buffer);
+      } else {
+        const response = await fetch(audioUrl);
+        if (!response.ok) {
+          return res.status(400).json({ success: false, error: `下载音频失败: HTTP ${response.status}` });
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        writeFileSync(tempWav, Buffer.from(arrayBuffer));
+      }
+
+      // 检查 ffmpeg 是否可用
+      let ffmpegPath = 'ffmpeg';
+      let ffmpegOk = false;
+      try {
+        execSync('ffmpeg -version', { timeout: 3000 });
+        ffmpegOk = true;
+      } catch {
+        // 尝试 ffmpeg-static
+        try {
+          const nodeModulesDir = localRequire.resolve('ffmpeg-static').replace('/index.js', '');
+          ffmpegPath = join(nodeModulesDir, 'ffmpeg');
+          if (!existsSync(ffmpegPath)) {
+            return res.status(500).json({ success: false, error: 'ffmpeg 不可用' });
+          }
+          ffmpegOk = true;
+        } catch {
+          return res.status(500).json({ success: false, error: 'ffmpeg 不可用' });
+        }
+      }
+
+      // 用 ffmpeg 转换为 MP3
+      await new Promise((resolve, reject) => {
+        const args = ['-y', '-i', tempWav, '-codec:a', 'libmp3lame', '-qscale:a', '2', '-ar', '44100', '-ac', '2', tempMp3];
+        const proc = spawn(ffmpegPath, args);
+        let stderr = '';
+        proc.stderr.on('data', (d) => { stderr += d.toString(); });
+        proc.on('close', (code) => {
+          if (code === 0) resolve();
+          else reject(new Error(`ffmpeg 转换失败: ${stderr.slice(-200)}`));
+        });
+        proc.on('error', reject);
+      });
+
+      // 读取 MP3 文件并转为 base64
+      const mp3Data = readFileSync(tempMp3);
+      const mp3Base64 = mp3Data.toString('base64');
+      const mp3DataUrl = `data:audio/mpeg;base64,${mp3Base64}`;
+
+      console.log(`[audio] WAV → MP3 转换完成: ${mp3Data.length} bytes`);
+      return res.json({ success: true, mp3Url: mp3DataUrl, size: mp3Data.length });
+    } finally {
+      // 清理临时文件
+      try { unlinkSync(tempWav); } catch {}
+      try { unlinkSync(tempMp3); } catch {}
+    }
+  } catch (e) {
+    console.error('[audio] /convert-to-mp3 error:', e);
     res.status(500).json({ success: false, error: e.message ?? String(e) });
   }
 });

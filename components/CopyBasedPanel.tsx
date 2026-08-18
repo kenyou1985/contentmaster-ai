@@ -2666,13 +2666,56 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                   ✓ 配音完成 · {ttsResult.totalDuration.toFixed(1)} 秒
                   {selectedVoice && ` · 音色：${selectedVoice.name}`}
                 </span>
-                <a
-                  href={ttsResult.mergedAudioUrl}
-                  download={`tts_${Date.now()}.wav`}
-                  className="text-[10px] text-blue-400 hover:text-blue-300 underline flex items-center gap-1"
-                >
-                  <Download size={10} /> 下载 WAV
-                </a>
+                <div className="flex items-center gap-2">
+                  {/* MP3 下载 */}
+                  <button
+                    onClick={async () => {
+                      if (!ttsResult) return;
+                      try {
+                        const baseUrl = (window as any).__REMOTION_SERVER_URL__ || `${window.location.protocol}//${window.location.hostname}:18093`;
+                        // 将 blob URL 转为 data URL
+                        const res = await fetch(ttsResult.mergedAudioUrl);
+                        const blob = await res.blob();
+                        const reader = new FileReader();
+                        reader.onloadend = async () => {
+                          const dataUrl = String(reader.result);
+                          // 调用服务端转换
+                          const resp = await fetch(`${baseUrl}/audio/convert-to-mp3`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ audioUrl: dataUrl }),
+                          });
+                          const result = await resp.json();
+                          if (result.success && result.mp3Url) {
+                            // 触发下载
+                            const a = document.createElement('a');
+                            a.href = result.mp3Url;
+                            a.download = `tts_${Date.now()}.mp3`;
+                            a.click();
+                            toast.success('MP3 下载成功！');
+                          } else {
+                            toast.error(result.error || 'MP3 转换失败');
+                          }
+                        };
+                        reader.onerror = () => toast.error('读取音频失败');
+                        reader.readAsDataURL(blob);
+                      } catch (e: any) {
+                        toast.error(e.message || 'MP3 下载失败');
+                      }
+                    }}
+                    className="text-[10px] text-green-400 hover:text-green-300 flex items-center gap-1"
+                  >
+                    <Download size={10} /> 下载 MP3
+                  </button>
+                  {/* WAV 下载 */}
+                  <a
+                    href={ttsResult.mergedAudioUrl}
+                    download={`tts_${Date.now()}.wav`}
+                    className="text-[10px] text-blue-400 hover:text-blue-300 underline flex items-center gap-1"
+                  >
+                    <Download size={10} /> 下载 WAV
+                  </a>
+                </div>
               </div>
               <audio controls src={ttsResult.mergedAudioUrl} className="w-full h-8" />
               <details className="text-[10px] text-slate-500">

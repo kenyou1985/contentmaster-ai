@@ -24,6 +24,7 @@ import {
   Film,
   Loader2,
   Music,
+  Download,
 } from 'lucide-react';
 import {
   traditionalToSimplified,
@@ -35,6 +36,28 @@ import {
   extractAudioFromVideo,
   prewarmFfmpeg,
 } from '../services/audioExtractor';
+
+// ── 字幕辅助函数 ──────────────────────────────────────────
+
+/** 下载文件 */
+function downloadFile(filename: string, content: string, mimeType: string) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/** 格式化 SRT 时间（秒 → HH:MM:SS,mmm） */
+function formatSrtTime(sec: number): string {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  const ms = Math.round((sec % 1) * 1000);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
+}
 
 // ── 单个素材（图片或视频）────────────────────────────────
 export interface CustomMediaTrackItem {
@@ -387,14 +410,16 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
       const reader = new FileReader();
       reader.onloadend = () => resolve(String(reader.result));
       reader.onerror = reject;
+      // 确保使用正确的 MIME 类型读取 blob
       reader.readAsDataURL(blob);
     });
   });
 }
 
-// ── 上传音频 / 视频（支持视频文件自动提取音轨）───
+  // ── 上传音频 / 视频（支持视频文件自动提取音轨）───
   const audioInputRef = useRef<HTMLInputElement>(null);
   const [asrLoading, setAsrLoading] = useState<boolean>(false);
+  const [downloadMenuOpen, setDownloadMenuOpen] = useState<boolean>(false);
   const [audioStage, setAudioStage] = useState<'idle' | 'extracting' | 'asr' | 'converting'>('idle');
   const [audioProgress, setAudioProgress] = useState<number>(0);  // 0-1
   const handleAddAudio = useCallback(async (files: FileList | null) => {
@@ -877,13 +902,53 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
             </span>
           </div>
           {state.subtitleCues.length > 0 && (
-            <button
-              onClick={handleRemoveSubtitle}
-              className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1"
-              type="button"
-            >
-              <Trash2 size={10} /> 清除字幕文件
-            </button>
+            <div className="flex items-center gap-2">
+              {/* 下载字幕按钮 */}
+              <div className="relative">
+                <button
+                  onClick={() => setDownloadMenuOpen(!downloadMenuOpen)}
+                  className="text-[10px] text-green-400 hover:text-green-300 flex items-center gap-1"
+                  type="button"
+                >
+                  <Download size={10} /> 下载字幕
+                </button>
+                {downloadMenuOpen && (
+                  <div className="absolute right-0 top-full mt-1 bg-slate-800 border border-slate-600 rounded shadow-lg z-10 min-w-[80px]">
+                    <button
+                      onClick={() => {
+                        const text = state.subtitleCues.map((c) => c.text).join('\n');
+                        downloadFile(`subtitle_${Date.now()}.txt`, text, 'text/plain');
+                        setDownloadMenuOpen(false);
+                      }}
+                      className="block w-full text-left px-3 py-1.5 text-[10px] text-slate-300 hover:bg-slate-700"
+                    >
+                      TXT 格式
+                    </button>
+                    <button
+                      onClick={() => {
+                        const srt = state.subtitleCues.map((c, i) => {
+                          const startTime = formatSrtTime(c.startSec);
+                          const endTime = formatSrtTime(c.endSec);
+                          return `${i + 1}\n${startTime} --> ${endTime}\n${c.text}\n`;
+                        }).join('\n');
+                        downloadFile(`subtitle_${Date.now()}.srt`, srt, 'text/srt');
+                        setDownloadMenuOpen(false);
+                      }}
+                      className="block w-full text-left px-3 py-1.5 text-[10px] text-slate-300 hover:bg-slate-700"
+                    >
+                      SRT 格式
+                    </button>
+                  </div>
+                )}
+              </div>
+              <button
+                onClick={handleRemoveSubtitle}
+                className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1"
+                type="button"
+              >
+                <Trash2 size={10} /> 清除
+              </button>
+            </div>
           )}
         </div>
 

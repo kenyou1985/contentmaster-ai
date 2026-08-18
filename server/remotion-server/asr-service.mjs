@@ -83,9 +83,10 @@ async function decodeAudioToFloat32Mono16k(audioPath) {
     sampleRate = wav.fmt.sampleRate;
     numChannels = wav.fmt.numChannels;
     let audioData = wav.getSamples();
+    // 确保 samples 是 Float32Array
     if (Array.isArray(audioData)) {
       samples = audioData[0];
-      if (numChannels > 1) {
+      if (numChannels > 1 && audioData[1]) {
         const SCALING = Math.sqrt(2);
         for (let i = 0; i < samples.length; i++) {
           samples[i] = (SCALING * (audioData[0][i] + audioData[1][i])) / 2;
@@ -94,6 +95,10 @@ async function decodeAudioToFloat32Mono16k(audioPath) {
     } else {
       samples = audioData;
       numChannels = 1;
+    }
+    // 验证 samples 有效性
+    if (!samples || samples.length === 0) {
+      throw new Error(`WAV 解码失败：音频样本为空（sampleRate=${sampleRate}, channels=${numChannels}）`);
     }
   } else if (ext === 'mp3' || ext === 'mpeg') {
     const buf = readFileSync(audioPath);

@@ -65,6 +65,24 @@ function getMaxAmplitude(buffer: AudioBuffer, sampleSize = 10000): number {
 }
 
 /**
+ * 计算 AudioBuffer 的 RMS（均方根）幅值，用于判断整体音量水平
+ */
+function getRmsAmplitude(buffer: AudioBuffer, sampleSize = 50000): number {
+  const checkLen = Math.min(buffer.length, sampleSize);
+  let sumSquares = 0;
+  let count = 0;
+  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+    const data = buffer.getChannelData(ch);
+    for (let i = 0; i < checkLen; i++) {
+      const v = data[i];
+      sumSquares += v * v;
+      count++;
+    }
+  }
+  return count > 0 ? Math.sqrt(sumSquares / count) : 0;
+}
+
+/**
  * 重采样 AudioBuffer 到目标采样率和声道数
  */
 async function resampleAudioBuffer(
@@ -409,10 +427,18 @@ async function strategyFfmpegWasm(
       if (p && typeof (p as any).then === 'function') (p as any).then(res, rej);
     });
     ctx.close().catch(() => {});
-    const maxAmp = getMaxAmplitude(audioBuf);
+    // 增加采样检查范围
+    const maxAmp = getMaxAmplitude(audioBuf, Math.min(audioBuf.length, 50000));
     console.log(`[audioExtractor] ffmpeg.wasm 解码后: ${audioBuf.numberOfChannels}ch @ ${audioBuf.sampleRate}Hz, ${audioBuf.duration.toFixed(1)}s, maxAmp=${maxAmp.toFixed(4)}`);
-    if (maxAmp < 0.001) {
-      throw new Error(`ffmpeg.wasm 输出是静音（maxAmp=${maxAmp.toFixed(4)}），视频可能本身没音轨`);
+    // 对长视频使用更宽松的阈值
+    const silenceThreshold = audioBuf.duration > 30 ? 0.0001 : 0.001;
+    if (maxAmp < silenceThreshold) {
+      const rms = getRmsAmplitude(audioBuf);
+      console.log(`[audioExtractor]   RMS=${rms.toFixed(6)}, 再次检查...`);
+      if (rms < silenceThreshold * 0.5) {
+        throw new Error(`ffmpeg.wasm 输出是静音（maxAmp=${maxAmp.toFixed(4)}），视频可能本身没音轨`);
+      }
+      console.log(`[audioExtractor]   通过 RMS 检查，使用结果`);
     }
 
     // ffmpeg 已经按目标采样率/声道输出 WAV，直接返回即可
@@ -511,10 +537,20 @@ async function strategyServerExtract(
       const p = ctx.decodeAudioData(arrayBuf.slice(0), res, rej);
       if (p && typeof (p as any).then === 'function') (p as any).then(res, rej);
     });
-    const maxAmp = getMaxAmplitude(audioBuf);
+    // 增加采样检查范围（原来只检查前10000样本，对长视频可能漏掉主要内容）
+    const maxAmp = getMaxAmplitude(audioBuf, Math.min(audioBuf.length, 50000));
     console.log(`[audioExtractor] 服务端 WAV 解码后: ${audioBuf.numberOfChannels}ch @ ${audioBuf.sampleRate}Hz, ${audioBuf.duration.toFixed(1)}s, maxAmp=${maxAmp.toFixed(4)}`);
-    if (maxAmp < 0.001) {
-      throw new Error(`服务端返回静音（maxAmp=${maxAmp.toFixed(4)}），视频可能无音轨`);
+    // 放宽阈值并增加检查：对长视频（>30s）使用更宽松的阈值
+    const silenceThreshold = audioBuf.duration > 30 ? 0.0001 : 0.001;
+    if (maxAmp < silenceThreshold) {
+      // 再检查音频的 RMS 值来确认是否真的静音
+      const rms = getRmsAmplitude(audioBuf);
+      console.log(`[audioExtractor]   RMS=${rms.toFixed(6)}, 再次检查整体音量...`);
+      // 如果 RMS 也很低，才判定为静音
+      if (rms < silenceThreshold * 0.5) {
+        throw new Error(`服务端返回静音（maxAmp=${maxAmp.toFixed(4)}，rms=${rms.toFixed(6)}），视频可能无音轨`);
+      }
+      console.log(`[audioExtractor]   通过 RMS 检查，使用服务端结果`);
     }
   } finally {
     ctx.close().catch(() => {});
