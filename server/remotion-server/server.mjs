@@ -831,7 +831,6 @@ app.post('/audio/extract', async (req, res) => {
             }
           });
         });
-        usedExtractor = `ffmpeg-${label}`;
         // 取版本信息（用 execFile，不用 execSync shell）
         try {
           const vOut = await new Promise(res => {
@@ -845,6 +844,29 @@ app.post('/audio/extract', async (req, res) => {
         } catch (_ve) {
           ffmpegVersion = label;
         }
+
+        // ffmpeg-static 对某些 HEVC+AAC 解码失败但静默输出，检查后决定是否重试
+        if (label === 'ffmpeg-static') {
+          const stat = statSync(outPath);
+          if (stat.size > 500_000) {
+            const wBytes = readFileSync(outPath);
+            const pcmData = wBytes.slice(44);
+            let pcmMax = 0;
+            const checkLen = Math.min(pcmData.length, 100_000);
+            for (let i = 0; i < checkLen; i += 2) {
+              const v = Math.abs(pcmData.readInt16LE(i));
+              if (v > pcmMax) pcmMax = v;
+            }
+            const pcmRatio = pcmMax / 32767;
+            console.log(`[remotion] ffmpeg-static PCM max: ${pcmMax} (${pcmRatio.toFixed(4)})`);
+            if (pcmRatio < 0.001) {
+              console.warn(`[remotion] ffmpeg-static 输出静音，尝试下一个`);
+              continue; // try next candidate
+            }
+          }
+        }
+
+        usedExtractor = `ffmpeg-${label}`;
         ffmpegOk = true;
         break;
       } catch (_e) {
@@ -872,24 +894,6 @@ app.post('/audio/extract', async (req, res) => {
     if (wavBytes.length < 1000) {
       rmSync(tempDir, { recursive: true, force: true });
       return res.status(422).json({ success: false, error: 'ffmpeg 输出过小，视频可能无音轨' });
-    }
-
-    // 检查 PCM 数据是否接近静音（ffmpeg-static 对某些 HEVC+AAC 解码失败时静默输出静音）
-    // 仅在 ffmpeg-static 输出较大 WAV 但无声音时触发重试
-    if (label === 'ffmpeg-static' && wavBytes.length > 500_000) {
-      const pcmData = wavBytes.slice(44); // skip 44-byte WAV header
-      let pcmMax = 0;
-      const checkLen = Math.min(pcmData.length, 100_000);
-      for (let i = 0; i < checkLen; i += 2) {
-        const v = Math.abs(pcmData.readInt16LE(i));
-        if (v > pcmMax) pcmMax = v;
-      }
-      const pcmRatio = pcmMax / 32767;
-      console.log(`[remotion] ffmpeg-static PCM max: ${pcmMax} (${pcmRatio.toFixed(4)})`);
-      if (pcmRatio < 0.001) {
-        // 静默输出，throw 让 client 尝试下一个 ffmpeg
-        throw new Error(`ffmpeg-static 输出静音（pcmRatio=${pcmRatio.toFixed(4)}），尝试下一个`);
-      }
     }
 
     const wavDataUrl = `data:audio/wav;base64,${wavBytes.toString('base64')}`;
