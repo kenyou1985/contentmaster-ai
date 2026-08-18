@@ -3679,7 +3679,13 @@ const RemotionSettingsPanel: React.FC<{
                 onClick={async () => {
                   if (!customTracks.subtitleCues?.length) return;
                   const effectiveKey = typeof window !== 'undefined'
-                    ? (window.localStorage.getItem('YUNWU_API_KEY') || window.localStorage.getItem('GEMINI_API_KEY'))
+                    ? (window.localStorage.getItem('API_KEY_yunwu')
+                        || window.localStorage.getItem('API_KEY_google')
+                        || window.localStorage.getItem('API_KEY_runninghub')
+                        || window.localStorage.getItem('YUNWU_API_KEY')
+                        || window.localStorage.getItem('GEMINI_API_KEY')
+                        || window.localStorage.getItem('OPENLUX_API_KEY')
+                        || (window as any).localStorage.getItem('OPENAI_API_KEY'))
                     : null;
                   if (!effectiveKey) {
                     appendLog('ASR', `⚠ 请先在设置中配置 AI API Key`);

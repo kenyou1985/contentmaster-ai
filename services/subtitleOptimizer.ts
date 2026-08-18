@@ -49,9 +49,12 @@ export async function optimizeSubtitles(
   const effectiveKey =
     apiKey?.trim() ||
     (typeof window !== 'undefined'
-      ? localStorage.getItem('YUNWU_API_KEY') ||
+      ? localStorage.getItem('API_KEY_yunwu') ||
+        localStorage.getItem('API_KEY_google') ||
+        localStorage.getItem('YUNWU_API_KEY') ||
         localStorage.getItem('GEMINI_API_KEY') ||
-        localStorage.getItem('OPENAI_API_KEY')
+        localStorage.getItem('OPENLUX_API_KEY') ||
+        (localStorage as any).getItem('OPENAI_API_KEY')
       : null);
 
   if (!effectiveKey) {

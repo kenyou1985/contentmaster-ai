@@ -622,12 +622,22 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
       return;
     }
     const hasApiKey = typeof window !== 'undefined'
-      && (!!window.localStorage.getItem('YUNWU_API_KEY') || !!window.localStorage.getItem('GEMINI_API_KEY'));
+      && (!!window.localStorage.getItem('API_KEY_yunwu')
+          || !!window.localStorage.getItem('API_KEY_google')
+          || !!window.localStorage.getItem('YUNWU_API_KEY')
+          || !!window.localStorage.getItem('GEMINI_API_KEY')
+          || !!window.localStorage.getItem('OPENLUX_API_KEY')
+          || !!(window as any).localStorage.getItem('OPENAI_API_KEY'));
     if (!hasApiKey) {
-      alert('请先在设置中配置 AI API Key（YUNWU / Gemini）');
+      alert('请先在设置中配置 AI API Key（OpenLux / YUNWU / Gemini）');
       return;
     }
-    const apiKey = window.localStorage.getItem('YUNWU_API_KEY') || window.localStorage.getItem('GEMINI_API_KEY');
+    const apiKey = window.localStorage.getItem('API_KEY_yunwu')
+      || window.localStorage.getItem('API_KEY_google')
+      || window.localStorage.getItem('YUNWU_API_KEY')
+      || window.localStorage.getItem('GEMINI_API_KEY')
+      || window.localStorage.getItem('OPENLUX_API_KEY')
+      || (window as any).localStorage.getItem('OPENAI_API_KEY');
     setAsrLoading(true);
     log('ASR', `▸ AI 优化字幕中（共 ${state.subtitleCues.length} 条）…`);
     try {
