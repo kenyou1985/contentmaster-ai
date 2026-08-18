@@ -59,6 +59,10 @@ import {
   FileAudio,
   ArrowUp,
   ArrowDown,
+  Search,
+  Replace,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { useToast } from './Toast';
 import { VoiceLibrary } from './VoiceLibrary';
@@ -574,6 +578,22 @@ const CopyBasedPanel: React.FC<{
   /** 字幕样式面板展开 */
   const [subtitleStyleOpen, setSubtitleStyleOpen] = useState<boolean>(false);
 
+  /** 自动 AI 优化字幕开关 */
+  const [autoOptimize, setAutoOptimize] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem('AUTO_OPTIMIZE_SUBTITLE');
+      return stored !== null ? stored === 'true' : true;
+    } catch { return true; }
+  });
+
+  /** 字幕编辑面板 */
+  const [subtitleEditOpen, setSubtitleEditOpen] = useState<boolean>(false);
+  const [editingCueIdx, setEditingCueIdx] = useState<number | null>(null);
+  const [editingText, setEditingText] = useState<string>('');
+  const [findText, setFindText] = useState<string>('');
+  const [replaceText, setReplaceText] = useState<string>('');
+  const [optimizingSubtitles, setOptimizingSubtitles] = useState<boolean>(false);
+
   /** 渲染设置各子面板展开 */
   const [bgmExpanded, setBgmExpanded] = useState<boolean>(false);
   const [filterExpanded, setFilterExpanded] = useState<boolean>(false);
@@ -704,6 +724,80 @@ const CopyBasedPanel: React.FC<{
     setLogs([]);
     logIdRef.current = 0;
     appendLog('INFO', '日志已清空');
+  }, [appendLog]);
+
+  // ──────────────────────────────────────────────
+  // 字幕编辑辅助函数
+  // ──────────────────────────────────────────────
+  /** 统计查找词出现次数 */
+  const countFindOccurrences = (cues: SubtitleCue[], find: string): number => {
+    if (!find.trim()) return 0;
+    return cues.reduce((cnt, c) => {
+      let idx = 0;
+      const lower = c.text.toLowerCase();
+      const lowerFind = find.toLowerCase();
+      while ((idx = lower.indexOf(lowerFind, idx)) !== -1) { cnt++; idx += lowerFind.length; }
+      return cnt;
+    }, 0);
+  };
+
+  /** 批量替换 */
+  const handleBatchReplace = useCallback(() => {
+    if (!findText.trim()) return;
+    const count = countFindOccurrences(customTracks.subtitleCues, findText);
+    if (count === 0) return;
+    const confirmed = confirm(`确定将 "${findText}" 全部替换为 "${replaceText}" 吗？\n将替换 ${count} 处。`);
+    if (!confirmed) return;
+    setCustomTracks((prev) => ({
+      ...prev,
+      subtitleCues: prev.subtitleCues.map((c) => ({ ...c, text: c.text.split(findText).join(replaceText) })),
+    }));
+    setFindText('');
+    appendLog('EDIT', `✓ 批量替换：${count} 处 "${findText}" → "${replaceText}"`);
+  }, [findText, replaceText, customTracks.subtitleCues, appendLog]);
+
+  /** 保存单条编辑 */
+  const handleSaveEdit = useCallback((idx: number) => {
+    setCustomTracks((prev) => ({
+      ...prev,
+      subtitleCues: prev.subtitleCues.map((c, i) => i === idx ? { ...c, text: editingText } : c),
+    }));
+    setEditingCueIdx(null);
+    setEditingText('');
+  }, [editingText]);
+
+  /** 自动 AI 优化字幕（非阻塞） */
+  const triggerAutoOptimize = useCallback((cues: SubtitleCue[]) => {
+    const apiKey = (typeof window !== 'undefined'
+      ? (window.localStorage.getItem('API_KEY_yunwu')
+          || window.localStorage.getItem('API_KEY_google')
+          || window.localStorage.getItem('YUNWU_API_KEY')
+          || window.localStorage.getItem('GEMINI_API_KEY')
+          || window.localStorage.getItem('OPENLUX_API_KEY')
+          || (window as any).localStorage.getItem('OPENAI_API_KEY'))
+      : null);
+    if (!apiKey) {
+      appendLog('ASR', `⚠ 自动优化跳过：未配置 API Key`);
+      return;
+    }
+    setOptimizingSubtitles(true);
+    appendLog('ASR', `▸ AI 优化字幕中…`);
+    import('../services/subtitleOptimizer').then(({ optimizeSubtitles }) => {
+      optimizeSubtitles(cues, apiKey, (cur, total) => {
+        appendLog('ASR', `  AI 优化: ${cur}/${total}`);
+      }).then((result) => {
+        if (result.success) {
+          setCustomTracks((prev) => ({ ...prev, subtitleCues: result.optimizedCues as SubtitleCue[] }));
+          appendLog('ASR', `✓ AI 优化完成：${result.correctedCount ? `纠正了 ${result.correctedCount} 条` : '无明显错误'} · ${result.optimizedCues.length} 条`);
+        } else {
+          appendLog('ASR', `⚠ 自动优化失败: ${result.error}`);
+        }
+        setOptimizingSubtitles(false);
+      }).catch((e: any) => {
+        appendLog('ASR', `✗ AI 优化出错: ${e.message}`);
+        setOptimizingSubtitles(false);
+      });
+    });
   }, [appendLog]);
 
   // ──────────────────────────────────────────────
@@ -1770,6 +1864,14 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
         if (asrCount > 0) {
           appendLog('EXPORT', `✓ ASR 完成：${asrCount} 个字幕片段（含词级时间戳）`);
           toast.success(`ASR 完成：${asrCount} 个字幕片段`, 2000);
+          // 自动 AI 优化字幕
+          if (autoOptimize && asrShots.length > 0) {
+            const allCues = asrShots.flatMap((s: any) => s.textCues || []);
+            if (allCues.length > 0) {
+              setCustomTracks((prev) => ({ ...prev, subtitleCues: allCues }));
+              triggerAutoOptimize(allCues);
+            }
+          }
         } else {
           appendLog('WARN', 'ASR 未返回有效 cues，使用按句均分方案');
         }
@@ -3673,6 +3775,21 @@ const RemotionSettingsPanel: React.FC<{
               <Sparkles size={10} />
               {whisperEnabled ? 'Whisper ASR 已开启（词级时间戳）' : '开启 Whisper ASR（词级时间戳）'}
             </button>
+            {/* 自动优化开关 */}
+            {(customTracks.subtitleCues?.length ?? 0) > 0 && (
+              <label className="flex items-center gap-1 text-[10px] text-slate-400 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={autoOptimize}
+                  onChange={(e) => {
+                    setAutoOptimize(e.target.checked);
+                    localStorage.setItem('AUTO_OPTIMIZE_SUBTITLE', String(e.target.checked));
+                  }}
+                  className="accent-emerald-500"
+                />
+                自动
+              </label>
+            )}
             {/* AI 优化字幕按钮 */}
             {(customTracks.subtitleCues?.length ?? 0) > 0 && (
               <button

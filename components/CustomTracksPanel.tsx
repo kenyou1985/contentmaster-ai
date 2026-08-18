@@ -25,6 +25,12 @@ import {
   Loader2,
   Music,
   Download,
+  Edit3,
+  Search,
+  Replace,
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
 } from 'lucide-react';
 import {
   traditionalToSimplified,
@@ -252,6 +258,72 @@ function probeAudioDuration(url: string): Promise<number> {
   });
 }
 
+/** 从各种可能的 storage key 中获取 API Key */
+function getStoredApiKey(): string | null {
+  if (typeof window === 'undefined') return null;
+  return (
+    localStorage.getItem('API_KEY_yunwu') ||
+    localStorage.getItem('API_KEY_google') ||
+    localStorage.getItem('YUNWU_API_KEY') ||
+    localStorage.getItem('GEMINI_API_KEY') ||
+    localStorage.getItem('OPENLUX_API_KEY') ||
+    (localStorage as any).getItem('OPENAI_API_KEY') ||
+    null
+  );
+}
+
+/** 自动 AI 优化字幕（自动模式，不阻塞 UI） */
+async function runAutoOptimize(
+  cues: CustomSubtitleCue[],
+  onProgress: (cur: number, total: number) => void,
+  onComplete: (optimizedCues: CustomSubtitleCue[], correctedCount: number) => void,
+  onError: (msg: string) => void
+) {
+  const apiKey = getStoredApiKey();
+  if (!apiKey) {
+    onError('未配置 API Key，跳过自动优化');
+    return;
+  }
+  try {
+    const { optimizeSubtitles } = await import('../services/subtitleOptimizer');
+    const result = await optimizeSubtitles(cues, apiKey, onProgress);
+    if (result.success) {
+      onComplete(result.optimizedCues as CustomSubtitleCue[], result.correctedCount || 0);
+    } else {
+      onError(result.error || 'AI 优化失败');
+    }
+  } catch (e: any) {
+    onError(e.message || 'AI 优化出错');
+  }
+}
+
+/** 在组件内使用的自动优化触发器（非 async，供 try 块内同步调用） */
+function triggerAutoOptimize(
+  cues: CustomSubtitleCue[],
+  log: (prefix: string, msg: string) => void,
+  onChange: (updater: (prev: CustomTracksState) => CustomTracksState) => void,
+  setOptimizing: (v: boolean) => void
+) {
+  runAutoOptimize(
+    cues,
+    (cur, total) => log('ASR', `  AI 优化: ${cur}/${total}`),
+    (optimizedCues, correctedCount) => {
+      onChange((prev) => ({
+        ...prev,
+        subtitleCues: optimizedCues,
+        subtitleFileName: undefined,
+      }));
+      log('ASR', `✓ AI 优化完成：${correctedCount > 0 ? `纠正了 ${correctedCount} 条` : '无明显错误'}· 共 ${optimizedCues.length} 条`);
+      setOptimizing(false);
+    },
+    (msg) => {
+      log('ASR', `⚠ 自动优化跳过: ${msg}`);
+      setOptimizing(false);
+    }
+  );
+  setOptimizing(true);
+}
+
 // ── 计算单条素材的有效时长（秒）──────────────────────────
 function effectiveItemDuration(it: CustomMediaTrackItem): number {
   if (typeof it.overrideDurationSec === 'number' && it.overrideDurationSec > 0) {
@@ -305,6 +377,22 @@ export const CustomTracksPanel: React.FC<CustomTracksPanelProps> = ({
   // ── 拖拽状态 ─────────────────────────────────────────
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
   const [isDropzoneHover, setIsDropzoneHover] = useState<boolean>(false);
+
+  // ── 自动 AI 优化开关 ─────────────────────────────────
+  const [autoOptimize, setAutoOptimize] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem('AUTO_OPTIMIZE_SUBTITLE');
+      return stored !== null ? stored === 'true' : true; // 默认开启
+    } catch { return true; }
+  });
+
+  // ── 字幕编辑面板 ─────────────────────────────────────
+  const [subtitleEditOpen, setSubtitleEditOpen] = useState(false);
+  const [editingCueIdx, setEditingCueIdx] = useState<number | null>(null);
+  const [editingText, setEditingText] = useState('');
+  const [findText, setFindText] = useState('');
+  const [replaceText, setReplaceText] = useState('');
+  const [optimizingSubtitles, setOptimizingSubtitles] = useState(false);
 
   // ── 添加图片 / 视频 ─────────────────────────────────
   const mediaInputRef = useRef<HTMLInputElement>(null);
@@ -512,26 +600,20 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
             log('ASR', `▸ 检测到繁体字幕，正在转换为简体…`);
             try {
               const convertedCues = await convertCuesTexts(data.cues, 't2s');
-              onChange((prev) => ({
-                ...prev,
-                subtitleCues: convertedCues,
-                subtitleFileName: undefined,
-                subtitleEnabled: true,
-              }));
-              log('ASR', `✓ Whisper 识别完成：${convertedCues.length} 条字幕（${data.durationSec?.toFixed(1)}s）· 已转简体`);
-            } catch (convErr: any) {
-              // 转换失败保留原文
-              log('WARN', `繁简转换失败: ${convErr.message}，保留原始字幕`);
-              onChange((prev) => ({
-                ...prev,
-                subtitleCues: data.cues,
-                subtitleFileName: undefined,
-                subtitleEnabled: true,
-              }));
-              log('ASR', `✓ Whisper 识别完成：${data.cues.length} 条字幕（${data.durationSec?.toFixed(1)}s）`);
+            onChange((prev) => ({
+              ...prev,
+              subtitleCues: convertedCues,
+              subtitleFileName: undefined,
+              subtitleEnabled: true,
+            }));
+            log('ASR', `✓ Whisper 识别完成：${convertedCues.length} 条字幕（${data.durationSec?.toFixed(1)}s）· 已转简体`);
+            // 自动 AI 优化
+            if (autoOptimize && convertedCues.length > 0) {
+              triggerAutoOptimize(convertedCues, log, onChange, setOptimizingSubtitles);
             }
-          } else {
-            // 已经是简体，直接写入
+          } catch (convErr: any) {
+            // 转换失败保留原文
+            log('WARN', `繁简转换失败: ${convErr.message}，保留原始字幕`);
             onChange((prev) => ({
               ...prev,
               subtitleCues: data.cues,
@@ -539,6 +621,23 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
               subtitleEnabled: true,
             }));
             log('ASR', `✓ Whisper 识别完成：${data.cues.length} 条字幕（${data.durationSec?.toFixed(1)}s）`);
+            // 自动 AI 优化
+            if (autoOptimize && data.cues.length > 0) {
+              triggerAutoOptimize(data.cues, log, onChange, setOptimizingSubtitles);
+            }
+          }
+        } else if (data.cues?.length > 0) {
+          // 已经是简体，直接写入
+          onChange((prev) => ({
+            ...prev,
+            subtitleCues: data.cues,
+            subtitleFileName: undefined,
+            subtitleEnabled: true,
+          }));
+          log('ASR', `✓ Whisper 识别完成：${data.cues.length} 条字幕（${data.durationSec?.toFixed(1)}s）`);
+          // 自动 AI 优化
+          if (autoOptimize && data.cues.length > 0) {
+            triggerAutoOptimize(data.cues, log, onChange, setOptimizingSubtitles);
           }
         } else {
           log('ASR', `⚠ Whisper 识别失败: ${data.error || '未知错误'}`);
@@ -559,7 +658,7 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
       setAudioStage('idle');
       setAudioProgress(0);
     }
-  }, [state.subtitleCues, state.subtitleFileName, onChange, log]);
+  }, [state.subtitleCues, state.subtitleFileName, onChange, log, autoOptimize]);
 
   const handleRemoveAudio = useCallback(() => {
     onChange((prev) => ({
@@ -611,6 +710,48 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
     }));
   }, [onChange]);
 
+  /** 统计查找词在所有字幕中出现的总次数 */
+  const countFindOccurrences = (cues: CustomSubtitleCue[], find: string): number => {
+    if (!find.trim()) return 0;
+    return cues.reduce((cnt, c) => {
+      let idx = 0;
+      const lower = c.text.toLowerCase();
+      const lowerFind = find.toLowerCase();
+      while ((idx = lower.indexOf(lowerFind, idx)) !== -1) { cnt++; idx += lowerFind.length; }
+      return cnt;
+    }, 0);
+  };
+
+  /** 批量查找替换 */
+  const handleBatchReplace = useCallback(() => {
+    if (!findText.trim()) return;
+    const count = countFindOccurrences(state.subtitleCues, findText);
+    if (count === 0) return;
+    const confirmed = confirm(`确定将 "${findText}" 全部替换为 "${replaceText}" 吗？\n将替换 ${count} 处。`);
+    if (!confirmed) return;
+    onChange((prev) => ({
+      ...prev,
+      subtitleCues: prev.subtitleCues.map((c) => ({
+        ...c,
+        text: c.text.split(findText).join(replaceText),
+      })),
+    }));
+    setFindText('');
+    log('EDIT', `✓ 批量替换：${count} 处 "${findText}" → "${replaceText}"`);
+  }, [findText, replaceText, state.subtitleCues, onChange, log]);
+
+  /** 保存单条字幕编辑 */
+  const handleSaveEdit = useCallback((idx: number) => {
+    onChange((prev) => ({
+      ...prev,
+      subtitleCues: prev.subtitleCues.map((c, i) =>
+        i === idx ? { ...c, text: editingText } : c
+      ),
+    }));
+    setEditingCueIdx(null);
+    setEditingText('');
+  }, [editingText, onChange]);
+
   /**
    * AI 优化字幕
    * - 使用单次 API 调用批量处理所有字幕（避免逐条调用的性能问题）
@@ -638,7 +779,7 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
       || window.localStorage.getItem('GEMINI_API_KEY')
       || window.localStorage.getItem('OPENLUX_API_KEY')
       || (window as any).localStorage.getItem('OPENAI_API_KEY');
-    setAsrLoading(true);
+    setOptimizingSubtitles(true);
     log('ASR', `▸ AI 优化字幕中（共 ${state.subtitleCues.length} 条）…`);
     try {
       const result = await optimizeSubtitles(state.subtitleCues, apiKey, (cur, total) => {
@@ -659,7 +800,7 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
       log('ASR', `✗ AI 优化出错: ${e.message}`);
       alert('AI 优化出错: ' + e.message);
     } finally {
-      setAsrLoading(false);
+      setOptimizingSubtitles(false);
     }
   }, [state.subtitleCues, onChange, log]);
 
@@ -950,13 +1091,36 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
             <span className="text-[10px] text-slate-500">
               {asrLoading
                 ? '🔄 Whisper 识别中…'
-                : state.subtitleCues.length > 0
-                  ? `${state.subtitleCues.length} 条${state.subtitleFileName ? `（${state.subtitleFileName}）` : '（自动生成）'}`
-                  : '默认 Whisper ASR 自动生成'}
+                : optimizingSubtitles
+                  ? '✨ AI 优化中…'
+                  : state.subtitleCues.length > 0
+                    ? `${state.subtitleCues.length} 条${state.subtitleFileName ? `（${state.subtitleFileName}）` : '（自动生成）'}`
+                    : '默认 Whisper ASR 自动生成'}
             </span>
           </div>
           {state.subtitleCues.length > 0 && (
             <div className="flex items-center gap-2">
+              {/* 自动优化开关 */}
+              <label className="flex items-center gap-1 text-[10px] text-slate-400 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={autoOptimize}
+                  onChange={(e) => {
+                    setAutoOptimize(e.target.checked);
+                    localStorage.setItem('AUTO_OPTIMIZE_SUBTITLE', String(e.target.checked));
+                  }}
+                  className="accent-emerald-500"
+                />
+                自动优化
+              </label>
+              {/* 编辑字幕按钮 */}
+              <button
+                onClick={() => setSubtitleEditOpen(!subtitleEditOpen)}
+                className="text-[10px] text-blue-400 hover:text-blue-300 flex items-center gap-1"
+                type="button"
+              >
+                <Edit3 size={10} /> {subtitleEditOpen ? '收起编辑' : '编辑字幕'}
+              </button>
               {/* 下载字幕按钮 */}
               <div className="relative">
                 <button
@@ -1121,6 +1285,122 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
             {state.subtitleCues.length > 20 && (
               <div className="text-slate-500">...还有 {state.subtitleCues.length - 20} 条</div>
             )}
+          </div>
+        )}
+
+        {/* ── 字幕编辑面板（展开时显示）───────────────────── */}
+        {subtitleEditOpen && state.subtitleCues.length > 0 && (
+          <div className="border border-blue-600/50 rounded-lg p-3 bg-slate-900/80 space-y-3">
+            <div className="flex items-center gap-2 text-xs font-bold text-blue-400">
+              <Edit3 size={12} /> 字幕编辑
+              <span className="text-slate-500 font-normal">（{state.subtitleCues.length} 条）</span>
+            </div>
+
+            {/* 批量查找替换 */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <Search size={10} className="text-slate-400" />
+              <input
+                type="text"
+                placeholder="查找…"
+                value={findText}
+                onChange={(e) => setFindText(e.target.value)}
+                className="flex-1 min-w-[120px] text-[11px] bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-200 placeholder-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+              <Replace size={10} className="text-slate-400" />
+              <input
+                type="text"
+                placeholder="替换为…"
+                value={replaceText}
+                onChange={(e) => setReplaceText(e.target.value)}
+                className="flex-1 min-w-[120px] text-[11px] bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-200 placeholder-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+              <button
+                onClick={handleBatchReplace}
+                disabled={!findText.trim() || optimizingSubtitles}
+                className="text-[11px] px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded disabled:opacity-40 flex items-center gap-1"
+                type="button"
+              >
+                <Replace size={10} />
+                {findText.trim()
+                  ? `替换${countFindOccurrences(state.subtitleCues, findText)}处`
+                  : '批量替换'}
+              </button>
+            </div>
+
+            {/* 字幕列表（可编辑） */}
+            <div className="bg-slate-950/60 border border-slate-700 rounded max-h-64 overflow-y-auto space-y-1">
+              {state.subtitleCues.map((cue, idx) => (
+                <div key={idx} className="flex items-start gap-2 px-2 py-1.5 hover:bg-slate-800/50 group">
+                  <span className="text-[9px] text-slate-500 w-16 flex-shrink-0 pt-0.5">
+                    {cue.startSec.toFixed(1)}s
+                  </span>
+                  {editingCueIdx === idx ? (
+                    <div className="flex-1 flex gap-1">
+                      <input
+                        type="text"
+                        autoFocus
+                        value={editingText}
+                        onChange={(e) => setEditingText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleSaveEdit(idx);
+                          if (e.key === 'Escape') setEditingCueIdx(null);
+                        }}
+                        className="flex-1 text-[11px] bg-slate-800 border border-blue-500 rounded px-1.5 py-0.5 text-slate-200 focus:outline-none"
+                      />
+                      <button
+                        onClick={() => handleSaveEdit(idx)}
+                        className="text-[10px] px-1.5 py-0.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded"
+                        type="button"
+                      >
+                        保存
+                      </button>
+                      <button
+                        onClick={() => setEditingCueIdx(null)}
+                        className="text-[10px] px-1.5 py-0.5 bg-slate-600 hover:bg-slate-500 text-white rounded"
+                        type="button"
+                      >
+                        取消
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <span
+                        className={`flex-1 text-[11px] text-slate-200 cursor-pointer hover:text-white ${
+                          findText.trim() && cue.text.includes(findText)
+                            ? 'bg-yellow-600/30 text-yellow-200 rounded px-0.5'
+                            : ''
+                        }`}
+                        onClick={() => {
+                          setEditingCueIdx(idx);
+                          setEditingText(cue.text);
+                        }}
+                        title="点击编辑"
+                      >
+                        {cue.text}
+                      </span>
+                      <button
+                        onClick={() => {
+                          setEditingCueIdx(idx);
+                          setEditingText(cue.text);
+                        }}
+                        className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-blue-400 transition-opacity"
+                        type="button"
+                      >
+                        <Edit3 size={9} />
+                      </button>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <button
+              onClick={() => setSubtitleEditOpen(false)}
+              className="text-[11px] text-slate-400 hover:text-slate-200 flex items-center gap-1"
+              type="button"
+            >
+              <ChevronUp size={10} /> 收起编辑
+            </button>
           </div>
         )}
 
