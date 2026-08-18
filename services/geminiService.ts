@@ -38,6 +38,8 @@ export type StreamContentOptions = {
   referenceDataUrls?: string[];
   /** 有参考图时，多模态首条英文说明；不传则用通用锚定（不预设狗/宠物） */
   referenceMultimodalPreamble?: string;
+  /** 直接传入 API Key，跳过 localStorage 读取（用于传参调用场景） */
+  apiKeyOverride?: string;
 };
 
 export type StreamModelArgs = Parameters<typeof streamContentGeneration>;
@@ -944,28 +946,36 @@ export const streamContentGeneration = async (
   options?: StreamContentOptions
 ) => {
   try {
-      if (!apiKey) {
-        if (typeof window !== "undefined" && window.localStorage) {
-          const storedKey = window.localStorage.getItem("GEMINI_API_KEY");
-          const storedProvider = window.localStorage.getItem(
-            "GEMINI_PROVIDER"
-          ) as Provider | null;
-          if (storedKey) {
-            apiKey = storedKey;
-            provider = storedProvider === "google" ? "google" : "yunwu";
-            if (provider === "google") {
-              baseUrl = GOOGLE_BASE_URL;
-              model = GOOGLE_PRIMARY_MODEL;
-            } else {
-              baseUrl = YUNWU_BASE_URL;
-              model = DEFAULT_YUNWU_MODEL;
-            }
-            baseUrl = baseUrl.replace(/\/$/, "");
-          }
-        }
-
+      if (options?.apiKeyOverride) {
+        apiKey = options.apiKeyOverride;
+        // 根据 key 判断 provider（简单 heuristic）
+        provider = 'yunwu';
+        baseUrl = YUNWU_BASE_URL.replace(/\/$/, "");
+        model = modelName || 'gpt-5.6-luna';
+      } else {
         if (!apiKey) {
-          throw new Error("API Key 未設置。請在設置中輸入您的 API Key。");
+          if (typeof window !== "undefined" && window.localStorage) {
+            const storedKey = window.localStorage.getItem("GEMINI_API_KEY");
+            const storedProvider = window.localStorage.getItem(
+              "GEMINI_PROVIDER"
+            ) as Provider | null;
+            if (storedKey) {
+              apiKey = storedKey;
+              provider = storedProvider === "google" ? "google" : "yunwu";
+              if (provider === "google") {
+                baseUrl = GOOGLE_BASE_URL;
+                model = GOOGLE_PRIMARY_MODEL;
+              } else {
+                baseUrl = YUNWU_BASE_URL;
+                model = DEFAULT_YUNWU_MODEL;
+              }
+              baseUrl = baseUrl.replace(/\/$/, "");
+            }
+          }
+
+          if (!apiKey) {
+            throw new Error("API Key 未設置。請在設置中輸入您的 API Key。");
+          }
         }
       }
 

@@ -3678,15 +3678,18 @@ const RemotionSettingsPanel: React.FC<{
               <button
                 onClick={async () => {
                   if (!customTracks.subtitleCues?.length) return;
-                  const hasApiKey = typeof window !== 'undefined' && !!window.localStorage.getItem('GEMINI_API_KEY');
-                  if (!hasApiKey) {
-                    alert('请先在设置中配置 AI API Key（Gemini / Yunwu）');
+                  const effectiveKey = typeof window !== 'undefined'
+                    ? (window.localStorage.getItem('YUNWU_API_KEY') || window.localStorage.getItem('GEMINI_API_KEY'))
+                    : null;
+                  if (!effectiveKey) {
+                    appendLog('ASR', `⚠ 请先在设置中配置 AI API Key`);
+                    toast.error('请先在设置中配置 AI API Key', 4000);
                     return;
                   }
                   setWhisperRunning(true);
                   appendLog('ASR', `▸ AI 优化字幕中…`);
                   try {
-                    const result = await optimizeSubtitles(customTracks.subtitleCues, (cur, total) => {
+                    const result = await optimizeSubtitles(customTracks.subtitleCues, effectiveKey, (cur, total) => {
                       appendLog('ASR', `  AI 优化: ${cur}/${total}`);
                     });
                     if (result.success) {

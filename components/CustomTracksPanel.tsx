@@ -621,15 +621,17 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
       alert('当前没有字幕可以优化');
       return;
     }
-    const hasApiKey = typeof window !== 'undefined' && !!window.localStorage.getItem('GEMINI_API_KEY');
+    const hasApiKey = typeof window !== 'undefined'
+      && (!!window.localStorage.getItem('YUNWU_API_KEY') || !!window.localStorage.getItem('GEMINI_API_KEY'));
     if (!hasApiKey) {
-      alert('请先在设置中配置 AI API Key（Gemini / Yunwu）');
+      alert('请先在设置中配置 AI API Key（YUNWU / Gemini）');
       return;
     }
+    const apiKey = window.localStorage.getItem('YUNWU_API_KEY') || window.localStorage.getItem('GEMINI_API_KEY');
     setAsrLoading(true);
     log('ASR', `▸ AI 优化字幕中（共 ${state.subtitleCues.length} 条）…`);
     try {
-      const result = await optimizeSubtitles(state.subtitleCues, (cur, total) => {
+      const result = await optimizeSubtitles(state.subtitleCues, apiKey, (cur, total) => {
         log('ASR', `  AI 优化: ${cur}/${total}`);
       });
       if (result.success) {

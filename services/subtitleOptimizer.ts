@@ -29,102 +29,36 @@ export interface OptimizationResult {
 }
 
 /**
- * 从 localStorage 获取 API Key
- */
-function getApiKey(): string | null {
-  if (typeof window === 'undefined') return null;
-  // 兼容多种 key 名称
-  return (
-    localStorage.getItem('GEMINI_API_KEY') ||
-    localStorage.getItem('YUNWU_API_KEY') ||
-    localStorage.getItem('OPENAI_API_KEY')
-  );
-}
-
-/**
- * 调用 AI（单次批量），返回整段响应文本
- */
-async function callAI(
-  prompt: string,
-  systemInstruction: string,
-  apiCall: (prompt: string, systemInstruction: string) => Promise<string>
-): Promise<string> {
-  return apiCall(prompt, systemInstruction);
-}
-
-/**
- * 解析 AI 返回的批量字幕结果
- * 支持多种格式：
- * 1. JSON 数组（推荐）
- * 2. 每行一个字幕
- * 3. 用编号分隔
- */
-function parseBatchResult(content: string, originalCues: SubtitleCue[]): SubtitleCue[] {
-  const trimmed = content.trim();
-
-  // 尝试解析 JSON 数组
-  const jsonMatch = trimmed.match(/\[[\s\S]*\]/);
-  if (jsonMatch) {
-    try {
-      const arr = JSON.parse(jsonMatch[0]);
-      if (Array.isArray(arr) && arr.length > 0) {
-        return originalCues.map((cue, idx) => {
-          const item = arr[idx];
-          if (typeof item === 'string') {
-            return { ...cue, text: item };
-          }
-          if (item && typeof item === 'object' && item.text) {
-            return { ...cue, text: item.text };
-          }
-          return cue;
-        });
-      }
-    } catch (e) {
-      // 继续尝试其他格式
-    }
-  }
-
-  // 尝试按行解析（每行一个字幕）
-  const lines = trimmed.split(/\n+/).map((l) => l.trim()).filter(Boolean);
-  if (lines.length >= originalCues.length * 0.8) {
-    return originalCues.map((cue, idx) => {
-      // 优先使用对应的行；如果多出一行可能是说明文字
-      const line = lines[idx];
-      if (line) {
-        // 清理可能的前缀（数字编号、方括号等）
-        const cleaned = line.replace(/^[\d]+[\.、:：\s]+/, '').replace(/^[\[\(][^\]]+[\]\)]\s*/, '');
-        return { ...cue, text: cleaned };
-      }
-      return cue;
-    });
-  }
-
-  // 最后兜底：返回原文
-  return originalCues;
-}
-
-/**
  * 批量优化字幕（单次 AI 调用，性能更好）
  *
  * @param cues 原始字幕数组（按时间顺序）
+ * @param apiKey AI API Key（YUNWU_API_KEY / GEMINI_API_KEY）
  * @param onProgress 进度回调 (current, total)
  * @returns 优化后的字幕数组
  */
 export async function optimizeSubtitles(
   cues: SubtitleCue[],
+  apiKey?: string | null,
   onProgress?: (current: number, total: number) => Promise<void> | void
 ): Promise<OptimizationResult> {
   if (!cues || cues.length === 0) {
     return { success: true, optimizedCues: [], correctedCount: 0 };
   }
 
-  // 检查 API Key
-  const apiKey = getApiKey();
-  if (!apiKey) {
+  // 优先使用传入的 apiKey，否则尝试从 localStorage 兼容旧逻辑
+  const effectiveKey =
+    apiKey?.trim() ||
+    (typeof window !== 'undefined'
+      ? localStorage.getItem('YUNWU_API_KEY') ||
+        localStorage.getItem('GEMINI_API_KEY') ||
+        localStorage.getItem('OPENAI_API_KEY')
+      : null);
+
+  if (!effectiveKey) {
     return {
       success: false,
       optimizedCues: cues,
-      error: '请先在设置中配置 AI API Key（GEMINI_API_KEY / YUNWU_API_KEY）',
+      error: '请先在设置中配置 AI API Key',
     };
   }
 
@@ -137,7 +71,6 @@ export async function optimizeSubtitles(
         let fullContent = '';
         let aborted = false;
 
-        // 设置超时（120 秒）
         const timeoutId = setTimeout(() => {
           if (!aborted) {
             aborted = true;
@@ -151,8 +84,8 @@ export async function optimizeSubtitles(
           (chunk) => {
             if (!aborted) fullContent += chunk;
           },
-          undefined,
-          { temperature: 0.3, maxTokens: 8192 }
+          'gpt-5.6-luna', // 优先使用 gpt-5.6-luna 模型
+          { temperature: 0.3, maxTokens: 8192, apiKeyOverride: effectiveKey }
         )
           .then(() => {
             if (!aborted) {
@@ -176,7 +109,6 @@ export async function optimizeSubtitles(
     };
   }
 
-  // 报告初始进度
   onProgress?.(0, cues.length);
 
   try {
@@ -203,7 +135,6 @@ export async function optimizeSubtitles(
 - 只输出 JSON，不要包含其他说明文字
 - 示例：[ "纠正后的第1条", "纠正后的第2条", ... ]`;
 
-    // 构造批量输入
     const numberedOriginal = cues.map((c, i) => `${i + 1}. ${c.text}`).join('\n');
     const userPrompt = `请纠正以下 ${cues.length} 条字幕中的错误（基于上下文语境）：
 
@@ -212,20 +143,17 @@ ${numberedOriginal}
 请只返回 JSON 数组，格式如：[ "纠正后的第1条", "纠正后的第2条", ... ]
 数组长度必须等于 ${cues.length}，不要修改其他内容。`;
 
-    const result = await callAI(userPrompt, systemInstruction, apiCall);
+    const result = await apiCall(userPrompt, systemInstruction);
 
-    // 报告 80% 进度（解析前）
     onProgress?.(Math.floor(cues.length * 0.8), cues.length);
 
     const optimizedCues = parseBatchResult(result, cues);
 
-    // 统计实际修改数量
     let correctedCount = 0;
     optimizedCues.forEach((opt, idx) => {
       if (opt.text !== cues[idx].text) correctedCount++;
     });
 
-    // 报告 100% 进度
     onProgress?.(cues.length, cues.length);
 
     return {
@@ -240,6 +168,50 @@ ${numberedOriginal}
       error: '优化失败: ' + (e instanceof Error ? e.message : String(e)),
     };
   }
+}
+
+/**
+ * 解析 AI 返回的批量字幕结果
+ */
+function parseBatchResult(content: string, originalCues: SubtitleCue[]): SubtitleCue[] {
+  const trimmed = content.trim();
+
+  // 尝试解析 JSON 数组
+  const jsonMatch = trimmed.match(/\[[\s\S]*\]/);
+  if (jsonMatch) {
+    try {
+      const arr = JSON.parse(jsonMatch[0]);
+      if (Array.isArray(arr) && arr.length > 0) {
+        return originalCues.map((cue, idx) => {
+          const item = arr[idx];
+          if (typeof item === 'string') {
+            return { ...cue, text: item };
+          }
+          if (item && typeof item === 'object' && item.text) {
+            return { ...cue, text: item.text };
+          }
+          return cue;
+        });
+      }
+    } catch (e) {
+      // 继续尝试其他格式
+    }
+  }
+
+  // 按行解析
+  const lines = trimmed.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length >= originalCues.length * 0.8) {
+    return originalCues.map((cue, idx) => {
+      const line = lines[idx];
+      if (line) {
+        const cleaned = line.replace(/^[\d]+[\.、:：\s]+/, '').replace(/^[\[\(][^\]]+[\]\)]\s*/, '');
+        return { ...cue, text: cleaned };
+      }
+      return cue;
+    });
+  }
+
+  return originalCues;
 }
 
 /**
@@ -266,14 +238,20 @@ export function detectLikelyErrors(text: string): string[] {
 
 /**
  * 简化的单次优化（直接调用 AI）
- * 适用于快速修正少量字幕
  */
 export async function quickOptimize(
   subtitleText: string,
-  context?: string
+  context?: string,
+  apiKey?: string | null
 ): Promise<string> {
-  const apiKey = getApiKey();
-  if (!apiKey) {
+  const effectiveKey =
+    apiKey?.trim() ||
+    (typeof window !== 'undefined'
+      ? localStorage.getItem('YUNWU_API_KEY') ||
+        localStorage.getItem('GEMINI_API_KEY')
+      : null);
+
+  if (!effectiveKey) {
     throw new Error('请先在设置中配置 AI API Key');
   }
 
@@ -298,8 +276,8 @@ export async function quickOptimize(
       (chunk) => {
         fullContent += chunk;
       },
-      undefined,
-      { temperature: 0.3, maxTokens: 2048 }
+      'gpt-5.6-luna',
+      { temperature: 0.3, maxTokens: 2048, apiKeyOverride: effectiveKey }
     )
       .then(() => {
         clearTimeout(timeoutId);
