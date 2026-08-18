@@ -775,8 +775,11 @@ app.post('/audio/extract', async (req, res) => {
     //    @remotion/renderer.extractAudio() 输出 audioFormat:255（WAVE_FORMAT_EXTENSIBLE），
     //    浏览器 decodeAudioData() 无法解码。改用 ffmpeg-static 直接转 PCM。
     //    execFile spawn 绕开 shell，不会触发 macOS Gatekeeper SIGKILL。
+    //
+    // 注意：用 localRequire('ffmpeg-static') 获取二进制路径，不要用 resolve
+    // （resolve 返回 index.js 文件本身，不是模块 export 的路径）
     const candidates = [
-      { path: localRequire.resolve('ffmpeg-static'), label: 'ffmpeg-static' },
+      { path: localRequire('ffmpeg-static'), label: 'ffmpeg-static' },
       { path: '/Applications/小V猫.app/Contents/Resources/app/ffmpeg', label: '小V猫' },
       { path: '/Applications/剪映专业版5.9.app/Contents/Resources/ffmpeg', label: '剪映' },
       { path: '/Applications/易剪媒.app/Contents/Resources/extraResources/ffmpeg/mac/ffmpeg', label: '易剪媒' },
