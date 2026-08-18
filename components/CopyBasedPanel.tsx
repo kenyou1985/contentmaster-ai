@@ -87,6 +87,7 @@ import {
   type BgmCacheEntry,
 } from '../services/bgmUploadService';
 import { transcribeShots } from '../services/localAsrService';
+import { optimizeSubtitles } from '../services/subtitleOptimizer';
 import { prewarmFfmpeg } from '../services/audioExtractor';
 import {
   CustomTracksPanel,
@@ -3672,6 +3673,46 @@ const RemotionSettingsPanel: React.FC<{
               <Sparkles size={10} />
               {whisperEnabled ? 'Whisper ASR 已开启（词级时间戳）' : '开启 Whisper ASR（词级时间戳）'}
             </button>
+            {/* AI 优化字幕按钮 */}
+            {(customTracks.subtitleCues?.length ?? 0) > 0 && (
+              <button
+                onClick={async () => {
+                  if (!customTracks.subtitleCues?.length) return;
+                  const hasApiKey = typeof window !== 'undefined' && !!window.localStorage.getItem('GEMINI_API_KEY');
+                  if (!hasApiKey) {
+                    alert('请先在设置中配置 AI API Key（Gemini / Yunwu）');
+                    return;
+                  }
+                  setWhisperRunning(true);
+                  appendLog('ASR', `▸ AI 优化字幕中…`);
+                  try {
+                    const result = await optimizeSubtitles(customTracks.subtitleCues, (cur, total) => {
+                      appendLog('ASR', `  AI 优化: ${cur}/${total}`);
+                    });
+                    if (result.success) {
+                      setCustomTracks((prev) => ({
+                        ...prev,
+                        subtitleCues: result.optimizedCues,
+                        subtitleFileName: undefined,
+                      }));
+                      appendLog('ASR', `✓ AI 优化完成：${result.optimizedCues.length} 条字幕`);
+                    } else {
+                      appendLog('ASR', `⚠ AI 优化失败: ${result.error}`);
+                      alert('AI 优化失败: ' + (result.error || '未知错误'));
+                    }
+                  } catch (e: any) {
+                    appendLog('ASR', `✗ AI 优化出错: ${e.message}`);
+                    alert('AI 优化出错: ' + e.message);
+                  } finally {
+                    setWhisperRunning(false);
+                  }
+                }}
+                disabled={whisperRunning || !(customTracks.subtitleCues?.length ?? 0)}
+                className="flex items-center gap-1.5 px-2 py-1 text-[10px] rounded border bg-emerald-600 border-emerald-500 text-white hover:bg-emerald-500 disabled:opacity-40 transition-all"
+              >
+                ✨ AI 优化字幕
+              </button>
+            )}
             {/* 字幕样式详情 */}
             {subtitleStyleOpen && (
               <div className="flex flex-col gap-1.5 bg-slate-900/40 rounded p-2">

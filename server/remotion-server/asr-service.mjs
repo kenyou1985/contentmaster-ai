@@ -22,7 +22,16 @@ const { WaveFile } = wavefilePkg;
 let asrPipeline = null;
 let modelLoadingPromise = null;
 
-const WHISPER_MODEL = 'Xenova/whisper-base'; // 轻量模型，兼顾质量和速度
+/**
+ * Whisper 模型选择：
+ * - whisper-base (~140MB): 速度快，质量一般，适合快速测试
+ * - whisper-small (~244MB): 速度与质量平衡，中文较好
+ * - whisper-medium (~768MB): 质量高，中文识别更准确
+ * - whisper-large-v3 (~1.5GB): 最高质量，中文人名、专业术语识别最准
+ *
+ * 推荐：production 环境使用 whisper-large-v3 以获得最佳识别效果
+ */
+const WHISPER_MODEL = 'Xenova/whisper-large-v3';
 
 /**
  * 获取或初始化 ASR pipeline（懒加载 + 全局单例）

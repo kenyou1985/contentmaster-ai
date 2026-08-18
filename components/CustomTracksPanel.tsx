@@ -37,6 +37,7 @@ import {
   prewarmFfmpeg,
 } from '../services/audioExtractor';
 import { getRemotionApiBase } from '../services/remotionExportService';
+import { optimizeSubtitles } from '../services/subtitleOptimizer';
 
 // ── 字幕辅助函数 ──────────────────────────────────────────
 
@@ -1017,6 +1018,48 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
               {asrLoading ? <Loader2 size={12} className="animate-spin" /> : null}
               {asrLoading ? '识别中…' : '🔄 重新识别'}
             </button>
+            {/* AI 优化按钮 */}
+            {state.subtitleCues.length > 0 && (
+              <button
+                onClick={async () => {
+                  if (!state.subtitleCues.length) return;
+                  const hasApiKey = typeof window !== 'undefined' && !!window.localStorage.getItem('GEMINI_API_KEY');
+                  if (!hasApiKey) {
+                    alert('请先在设置中配置 AI API Key（Gemini / Yunwu）');
+                    return;
+                  }
+                  setAsrLoading(true);
+                  log('ASR', `▸ AI 优化字幕中…`);
+                  try {
+                    const result = await optimizeSubtitles(state.subtitleCues, (cur, total) => {
+                      log('ASR', `  AI 优化: ${cur}/${total}`);
+                    });
+                    if (result.success) {
+                      onChange((prev) => ({
+                        ...prev,
+                        subtitleCues: result.optimizedCues,
+                        subtitleFileName: undefined,
+                      }));
+                      log('ASR', `✓ AI 优化完成：${result.optimizedCues.length} 条字幕`);
+                    } else {
+                      log('ASR', `⚠ AI 优化失败: ${result.error}`);
+                      alert('AI 优化失败: ' + (result.error || '未知错误'));
+                    }
+                  } catch (e: any) {
+                    log('ASR', `✗ AI 优化出错: ${e.message}`);
+                    alert('AI 优化出错: ' + e.message);
+                  } finally {
+                    setAsrLoading(false);
+                  }
+                }}
+                disabled={asrLoading || !state.subtitleCues.length}
+                className="text-[11px] px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded flex items-center gap-1 disabled:opacity-40"
+                type="button"
+                title="使用 AI 根据上下文语境优化字幕"
+              >
+                ✨ AI 优化
+              </button>
+            )}
           )}
           <label className="flex items-center gap-1 text-[10px] text-slate-300">
             <input
