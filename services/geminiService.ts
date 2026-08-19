@@ -1064,6 +1064,7 @@ export const streamContentGeneration = async (
 
       if (provider === "google") {
         const googlePrimary = modelName || model || GOOGLE_PRIMARY_MODEL;
+        console.log('[Gemini Service] 使用 Google provider，模型:', googlePrimary);
 
         const runGoogleOnce = async (m: string) => {
           return Promise.race([
@@ -1113,6 +1114,8 @@ export const streamContentGeneration = async (
         }
       }
 
+      // Yunwu 流式调用
+      console.log('[Gemini Service] 使用 Yunwu provider，模型:', primaryModel);
       const primaryModel = modelName || STREAM_PRIMARY_MODEL; // 流式强制用 gpt-5.6-luna
 
       const isQuotaError = (err: any): boolean => {
