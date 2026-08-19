@@ -3449,7 +3449,7 @@ export const NICHES: Record<NicheType, NicheConfig> = {
     name: '新闻热点 (News)',
     icon: '🔥',
     description: '新闻评论员视角：独家辣评国际热点与权力博弈。',
-    systemInstruction: NEWS_COMMENTARY_SYSTEM,
+    systemInstruction: '',
     topicPromptTemplate: NEWS_GEO_POLITICS_PROMPT,
     scriptPromptTemplate: NEWS_LONG_SCRIPT_DOUYIN
   },

@@ -1736,6 +1736,17 @@ function scrubBodyOfThinking(text: string): string {
   result = result.replace(/【稿件统计】[\s\S]*?$/g, '');
   result = result.replace(/【素材引用说明】[\s\S]*?$/g, '');
 
+  // v2：清理正文里残留的孤立 Phase 标签行（如模型截断输出留下的残片）
+  result = result.replace(/^【Phase \d[^】]*】\s*$/gm, '');
+
+  // v2：清理孤立的冒号（单独一行、或前后无文字的冒号）
+  // 例如：「这。」后面跟着「：」这种截断残留
+  result = result.replace(/^：+\s*$/gm, '');
+  result = result.replace(/^：\s*/gm, '');
+
+  // v2：清理截断句（以逗号/冒号结尾但后面没有完整句子的残句）
+  result = result.replace(/[，,：:]\s*$/gm, '');
+
   return result.trim();
 }
 
@@ -3841,9 +3852,13 @@ ${segmentSourceText}
     type PhaseTag = { tag: string; phase: ThinkingPhase };
     const PHASE_TAGS: PhaseTag[] = [
       { tag: '【Phase 1', phase: 'phase1' },
+      { tag: '【Phase1', phase: 'phase1' },
       { tag: '【Phase 2', phase: 'phase2' },
+      { tag: '【Phase2', phase: 'phase2' },
       { tag: '【Phase 3', phase: 'phase3' },
+      { tag: '【Phase3', phase: 'phase3' },
       { tag: '【Phase 4', phase: 'phase4' },
+      { tag: '【Phase4', phase: 'phase4' },
       { tag: '【素材引用说明', phase: '素材引用' },
       { tag: '【稿件统计', phase: 'done' },
     ];
@@ -3855,13 +3870,13 @@ ${segmentSourceText}
     let thinkingStreamBuf = '';
     let bodyCursor = -1; // 正文开始位置（index in liveContentClean），-1 表示正文尚未开始
 
-    /** 检查 trimmed 行是否为 phase 标签 */
+    /** 检查 trimmed 行是否为 phase 标签（更宽泛的匹配） */
     const detectPhaseTag = (stripped: string): ThinkingPhase | 'body' | null => {
       if (stripped === BODY_TAG) return 'body';
       for (const p of PHASE_TAGS) {
         if (stripped.startsWith(p.tag)) {
           const nextCh = stripped[p.tag.length];
-          if (nextCh === undefined || nextCh === '】' || nextCh === ':' || nextCh === '：' || nextCh === ' ') {
+          if (nextCh === undefined || nextCh === '】' || nextCh === ':' || nextCh === '：' || nextCh === ' ' || nextCh === '　') {
             return p.phase;
           }
         }
@@ -3963,6 +3978,20 @@ ${segmentSourceText}
       }
     };
 
+    /**
+     * 第三步修订流解析器：直接追加正文到 liveContentClean。
+     * 防御性过滤 Phase 标签（修订 prompt 通常不会输出，但模型可能犯错）。
+     */
+    const parseBodyChunk = (chunk: string) => {
+      // 过滤 Phase 标签行（防御性，防止模型在修订稿里夹带 Phase）
+      const lines = chunk.split('\n');
+      const cleanLines = lines.filter(l => {
+        const t = l.trim();
+        return !t.startsWith('【Phase ') && !t.startsWith('【Phase') && !t.startsWith('【素材引用说明') && !t.startsWith('【稿件统计') && !t.startsWith('【正文】');
+      });
+      liveContentClean += cleanLines.join('\n');
+    };
+
     const flushThinkingBuf = () => {
       if (currentPhase === 'idle' && thinkingStreamBuf) {
         thinkingStreamBuf = '';
@@ -4049,9 +4078,13 @@ ${segmentSourceText}
             undefined,
             { maxTokens: 4096, idleTimeoutMs: 120000, firstChunkTimeoutMs: 120000 },
           );
-          // 自检流结束后 flush
-          if (currentPhase !== 'idle' && thinkingStreamBuf.trim()) {
-            flushLineBuf();
+          // 第二步结束：flush 最后残留的 Phase 行
+          if (currentPhase !== 'idle') {
+            const tail = lineBuf.trim() || thinkingStreamBuf.trim();
+            if (tail) pushThinkingLine(currentPhase, tail);
+            lineBuf = '';
+            thinkingStreamBuf = '';
+            currentPhase = 'idle';
           }
         } catch (e) {
           console.warn('[Generator] Phase 自检失败（不影响正文）:', e);
