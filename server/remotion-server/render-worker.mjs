@@ -25,6 +25,23 @@ const OUTPUT_DIR = process.env.REMOTION_OUTPUT_DIR || join('/tmp', 'remotion-out
 const PUBLIC_MEDIA_DIR = join(PROJECT_ROOT, 'public', 'mmedia');
 const LOG_DIR = join(OUTPUT_DIR, 'logs');
 
+// ── 浏览器可执行文件路径 ───────────────────────────────────────────
+// Railway / Linux 容器内：使用系统安装的 chromium，避免 Remotion 运行时下载失败
+const SYSTEM_CHROMIUM_PATHS = [
+  process.env.PUPPETEER_EXECUTABLE_PATH,
+  process.env.CHROME_EXECUTABLE_PATH,
+  process.env.REMOTION_BROWSER_EXECUTABLE,
+  '/usr/bin/chromium',
+  '/usr/bin/google-chrome',
+  '/usr/bin/chrome',
+];
+const SYSTEM_CHROMIUM = SYSTEM_CHROMIUM_PATHS.find((p) => p && existsSync(p)) || null;
+if (SYSTEM_CHROMIUM) {
+  console.log(`[browser] 使用系统 Chromium: ${SYSTEM_CHROMIUM}`);
+} else {
+  console.warn(`[browser] 未找到系统 Chromium，Remotion 将尝试下载（容器中可能失败）`);
+}
+
 if (!existsSync(OUTPUT_DIR)) mkdirSync(OUTPUT_DIR, { recursive: true });
 if (!existsSync(PUBLIC_MEDIA_DIR)) mkdirSync(PUBLIC_MEDIA_DIR, { recursive: true });
 if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
@@ -445,6 +462,7 @@ async function main() {
         bundler.bundle({
           entryPoint: ENTRY_FILE,
           enableCaching: true,
+          ...(SYSTEM_CHROMIUM ? { browserExecutable: SYSTEM_CHROMIUM } : {}),
         }),
         new Promise((_, reject) => setTimeout(() => reject(new Error('bundler.bundle 超时（>180s）')), 180_000))
       ]);
@@ -465,6 +483,7 @@ async function main() {
       serveUrl: bundleLocation,
       id: 'MyVideo',
       inputProps,
+      ...(SYSTEM_CHROMIUM ? { browserExecutable: SYSTEM_CHROMIUM } : {}),
     });
     let selectTimer;
     const composition = await Promise.race([
@@ -514,6 +533,7 @@ async function main() {
       outputLocation: outputPath,
       inputProps,
       concurrency,
+      ...(SYSTEM_CHROMIUM ? { browserExecutable: SYSTEM_CHROMIUM } : {}),
       // v1.10：启用 swiftshader 软件 GPU 加速（替代 --disable-gpu 关闭 GPU）
       // 在 Railway 无物理 GPU / 本地无独显时也能用 CPU 模拟 GPU，比纯软件渲染快 1.5-3x
       chromiumOptions: {
@@ -593,6 +613,16 @@ async function main() {
       format: 'mp4',
       taskId,
     });
+  } catch (err) {
+    logError(err);
+    process.stdout.write(JSON.stringify({
+      type: 'failed',
+      error: err.message || String(err),
+      message: 'Remotion 渲染失败',
+    }) + '\n');
+    process.exit(1);
+  }
+}
 
 /**
  * 单段渲染函数（可被 batch-renderer 导入复用）
@@ -641,6 +671,7 @@ export async function renderSegment(shots, outputPath, opts = {}) {
     bundleLocation = await bundler.bundle({
       entryPoint: ENTRY_FILE,
       enableCaching: true,
+      ...(SYSTEM_CHROMIUM ? { browserExecutable: SYSTEM_CHROMIUM } : {}),
     });
     recordBundleResult(cacheCheck.cacheKey, bundleLocation);
     logInfo(`已打包（耗时 ${Date.now() - t0}ms）`);
@@ -663,6 +694,7 @@ export async function renderSegment(shots, outputPath, opts = {}) {
       serveUrl: bundleLocation,
       id: 'MyVideo',
       inputProps,
+      ...(SYSTEM_CHROMIUM ? { browserExecutable: SYSTEM_CHROMIUM } : {}),
     });
   } finally {
     clearTimeout(selectTimer);
@@ -683,6 +715,7 @@ export async function renderSegment(shots, outputPath, opts = {}) {
     outputLocation: outputPath,
     inputProps,
     concurrency,
+    ...(SYSTEM_CHROMIUM ? { browserExecutable: SYSTEM_CHROMIUM } : {}),
     chromiumOptions: {
       args: [
         '--no-sandbox',

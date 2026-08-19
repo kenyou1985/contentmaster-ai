@@ -159,6 +159,23 @@ const LOG_DIR = join(OUTPUT_DIR, 'logs');
 if (!existsSync(OUTPUT_DIR)) mkdirSync(OUTPUT_DIR, { recursive: true });
 if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
 
+// ── 浏览器可执行文件路径 ─────────────────────────
+// Railway / Linux 容器内：使用系统安装的 chromium，避免 Remotion 运行时下载失败
+const SYSTEM_CHROMIUM_PATHS = [
+  process.env.PUPPETEER_EXECUTABLE_PATH,
+  process.env.CHROME_EXECUTABLE_PATH,
+  process.env.REMOTION_BROWSER_EXECUTABLE,
+  '/usr/bin/chromium',
+  '/usr/bin/google-chrome',
+  '/usr/bin/chrome',
+];
+const SYSTEM_CHROMIUM = SYSTEM_CHROMIUM_PATHS.find((p) => p && existsSync(p)) || null;
+if (SYSTEM_CHROMIUM) {
+  console.log(`[browser] 使用系统 Chromium: ${SYSTEM_CHROMIUM}`);
+} else {
+  console.warn(`[browser] 未找到系统 Chromium，Remotion 将尝试下载（容器中可能失败）`);
+}
+
 // 流式下载（替代 express.static）：
 // - 移除 Content-Length，启用 Railway chunked transfer
 // - 每 512KB 发一次块，块间无延迟（node pipe 自动背压），
@@ -611,6 +628,7 @@ async function runRenderInProcess(payload, taskId) {
     const bundleLocation = await bundler.bundle({
       entryPoint: REMOTION_PROJECT_ENTRY,
       enableCaching: true,
+      ...(SYSTEM_CHROMIUM ? { browserExecutable: SYSTEM_CHROMIUM } : {}),
     });
     log(`打包完成（耗时 ${Date.now() - t0}ms）: ${bundleLocation}`);
 
@@ -627,6 +645,7 @@ async function runRenderInProcess(payload, taskId) {
       serveUrl: bundleLocation,
       id: 'MyVideo',
       inputProps,
+      ...(SYSTEM_CHROMIUM ? { browserExecutable: SYSTEM_CHROMIUM } : {}),
     });
 
     log(`Composition: ${composition.width}x${composition.height} @ ${composition.fps}fps, ${composition.durationInFrames} 帧`);
@@ -660,6 +679,7 @@ async function runRenderInProcess(payload, taskId) {
       outputLocation: outputPath,
       inputProps,
       concurrency,
+      ...(SYSTEM_CHROMIUM ? { browserExecutable: SYSTEM_CHROMIUM } : {}),
       chromiumOptions: {
         args: [
           '--no-sandbox',
