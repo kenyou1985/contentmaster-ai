@@ -1750,10 +1750,29 @@ function scrubBodyOfThinking(text: string): string {
   return result.trim();
 }
 
+/**
+ * 移除正文里嵌入的具体 URL / 网址（包括 https://、http://、www. 开头的链接）
+ *   - 正文中不应出现具体出处链接（这些信息应留在思考流的【素材引用说明】）
+ *   - 保留纯域名形式（无协议头）作为事件描述（如「白宫声明」「省政府官网」）
+ *   - 替换为「官方公告」「相关声明」等通用引用描述
+ */
+function scrubBodyUrls(text: string): string {
+  let s = text;
+  // 匹配带协议的 URL（含路径、参数）
+  s = s.replace(/https?:\/\/[^\s,，。；;！!？?\)\)\）]+/gi, '官方公告');
+  // 匹配无协议的 www. 开头
+  s = s.replace(/\bwww\.[^\s,，。；;！!？?\)\)\）]+/gi, '官方公告');
+  // 清理多次替换后残留的「官方公告官方公告」
+  s = s.replace(/官方公告(官方公告)+/g, '官方公告');
+  return s;
+}
+
 function applyOneShotPostProcessing(content: string, niche: NicheType, scriptLengthMode: 'LONG' | 'SHORT', greatPowerLanguage?: 'zh' | 'en', customMinChars?: number | null): string {
   // 第一步：从正文输出中剥离 Phase/【稿件统计】等结构化分析块
   let text = scrubBodyOfThinking(content);
-  // 第二步：过 AI 味清除器（兜底）
+  // 第二步：移除正文中嵌入的具体 URL（出处链接应留在思考流的【素材引用说明】）
+  text = scrubBodyUrls(text);
+  // 第三步：过 AI 味清除器（兜底）
   let scrubbed = scrubScriptAiTaste(text);
   let clamped = clampOneShotLength(scrubbed.trim(), niche, scriptLengthMode, customMinChars);
 
@@ -3870,16 +3889,24 @@ ${segmentSourceText}
     let thinkingStreamBuf = '';
     let bodyCursor = -1; // 正文开始位置（index in liveContentClean），-1 表示正文尚未开始
 
-    /** 检查 trimmed 行是否为 phase 标签（更宽泛的匹配） */
-    const detectPhaseTag = (stripped: string): ThinkingPhase | 'body' | null => {
-      if (stripped === BODY_TAG) return 'body';
-      for (const p of PHASE_TAGS) {
-        if (stripped.startsWith(p.tag)) {
-          const nextCh = stripped[p.tag.length];
-          if (nextCh === undefined || nextCh === '】' || nextCh === ':' || nextCh === '：' || nextCh === ' ' || nextCh === '　') {
-            return p.phase;
-          }
-        }
+    // v2：从 trimmed（小写）行识别 phase 标签
+    //   大小写不敏感：模型可能输出 [Phase 1]、[phase 1]、[phase1]、[PHASE 1]
+    //   都识别为同一个 phase
+    const detectPhaseTag = (strippedLower: string): ThinkingPhase | 'body' | null => {
+      const t = strippedLower.trim();
+      if (t === '【正文】') return 'body';
+      // 素材引用说明（兼容【素材引用】）
+      if (t.startsWith('【素材引用')) return '素材引用';
+      // 稿件统计
+      if (t.startsWith('【稿件统计')) return 'done';
+      // Phase X 或 PhaseX（数字 1-4）
+      const phaseMatch = t.match(/^【\s*phase\s*(\d)\s*[】:：\s]/);
+      if (phaseMatch) {
+        const n = phaseMatch[1];
+        if (n === '1') return 'phase1';
+        if (n === '2') return 'phase2';
+        if (n === '3') return 'phase3';
+        if (n === '4') return 'phase4';
       }
       return null;
     };
@@ -3894,16 +3921,17 @@ ${segmentSourceText}
 
     const handleThinkingLine = (line: string) => {
       const stripped = line.trim();
-      const tag = detectPhaseTag(stripped);
+      const tag = detectPhaseTag(stripped.toLowerCase());
       if (tag) {
         flushLineBuf();
         currentPhase = tag === 'body' ? 'idle' : tag;
         if (tag !== 'body') {
-          const after = stripped.match(/】([^]*)/)?.[1]?.trim()
-            ?? (() => {
-                const tagIdx = stripped.indexOf('Phase ');
-                return tagIdx >= 0 ? stripped.slice(tagIdx + 6).replace(/^[:：] */, '').trim() : '';
-              })();
+          // 提取标签后的内容作为该 phase 的首行
+          const tagEndIdx = stripped.toLowerCase().indexOf('】');
+          let after = '';
+          if (tagEndIdx >= 0) {
+            after = stripped.slice(tagEndIdx + 1).replace(/^[:：] */, '').trim();
+          }
           if (after) {
             lineBuf = after;
             flushLineBuf();
@@ -3942,6 +3970,8 @@ ${segmentSourceText}
         const line = thinkingStreamBuf.slice(0, nlIdx);
         thinkingStreamBuf = thinkingStreamBuf.slice(nlIdx + 1);
         const stripped = line.trim();
+        // v2：兼容小写 phase（如 gemini-3.1 输出 [phase3] 而非 [Phase 3]）
+        const strippedLower = stripped.toLowerCase();
 
         if (stripped === BODY_TAG) {
           // 正文开始：flush 之前 Phase 内容，然后切换到正文追加模式
@@ -3951,37 +3981,46 @@ ${segmentSourceText}
           lineBuf = '';
           currentPhase = 'idle';
           bodyCursor = 0;
-        } else if (stripped.startsWith('【Phase ') || stripped.startsWith('【素材引用说明') || stripped.startsWith('【稿件统计')) {
-          const tag = detectPhaseTag(stripped);
+        } else if (
+          strippedLower.startsWith('【phase ') ||
+          strippedLower.startsWith('【phase') ||
+          strippedLower.startsWith('【素材引用说明') ||
+          strippedLower.startsWith('【素材引用') ||
+          strippedLower.startsWith('【稿件统计')
+        ) {
+          const tag = detectPhaseTag(strippedLower);
           if (tag) {
             if (currentPhase !== 'idle' && lineBuf.trim()) {
               pushThinkingLine(currentPhase, lineBuf.trim());
             }
             currentPhase = tag;
-            const after = stripped.match(/】([^]*)/)?.[1]?.trim()
-              ?? (() => {
-                const tagIdx = stripped.indexOf('Phase ');
-                return tagIdx >= 0 ? stripped.slice(tagIdx + 6).replace(/^[:：] */, '').trim() : '';
-              })();
+            // 提取标签后的内容作为该 phase 的首行
+            const tagEndIdx = strippedLower.indexOf('】');
+            let after = '';
+            if (tagEndIdx >= 0) {
+              after = stripped.slice(tagEndIdx + 1).replace(/^[:：] */, '').trim();
+            }
             lineBuf = after;
           }
         } else if (currentPhase !== 'idle') {
-          lineBuf += (lineBuf ? '\n' : '') + stripped;
+          // v2：过滤掉孤立冒号行（模型截断输出留下的 `：` 残片）
+          if (stripped === '：' || stripped === ':' || stripped === '，' || stripped === ',') {
+            // 跳过，不进 thinking
+          } else {
+            lineBuf += (lineBuf ? '\n' : '') + stripped;
+          }
         }
         nlIdx = thinkingStreamBuf.indexOf('\n');
       }
-      // 正文追加（thinkingStreamBuf 已被上面消费，剩余的就是正文内容）
-      // v2：正文追加前先判断是否真的进入正文模式（bodyCursor >= 0），
-      // 在此之前所有内容都缓存到 thinkingStreamBuf，等【正文】标签出现后再一次性追加。
+      // v2：thinkingStreamBuf 已被上面消费，剩余的就是正文内容
+      // - 正文追加前先判断是否真的进入正文模式（bodyCursor >= 0）
+      // - 在此之前所有内容都缓存到 thinkingStreamBuf，等【正文】标签出现后再一次性追加
+      // - Phase 行实时 flush：当 lineBuf 超过 200 字或累积超过 500 字时主动 push
       if (bodyCursor >= 0) {
-        // 【正文】已出现，正式开始追加正文
         liveContentClean += thinkingStreamBuf;
         bodyCursor = liveContentClean.length;
         thinkingStreamBuf = '';
       } else {
-        // 仍在 Phase 预分析阶段
-        // v2：行缓冲超 200 字或累积超过 500 字时主动 flush，避免长行等不到换行符
-        // 一直不显示
         if (lineBuf.length > 200 || thinkingStreamBuf.length > 500) {
           if (currentPhase !== 'idle' && lineBuf.trim()) {
             pushThinkingLine(currentPhase, lineBuf.trim());
