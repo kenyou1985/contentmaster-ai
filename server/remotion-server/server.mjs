@@ -111,14 +111,30 @@ const LOG_DIR = join(OUTPUT_DIR, 'logs');
 if (!existsSync(OUTPUT_DIR)) mkdirSync(OUTPUT_DIR, { recursive: true });
 if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
 
-app.use('/download', express.static(OUTPUT_DIR, {
-  maxAge: '7d',
-  setHeaders: (res, filePath) => {
-    if (filePath.endsWith('.mp4')) {
-      res.setHeader('Content-Type', 'video/mp4');
-    }
-  },
-}));
+// 流式下载（替代 express.static）：
+// - 移除 Content-Length，启用 Railway chunked transfer
+// - 每 512KB 发一次块，块间无延迟（node pipe 自动背压），
+//   Railway 的 120s 空闲超时只会在真正没数据传输时触发，pipe 会持续推数据所以不会触发
+// - 客户端 AbortSignal.timeout(600s) 给浏览器足够时间完成大文件下载
+app.use('/download', (req, res) => {
+  const filename = req.path.replace(/^\//, '');
+  const filePath = join(OUTPUT_DIR, filename);
+  if (!existsSync(filePath)) return res.status(404).json({ error: '文件不存在' });
+
+  res.setHeader('Content-Type', 'video/mp4');
+  res.setHeader('Content-Disposition', `attachment; filename="${basename(filename)}"`);
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  // 不设 Content-Length → Railway 走 chunked transfer，边推边发不卡在"等文件发完"
+  res.flushHeaders();
+
+  const stream = createReadStream(filePath, { highWaterMark: 1024 * 1024 }); // 1MB chunks
+  stream.on('error', (e) => {
+    if (!res.headersSent) res.status(500).json({ error: e.message });
+    else try { res.end(); } catch {}
+  });
+  stream.pipe(res);
+});
 
 // ── 任务队列 ───────────────────────────────
 const renderTasks = new Map();

@@ -104,7 +104,7 @@ export interface GeneratedContent {
 }
 
 /** Thinking log phase */
-export type ThinkingPhase = 'idle' | 'phase1' | 'phase2' | 'phase3' | 'phase4' | 'done';
+export type ThinkingPhase = 'idle' | 'phase1' | 'phase2' | 'phase3' | 'phase4' | '素材引用' | 'done';
 
 /** Single line in the terminal thinking log */
 export interface ThoughtLine {
@@ -121,6 +121,7 @@ export const THINKING_PHASE_LABELS: Record<ThinkingPhase, string> = {
   phase2: 'Phase 2',
   phase3: 'Phase 3',
   phase4: 'Phase 4',
+  '素材引用': '素材引用说明',
   done: '终稿统计',
 };
 

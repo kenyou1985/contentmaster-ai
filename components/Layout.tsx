@@ -4,6 +4,7 @@ import {
   Video, ImagePlus, Rss, Mic, Youtube, User, MoreHorizontal, PlusSquare,
 } from 'lucide-react';
 import { ApiProvider } from '../types';
+import { YUNWU_MODELS, GOOGLE_MODELS, RUNNINGHUB_MODELS } from '../services/geminiService';
 
 type TabId = 'generate' | 'tools' | 'media' | 'dubbing' | 'digitalHuman' | 'cover' | 'monitor' | 'channel';
 
@@ -163,6 +164,38 @@ export const Layout: React.FC<LayoutProps> = ({
                     <option value="yunwu">OpenLux.ai（sk- 開頭）</option>
                     <option value="google">Google Gemini（AIza 開頭）</option>
                     <option value="runninghub">RunningHub（開源模型）</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-400 font-semibold uppercase tracking-wider flex items-center gap-1">
+                    <Cpu size={12} /> 模型
+                  </label>
+                  <select
+                    value={
+                      typeof window !== 'undefined' && window.localStorage
+                        ? (window.localStorage.getItem(
+                            provider === 'google' ? 'GEMINI_GOOGLE_MODEL' : provider === 'runninghub' ? 'GEMINI_RUNNINGHUB_MODEL' : 'GEMINI_YUNWU_MODEL'
+                          ) || 'default')
+                        : 'default'
+                    }
+                    onChange={(e) => {
+                      const modelKey = provider === 'google'
+                        ? 'GEMINI_GOOGLE_MODEL'
+                        : provider === 'runninghub'
+                          ? 'GEMINI_RUNNINGHUB_MODEL'
+                          : 'GEMINI_YUNWU_MODEL';
+                      window.localStorage.setItem(modelKey, e.target.value);
+                      // Also re-initialize gemini service with new model
+                      const { initializeGemini } = require('../services/geminiService');
+                      initializeGemini(apiKey, { provider });
+                    }}
+                    className="w-full bg-slate-900/50 border border-slate-700/60 rounded-md px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20"
+                  >
+                    <option value="default">默认（系统自动选择）</option>
+                    {(provider === 'yunwu' ? YUNWU_MODELS : provider === 'google' ? GOOGLE_MODELS : RUNNINGHUB_MODELS).map(m => (
+                      <option key={m.id} value={m.id}>{m.label}</option>
+                    ))}
                   </select>
                 </div>
 

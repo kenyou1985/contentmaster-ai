@@ -833,6 +833,7 @@ import {
 } from '../types';
 import { NICHES, TCM_SUB_MODES, FINANCE_SUB_MODES, LIFE_DUNGEON_SUB_MODES, NEWS_SUB_MODES, INTERACTIVE_ENDING_TEMPLATE, PSYCHOLOGY_LONG_SCRIPT_PROMPT, PSYCHOLOGY_SHORT_SCRIPT_PROMPT, PHILOSOPHY_LONG_SCRIPT_PROMPT, PHILOSOPHY_SHORT_SCRIPT_PROMPT, EMOTION_TABOO_LONG_SCRIPT_PROMPT, EMOTION_TABOO_SHORT_SCRIPT_PROMPT, YI_JING_SHORT_SCRIPT_PROMPT, HISTORICAL_FIGURE_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT, NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH, applyTopicCountToPrompt, NEWS_SHORT_SCRIPT_DOUYIN, NEWS_LONG_SCRIPT_DOUYIN } from '../constants';
 import { NicheSelector } from './NicheSelector';
+import { ModelSelector } from './ModelSelector';
 import { generateTopics, generateTopicsStreaming, streamContentGeneration, initializeGemini, SEGMENT_RETRY_MAX, SEGMENT_RETRY_DELAY_MS } from '../services/geminiService';
 import { fetchMacroNewsDigestForPrompt, subModeName } from '../services/macroNewsFeedService';
 import { fetchPsychologyDigestForPrompt } from '../services/psychologyFeedService';
@@ -1282,10 +1283,10 @@ function getOneShotScriptPlan(niche: NicheType, scriptLengthMode: 'LONG' | 'SHOR
         '禁止废话、禁止长篇论证、禁止画面提示符、禁止前置说明、禁止二次润色。',
     };
   }
-  // 新闻热点赛道长视频：默认 2500-3200 字，支持自定义（硬下限 2300 字）
+  // 新闻热点赛道长视频：默认 2500-4000 字，支持自定义（硬下限 2300 字）
   if (niche === NicheType.GENERAL_VIRAL && scriptLengthMode === 'LONG') {
     const minChars = Math.max(customMinChars ?? 2500, 2300);
-    const maxChars = Math.max(minChars + 200, 3200);
+    const maxChars = Math.max(minChars + 500, 4000);
     const wordCountNote = customMinChars ? `（自定义：≥${customMinChars}字）` : '';
     return {
       minChars,
@@ -1360,14 +1361,24 @@ function buildOneShotLongScriptPrompt(
   customMinChars?: number | null,
 ): string {
   const plan = getOneShotScriptPlan(niche, scriptLengthMode, customMinChars);
-  const seeded = basePrompt.replaceAll('{topic}', topic);
-  if (!plan) return seeded;
-  return `${seeded}\n\n【生成模式变更（最高优先级）】\n本次必须一次性直接输出最终完整成稿。\n- 禁止先列大纲再写正文\n- 禁止分段输出后再合并\n- 禁止输出“第1部分/第2部分/上篇/下篇/待续”等中间产物\n- 禁止生成后再做“去AI味清洗/洗稿/二次润色”思路\n- 必须在首次生成时就直接把 AI 味降下来，写成可直接发布的最终稿\n\n【篇幅硬要求】\n- 严格目标区间：${plan.targetLabel}\n- 最低不少于 ${plan.minChars} 字\n- 最高不超过 ${plan.maxChars} 字\n\n【风格总要求】\n${plan.extraDirective}\n\n【输出要求】\n- 只输出最终正文\n- 不要解释你的写法\n- 不要输出大纲、章节规划、创作说明、字数说明\n- 不要输出“以下是正文”“下面开始”等前置语`;}
+  if (!plan) return basePrompt.replaceAll('{topic}', topic);
+  return `${basePrompt.replaceAll('{topic}', topic)}
 
-/**
- * 续写补齐字数提示词：当一次性生成字数不足时，自动调用此 prompt 让模型继续往下写
- * 严禁重复前面的内容，只接在末尾续写
- */
+【篇幅硬要求】
+- 严格目标区间：${plan.targetLabel}
+- 最低不少于 ${plan.minChars} 字
+- 最高不超过 ${plan.maxChars} 字
+- 一次性输出完整成稿，不要分段、不要分集、不要续写标记
+
+【输出格式（必须严格遵守）】
+第一步：先输出【Phase 1】→【Phase 4】结构化思考分析（每段用短句列出要点，不写完整段落）
+第二步：输出【正文】，从第三步开始直接写口播正文
+第三步：输出正文（纯正文，不要加小标题、不要分段标记、不要在正文里加"Phase"字样）
+第四步：在正文结束后输出【稿件统计】，只含字数
+
+${plan.extraDirective}`;
+}
+
 function buildContinueToTargetCharsPrompt(
   currentText: string,
   topic: string,
@@ -1395,6 +1406,102 @@ function buildContinueToTargetCharsPrompt(
 
 【输出格式】
 直接输出要续写的内容（不要写"以下是续写"等前缀），写完「咱们下期见。」即停。`;
+}
+
+function buildScriptSelfCheckPrompt(scriptText: string, topic: string): string {
+  // 第二步：基于已生成的正文做结构化自检，输出 Phase 1-4 + 稿件统计
+  // 注意：此 prompt 的输出仅进入思考流面板展示，不影响正文
+  return `你是一篇已发布口播稿的质检员，请按以下五个维度对下面这篇稿子做结构化自检报告。
+
+【选题】${topic}
+
+【稿件】
+"""
+${scriptText}
+"""
+
+【自检维度】
+1. Phase 1：核心论点是否清晰，立场是否一致
+2. Phase 2：硬数据/事实/时间锚点是否齐全，素材引用是否充分（如有不足，列出来）
+3. Phase 3：AI 味检查（是否仍有模板词、说教腔、空话）
+4. Phase 4：重复度检查（句子/案例/比喻是否重复）
+5. 稿件统计：当前字数、文件命名建议、素材引用情况
+
+【输出格式（必须严格遵守）】
+按以下六段输出，每段以【Phase X】或【稿件统计】或【素材引用说明】开头，段内用短句、不写完整段落：
+
+【Phase 1：核心论点】
+- 主题：（一句话，概括稿件核心在说什么）
+- 立场：（正面/批判/中立，核心态度是什么）
+- 主线：（用什么逻辑串起全文，1-2句话）
+
+【Phase 2：素材覆盖】
+- 用户原文已有：（从稿件中提取已用到的背景素材、论点、案例，不要猜测，只列文中已出现的）
+- 本次补充：（从稿件中提取本次新增的具体数字、时间节点、事件名、来源明确的数据，不要猜测，只列文中已出现的）
+- 缺什么：（以上两部分之外的缺失，如：缺具体金额、缺关键时间节点、缺可核验来源、缺历史对比等，如有则列出来）
+
+【Phase 3：去AI味】
+- 残留模板词：（如"值得注意的是""表明""显示""说明""本质是""真相""越来越像"等，列出所有）
+- 残留说教腔：（如"我们先下结论""你以为…其实…""问题来了""更狠的是""说白了"等，列出所有）
+
+【Phase 4：重复度】
+- 重复句/重复案例：（如有）
+- 重复比喻：（如"牌桌/棋局/筹码"多次连用、修仙/外门弟子等）
+- 重复结构：（如反复使用"表面…实际…"三段式、反复纠正式句式，列出）
+
+【稿件统计】
+- 当前字数：
+- 文件名建议：
+- 评级：
+
+【素材引用说明】（仅列出文中明确出现的事件、数据、来源；不要猜测未写明的内容）
+- 具体事件锚点：（列出文中出现的时间+事件，如"2023年11月胡塞扣押银河领袖号"）
+- 具体数据引用：（列出文中出现的数字+含义，如"苏伊士运河通行量下降42%"）
+- 来源标注：（列出文中出现过的机构名，如"联合国贸发会议""德鲁里指数"等）
+- 缺失来源：（列出重要数据或论点未标注来源的情况）`;
+}
+
+function buildScriptRevisionPrompt(
+  scriptText: string,
+  selfCheckReport: string,
+  topic: string,
+  plan: OneShotScriptPlan,
+): string {
+  // 第三步：拿着自检报告对正文做修订，输出最终稿（替换正文）
+  return `你是时事评论频道「盒子里的秘密」的主笔。刚才写了一篇初稿，质检员给出了结构化诊断。
+
+请**从零重写**一篇终稿（不是续写，不是改写，是完全替换）。重写时必须严格落实质检报告的每一条修订要求。
+
+【选题】${topic}
+【目标字数】${plan.minChars} - ${plan.maxChars} 字（终稿必须落在区间内，可上下浮动 100 字）
+
+【质检报告·逐条落实】
+${selfCheckReport}
+
+【重写铁律·最高优先级】
+1. **从第一个字开始写，不要复述、不要承接、不要续写初稿。** 把初稿当成背景资料，完全重写。
+2. **初稿的所有旧结尾必须丢弃**（包括"咱们下期见""评论区留言"等所有收尾语）。结尾必须重新写一个。
+3. **彻底删除**质检报告列出的所有残留模板词。
+4. **彻底删除**质检报告列出的所有重复比喻：同一类比喻（牌桌/棋盘/棋局/筹码/分账）整篇只允许保留 1 个，其余改写成具体动作或场景。
+5. **彻底删除**以下所有纠正式讲解腔（无论是否出现在质检报告里，全部删除）："你以为…？…其实…"、"你以为…错…"、"我们别被…骗了"、"先看美国"、"再看莫斯科"、"别被…哄住"、"谈判是一回事，X是另一回事"（对照句整句）。
+6. **删除**所有口径模糊的表达，替换为精确数字或具体事件名（如"超过千亿美元"→"约 1280 亿美元"；"二〇二二年以后"→"2022 年 3 月"）。
+7. **删除**以下高频锚点，整篇每项最多出现 3 次（超过即删除）："全力挺乌""停火不等于和平""谈判是一回事""口号大于能力"。
+8. **打破"先总后分"通讯社节奏**：至少加入 2 处戏剧性拐点（如"但转折来了——""真正让X紧张的，不是 Y，而是 Z"），让叙述有冲击感。
+9. **保留**所有事实论点和已补的具体数字；**禁止**新增自检报告未要求的内容（避免再次触发同类问题）。
+10. **总字数必须落在 ${plan.minChars} - ${plan.maxChars} 字之间**。
+
+【重写格式要求】
+- 第一行直接是正文，不要标题、不要前言、不要"以下是修订版"等过渡语。
+- 全文一段到底，不分小节、不加小标题、不加粗标注。
+- 写一个干净的结尾，不要任何"咱们下期见""评论区留言"等互动收尾。
+
+【初稿（仅作背景，不要复述）】
+"""
+${scriptText}
+"""
+
+【终稿·从这里开始直接写，不要引用初稿任何句子】
+`;
 }
 
 function clampOneShotLength(
@@ -1466,20 +1573,181 @@ function shouldUseOneShotLongForm(niche: NicheType, scriptLengthMode: 'LONG' | '
 }
 
 /** 一次性长文生成后处理：截断 + 收尾词注入/去重 */
+/**
+ * 第三步修订后的 AI 味清除器（兜底）。
+ * 即使 AI 没有完全遵守修订铁律，代码层也强制清除残留的 AI 味。
+ * 必须在 applyOneShotPostProcessing 之前调用，避免被收尾逻辑干扰。
+ */
+function scrubScriptAiTaste(text: string): string {
+  let s = text;
+
+  // 1. 路径提示模板词：直接删除整句
+  const PATH_PHRASES = [
+    /我们先下结论[。！？,，、：]?/g,
+    /我们再往深一点看[。！？,，、：]?/g,
+    /这就到了核心[。！？,，、：]?/g,
+    /所以我们最后看清楚一点[。！？,，、：]?/g,
+    /问题来了[，,]?/g,
+    /接下来最值得盯住的[是]?[。！？,，、：]?/g,
+    /这就解释了为什么[。！？,，、：]?/g,
+  ];
+  for (const re of PATH_PHRASES) {
+    s = s.replace(re, '');
+  }
+
+  // 2. 纠正式讲解腔（含问号版本）
+  const CORRECTIVE_PATTERNS = [
+    /你以为[^。！？?]{1,40}[?？][，。][，\s]?其实[^。！？]{1,40}[。！？]/g,
+    /你以为[^。！？]{1,40}错[^。！？]{1,40}[。！？]/g,
+    /更狠的是[，,]?/g,
+    /更要命的是[，,]?/g,
+    /说白了[，,]?/g,
+  ];
+  for (const re of CORRECTIVE_PATTERNS) {
+    s = s.replace(re, (m) => (m.endsWith('。！？') ? m.slice(0, -1) : ''));
+  }
+
+  // 3. 通讯社感修饰词：删除"值得注意的是""本质是""越来越像""表明""显示""说明""反映"
+  const NEWSROOM_PHRASES = [
+    /值得注意的是[，,]?/g,
+    /本质上[是]?/g,
+    /真相是[，,]?/g,
+    /越来越像/g,
+    /，表明/g,
+    /，显示/g,
+    /，说明/g,
+    /，反映/g,
+    /需要指出的是[，,]?/g,
+    /事实上[，,]?/g,
+    /从来不是[，,]?/g,
+    /真正的[。！？]/g,
+    /大概率[，,]?/g,
+    /我们不能只看[。！？,，、：]?/g,
+    /据[^，。]{0,30}等机构/g,
+    /据世界银行等机构/g,
+  ];
+  for (const re of NEWSROOM_PHRASES) {
+    s = s.replace(re, '');
+  }
+
+  // 4. 讲解腔引导句
+  const LECTURE_LEADS = [
+    /我们别被[^。，]{0,30}骗了[。！？,，]?/g,
+    /先把话挑明[，,]?/g,
+    /我们把话挑明[，,]?/g,
+    /把话挑明了看[，,]?/g,
+    /先把[^。，]{0,10}拆开看[，,]?/g,
+    /先看美国[，,]?/g,
+    /再看莫斯科[，,]?/g,
+    /别被[^。，]{0,30}哄住[。！？,，]?/g,
+  ];
+  for (const re of LECTURE_LEADS) {
+    s = s.replace(re, '');
+  }
+
+  // 5. 同义比喻去重：牌桌/棋盘/棋局/筹码 整篇只保留第一次出现
+  const METAPHOR_SYNONYMS: Record<string, RegExp[]> = {
+    '牌桌': [/[牌桌]棋[局盘]?/g, /棋[局盘][上中]?/g, /[下]注/g, /筹码/g, /分账/g],
+    '修仙': [/修仙界/g, /外门弟子/g, /法器|灵石|护法/g],
+    '握手': [/桌上握手/g, /桌面下/g, /桌下/g, /握手/g],
+  };
+  for (const key of Object.keys(METAPHOR_SYNONYMS)) {
+    const patterns = METAPHOR_SYNONYMS[key];
+    let firstFound = false;
+    for (const re of patterns) {
+      s = s.replace(re, (match) => {
+        if (!firstFound) {
+          firstFound = true;
+          return match;
+        }
+        return '';
+      });
+    }
+  }
+
+  // 6. 高频锚点限频
+  const FREQUENT_ANCHORS = [
+    '全力挺乌', '口号大于能力', '面子问题',
+    '停火不等于和平',
+    '谈判是一回事',
+  ];
+  for (const anchor of FREQUENT_ANCHORS) {
+    const re = new RegExp(anchor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+    let count = 0;
+    s = s.replace(re, (match) => {
+      count++;
+      return count <= 3 ? match : '';
+    });
+  }
+
+  // 7. 重复句式去重：同一类纠正/对照句式保留前2次，第3次后删除
+  const REPEAT_PATTERNS = [
+    /不是[^，,。；;]{1,30}，而是[^，,。；;]{1,30}/g,
+    /X是一回事[，,]?Y是另一回事[。！？]/g,
+    /如果[^{}]{0,50}，那就是[^{}]{0,30}/g,
+  ];
+  for (const re of REPEAT_PATTERNS) {
+    let count = 0;
+    s = s.replace(re, (m) => {
+      count++;
+      return count <= 2 ? m : '';
+    });
+  }
+
+  // 8. 重复结尾去重
+  const CLOSING_RE = /(?:咱们下期见|我们下期见|咱们下期继续聊|咱们下期继续拆)[。！？]*\s*/gi;
+  let iters = 0;
+  while (CLOSING_RE.test(s) && iters < 50) {
+    s = s.replace(CLOSING_RE, '');
+    iters++;
+  }
+
+  // 9. 清理空白和重复句号
+  s = s.replace(/\s{2,}/g, ' ');
+  s = s.replace(/。。/g, '。');
+  s = s.replace(/[。！？,，]{2,}/g, (m) => m[0]);
+  s = s.replace(/\s+$/g, '');
+  s = s.replace(/^[。！？,，、：\s]+/g, '');
+
+  return s.trim();
+}
+
+/**
+ * 从正文输出中剥离 Phase/【稿件统计】等结构化分析块，只保留【正文】纯正文。
+ * 在 applyOneShotPostProcessing 最前面调用，确保传给后处理的只有纯正文。
+ */
+function scrubBodyOfThinking(text: string): string {
+  const bodyStart = text.indexOf('【正文】');
+  if (bodyStart === -1) return text;
+
+  let result = text.slice(bodyStart + 4); // 去掉【正文】三个字
+
+  // 删除正文后面的【Phase X】/【稿件统计】/【素材引用说明】等结构化块
+  result = result.replace(/【Phase \d[^】]*】【[\s\S]*?(?=【Phase|【正文】|【稿件统计】|$)/g, '');
+  result = result.replace(/【稿件统计】[\s\S]*?$/g, '');
+  result = result.replace(/【素材引用说明】[\s\S]*?$/g, '');
+
+  return result.trim();
+}
+
 function applyOneShotPostProcessing(content: string, niche: NicheType, scriptLengthMode: 'LONG' | 'SHORT', greatPowerLanguage?: 'zh' | 'en', customMinChars?: number | null): string {
-  let text = clampOneShotLength(content.trim(), niche, scriptLengthMode, customMinChars);
+  // 第一步：从正文输出中剥离 Phase/【稿件统计】等结构化分析块
+  let text = scrubBodyOfThinking(content);
+  // 第二步：过 AI 味清除器（兜底）
+  let scrubbed = scrubScriptAiTaste(text);
+  let clamped = clampOneShotLength(scrubbed.trim(), niche, scriptLengthMode, customMinChars);
 
   if (niche === NicheType.GREAT_POWER_GAME) {
-    text = greatPowerLanguage === 'zh'
-      ? ensureGreatPowerClosingZh(text.replace(/[A-Za-z]{4,}[\s\S]*$/g, '').trim() || text)
-      : ensureGreatPowerClosing(text);
+    clamped = greatPowerLanguage === 'zh'
+      ? ensureGreatPowerClosingZh(clamped.replace(/[A-Za-z]{4,}[\s\S]*$/g, '').trim() || clamped)
+      : ensureGreatPowerClosing(clamped);
   } else if (niche === NicheType.GENERAL_VIRAL || scriptLengthMode === 'SHORT') {
-    text = ensureNewsShortClosing(text);
+    clamped = ensureNewsShortClosing(clamped);
   } else {
     // 其余一次性长文赛道（心理学/哲学/情感/易经命理/中医玄学/大国博弈/人生副本等）：注入通用收尾，去重
-    text = applyGenericVideoClosing(text);
+    clamped = applyGenericVideoClosing(clamped);
   }
-  return text;
+  return clamped;
 }
 
 /** 通用视频收尾：注入「咱们下期见」，且彻底去重（循环清除所有重复出现） */
@@ -1915,7 +2183,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   const yiJingComputedSegCount = useMemo(
     () =>
       niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'zh'
-        ? 10 // 大国博弈中文版：固定 10 段（每段约 800-900 字，合计 8000-9000 字）
+        ? 4 // 大国博弈中文版：固定 4 段（每段约 600-800 字，合计 2500-4000 字）
         : computeParallelSegmentCount(
             parallelTotalTargetChars,
             scriptLengthMode === 'SHORT' ? 'SHORT' : 'LONG'
@@ -2507,24 +2775,21 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
       if (greatPowerLanguage === 'zh') {
         // 中文模式：完整中文选题 prompt（RSS digest 在下面追加）
         prompt = `【强制语言声明】本文档所有内容必须使用简体中文。选题标题必须是中文。每行一个标题。不要输出任何英文。
-【角色】你是地缘政治内幕爆料人"博弈"（Bo Yi）。不是普通评论员，而是一个研究过真实作战数据、曾身处决策会议室、了解机密档案的人。
+【角色】你是时事评论频道「盒子里的秘密」主笔，按当前国际局势生成 10 个大国博弈角度的爆款标题。
 
-【用户输入】${inputVal.trim() || '（用户未指定方向，由你从当前国际局势中自行选取最震撼的内幕爆料角度）'}
+【用户输入】${inputVal.trim() || '（用户未指定方向，从当前最震撼的地缘政治角度生成）'}
 
-【选题方向引导（博奕风格·中文·内幕爆料）】
-- 军事行动内幕：导弹防御漏洞、兵力部署数字、实际交火结果——官方叙事背后的真相
-- 战略体制失灵：情报评估如何被政治意志系统性压过，专业判断被否决的过程
-- 大国博弈格局：俄乌/中东/台海等热点中各方真实立场与算计，不是表面外交辞令
-- 经济与军力关联：穷兵黩武的债务代价、民生压力、战略储备消耗——数字揭示一切
-- 军事能力对比：防空系统漏洞、海上封锁可行性、地面部队真实战力——数据不会说谎
-- 内部文件曝光：情报圈/军方/外交系统内部的真实评估，与公开表态之间的鸿沟
-- 历史规律重现：这一次与历史上哪个时刻如出一辙？规律揭示了怎样的走向？
+【选题方向（盒子里的秘密风格·数据分析·逻辑拆解）】
+- 用数字说话：撤资规模、伤亡数字、制裁金额、汇率波动——数字背后藏着利益格局
+- 拆利益链条：谁在推这件事？谁的账单在涨？谁在偷着受益？
+- 逻辑推演：表面动作背后是什么算计？历史有没有出现过类似的局面？
+- 风险评估：这件事下一步最可能往哪个方向走？哪个节点最容易爆？
 
 【选题风格铁律】
-- 每条标题须体现博奕爆料人视角：数据说话、文件曝光、冷峻揭露
-- 禁止写成通讯社导语或新闻综述——这不是新闻，这是内幕
-- 禁止"据报道""有分析认为""专家表示"——你是爆料人，不是传声筒
-- 标题要有让人"不看浑身难受"的冲动：悬念、反直觉、震撼数字至少有其一
+- 禁止写成新闻播报导语——这不是通讯社简报，这是逻辑拆解
+- 禁止空洞标题：「俄乌冲突升级」「中美关系分析」——没有爆点，没有拆解
+- 禁止「据报道」「专家表示」「数据显示」——你是分析师，不是传声筒
+- 标题要有让人想点进去的冲动：数字、反直觉判断、悬念，三有其一
 - 可用冒号/破折号/问号制造节奏，总长建议 20–45 汉字
 - 必须输出纯中文标题，不要任何英文`;
       } else {
@@ -3561,113 +3826,139 @@ ${segmentSourceText}
     setBatchProgress({ current: 0, total: 100, hint: '正在初始化一次性长文生成…' });
     resetThinkingLines();
 
-    // ── Thinking 流解析器（状态机，按行解析）──────────────────────────────
+    // ── Thinking 流解析器（两步法：先正文 → 后自检）────────────────────
+    // 第一步：流式正文，全部进入 liveContentClean，不进 thinking
+    // 第二步：正文完成后调用 buildScriptSelfCheckPrompt，输出走 thinking 解析器
     type PhaseTag = { tag: string; phase: ThinkingPhase };
     const PHASE_TAGS: PhaseTag[] = [
       { tag: '【Phase 1', phase: 'phase1' },
       { tag: '【Phase 2', phase: 'phase2' },
       { tag: '【Phase 3', phase: 'phase3' },
       { tag: '【Phase 4', phase: 'phase4' },
+      { tag: '【素材引用说明', phase: '素材引用' },
       { tag: '【稿件统计', phase: 'done' },
     ];
-    // 正文标签：跳过 Phase 标签后开始输出正文
     const BODY_TAG = '【正文】';
 
     let currentPhase: ThinkingPhase = 'idle';
-    let thinkingBuf = '';    // 正在拼凑中的行内容
-    let liveContentClean = ''; // 去掉 Phase 标签后的正文
+    let liveContentClean = '';
+    let lineBuf = '';
+    let thinkingStreamBuf = '';
+    let bodyCursor = -1; // 正文开始位置（index in liveContentClean），-1 表示正文尚未开始
 
-    const flushThinkingBuf = () => {
-      const trimmed = thinkingBuf.trim();
+    /** 检查 trimmed 行是否为 phase 标签 */
+    const detectPhaseTag = (stripped: string): ThinkingPhase | 'body' | null => {
+      if (stripped === BODY_TAG) return 'body';
+      for (const p of PHASE_TAGS) {
+        if (stripped.startsWith(p.tag)) {
+          const nextCh = stripped[p.tag.length];
+          if (nextCh === undefined || nextCh === '】' || nextCh === ':' || nextCh === '：' || nextCh === ' ') {
+            return p.phase;
+          }
+        }
+      }
+      return null;
+    };
+
+    const flushLineBuf = () => {
+      const trimmed = lineBuf.trim();
       if (currentPhase !== 'idle' && trimmed) {
         pushThinkingLine(currentPhase, trimmed);
       }
-      thinkingBuf = '';
+      lineBuf = '';
     };
 
-    /** 解析 chunk：提取 Phase 标签，累积正文，实时更新 UI */
-    const parseThinkingChunk = (chunk: string) => {
-      let text = chunk;
-
-      // 1. 如果处于 Thinking 阶段但本 chunk 以【Phase/【正文开头 → 先 flush
-      if (currentPhase !== 'idle') {
-        const nextPhase = PHASE_TAGS.find((p) => text.startsWith(p.tag));
-        const isBodyStart = text.startsWith(BODY_TAG);
-        if (nextPhase || isBodyStart) {
-          flushThinkingBuf();
-          currentPhase = 'idle';
-        }
-      }
-
-      // 2. 扫描本 chunk 中的所有 Phase/正文 标签位置
-      const allMarkers: { tag: string; phase: ThinkingPhase | 'body'; index: number }[] = [];
-      for (const p of PHASE_TAGS) {
-        let idx = 0;
-        while (true) {
-          const pos = text.indexOf(p.tag, idx);
-          if (pos === -1) break;
-          allMarkers.push({ tag: p.tag, phase: p.phase, index: pos });
-          idx = pos + p.tag.length;
-        }
-      }
-      allMarkers.push({ tag: BODY_TAG, phase: 'body', index: text.indexOf(BODY_TAG) });
-      const bodyIdx = text.indexOf(BODY_TAG);
-      if (bodyIdx !== -1) {
-        allMarkers.push({ tag: BODY_TAG, phase: 'body', index: bodyIdx });
-      }
-
-      // 按位置排序，去掉重复
-      const sorted = allMarkers
-        .filter((m) => m.index !== -1)
-        .sort((a, b) => a.index - b.index)
-        .filter((m, i, arr) => i === 0 || m.index !== arr[i - 1].index);
-
-      if (sorted.length === 0) {
-        // 无标记：本 chunk 全是正文内容或 thinking 内容
-        if (currentPhase !== 'idle') {
-          thinkingBuf += text;
-        } else {
-          liveContentClean += text;
-        }
-        return;
-      }
-
-      // 3. 逐段处理
-      let cursor = 0;
-      for (const marker of sorted) {
-        const before = text.slice(cursor, marker.index);
-        if (before) {
-          if (currentPhase !== 'idle') {
-            thinkingBuf += before;
-          } else {
-            liveContentClean += before;
+    const handleThinkingLine = (line: string) => {
+      const stripped = line.trim();
+      const tag = detectPhaseTag(stripped);
+      if (tag) {
+        flushLineBuf();
+        currentPhase = tag === 'body' ? 'idle' : tag;
+        if (tag !== 'body') {
+          const after = stripped.match(/】([^]*)/)?.[1]?.trim()
+            ?? (() => {
+                const tagIdx = stripped.indexOf('Phase ');
+                return tagIdx >= 0 ? stripped.slice(tagIdx + 6).replace(/^[:：] */, '').trim() : '';
+              })();
+          if (after) {
+            lineBuf = after;
+            flushLineBuf();
           }
         }
-        // 遇到新标签：flush 旧的，切换 phase
-        if (marker.phase === 'body') {
-          flushThinkingBuf();
-          currentPhase = 'idle';
-          // 正文标签本身不输出
-          cursor = marker.index + BODY_TAG.length;
-        } else {
-          flushThinkingBuf();
-          currentPhase = marker.phase;
-          // 去掉标签前缀，取标签后内容作为第一行
-          const labelText = text.slice(marker.index + marker.tag.length + 1).replace(/^】/, '');
-          if (labelText) thinkingBuf = labelText;
-          cursor = marker.index + marker.tag.length + 1 + labelText.length + 1;
-          // cursor 已越界，下个 marker 会正确截断
-        }
+      } else if (currentPhase !== 'idle') {
+        lineBuf = line;
+        flushLineBuf();
       }
+      // idle 阶段：忽略
+    };
 
-      // 4. 处理末尾剩余内容
-      const tail = text.slice(cursor);
-      if (tail) {
-        if (currentPhase !== 'idle') {
-          thinkingBuf += tail;
-        } else {
-          liveContentClean += tail;
+    /** 自检流解析器（用于第二步 Phase 自检） */
+    const parseThinkingChunkReal = (chunk: string) => {
+      const fullText = thinkingStreamBuf + chunk;
+      thinkingStreamBuf = '';
+      let cursor = 0;
+      let nlIdx = fullText.indexOf('\n', cursor);
+      while (nlIdx !== -1) {
+        handleThinkingLine(fullText.slice(cursor, nlIdx));
+        cursor = nlIdx + 1;
+        nlIdx = fullText.indexOf('\n', cursor);
+      }
+      const tail = fullText.slice(cursor);
+      if (tail) thinkingStreamBuf = tail;
+    };
+
+    /**
+     * 主生成流解析器：实时分离 Phase 思考流和正文。
+     * 同一入口同时完成：Phase 标签进 thinking panel，正文内容追加到 liveContentClean。
+     */
+    const parseMainStreamChunk = (chunk: string) => {
+      thinkingStreamBuf += chunk;
+      let nlIdx = thinkingStreamBuf.indexOf('\n');
+      while (nlIdx !== -1) {
+        const line = thinkingStreamBuf.slice(0, nlIdx);
+        thinkingStreamBuf = thinkingStreamBuf.slice(nlIdx + 1);
+        const stripped = line.trim();
+
+        if (stripped === BODY_TAG) {
+          // 正文开始：flush 之前 Phase 内容，然后切换到正文追加模式
+          if (currentPhase !== 'idle' && lineBuf.trim()) {
+            pushThinkingLine(currentPhase, lineBuf.trim());
+          }
+          lineBuf = '';
+          currentPhase = 'idle';
+          bodyCursor = 0;
+        } else if (stripped.startsWith('【Phase ') || stripped.startsWith('【素材引用说明') || stripped.startsWith('【稿件统计')) {
+          const tag = detectPhaseTag(stripped);
+          if (tag) {
+            if (currentPhase !== 'idle' && lineBuf.trim()) {
+              pushThinkingLine(currentPhase, lineBuf.trim());
+            }
+            currentPhase = tag;
+            const after = stripped.match(/】([^]*)/)?.[1]?.trim()
+              ?? (() => {
+                const tagIdx = stripped.indexOf('Phase ');
+                return tagIdx >= 0 ? stripped.slice(tagIdx + 6).replace(/^[:：] */, '').trim() : '';
+              })();
+            lineBuf = after;
+          }
+        } else if (currentPhase !== 'idle') {
+          lineBuf += (lineBuf ? '\n' : '') + stripped;
         }
+        nlIdx = thinkingStreamBuf.indexOf('\n');
+      }
+      // 正文追加（thinkingStreamBuf 已被上面消费，剩余的就是正文内容）
+      if (bodyCursor >= 0) {
+        liveContentClean += thinkingStreamBuf;
+        bodyCursor = liveContentClean.length;
+        thinkingStreamBuf = '';
+      }
+    };
+
+    const flushThinkingBuf = () => {
+      if (currentPhase === 'idle' && thinkingStreamBuf) {
+        thinkingStreamBuf = '';
+      } else {
+        flushLineBuf();
       }
     };
     // ─────────────────────────────────────────────────────────────────────
@@ -3675,7 +3966,7 @@ ${segmentSourceText}
     const topic = sel[0];
     const config = NICHES[niche];
     const isGreatPowerZh = niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'zh';
-    // 新闻热点赛道：按 scriptLengthMode 选择短/长视频脚本模板（香香人设）
+    // 新闻热点赛道：按 scriptLengthMode 选择短/长视频脚本模板
     const newsBasePrompt =
       niche === NicheType.GENERAL_VIRAL
         ? scriptLengthMode === 'SHORT' ? NEWS_SHORT_SCRIPT_DOUYIN : NEWS_LONG_SCRIPT_DOUYIN
@@ -3696,20 +3987,20 @@ ${segmentSourceText}
         prompt,
         systemInstruction,
         (chunk) => {
-          // 解析 Phase 标签，实时更新 thinking log 和正文
-          parseThinkingChunk(chunk);
+          // 解析主生成流（Phase 标签进 thinking panel，正文追加到 liveContentClean）
+          parseMainStreamChunk(chunk);
           setGeneratedContents([{ topic: topic.title, content: liveContentClean }]);
           setYiJingMergedOutput(liveContentClean);
           setTcmMergedOutput(liveContentClean);
           const visibleChars = liveContentClean.trim().length;
-          // 渐进式进度：根据字符数估算当前进度，最高 92%（剩余 8% 留给收尾处理）
-          const charBasedProgress = Math.min(92, 10 + Math.floor(visibleChars / 45));
+          // 渐进式进度：根据字符数估算当前进度，最高 80%（剩余 20% 留给自检+后处理）
+          const charBasedProgress = Math.min(80, 10 + Math.floor(visibleChars / 45));
           const incrementalProgress = Math.max(1, Math.floor(chunk.length / 120));
-          progressValue = Math.min(92, Math.max(progressValue + incrementalProgress, charBasedProgress));
+          progressValue = Math.min(80, Math.max(progressValue + incrementalProgress, charBasedProgress));
           setBatchProgress({
             current: progressValue,
             total: 100,
-            hint: `正在生成正文… 当前约 ${visibleChars} 字，内容已实时写入右侧编辑区`,
+            hint: `正在生成正文… 当前约 ${visibleChars} 字`,
           });
         },
         undefined,
@@ -3720,13 +4011,65 @@ ${segmentSourceText}
               : scriptLengthMode === 'SHORT'
                 ? 4096
                 : 32768,
-          idleTimeoutMs: 60000,
-          firstChunkTimeoutMs: 90000,
+          idleTimeoutMs: 120000,
+          firstChunkTimeoutMs: 180000,
         }
       );
 
-      // 流结束后：flush 剩余的 thinking 行
-      flushThinkingBuf();
+      // 第二步：基于已生成正文做 Phase 自检（异步、不阻塞主流程）
+      let selfCheckReport = '';
+      if (niche === NicheType.GENERAL_VIRAL && liveContentClean.trim().length > 200) {
+        setBatchProgress({ current: 85, total: 100, hint: '正文生成完成，正在做 Phase 自检…' });
+        try {
+          await streamContentGeneration(
+            buildScriptSelfCheckPrompt(liveContentClean, topic.title),
+            systemInstruction,
+            (chunk) => {
+              selfCheckReport += chunk;
+              parseThinkingChunkReal(chunk);
+            },
+            undefined,
+            { maxTokens: 4096, idleTimeoutMs: 120000, firstChunkTimeoutMs: 120000 },
+          );
+          // 自检流结束后 flush
+          if (currentPhase !== 'idle' && thinkingStreamBuf.trim()) {
+            flushLineBuf();
+          }
+        } catch (e) {
+          console.warn('[Generator] Phase 自检失败（不影响正文）:', e);
+        }
+      }
+
+      // 第三步：拿着自检报告 + 正文，做修订输出最终稿
+      const revisionPlan = getOneShotScriptPlan(niche, scriptLengthMode, scriptWordCountMin);
+      if (
+        niche === NicheType.GENERAL_VIRAL &&
+        scriptLengthMode === 'LONG' &&
+        selfCheckReport.trim().length > 100 &&
+        liveContentClean.trim().length > 500 &&
+        revisionPlan
+      ) {
+        setBatchProgress({ current: 90, total: 100, hint: '自检完成，正在根据诊断修订正文…' });
+        const previousBody = liveContentClean;
+        liveContentClean = '';  // 重置 buffer，让修订输出完整替换初稿
+        try {
+          await streamContentGeneration(
+            buildScriptRevisionPrompt(previousBody, selfCheckReport, topic.title, revisionPlan),
+            systemInstruction,
+            (chunk) => {
+              parseBodyChunk(chunk);
+              setGeneratedContents([{ topic: topic.title, content: liveContentClean }]);
+              setYiJingMergedOutput(liveContentClean);
+              setTcmMergedOutput(liveContentClean);
+            },
+            undefined,
+            { maxTokens: 32768, idleTimeoutMs: 180000, firstChunkTimeoutMs: 180000 },
+          );
+        } catch (e) {
+          console.warn('[Generator] 修订失败，回退到初稿:', e);
+          liveContentClean = previousBody;
+        }
+      }
 
       // 流结束后立即推进进度条到 95%
       setBatchProgress({ current: 95, total: 100, hint: '正文生成完成，正在整理最终文案…' });
@@ -3834,7 +4177,8 @@ ${segmentSourceText}
 
     // ── 为并发任务创建独立的 thinking 解析器 ─────────────────────────────────
     const makeThinkingParser = (topicTitle: string) => {
-      let phase: ThinkingPhase = 'idle';
+      // 初始 phase 改为 'phase1'，确保【正文】之前的thinking内容也能被 flush 到 UI
+      let phase: ThinkingPhase = 'phase1';
       let buf = '';
       return {
         parse: (chunk: string) => {
@@ -3865,7 +4209,8 @@ ${segmentSourceText}
               if (phase !== 'idle') buf += before;
             }
             if (m.ph === 'body') {
-              if (phase !== 'idle' && buf.trim()) pushThinkingLine(phase, `[${topicTitle}] ${buf.trim()}`);
+              // 【正文】到达：flush 所有 pending thinking 内容
+              if (buf.trim()) pushThinkingLine(phase, `[${topicTitle}] ${buf.trim()}`);
               phase = 'idle';
               buf = '';
               cursor = m.idx + 4;
@@ -3943,6 +4288,7 @@ ${segmentSourceText}
             try {
               const parser = makeThinkingParser(topic.title);
               let liveContent = '';
+              let thinkingOutput = ''; // 并发任务专用：收集所有 thinking 流输出
               setConcurrentLongFormProgress((prev) => ({ ...prev, [topicId]: 5 }));
 
               await streamContentGeneration(
@@ -3950,7 +4296,8 @@ ${segmentSourceText}
                 systemInstruction,
                 (chunk) => {
                   parser.parse(chunk);
-                  liveContent += chunk;
+                  thinkingOutput += chunk; // 全量追加给 thinking 解析器
+                  liveContent += chunk;   // 正文 chunk 直接追加
                   setGeneratedContents((prev) => {
                     const next = [...prev];
                     next[idx] = { topic: topic.title, content: liveContent };
@@ -3972,7 +4319,50 @@ ${segmentSourceText}
 
               parser.flush();
 
-              const content = applyOneShotPostProcessing(liveContent, niche, scriptLengthMode, greatPowerLanguage, scriptWordCountMin);
+              let content = applyOneShotPostProcessing(liveContent, niche, scriptLengthMode, greatPowerLanguage, scriptWordCountMin);
+
+              // 大国博弈中文版：正文完成后先做 Phase 自检，再决定是否修订
+              if (isGreatPowerZh && content.length > 500) {
+                let selfCheckReport = '';
+                setConcurrentLongFormProgress((prev) => ({ ...prev, [topicId]: 88 }));
+                try {
+                  const thinkingParser = makeThinkingParser(topic.title);
+                  await streamContentGeneration(
+                    buildScriptSelfCheckPrompt(content, topic.title),
+                    NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH,
+                    (chunk) => {
+                      selfCheckReport += chunk;
+                      thinkingParser.parse(chunk); // 自检 thinking 数据同步追加到 UI
+                    },
+                    undefined,
+                    { maxTokens: 4096, idleTimeoutMs: 60000, firstChunkTimeoutMs: 60000 }
+                  );
+                  thinkingParser.flush();
+
+                  // 如果自检报告有实质内容，触发修订
+                  if (selfCheckReport.length > 100) {
+                    const revisionPlan = getOneShotScriptPlan(niche, scriptLengthMode, scriptWordCountMin);
+                    if (revisionPlan && selfCheckReport.includes('Phase')) {
+                      setConcurrentLongFormProgress((prev) => ({ ...prev, [topicId]: 92 }));
+                      // 修订输出：直接替换 content，不追加到 liveContent（避免正文输两遍）
+                      const previousRevisionBody = content;
+                      let revisedContent = '';
+                      await streamContentGeneration(
+                        buildScriptRevisionPrompt(previousRevisionBody, selfCheckReport, topic.title, revisionPlan),
+                        NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH,
+                        (chunk) => { revisedContent += chunk; },
+                        undefined,
+                        { maxTokens: 32768, idleTimeoutMs: 120000, firstChunkTimeoutMs: 120000 }
+                      );
+                      if (revisedContent.length > previousRevisionBody.length * 0.8) {
+                        content = applyOneShotPostProcessing(revisedContent, niche, scriptLengthMode, greatPowerLanguage, scriptWordCountMin);
+                      }
+                    }
+                  }
+                } catch (e) {
+                  console.warn('[Generator] GreatPowerZh self-check/revision failed:', e);
+                }
+              }
 
               setGeneratedContents((prev) => {
                 const next = [...prev];
@@ -8584,6 +8974,9 @@ ${segmentSourceText}
           </div>
         )}
 
+        {/* 模型选择 */}
+        <ModelSelector />
+
         {/* Input Area */}
         <div className="flex flex-col md:flex-row gap-4 items-start">
             <div className="flex-1 w-full">
@@ -9821,65 +10214,94 @@ ${segmentSourceText}
           </div>
       </section>
 
-      {/* Terminal Thinking Log — 新闻热点赛道输出时显示 */}
-      {niche === NicheType.GENERAL_VIRAL && thinkingLines.length > 0 && (
+      {/* Terminal Thinking Log — 新闻热点 + 大国博弈赛道占位，生成时实时填充 */}
+      {(niche === NicheType.GENERAL_VIRAL || niche === NicheType.GREAT_POWER_GAME) && (
         <div className="mb-4 bg-slate-950 border border-slate-700 rounded-xl overflow-hidden animate-in fade-in duration-300">
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-slate-900/80">
             <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+              <div className={`w-2 h-2 rounded-full ${status === GenerationStatus.GENERATING ? 'bg-cyan-400 animate-pulse' : thinkingLines.length > 0 ? 'bg-emerald-400' : 'bg-slate-600'}`} />
               <span className="text-xs font-mono text-slate-400">【 实时思考流 】</span>
+              <span className="text-[10px] text-slate-600 font-mono">
+                {thinkingLines.length > 0 ? `${thinkingLines.length} 行` : status === GenerationStatus.GENERATING ? '生成中…' : '等待生成'}
+              </span>
             </div>
-            <span className="text-[10px] text-slate-600 font-mono">{thinkingLines.length} 行</span>
+            {thinkingLines.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  const text = thinkingLines
+                    .map(l => `[${l.phase}] ${l.content}`)
+                    .join('\n');
+                  navigator.clipboard.writeText(text);
+                  toast.success('思考流已复制到剪贴板');
+                }}
+                className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 rounded text-[10px] flex items-center gap-1 transition-all border border-slate-700"
+              >
+                <Copy size={10} /> 复制
+              </button>
+            )}
           </div>
           {/* Lines */}
           <div
             className="h-[320px] overflow-y-auto px-4 py-3 space-y-1 custom-scrollbar"
             ref={(el) => { if (el) setTimeout(() => { el.scrollTop = el.scrollHeight; }, 50); }}
           >
-            {thinkingLines.map((line) => {
-              const isPhase = line.phase !== 'idle' && line.phase !== 'done';
-              const isDone = line.phase === 'done';
-              const isBody = line.phase === 'idle';
-              const borderColor = isDone
-                ? 'border-amber-400'
-                : line.phase === 'phase1' ? 'border-cyan-400'
-                : line.phase === 'phase2' ? 'border-emerald-400'
-                : line.phase === 'phase3' ? 'border-purple-400'
-                : line.phase === 'phase4' ? 'border-pink-400'
-                : 'border-slate-700';
-              const labelText = isDone ? '终稿'
-                : line.phase === 'phase1' ? 'Phase 1'
-                : line.phase === 'phase2' ? 'Phase 2'
-                : line.phase === 'phase3' ? 'Phase 3'
-                : line.phase === 'phase4' ? 'Phase 4'
-                : '';
-              const labelBg = isDone ? 'bg-amber-500/20 text-amber-300'
-                : line.phase === 'phase1' ? 'bg-cyan-500/20 text-cyan-300'
-                : line.phase === 'phase2' ? 'bg-emerald-500/20 text-emerald-300'
-                : line.phase === 'phase3' ? 'bg-purple-500/20 text-purple-300'
-                : line.phase === 'phase4' ? 'bg-pink-500/20 text-pink-300'
-                : 'bg-slate-700/50 text-slate-400';
+            {thinkingLines.length === 0 && status !== GenerationStatus.GENERATING ? (
+              <div className="flex flex-col items-center justify-center h-full text-slate-600 text-xs font-mono gap-3">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                  <path d="M2 17l10 5 10-5"/>
+                  <path d="M2 12l10 5 10-5"/>
+                </svg>
+                <span className="text-center leading-relaxed">Phase 1-4 分析过程<br/>及终稿统计将在此实时显示</span>
+              </div>
+            ) : (
+              thinkingLines.map((line) => {
+                const isPhase = line.phase !== 'idle' && line.phase !== 'done';
+                const isDone = line.phase === 'done';
+                const borderColor = isDone
+                  ? 'border-amber-400'
+                  : line.phase === 'phase1' ? 'border-cyan-400'
+                  : line.phase === 'phase2' ? 'border-emerald-400'
+                  : line.phase === 'phase3' ? 'border-purple-400'
+                  : line.phase === 'phase4' ? 'border-pink-400'
+                  : line.phase === '素材引用' ? 'border-teal-400'
+                  : 'border-slate-700';
+                const labelText = isDone ? '终稿'
+                  : line.phase === 'phase1' ? 'Phase 1'
+                  : line.phase === 'phase2' ? 'Phase 2'
+                  : line.phase === 'phase3' ? 'Phase 3'
+                  : line.phase === 'phase4' ? 'Phase 4'
+                  : line.phase === '素材引用' ? '素材引用'
+                  : '';
+                const labelBg = isDone ? 'bg-amber-500/20 text-amber-300'
+                  : line.phase === 'phase1' ? 'bg-cyan-500/20 text-cyan-300'
+                  : line.phase === 'phase2' ? 'bg-emerald-500/20 text-emerald-300'
+                  : line.phase === 'phase3' ? 'bg-purple-500/20 text-purple-300'
+                  : line.phase === 'phase4' ? 'bg-pink-500/20 text-pink-300'
+                  : line.phase === '素材引用' ? 'bg-teal-500/20 text-teal-300'
+                  : 'bg-slate-700/50 text-slate-400';
 
-              if (isDone) {
-                // 终稿统计：特殊展示
+                if (isDone) {
+                  return (
+                    <div key={line.id} className={`border-l-2 ${borderColor} pl-3 py-2 rounded-r bg-amber-500/5`}>
+                      <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${labelBg}`}>{labelText}</span>
+                      <p className="text-[11px] text-slate-200 mt-1.5 leading-relaxed whitespace-pre-wrap font-mono">{line.content}</p>
+                    </div>
+                  );
+                }
+
                 return (
-                  <div key={line.id} className={`border-l-2 ${borderColor} pl-3 py-2 rounded-r bg-amber-500/5`}>
-                    <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${labelBg}`}>{labelText}</span>
-                    <p className="text-[11px] text-slate-200 mt-1.5 leading-relaxed whitespace-pre-wrap font-mono">{line.content}</p>
+                  <div key={line.id} className="flex items-start gap-2">
+                    <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded shrink-0 mt-0.5 ${labelBg}`}>{labelText}</span>
+                    <p className="text-[11px] leading-relaxed whitespace-pre-wrap font-mono text-slate-300">
+                      {line.content}
+                    </p>
                   </div>
                 );
-              }
-
-              return (
-                <div key={line.id} className="flex items-start gap-2">
-                  <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded shrink-0 mt-0.5 ${labelBg}`}>{labelText}</span>
-                  <p className={`text-[11px] leading-relaxed whitespace-pre-wrap font-mono ${isBody ? 'text-slate-500 italic' : 'text-slate-300'}`}>
-                    {line.content}
-                  </p>
-                </div>
-              );
-            })}
+              })
+            )}
             {/* Cursor blink when generating */}
             {status === GenerationStatus.GENERATING && (
               <div className="flex items-center gap-2 text-slate-500 text-[11px] font-mono">
@@ -10015,10 +10437,19 @@ ${segmentSourceText}
                                 </div>
                             </div>
 
-                            <div className="whitespace-pre-wrap leading-relaxed tracking-wide text-slate-300">
-                                {generatedContents[viewIndex].content}
-                                {activeIndices.has(viewIndex) && <span className="inline-block w-2 h-4 bg-emerald-500 ml-1 animate-pulse" />}
-                            </div>
+                            {/* 段落归一化：句号后单换行→双换行，保证段落清晰 */}
+                            {(() => {
+                              const raw = generatedContents[viewIndex]?.content ?? '';
+                              const normalized = raw
+                                .replace(/([。！？；])([^\n])/g, '$1\n\n$2')
+                                .replace(/([。！？；])\n([^\n])/g, '$1\n\n$2');
+                              return (
+                                <div className="whitespace-pre-wrap leading-[1.9] tracking-wide text-slate-300">
+                                  {normalized}
+                                  {activeIndices.has(viewIndex) && <span className="inline-block w-2 h-4 bg-emerald-500 ml-1 animate-pulse" />}
+                                </div>
+                              );
+                            })()}
                         </div>
                     ) : (
                         <div className="h-full flex flex-col items-center justify-center text-slate-600 gap-4">

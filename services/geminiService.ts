@@ -9,6 +9,24 @@ const DEFAULT_YUNWU_MODEL = "gpt-5.4-mini";
 const GOOGLE_PRIMARY_MODEL = "gemini-2.0-flash";
 const GOOGLE_FALLBACK_MODEL = "gemini-3.1-pro-preview";
 
+/** OpenLux 支持的模型列表（用户可在 UI 选择） */
+export const YUNWU_MODELS = [
+  { id: 'gpt-5.6-luna',   label: 'GPT-5.6 Luna（默认）' },
+  { id: 'gpt-5.4-mini',   label: 'GPT-5.4 Mini' },
+  { id: 'claude-opus-5',   label: 'Claude Opus-5（Anthropic）' },
+  { id: 'gemini-3.1-pro-preview', label: 'Gemini-3.1 Pro（Google）' },
+  { id: 'grok-4.3',       label: 'Grok-4.3（xAI）' },
+];
+/** Google 支持的模型列表 */
+export const GOOGLE_MODELS = [
+  { id: 'gemini-2.0-flash',        label: 'Gemini-2.0 Flash（默认）' },
+  { id: 'gemini-3.1-pro-preview',   label: 'Gemini-3.1 Pro Preview' },
+];
+/** RunningHub 支持的模型列表 */
+export const RUNNINGHUB_MODELS = [
+  { id: 'default', label: '默认模型（RunningHub）' },
+];
+
 /** 流式输出在首段文本出现前的最长等待；超时后 Yunwu 会改用备用模型重试一次 */
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = 120_000;
 /** Yunwu OpenAI 兼容通道上的备用模型（主模型排队/首包过慢时使用） */
@@ -169,10 +187,16 @@ async function callYunwuAPI(
         provider = storedProvider === 'google' ? 'google' : 'yunwu';
         if (provider === 'google') {
           baseUrl = GOOGLE_BASE_URL;
-          model = GOOGLE_PRIMARY_MODEL;
+          const storedModel = window.localStorage.getItem('GEMINI_GOOGLE_MODEL');
+          model = storedModel && storedModel !== 'default'
+            ? storedModel
+            : GOOGLE_PRIMARY_MODEL;
         } else {
           baseUrl = YUNWU_BASE_URL;
-          model = DEFAULT_YUNWU_MODEL;
+          const storedModel = window.localStorage.getItem('GEMINI_YUNWU_MODEL');
+          model = storedModel && storedModel !== 'default'
+            ? storedModel
+            : DEFAULT_YUNWU_MODEL;
         }
         baseUrl = baseUrl.replace(/\/$/, "");
       }
@@ -180,6 +204,16 @@ async function callYunwuAPI(
     
     if (!apiKey) {
       throw new Error("API Key 未設置。請在設置中輸入您的 API Key。");
+    }
+  } else {
+    // apiKey 存在时，检查用户保存的模型偏好
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const storedModel = window.localStorage.getItem(
+        provider === 'google' ? 'GEMINI_GOOGLE_MODEL' : 'GEMINI_YUNWU_MODEL'
+      );
+      if (storedModel && storedModel !== 'default') {
+        model = storedModel;
+      }
     }
   }
 
@@ -964,10 +998,16 @@ export const streamContentGeneration = async (
               provider = storedProvider === "google" ? "google" : "yunwu";
               if (provider === "google") {
                 baseUrl = GOOGLE_BASE_URL;
-                model = GOOGLE_PRIMARY_MODEL;
+                const storedModel = window.localStorage.getItem("GEMINI_GOOGLE_MODEL");
+                model = storedModel && storedModel !== 'default'
+                  ? storedModel
+                  : GOOGLE_PRIMARY_MODEL;
               } else {
                 baseUrl = YUNWU_BASE_URL;
-                model = DEFAULT_YUNWU_MODEL;
+                const storedModel = window.localStorage.getItem("GEMINI_YUNWU_MODEL");
+                model = storedModel && storedModel !== 'default'
+                  ? storedModel
+                  : DEFAULT_YUNWU_MODEL;
               }
               baseUrl = baseUrl.replace(/\/$/, "");
             }
@@ -976,11 +1016,21 @@ export const streamContentGeneration = async (
           if (!apiKey) {
             throw new Error("API Key 未設置。請在設置中輸入您的 API Key。");
           }
+        } else {
+          // apiKey 存在时，也检查用户保存的模型偏好
+          const storedModel = typeof window !== "undefined" && window.localStorage
+            ? window.localStorage.getItem(
+                provider === "google" ? "GEMINI_GOOGLE_MODEL" : "GEMINI_YUNWU_MODEL"
+              )
+            : null;
+          if (storedModel && storedModel !== 'default') {
+            model = storedModel;
+          }
         }
       }
 
-      const temperature = options?.temperature ?? 0.7;
-      const maxTokens = options?.maxTokens ?? 8192;
+      const temperature = options?.temperature ?? 1.0;
+      const maxTokens = options?.maxTokens ?? 16384;
       const firstChunkMs =
         options?.firstChunkTimeoutMs ?? STREAM_FIRST_CHUNK_TIMEOUT_MS;
       const idleTimeoutMs = options?.idleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
@@ -1131,10 +1181,10 @@ export const streamContentGeneration = async (
         // 主模型：一次尝试，失败立即切备用（不再重试同一模型浪费时间）
         await streamWithRetry(primaryModel, firstChunkMs);
       } catch (err: any) {
-        // "无可用渠道"错误立即切备用模型，不重试
-        if (isChannelUnavailable(err)) {
+        // "无可用渠道"错误或其他可重试错误，立即切备用模型，不重试
+        if (isChannelUnavailable(err) || isRetryableForFallback(err)) {
           console.warn(
-            `[Gemini Service] Yunwu 主模型无可用渠道 (${primaryModel})，立即切换备用模型: ${fallbackOpenAI}`
+            `[Gemini Service] Yunwu 主模型无可用渠道或可重试错误 (${primaryModel})，错误: ${err?.message || err}，立即切换备用模型: ${fallbackOpenAI}`
           );
           await wait(1000);
           try {
