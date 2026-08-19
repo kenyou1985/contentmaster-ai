@@ -63,6 +63,8 @@ import {
   Replace,
   ChevronDown,
   ChevronUp,
+  Link2,
+  ClipboardList,
 } from 'lucide-react';
 import { useToast } from './Toast';
 import { VoiceLibrary } from './VoiceLibrary';
@@ -93,6 +95,7 @@ import {
 import { transcribeShots } from '../services/localAsrService';
 import { optimizeSubtitles } from '../services/subtitleOptimizer';
 import { prewarmFfmpeg } from '../services/audioExtractor';
+import { extractScriptFromUrl, ExtractError } from '../services/scriptExtractor';
 import {
   CustomTracksPanel,
   createEmptyCustomTracksState,
@@ -451,6 +454,42 @@ const CopyBasedPanel: React.FC<{
   const [analysisResult, setAnalysisResult] = useState<CopyAnalysisResult | null>(null);
   const [analyzing, setAnalyzing] = useState<boolean>(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+
+  /** v10.6：链接提取文案 loading 状态（文案成片面板） */
+  const [extractingUrl, setExtractingUrl] = useState<boolean>(false);
+
+  /**
+   * v10.6：链接一键提取文案（抖音 / 今日头条）
+   * - 用户粘贴抖音/头条链接 → 自动识别平台 → 提取文案 → 填入 rawCopy
+   * - 复用 services/scriptExtractor（与 Generator 同一套逻辑）
+   */
+  const handleExtractScript = useCallback(async () => {
+    const raw = (rawCopy || '').trim();
+    if (!raw) {
+      toast.warning('请先粘贴一个抖音或今日头条链接');
+      return;
+    }
+    setExtractingUrl(true);
+    toast.info('正在提取文案（抖音 / 头条）...', { autoClose: 2000 });
+    try {
+      const result = await extractScriptFromUrl(raw);
+      const trimmed = result.text.slice(0, SCRIPT_MAX_LEN);
+      setRawCopy(trimmed);
+      const sourceLabel =
+        result.source === 'author-desc' ? '作者手写文案' :
+        result.source === 'asr' ? 'Whisper ASR 转写' :
+        result.source === 'article' ? '文章正文' : '降级提取';
+      toast.success(`✓ 已提取 ${trimmed.length} 字（${sourceLabel}）`, { autoClose: 3000 });
+    } catch (e: any) {
+      const msg = e instanceof ExtractError
+        ? `[${e.code}] ${e.message}`
+        : (e?.message || String(e));
+      console.error('[CopyBasedPanel] extractScript failed:', e);
+      toast.error(`提取失败：${msg}`, { autoClose: 5000 });
+    } finally {
+      setExtractingUrl(false);
+    }
+  }, [rawCopy, toast]);
 
   /** 用户编辑后的标题（索引 → 标题）。覆盖 analysisResult.titleOptions[i].title */
   const [editedTitles, setEditedTitles] = useState<Record<number, string>>(
@@ -2030,16 +2069,38 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
           </div>
 
           <div>
-            <label className="text-xs text-slate-400 font-semibold mb-1 block">
-              你的文案（500 字以上最佳）
-            </label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs text-slate-400 font-semibold block">
+                你的文案（500 字以上最佳）
+              </label>
+              {/* v10.6：链接一键提取文案（抖音 / 今日头条） */}
+              <button
+                type="button"
+                onClick={handleExtractScript}
+                disabled={extractingUrl || analyzing}
+                title="粘贴抖音/今日头条链接后点击，自动提取文案填入下方输入框"
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium bg-violet-600 hover:bg-violet-500 text-white shadow transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {extractingUrl ? (
+                  <>
+                    <Loader2 size={11} className="animate-spin" />
+                    <span>提取中</span>
+                  </>
+                ) : (
+                  <>
+                    <Link2 size={11} />
+                    <span>提取文案</span>
+                  </>
+                )}
+              </button>
+            </div>
             <textarea
               value={rawCopy}
               onChange={(e) => setRawCopy(e.target.value.slice(0, SCRIPT_MAX_LEN))}
               disabled={analyzing}
               rows={10}
               className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-emerald-500 resize-y min-h-[200px]"
-              placeholder="粘贴或输入需要做成视频的文案/口播稿...建议 300-3000 字，系统会切 5 段并行配音。"
+              placeholder="粘贴抖音/今日头条链接，点击右上「提取文案」自动导入；或直接粘贴需要做成视频的文案/口播稿...建议 300-3000 字，系统会切 5 段并行配音。"
             />
             <div className="flex items-center justify-between mt-1">
               <span
