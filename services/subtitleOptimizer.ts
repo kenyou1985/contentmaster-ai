@@ -86,8 +86,9 @@ export async function optimizeSubtitles(
     };
   }
 
-  const PRIMARY_MODEL = options?.primaryModel || 'gpt-5.6-luna';
-  const FALLBACK_MODEL = options?.fallbackModel || 'gpt-5.4-mini';
+  const PRIMARY_MODEL = options?.primaryModel || 'gemini-3.1-pro-preview';
+  const FALLBACK_MODEL = options?.fallbackModel || 'gpt-5.6-luna';
+  const SECOND_FALLBACK_MODEL = options?.secondFallbackModel || 'gpt-5.4-mini';
 
   let apiCall: (prompt: string, systemInstruction: string) => Promise<string>;
   try {

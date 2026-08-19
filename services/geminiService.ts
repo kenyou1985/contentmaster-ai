@@ -1230,6 +1230,7 @@ export const streamContentGeneration = async (
 
       // 模型兜底链（主 → Yunwu 兜底 → Google 最终兜底）
       const FALLBACK_CHAIN: Array<{ model: string; baseUrl?: string; isGoogle?: boolean }> = [
+        { model: 'gpt-5.6-luna', baseUrl: YUNWU_BASE_URL }, // Yunwu 兜底
         { model: 'gpt-5.4-mini', baseUrl: YUNWU_BASE_URL }, // Yunwu 第二兜底
         { model: GOOGLE_FALLBACK_MODEL, baseUrl: GOOGLE_BASE_URL, isGoogle: true }, // gemini-3.1-pro-preview
       ];
