@@ -1169,6 +1169,98 @@ function sanitizeViralTopicLine(raw: string): string {
     .trim();
 }
 
+/**
+ * 换皮检测：检测两条标题是否在「国家/事件/主题」层面重合度过高
+ *   - 提取国家/地区关键词 + 主题关键词（数字、人名、动作）
+ *   - 计算 jaccard 相似度（关键词集合交集 / 并集）
+ *   - 若 ≥60% 视为换皮，删除后一条
+ */
+function dedupTopicsBySimilarity(topics: string[], threshold = 0.6): string[] {
+  if (topics.length <= 1) return topics;
+
+  // 提取「国家/地区」「主题关键词」
+  const COUNTRY_KEYWORDS = [
+    '美国', '特朗普', '拜登', '华盛顿', '白宫', '五角大楼', '北约', 'NATO',
+    '中国', '北京', '中南海', '国务院', '商务部', '外交部',
+    '俄罗斯', '普京', '莫斯科', '克里姆林宫', '俄方', '克宫',
+    '乌克兰', '基辅', '泽连斯基', '乌方',
+    '以色列', '内塔尼亚胡', '特拉维夫', '以军', '以方',
+    '巴勒斯坦', '哈马斯', '加沙', '约旦河西岸', '巴方',
+    '伊朗', '德黑兰', '哈梅内伊',
+    '欧洲', '欧盟', '德国', '默克尔', '朔尔茨', '法国', '马克龙', '英国', '斯塔默',
+    '印度', '莫迪', '巴基斯坦', '伊姆兰汗',
+    '朝鲜', '平壤', '金正恩', '韩国', '首尔', '尹锡悦',
+    '日本', '东京', '岸田', '石破',
+    '土耳其', '埃尔多安',
+    '沙特', '利雅得', 'MBS', '阿联酋', '迪拜',
+    '阿根廷', '米莱', '巴西', '卢拉', '墨西哥', '辛鲍姆',
+    '非洲', '尼日利亚', '南非', '埃及', '苏丹', '埃塞俄比亚',
+    '东南亚', '菲律宾', '马科斯', '越南', '印尼', '泰国',
+    '北约', 'G7', 'G20', '金砖', '上合', '联合国', '安理会',
+  ];
+  // 中文停用词，避免作为「主题」出现
+  const STOPWORDS = new Set([
+    '的', '了', '和', '是', '在', '把', '被', '与', '或', '也', '但', '就', '都',
+    '如何', '为什么', '怎么', '什么', '哪', '这个', '那个', '事件', '局势', '情况',
+    '危机', '争议', '升级', '加剧', '失控', '走向', '走向何方', '真相', '内幕',
+    '聚焦', '关注', '观察', '解读', '分析', '透视', '盘点', '回顾', '总结',
+    '意味', '意味着', '意味深长', '挑战', '应对', '回应', '反击', '反制',
+    '新', '最新', '突发', '刚刚', '正在', '已经', '或将', '或将再次', '或将再次',
+  ]);
+
+  const extractTokens = (title: string): { countries: Set<string>; themes: Set<string> } => {
+    const countries = new Set<string>();
+    const themes = new Set<string>();
+    for (const k of COUNTRY_KEYWORDS) {
+      if (title.includes(k)) countries.add(k);
+    }
+    // 提取主题词：2-6 字中文词，去掉停用词
+    const tokens: string[] = [];
+    for (let len = 2; len <= 6; len++) {
+      for (let i = 0; i + len <= title.length; i++) {
+        const word = title.slice(i, i + len);
+        if (!STOPWORDS.has(word) && /^[一-龥]+$/.test(word)) {
+          tokens.push(word);
+        }
+      }
+    }
+    // 取出现 ≥2 次的词作为「主题词」，避免偶然共现
+    const counts = new Map<string, number>();
+    for (const t of tokens) counts.set(t, (counts.get(t) ?? 0) + 1);
+    for (const [w, c] of counts) if (c >= 2) themes.add(w);
+    return { countries, themes };
+  };
+
+  const tokenCache = new Map<string, { countries: Set<string>; themes: Set<string> }>();
+  const jaccard = (a: Set<string>, b: Set<string>): number => {
+    if (a.size === 0 && b.size === 0) return 0;
+    let inter = 0;
+    for (const x of a) if (b.has(x)) inter++;
+    const union = a.size + b.size - inter;
+    return union === 0 ? 0 : inter / union;
+  };
+
+  const result: string[] = [];
+  for (const topic of topics) {
+    let isDup = false;
+    const cur = tokenCache.get(topic) ?? extractTokens(topic);
+    tokenCache.set(topic, cur);
+    for (const kept of result) {
+      const prev = tokenCache.get(kept) ?? extractTokens(kept);
+      tokenCache.set(kept, prev);
+      const countrySim = jaccard(cur.countries, prev.countries);
+      const themeSim = jaccard(cur.themes, prev.themes);
+      // 任一重合度超阈值即视为换皮
+      if (countrySim >= threshold || themeSim >= threshold) {
+        isDup = true;
+        break;
+      }
+    }
+    if (!isDup) result.push(topic);
+  }
+  return result;
+}
+
 function looksLikeViralTopicLine(raw: string): boolean {
   const line = sanitizeViralTopicLine(raw);
   if (!line) return false;
@@ -1718,6 +1810,107 @@ function scrubScriptAiTaste(text: string): string {
       count++;
       return count <= 2 ? m : '';
     });
+  }
+
+  // 7.5 高频判断短语限频：用户反馈 phase3/phase4 反复出现的判断短语
+  // 全文「判断关键不在/判断的关键/不能只/尚不足以/不等于/不能自动/不能简单/更关键的是/更深一层/至少说明/至少说明/更进一步说」等 ≤2 次
+  const JUDGMENT_PHRASES = [
+    /判断关键不在[^，,。；;]{0,30}/g,
+    /判断的关键不在[^，,。；;]{0,30}/g,
+    /尚不足以[^，,。；;]{0,30}/g,
+    /不能只[^，,。；;]{0,30}/g,
+    /不能自动[^，,。；;]{0,30}/g,
+    /不能简单[^，,。；;]{0,30}/g,
+    /更关键的是[，,]?/g,
+    /更深一层[，,]?/g,
+    /更进一步[^，,。；;]{0,30}[，,]?/g,
+    /至少说明[^，,。；;]{0,30}/g,
+    /真正困难的是[，,]?/g,
+    /真正重要的是[，,]?/g,
+    /真正决定[^，,。；;]{0,30}的不是/g,
+    /根本不是[^，,。；;]{0,30}/g,
+    /本质上不是/g,
+    /这说明[^，,。；;]{0,30}/g,
+  ];
+  for (const re of JUDGMENT_PHRASES) {
+    let count = 0;
+    s = s.replace(re, (m) => {
+      count++;
+      return count <= 2 ? m : '';
+    });
+  }
+
+  // 7.6 说教腔强制删除：用户反馈 phase3 列出的具体短句
+  const PREACH_PHRASES = [
+    // 用户 phase3 残留说教腔
+    /安全理由不是一张无限额度的通行证[。！？]?/g,
+    /权力从来就没有天然的正当性[。！？]?/g,
+    /法律不能把整片人口都变成待审讯对象[。！？]?/g,
+    /前一种逻辑是法治，后一种逻辑是占领式管理[。！？]?/g,
+    /国家暴力更需要被约束[。！？]?/g,
+    /这不是监督，而是把责任外包给声明[。！？]?/g,
+    /犯罪责任必须个人化，国家暴力更需要被约束[。！？]?/g,
+    /如果一个国家真的相信自己是在维护安全，就应该[^。！？]{0,30}[。！？]?/g,
+    /否则，所谓编号不是安全的证明，而是恐惧的印章[。！？]?/g,
+    /号称为自由而战的国家，开始靠恐惧把人送进战场[。！？]?/g,
+    /战争机器[^。！？]{0,30}露出了最粗糙的齿轮[。！？]?/g,
+    /共同承担，而不是穷人承担得更多[。！？]?/g,
+    /不能一边要求普通人[^。！？]{0,30}一边把[^。！？]{0,30}当成装饰[。！？]?/g,
+    /这不是军队强大的标志，而是国家治理的警报[。！？]?/g,
+    /国家安全不是一张可以盖住所有问题的红章[。！？]?/g,
+    /武力能控制身体，不能制造忠诚[。！？]?/g,
+    /只收割底层的游戏[。！？]?/g,
+    /只会收索取的机器[。！？]?/g,
+    /究竟是在守护共同体，还是在把共同体变成一台只会索取的机器[。！？]?/g,
+    // 用户 phase4 反复出现的句型
+    /权力是一回事，正义是另一回事[。！？]?/g,
+    /调查本身不能证明[^。！？]{0,40}[。！？]?/g,
+    // 模板式收束：仅删除重复时用，正文末句由收尾逻辑统一注入
+    /对此你又有什么看法？\s*欢迎在评论区留言。/g,  // 用下面限频逻辑，不在这里删除
+  ];
+  for (const re of PREACH_PHRASES) {
+    s = s.replace(re, '');
+  }
+
+  // 7.6b 范文收尾限频：只保留最后一次出现（防止正文末段多次重复）
+  // 收尾注入逻辑会在末尾再次注入一次，最终态只有一个
+  const CANONICAL_CLOSING_RE = /对此你又有什么看法？\s*欢迎在评论区留言。/g;
+  {
+    const matches = [...s.matchAll(CANONICAL_CLOSING_RE)];
+    if (matches.length > 1) {
+      // 从后往前删除重复（保留最后一个）
+      for (let i = matches.length - 2; i >= 0; i--) {
+        const idx = matches[i].index ?? 0;
+        s = s.slice(0, idx) + '[[__DUP_CLOSING__]]' + s.slice(idx + matches[i][0].length);
+      }
+      s = s.replace(/\[\[__DUP_CLOSING__\]\]\s*/g, '');
+    }
+  }
+
+  // 7.7 修仙+家庭比喻强制删除：用户 phase3/phase4 明确点名
+  const NETWORK_METAPHORS = [
+    /修仙界的老仙/g,
+    /外门弟子/g,
+    /金丹碾压/g,
+    /差一阶便是天壤之别/g,
+    /金丹境界/g,
+    /渡劫/g,
+    /拿着别人的法器/g,
+    /闭关修炼/g,
+    /亲爹/g,
+    /后妈/g,
+    /递纸巾/g,
+    /家里人家/g,
+    /同一张桌子/g,
+    /一家人/g,
+    /家庭账本/g,
+    // 止血系列
+    /止血带/g,
+    /止血纱布/g,
+    /灭火器/g,
+  ];
+  for (const re of NETWORK_METAPHORS) {
+    s = s.replace(re, '');
   }
 
   // 8. 重复结尾去重
@@ -2818,7 +3011,10 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
     if (pastTopics.length > 0) {
       const pastStr = pastTopics.slice(-30).map(t => `  - "${t.replace(/"/g, '\"')}"`).join('\n');
-      prompt += `\n\n【选题去重铁律·最高优先级】以下为近期已出现的选题，禁止重复或近似模仿，须从全新角度切入：\n${pastStr}\n本次必须完全避开上述方向，每条标题须与上述任一条都截然不同。`;
+      prompt += `\n\n【选题去重铁律·最高优先级】以下为近期已出现的选题，禁止重复或近似模仿，须从全新角度切入：\n${pastStr}\n本次必须完全避开上述方向，每条标题须与上述任一条都截然不同。\n\n【反换皮铁律·同次生成内必须遵守】本次 ${resolvedPlanTopicCount} 条选题之间，必须满足以下多样性硬约束（违反视为整组作废重写）：\n- 涉及的**国家/地区**至少覆盖 ${Math.min(resolvedPlanTopicCount, 4)} 个以上不同主体（如美、俄、欧、中、印、巴西、非洲、东南亚、中东等）。同一个国家/地区最多出现 ${Math.max(2, Math.floor(resolvedPlanTopicCount / 3))} 条。\n- 涉及的**事件类型**至少覆盖 ${Math.min(resolvedPlanTopicCount, 5)} 种以上（如军事冲突、经济制裁、外交博弈、能源危机、内政动荡、科技竞争、社会民生、历史追溯、人道灾难、盟友关系等）。同一事件类型最多出现 ${Math.max(2, Math.floor(resolvedPlanTopicCount / 3))} 条。\n- 涉及的**政治人物/机构**至少 ${Math.min(resolvedPlanTopicCount, 4)} 个不同主体。同一人物/机构最多出现 2 条。\n- **禁止同一选题用不同表述换皮**（如「加沙人道危机加剧」与「以色列加沙行动升级」视为同一议题，必须只保留一条）。\n- 禁止 3 条以上选题都围绕「同一国家+同一议题」（如「俄罗斯能源+俄罗斯经济+俄罗斯军事」三连）。`;
+    } else {
+      // 即使是首次生成，也强制多样性（防止模型默认输出 10 条同一热门议题）
+      prompt += `\n\n【反换皮铁律·同次生成内必须遵守】本次 ${resolvedPlanTopicCount} 条选题之间，必须满足以下多样性硬约束（违反视为整组作废重写）：\n- 涉及的**国家/地区**至少覆盖 ${Math.min(resolvedPlanTopicCount, 4)} 个以上不同主体。同一个国家/地区最多出现 ${Math.max(2, Math.floor(resolvedPlanTopicCount / 3))} 条。\n- 涉及的**事件类型**至少覆盖 ${Math.min(resolvedPlanTopicCount, 5)} 种以上。同一事件类型最多出现 ${Math.max(2, Math.floor(resolvedPlanTopicCount / 3))} 条。\n- **禁止同一选题用不同表述换皮**。禁止 3 条以上都围绕「同一国家+同一议题」。`;
     }
     // =====================================================================
 
@@ -3156,7 +3352,17 @@ Hard rules:
           ? normalizedRawTopics.slice(0, resolvedPlanTopicCount)
           : Array.from(new Set([...normalizedRawTopics, ...fallbackTopics])).slice(0, resolvedPlanTopicCount);
 
-      const newTopics: Topic[] = finalRawTopics.map((t, i) => {
+      // v10.2：换皮检测——剔除同一国家+同一主题的"换汤不换药"标题
+      // 例如：「加沙人道危机加剧」与「以色列加沙行动升级」会被视为同一议题
+      const dedupedRawTopics =
+        finalRawTopics.length > 1 ? dedupTopicsBySimilarity(finalRawTopics, 0.6) : finalRawTopics;
+      console.log('[Generator] 去重前/后', {
+        before: finalRawTopics.length,
+        after: dedupedRawTopics.length,
+        dropped: finalRawTopics.length - dedupedRawTopics.length,
+      });
+
+      const newTopics: Topic[] = dedupedRawTopics.map((t, i) => {
         const title =
           niche === NicheType.HISTORICAL_FIGURE
             ? sanitizeMindfulPsychologyTopicLine(t)
@@ -3184,7 +3390,8 @@ Hard rules:
         normalizedCount: normalizedRawTopics.length,
         fallbackCount: fallbackTopics.length,
         finalCount: finalRawTopics.length,
-        preview: finalRawTopics.slice(0, 5),
+        dedupedCount: dedupedRawTopics.length,
+        preview: dedupedRawTopics.slice(0, 5),
       });
       setTopics(newTopics);
 
@@ -3192,7 +3399,7 @@ Hard rules:
       const key = niche + (niche === NicheType.TCM_METAPHYSICS ? `:${tcmSubMode}` : niche === NicheType.FINANCE_CRYPTO ? `:${financeSubMode}` : niche === NicheType.STORY_LIFE_DUNGEON ? `:${lifeDungeonSubMode}` : niche === NicheType.GENERAL_VIRAL ? `:${newsSubMode}` : '');
       recentTopicHistoryRef.current = {
         ...recentTopicHistoryRef.current,
-        [key]: [...(recentTopicHistoryRef.current[key] ?? []).slice(-30), ...finalRawTopics]
+        [key]: [...(recentTopicHistoryRef.current[key] ?? []).slice(-30), ...dedupedRawTopics]
       };
       setStatus(GenerationStatus.IDLE);
     } catch (err: any) {
