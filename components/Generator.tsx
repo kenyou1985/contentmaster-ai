@@ -3054,11 +3054,11 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     const pastTopics = (recentTopicHistoryRef.current[nicheKey] ?? []);
 
     if (pastTopics.length > 0) {
-      const pastStr = pastTopics.slice(-30).map(t => `  - "${t.replace(/"/g, '\"')}"`).join('\n');
-      prompt += `\n\n【选题去重铁律·最高优先级】以下为近期已出现的选题，禁止重复或近似模仿，须从全新角度切入：\n${pastStr}\n本次必须完全避开上述方向，每条标题须与上述任一条都截然不同。\n\n【反换皮铁律·同次生成内必须遵守】本次 ${resolvedPlanTopicCount} 条选题之间，必须满足以下多样性硬约束（违反视为整组作废重写）：\n- 涉及的**国家/地区**至少覆盖 ${Math.min(resolvedPlanTopicCount, 4)} 个以上不同主体（如美、俄、欧、中、印、巴西、非洲、东南亚、中东等）。同一个国家/地区最多出现 ${Math.max(2, Math.floor(resolvedPlanTopicCount / 3))} 条。\n- 涉及的**事件类型**至少覆盖 ${Math.min(resolvedPlanTopicCount, 5)} 种以上（如军事冲突、经济制裁、外交博弈、能源危机、内政动荡、科技竞争、社会民生、历史追溯、人道灾难、盟友关系等）。同一事件类型最多出现 ${Math.max(2, Math.floor(resolvedPlanTopicCount / 3))} 条。\n- 涉及的**政治人物/机构**至少 ${Math.min(resolvedPlanTopicCount, 4)} 个不同主体。同一人物/机构最多出现 2 条。\n- **禁止同一选题用不同表述换皮**（如「加沙人道危机加剧」与「以色列加沙行动升级」视为同一议题，必须只保留一条）。\n- 禁止 3 条以上选题都围绕「同一国家+同一议题」（如「俄罗斯能源+俄罗斯经济+俄罗斯军事」三连）。`;
+      const pastStr = pastTopics.slice(-50).map(t => `  - "${t.replace(/"/g, '\"')}"`).join('\n');
+      prompt += `\n\n【选题去重铁律·最高优先级】以下为近期已出现的选题（最近 50 条），禁止完全重复或近似模仿，必须从全新角度切入：\n${pastStr}\n本次必须完全避开上述方向，每条标题须与上述任一条都截然不同。\n\n【同事件·不同视角铁律·最高优先级】\n**允许**围绕**同一个事件**生成多条选题，但每条必须从**完全不同的角度/观点/立场**切入，禁止「换皮」式重复：\n- **维度差异**（每条至少命中以下 2-3 类不同维度）：\n  * 主体视角：受害方 / 加害方 / 第三方观察 / 国际社会 / 国内政治\n  * 时间维度：历史溯源 / 即时事件 / 长线影响\n  * 信息维度：法律层面 / 经济层面 / 人道层面 / 军事层面 / 外交层面\n  * 立场维度：中立陈述 / 批判质疑 / 维护辩护 / 预测前瞻\n  * 利益维度：地缘博弈 / 经济利益 / 道义立场 / 政治筹码\n- **钩子差异**（每条标题须用不同的钩子类型）：数字 / 反问 / 反直觉 / 悬念 / 矛盾冲突 / 历史类比\n- **强制多样性**：本次 ${resolvedPlanTopicCount} 条选题之间，必须覆盖至少 ${Math.min(resolvedPlanTopicCount, 3)} 种不同的视角维度。\n- **明确禁止的"换皮"模式**：\n  * 「X 国 Y 政策升级」与「X 国 Y 政策加码」——视为换皮，必须只保留一条\n  * 「某事件引发国际关注」与「某事件震动国际社会」——视为换皮\n  * 「某事件背后：A 的算盘」与「某事件背后：B 的算盘」——仅当事人名不同，视为换皮\n  * 同一事件换动词（「升级/加剧/恶化/失控」连续出现），视为换皮\n  * 同一事件换主语但视角完全相同（如「俄罗斯能源困局」与「欧盟能源对策」如果都在讲同一逻辑链条）——视为换皮\n\n【反换皮铁律·同次生成内必须遵守】本次 ${resolvedPlanTopicCount} 条选题之间，必须满足以下多样性硬约束（违反视为整组作废重写）：\n- 涉及的**国家/地区**至少覆盖 ${Math.min(resolvedPlanTopicCount, 4)} 个以上不同主体（如美、俄、欧、中、印、巴西、非洲、东南亚、中东等）。同一个国家/地区最多出现 ${Math.max(2, Math.floor(resolvedPlanTopicCount / 3))} 条。\n- 涉及的**事件类型**至少覆盖 ${Math.min(resolvedPlanTopicCount, 5)} 种以上（如军事冲突、经济制裁、外交博弈、能源危机、内政动荡、科技竞争、社会民生、历史追溯、人道灾难、盟友关系等）。同一事件类型最多出现 ${Math.max(2, Math.floor(resolvedPlanTopicCount / 3))} 条。\n- 涉及的**政治人物/机构**至少 ${Math.min(resolvedPlanTopicCount, 4)} 个不同主体。同一人物/机构最多出现 2 条。\n- 允许同事件，但必须从不同视角/立场切入（详见【同事件·不同视角铁律】）。\n- 禁止 3 条以上选题都围绕「同一国家+同一议题+同一视角」（如「俄罗斯能源困局：欧盟视角」+「俄罗斯能源困局：印度视角」+「俄罗斯能源困局：中俄视角」三连视为换皮）。`;
     } else {
       // 即使是首次生成，也强制多样性（防止模型默认输出 10 条同一热门议题）
-      prompt += `\n\n【反换皮铁律·同次生成内必须遵守】本次 ${resolvedPlanTopicCount} 条选题之间，必须满足以下多样性硬约束（违反视为整组作废重写）：\n- 涉及的**国家/地区**至少覆盖 ${Math.min(resolvedPlanTopicCount, 4)} 个以上不同主体。同一个国家/地区最多出现 ${Math.max(2, Math.floor(resolvedPlanTopicCount / 3))} 条。\n- 涉及的**事件类型**至少覆盖 ${Math.min(resolvedPlanTopicCount, 5)} 种以上。同一事件类型最多出现 ${Math.max(2, Math.floor(resolvedPlanTopicCount / 3))} 条。\n- **禁止同一选题用不同表述换皮**。禁止 3 条以上都围绕「同一国家+同一议题」。`;
+      prompt += `\n\n【反换皮铁律·同次生成内必须遵守】本次 ${resolvedPlanTopicCount} 条选题之间，必须满足以下多样性硬约束（违反视为整组作废重写）：\n- 涉及的**国家/地区**至少覆盖 ${Math.min(resolvedPlanTopicCount, 4)} 个以上不同主体。同一个国家/地区最多出现 ${Math.max(2, Math.floor(resolvedPlanTopicCount / 3))} 条。\n- 涉及的**事件类型**至少覆盖 ${Math.min(resolvedPlanTopicCount, 5)} 种以上。同一事件类型最多出现 ${Math.max(2, Math.floor(resolvedPlanTopicCount / 3))} 条。\n- **禁止同一选题用不同表述换皮**。禁止 3 条以上都围绕「同一国家+同一议题+同一视角」。`;
     }
     // =====================================================================
 
@@ -3396,10 +3396,11 @@ Hard rules:
           ? normalizedRawTopics.slice(0, resolvedPlanTopicCount)
           : Array.from(new Set([...normalizedRawTopics, ...fallbackTopics])).slice(0, resolvedPlanTopicCount);
 
-      // v10.2：换皮检测——剔除同一国家+同一主题的"换汤不换药"标题
+      // v10.3：换皮检测——剔除同一国家+同一主题的"换汤不换药"标题
       // 例如：「加沙人道危机加剧」与「以色列加沙行动升级」会被视为同一议题
+      // 阈值从 0.6 提升到 0.7，允许"同一事件+略微不同视角"的标题共存
       const dedupedRawTopics =
-        finalRawTopics.length > 1 ? dedupTopicsBySimilarity(finalRawTopics, 0.6) : finalRawTopics;
+        finalRawTopics.length > 1 ? dedupTopicsBySimilarity(finalRawTopics, 0.7) : finalRawTopics;
       console.log('[Generator] 去重前/后', {
         before: finalRawTopics.length,
         after: dedupedRawTopics.length,
@@ -9463,6 +9464,21 @@ ${segmentSourceText}
             onCopyTitle={(title) => {
                 navigator.clipboard?.writeText(title);
                 toast.success('已复制');
+            }}
+            onClearNiche={(key) => {
+                recentTopicHistoryRef.current = {
+                    ...recentTopicHistoryRef.current,
+                    [key]: [],
+                };
+                setTopicHistory((prev) => ({ ...prev, [key]: [] }));
+                if (typeof window !== 'undefined') {
+                    try {
+                        window.localStorage.removeItem(`topicHistory:v10.3:${key}`);
+                    } catch {
+                        // 忽略
+                    }
+                }
+                toast.success('已清空当前赛道历史');
             }}
         />
 
