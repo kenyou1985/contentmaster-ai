@@ -1365,16 +1365,25 @@ function buildOneShotLongScriptPrompt(
   return `${basePrompt.replaceAll('{topic}', topic)}
 
 【篇幅硬要求】
-- 严格目标区间：${plan.targetLabel}
-- 最低不少于 ${plan.minChars} 字
-- 最高不超过 ${plan.maxChars} 字
-- 一次性输出完整成稿，不要分段、不要分集、不要续写标记
+- **本次只输出【第一版正文】**（不是终稿！终稿由后续「质检 + 修订」步骤生成）
+- 第一版正文的目标字数：**约为目标区间的 60-80%**（即 ${Math.round(plan.minChars * 0.6)}–${Math.round(plan.maxChars * 0.8)} 字之间）
+- 写一段完整连贯的口播稿，包含开场、立论、论证、收尾；不要分段、不要分集、不要续写标记
+- 第一版正文允许保留一些粗糙：模板词、可优化的比喻、初次表达的论点，先把骨架立起来
 
 【输出格式（必须严格遵守）】
-第一步：先输出【Phase 1】→【Phase 4】结构化思考分析（每段用短句列出要点，不写完整段落）
-第二步：输出【正文】，从第三步开始直接写口播正文
-第三步：输出正文（纯正文，不要加小标题、不要分段标记、不要在正文里加"Phase"字样）
-第四步：在正文结束后输出【稿件统计】，只含字数
+1. **第一步：先输出【Phase 1：解析输入】→【Phase 4：表述优化】结构化思考分析**
+   - 每段用 2-4 行短句列出要点，不写完整段落
+   - Phase 1：基于选题 + 素材，拆解主题、核心问题、关键事实
+   - Phase 2：列出 2-3 个关键信息点、时间背景
+   - Phase 3：核心判断 + 2-3 个支撑逻辑
+   - Phase 4：预判哪些表达需要去 AI 味、节奏优化的重点段落
+   - 这些 Phase 内容是「预分析」，会在思考流面板实时展示，不要省略
+
+2. **第二步：输出【正文】**，从第一个字开始就是【第一版正文】（不是终稿）
+   - 直接写口播正文，不要加小标题、不要分段标记、不要在正文里加"Phase"字样
+   - 第一版正文可以写得相对粗放，方便后续质检流程修订
+
+3. **第三步：正文结束后输出【稿件统计】**，只含字数
 
 ${plan.extraDirective}`;
 }
@@ -4016,6 +4025,15 @@ ${segmentSourceText}
         }
       );
 
+      // 第一步结束：flush 最后残留的 Phase 行（如【稿件统计】之后没有 Phase 触发的尾段）
+      if (currentPhase !== 'idle') {
+        const tail = lineBuf.trim() || thinkingStreamBuf.trim();
+        if (tail) pushThinkingLine(currentPhase, tail);
+        lineBuf = '';
+        thinkingStreamBuf = '';
+        currentPhase = 'idle';
+      }
+
       // 第二步：基于已生成正文做 Phase 自检（异步、不阻塞主流程）
       let selfCheckReport = '';
       if (niche === NicheType.GENERAL_VIRAL && liveContentClean.trim().length > 200) {
@@ -4044,7 +4062,6 @@ ${segmentSourceText}
       const revisionPlan = getOneShotScriptPlan(niche, scriptLengthMode, scriptWordCountMin);
       if (
         niche === NicheType.GENERAL_VIRAL &&
-        scriptLengthMode === 'LONG' &&
         selfCheckReport.trim().length > 100 &&
         liveContentClean.trim().length > 500 &&
         revisionPlan
@@ -4063,7 +4080,11 @@ ${segmentSourceText}
               setTcmMergedOutput(liveContentClean);
             },
             undefined,
-            { maxTokens: 32768, idleTimeoutMs: 180000, firstChunkTimeoutMs: 180000 },
+            {
+              maxTokens: scriptLengthMode === 'SHORT' ? 16384 : 32768,
+              idleTimeoutMs: 180000,
+              firstChunkTimeoutMs: 180000,
+            },
           );
         } catch (e) {
           console.warn('[Generator] 修订失败，回退到初稿:', e);
