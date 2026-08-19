@@ -841,10 +841,11 @@ import { needsParagraphNormalization, normalizeDenseChineseParagraphs } from '..
 import { detectAiFeatures, type AiDetectionResult, type NicheTypeForScoring } from '../services/aiDetectionService';
 import { polishTextForAntiAi } from '../services/antiAiPolishService';
 import { TopicHistoryPanel, type TopicHistoryEntry } from './TopicHistoryPanel';
+import { extractScriptFromUrl, ExtractError } from '../services/scriptExtractor';
 
 
 
-import { Sparkles, Calendar, Loader2, Download, Eye, Zap, AlertTriangle, Copy, Check, Globe, Clock, PlusCircle, History, ListOrdered, Film, ChevronDown, ChevronRight, Rocket, Trash2 } from 'lucide-react';
+import { Sparkles, Calendar, Loader2, Download, Eye, Zap, AlertTriangle, Copy, Check, Globe, Clock, PlusCircle, History, ListOrdered, Film, ChevronDown, ChevronRight, Rocket, Trash2, Link2, ClipboardList } from 'lucide-react';
 import {
   buildParallelOutlineUserPrompt,
   buildParallelOutlineSystem,
@@ -2403,6 +2404,42 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   useEffect(() => {
     handleBatchGenerateRef.current = handleBatchGenerate;
   });
+
+  // v10.6：链接提取文案 loading 状态
+  const [extractingUrl, setExtractingUrl] = useState(false);
+
+  /**
+   * v10.6：链接一键提取文案
+   * - 自动嗅探抖音/今日头条链接
+   * - 复用本地 Whisper ASR（无作者文案时）
+   * - 提取成功后自动填入 inputVal
+   */
+  const handleExtractScriptFromUrl = async () => {
+    const raw = (inputVal || '').trim();
+    if (!raw) {
+      toast.warning('请先粘贴一个抖音或今日头条链接');
+      return;
+    }
+    setExtractingUrl(true);
+    toast.info('正在提取文案（抖音/头条）...', { autoClose: 2000 });
+    try {
+      const result = await extractScriptFromUrl(raw);
+      setInputVal(result.text);
+      const sourceLabel =
+        result.source === 'author-desc' ? '作者手写文案' :
+        result.source === 'asr' ? 'Whisper ASR 转写' :
+        result.source === 'article' ? '文章正文' : '降级提取';
+      toast.success(`✓ 已提取 ${result.text.length} 字（${sourceLabel}）`, { autoClose: 3000 });
+    } catch (e: any) {
+      const msg = e instanceof ExtractError
+        ? `[${e.code}] ${e.message}`
+        : (e?.message || String(e));
+      console.error('[Generator] extractScriptFromUrl failed:', e);
+      toast.error(`提取失败：${msg}`, { autoClose: 5000 });
+    } finally {
+      setExtractingUrl(false);
+    }
+  };
   
   // Set of indices that are currently being generated (for loading spinners)
   const [activeIndices, setActiveIndices] = useState<Set<number>>(new Set());
@@ -9490,9 +9527,34 @@ ${segmentSourceText}
                                 value={inputVal}
                                 onChange={(e) => setInputVal(e.target.value)}
                                 placeholder={getInputPlaceholder()}
-                                className="w-full bg-slate-800 border border-slate-700 rounded-lg pl-10 pr-4 py-3 text-slate-100 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
+                                className="w-full bg-slate-800 border border-slate-700 rounded-lg pl-10 pr-32 py-3 text-slate-100 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
                             />
+                            {/* v10.6：链接一键提取文案按钮（抖音 / 今日头条） */}
+                            <button
+                                type="button"
+                                onClick={handleExtractScriptFromUrl}
+                                disabled={extractingUrl || status === GenerationStatus.PLANNING}
+                                title="粘贴抖音/今日头条链接后点击，自动提取文案填入输入框"
+                                className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium bg-violet-600 hover:bg-violet-500 text-white shadow transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                {extractingUrl ? (
+                                    <>
+                                        <Loader2 size={12} className="animate-spin" />
+                                        <span>提取中</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Link2 size={12} />
+                                        <span>提取文案</span>
+                                    </>
+                                )}
+                            </button>
                         </div>
+                        <p className="mt-1.5 text-[10px] text-slate-500 leading-relaxed">
+                            💡 支持 <span className="text-violet-300">抖音</span>（v.douyin.com / iesdouyin.com / douyin.com/video）
+                            与 <span className="text-violet-300">今日头条</span>（m.toutiao.com / toutiao.com/w）。
+                            无作者文案时自动调用本地 Whisper ASR 转写。
+                        </p>
                     </div>
                 ) : (
                     <div className="p-4 bg-emerald-900/20 border border-emerald-500/30 rounded-lg flex items-center gap-3 animate-in fade-in duration-300">

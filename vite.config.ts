@@ -323,6 +323,89 @@ function metubeProxyDevPlugin(opts: {
   };
 }
 
+/**
+ * v10.6 链接提取文案 proxy 插件：
+ *   - /api/douyin-proxy?url=<iesdouyin share URL>  → 抓页面 HTML（解决 CORS）
+ *   - /api/toutiao-proxy?url=<m.toutiao URL>      → 抓页面 HTML（解决 CORS）
+ *   - /api/video-proxy?url=<aweme.snssdk.com URL> → 转发二进制视频/音频（解决防盗链）
+ * 与 metube proxy 不同：proxyUrl 在 URL 查询参数里，target 在函数外配置。
+ */
+function scriptExtractorProxyDevPlugin(opts: {
+  jianyingApiBase: string;
+}): Plugin {
+  const { jianyingApiBase } = opts;
+
+  return {
+    name: 'contentmaster-script-extractor-proxy',
+    configureServer(server) {
+      // 统一 CORS helper
+      const setCors = (res: import('http').ServerResponse) => {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      };
+
+      // 通用 GET 转发器：?url=<absolute URL>
+      const makeForwarder = (kindLabel: string, upstream?: string) =>
+        async (req: import('http').IncomingMessage, res: import('http').ServerResponse) => {
+          setCors(res);
+          if (req.method === 'OPTIONS') {
+            res.statusCode = 204;
+            res.end();
+            return;
+          }
+          if (req.method !== 'GET') {
+            res.statusCode = 405;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+            return;
+          }
+          const url = new URL(req.url || '/', 'http://localhost');
+          const target = url.searchParams.get('url');
+          if (!target) {
+            res.statusCode = 400;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ error: 'missing ?url parameter' }));
+            return;
+          }
+          try {
+            const r = await fetch(target, {
+              redirect: 'follow',
+              headers: {
+                'User-Agent':
+                  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 ' +
+                  '(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+              },
+            });
+            const buf = Buffer.from(await r.arrayBuffer());
+            const ct = r.headers.get('content-type') || 'application/octet-stream';
+            res.statusCode = r.status;
+            res.setHeader('Content-Type', ct);
+            res.end(buf);
+          } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.warn(`[script-extractor-proxy] ${kindLabel} fetch failed:`, msg);
+            res.statusCode = 502;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ error: msg }));
+          }
+        };
+
+      // 本地 dev：直接转发（HTML 端 CORS 通常 OK）
+      server.middlewares.use('/api/douyin-proxy', makeForwarder('douyin'));
+      server.middlewares.use('/api/toutiao-proxy', makeForwarder('toutiao'));
+      server.middlewares.use('/api/video-proxy', makeForwarder('video'));
+
+      // 在控制台打印 jianyingApiBase，方便调试（仅 dev）
+      if (jianyingApiBase) {
+        console.log(`[script-extractor-proxy] jianyingApiBase = ${jianyingApiBase}`);
+      }
+    },
+  };
+}
+
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
     const metubeUrl = env.METUBE_URL || '';
@@ -368,6 +451,9 @@ export default defineConfig(({ mode }) => {
         metubeProxyDevPlugin({
           metubeUrl,
           metubeYtdlOverridesJson,
+        }),
+        scriptExtractorProxyDevPlugin({
+          jianyingApiBase: env.VITE_JIANYING_API_BASE || '',
         }),
       ],
       build: {
