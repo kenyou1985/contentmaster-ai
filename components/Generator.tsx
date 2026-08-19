@@ -3399,13 +3399,79 @@ Hard rules:
       // v10.3：换皮检测——剔除同一国家+同一主题的"换汤不换药"标题
       // 例如：「加沙人道危机加剧」与「以色列加沙行动升级」会被视为同一议题
       // 阈值从 0.6 提升到 0.7，允许"同一事件+略微不同视角"的标题共存
-      const dedupedRawTopics =
+      let dedupedRawTopics =
         finalRawTopics.length > 1 ? dedupTopicsBySimilarity(finalRawTopics, 0.7) : finalRawTopics;
       console.log('[Generator] 去重前/后', {
         before: finalRawTopics.length,
         after: dedupedRawTopics.length,
         dropped: finalRawTopics.length - dedupedRawTopics.length,
       });
+
+      // v10.4：兜底补齐——若去重后选题数少于目标，自动续生成补齐
+      // （之前因为去重太狠，常常只输出 6 条而不是 10 条）
+      let fillRounds = 0;
+      const MAX_FILL_ROUNDS = 2;
+      const fillSeen = new Set(dedupedRawTopics);
+      const combinedHistory = [
+        ...pastTopics.slice(-50),
+        ...dedupedRawTopics,
+      ];
+      while (
+        dedupedRawTopics.length > 0 &&
+        dedupedRawTopics.length < resolvedPlanTopicCount &&
+        fillRounds < MAX_FILL_ROUNDS
+      ) {
+        fillRounds += 1;
+        const need = resolvedPlanTopicCount - dedupedRawTopics.length;
+        console.log(
+          `[Generator] 去重后只输出 ${dedupedRawTopics.length} 条，自动续生成补齐 ${need} 条（第 ${fillRounds}/${MAX_FILL_ROUNDS} 轮）`
+        );
+        try {
+          const fillPrompt =
+            `${prompt}\n\n【补齐要求·最高优先级】\n你上一次只返回了 ${dedupedRawTopics.length} 个有效选题。` +
+            `现在请只补齐剩余 ${need} 个全新选题。\n` +
+            `- 禁止重复以下已生成的 ${dedupedRawTopics.length} 条：\n${dedupedRawTopics.map((t, i) => `  ${i + 1}. ${t}`).join('\n')}\n` +
+            `- 每条仍是 15-35 字中文标题，带强钩子，遵循之前所有铁律。\n` +
+            `- 只输出 ${need} 行，每行一个标题，禁止任何其他文字。`;
+          let extraRaw: string[] = [];
+          // 重试一次：先尝试非流式，失败则流式
+          try {
+            extraRaw = await generateTopics(fillPrompt, topicSystemInstruction, {
+              topicCount: need,
+              avoidTopics: combinedHistory,
+            });
+          } catch (e1) {
+            console.warn('[Generator] 补齐非流式失败，尝试流式:', e1);
+            const seenInStream = new Set<string>();
+            const collected: string[] = [];
+            await generateTopicsStreaming(fillPrompt, topicSystemInstruction, {
+              topicCount: need,
+              avoidTopics: combinedHistory,
+              onTopic: (t: string) => {
+                if (seenInStream.has(t)) return;
+                seenInStream.add(t);
+                collected.push(t);
+              },
+            });
+            extraRaw = collected;
+          }
+          // 过滤掉已存在的 + 应用 sanitize（与主线一致）
+          const sanitizedExtra = (
+            sanitizeLikeViral
+              ? extraRaw
+                  .map((t) => sanitizeViralTopicLine(t))
+                  .filter((t) => looksLikeViralTopicLine(t))
+              : extraRaw
+          )
+            .filter((t) => t && !fillSeen.has(t))
+            .slice(0, need);
+          for (const t of sanitizedExtra) fillSeen.add(t);
+          dedupedRawTopics = [...dedupedRawTopics, ...sanitizedExtra];
+        } catch (e) {
+          console.warn('[Generator] 补齐轮失败，停止补齐:', e);
+          break;
+        }
+      }
 
       const newTopics: Topic[] = dedupedRawTopics.map((t, i) => {
         const title =
@@ -9112,7 +9178,7 @@ ${segmentSourceText}
               生成选题数量
             </label>
             <p className="text-[10px] text-slate-500 leading-relaxed max-w-md">
-              默认每次生成 <span className="text-slate-400">5</span> 条；可快速选 10 / 15 / 20，或自定义 1–50 条（适用于全部赛道与子模式）。
+              默认每次生成 <span className="text-slate-400">10</span> 条；可快速选 5 / 10 / 15 / 20，或自定义 1–50 条（适用于全部赛道与子模式）。
             </p>
           </div>
           <div className="flex flex-wrap gap-2 items-center">

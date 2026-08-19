@@ -493,8 +493,9 @@ export const generateTopics = async (
 
   /**
    * 易经命理跨次去重：提取关键词，移除与历史选题过于相似的标题。
-   * 相似判定：标题 A 和 B 共享超过 50% 的核心关键词（长度 1-2 的词），
-   * 且两者主题词（女人/男人/名人/部位/行为）相同。
+   * 相似判定：标题 A 和 B 共享核心关键词，使用 Jaccard 相似度（共享词数 / 并集词数）。
+   * 阈值 0.7，避免「同事件不同视角」的标题被错误过滤。
+   * 注：prompt 已经在模型层强制反换皮，这里仅做兜底，且门槛更宽松。
    */
   const isSimilarToHistory = (topic: string, history: string[]): boolean => {
     if (!history || history.length === 0) return false;
@@ -511,10 +512,12 @@ export const generateTopics = async (
     for (const h of history) {
       const hw = extractCoreWords(h);
       if (hw.length === 0) continue;
-      // 共享关键词超过阈值
-      const shared = hw.filter(w => words.has(w.toLowerCase()));
-      const ratio = shared.length / Math.max(hw.length, words.size);
-      if (ratio > 0.45) return true;
+      // Jaccard 相似度：共享词数 / 并集词数（避免 max 导致分母过大）
+      const shared = hw.filter(w => words.has(w.toLowerCase())).length;
+      const unionSize = words.size + new Set(hw).size - shared;
+      const ratio = unionSize === 0 ? 0 : shared / unionSize;
+      // 阈值 0.7：只有近乎完全相同的标题才会被过滤，允许同事件不同视角共存
+      if (ratio > 0.7) return true;
     }
     return false;
   }
@@ -670,6 +673,9 @@ export const generateTopicsStreaming = async (
   const avoidTopics = options?.avoidTopics ?? [];
 
   // 用于判断是否与历史选题重复
+  // v10.4 修复：Jaccard 相似度（共享词/并集），阈值 0.7。
+  // 之前的 Math.max 导致分母过大，共享几个词就算超阈值，把"同事件不同视角"
+  // 的标题也过滤了，导致每次只输出 6 条而不是 10 条。
   const isSimilarToHistory = (topic: string): boolean => {
     if (!avoidTopics.length) return false;
     const extractCoreWords = (s: string): string[] => {
@@ -684,9 +690,10 @@ export const generateTopicsStreaming = async (
     for (const h of avoidTopics) {
       const hw = extractCoreWords(h);
       if (!hw.length) continue;
-      const shared = hw.filter(w => words.has(w.toLowerCase()));
-      const ratio = shared.length / Math.max(hw.length, words.size);
-      if (ratio > 0.45) return true;
+      const shared = hw.filter(w => words.has(w.toLowerCase())).length;
+      const unionSize = words.size + new Set(hw).size - shared;
+      const ratio = unionSize === 0 ? 0 : shared / unionSize;
+      if (ratio > 0.7) return true;
     }
     return false;
   };
