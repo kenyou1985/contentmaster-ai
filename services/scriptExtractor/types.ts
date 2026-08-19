@@ -52,7 +52,8 @@ export class ExtractError extends Error {
     | 'FETCH_FAILED'
     | 'PARSE_FAILED'
     | 'ASR_FAILED'
-    | 'NO_CONTENT';
+    | 'NO_CONTENT'
+    | 'NEEDS_VIDEO_FILE';
   constructor(code: ExtractError['code'], message: string) {
     super(message);
     this.code = code;

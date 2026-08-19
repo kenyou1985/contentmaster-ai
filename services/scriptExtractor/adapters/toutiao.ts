@@ -146,6 +146,150 @@ function extractHtmlTitle(html: string): string {
   return m[1].trim().replace(/[\s\-_]?(今日头条|头条)\s*$/i, '');
 }
 
+/**
+ * 从 <meta name="description" content="..."> 拿摘要（og:description 同样可用）
+ * 兜底用：头条 meta description 含文章前 100 字左右的摘要
+ */
+function extractMetaDescription(html: string): string | null {
+  for (const pattern of [
+    /<meta\s+name=["']description["']\s+content=["']([^"']+)["']/i,
+    /<meta\s+property=["']og:description["']\s+content=["']([^"']+)["']/i,
+    /<meta\s+content=["']([^"']+)["']\s+name=["']description["']/i,
+    /<meta\s+content=["']([^"']+)["']\s+property=["']og:description["']/i,
+  ]) {
+    const m = html.match(pattern);
+    if (m && m[1] && m[1].length >= 20) return m[1];
+  }
+  return null;
+}
+
+/**
+ * v10.6.2：从 URL-encoded 的 articleInfo JSON 提取（头条 m.toutiao.com 真实数据形式）
+ *
+ * 实测：HTML 中 articleInfo 是 URL-encoded JSON 字符串（含 `%7B` `%7D` `%22` 等）。
+ * 关键陷阱：articleInfo 块本身是 URL-encoded，raw HTML 上没有 `{` / `}` 字符，
+ *           不能直接 `'{'.balance walk`，必须**先解码再 walk**。
+ *
+ * 解决（两步解码策略）：
+ *   1) 找到 `%22articleInfo%22` 的位置，把后面 200KB raw 截下来
+ *   2) 逐字符 + 逐 `%xx` 三字符 token 解析：每解出 1 个字符 → 同步跟踪 depth
+ *      - 这相当于手工跑一遍 decodeURIComponent
+ *   3) 当 depth 从 1 回到 0 → 得到 articleInfo 完整范围
+ *   4) 从 decoded 字符串中取出 JSON 对象 → JSON.parse → 提取 title + content
+ */
+function extractFromUrlEncodedArticleInfo(html: string): { title?: string; content?: string } | null {
+  try {
+    const tagStart = html.indexOf('%22articleInfo%22');
+    if (tagStart < 0) {
+      // 备选：HTML 原始状态（不被 URL-encoded 的版本）
+      const pos = html.indexOf('"articleInfo":');
+      if (pos < 0) return null;
+      const braceStart = html.indexOf('{', pos);
+      if (braceStart < 0) return null;
+      const slice = html.slice(braceStart, braceStart + 200_000);
+      let depth = 0, inStr = false, esc = false, end = -1;
+      for (let i = 0; i < slice.length; i++) {
+        const c = slice[i];
+        if (esc) { esc = false; continue; }
+        if (c === '\\') { esc = true; continue; }
+        if (c === '"') { inStr = !inStr; continue; }
+        if (inStr) continue;
+        if (c === '{') depth++;
+        else if (c === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+      }
+      if (end < 0) return null;
+      return parseArticleInfo(JSON.parse(slice.slice(0, end)));
+    }
+
+    // URL-encoded 形式
+    const slice = html.slice(tagStart, tagStart + 200_000);
+    if (slice.length < 30) return null;
+
+    // 渐进式解码 + balance walk
+    let decoded = '';
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let finalEnd = -1;
+    let i = 0;
+
+    while (i < slice.length) {
+      // 检测 %xx 三字符 token
+      let ch = '';
+      if (slice[i] === '%' && i + 2 < slice.length && /^[0-9A-Fa-f]{2}$/.test(slice.substr(i + 1, 2))) {
+        ch = String.fromCharCode(parseInt(slice.substr(i + 1, 2), 16));
+        i += 3;
+      } else {
+        ch = slice[i];
+        i += 1;
+      }
+      decoded += ch;
+
+      // balance walk
+      if (esc) { esc = false; continue; }
+      if (ch === '\\') { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === '{') {
+        depth++;
+      } else if (ch === '}') {
+        if (depth > 0) depth--;
+        if (depth === 0 && decoded.indexOf('{') >= 0) {
+          finalEnd = decoded.length;
+          break;
+        }
+      }
+    }
+    if (finalEnd < 0) return null;
+
+    // 从 decoded 中找到第一个 `{` 作为 JSON 起点（前面是 `"articleInfo":`）
+    const objStart = decoded.indexOf('{');
+    if (objStart < 0) return null;
+    const jsonText = decoded.slice(objStart, finalEnd);
+    const article = JSON.parse(jsonText);
+    return parseArticleInfo(article);
+  } catch {
+    return null;
+  }
+}
+
+function parseArticleInfo(article: any): { title?: string; content?: string } | null {
+  if (!article || typeof article !== 'object') return null;
+  const title = (article.title || '').trim() || undefined;
+  const rawContent = (article.content || '').trim();
+  if (!rawContent) return title ? { title } : null;
+
+  const paragraphs: string[] = [];
+  const pMatches = rawContent.match(/<p[^>]*>([\s\S]*?)<\/p>/g);
+  if (pMatches) {
+    for (const p of pMatches) {
+      const text = p
+        .replace(/<[^>]+>/g, '')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .trim();
+      if (text) paragraphs.push(text);
+    }
+  }
+  if (paragraphs.length === 0) {
+    const text = rawContent
+      .replace(/<[^>]+>/g, '\n')
+      .replace(/\n+/g, '\n')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .trim();
+    if (text) paragraphs.push(text);
+  }
+  if (paragraphs.length === 0) {
+    return title ? { title } : null;
+  }
+  return { title, content: paragraphs.join('\n\n') };
+}
+
 export const toutiaoExtractor: IScriptExtractor = {
   platform: 'toutiao',
 
@@ -179,7 +323,18 @@ export const toutiaoExtractor: IScriptExtractor = {
       throw new ExtractError('FETCH_FAILED', '页面 HTML 异常（可能 IP/地区被限制）');
     }
 
-    // 策略 1：尝试从 __INITIAL_STATE__ 解析
+    // 策略 1：从 URL-encoded 的 articleInfo JSON 提取（头条 m.toutiao.com 真实存在形式）
+    const article1 = extractFromUrlEncodedArticleInfo(html);
+    if (article1?.content) {
+      return {
+        platform: 'toutiao',
+        text: article1.title ? `${article1.title}\n\n${article1.content}` : article1.content,
+        title: article1.title,
+        source: 'article',
+      };
+    }
+
+    // 策略 2：尝试从 __INITIAL_STATE__ 解析
     const state = parseInitialState(html);
     if (state) {
       const article = findArticleContent(state);
@@ -193,7 +348,20 @@ export const toutiaoExtractor: IScriptExtractor = {
       }
     }
 
-    // 策略 2：从 SSR HTML 抓 article-content
+    // 策略 3：从 <meta name="description"> og:description 提取（兜底，至少拿到文章摘要）
+    const metaDesc = extractMetaDescription(html);
+    if (metaDesc && metaDesc.length >= 40) {
+      const title = extractHtmlTitle(html);
+      return {
+        platform: 'toutiao',
+        text: title ? `${title}\n\n${metaDesc}` : metaDesc,
+        title: title || undefined,
+        source: 'fallback',
+        suspicious: metaDesc.length < 100,
+      };
+    }
+
+    // 策略 4：从 SSR HTML 抓 article-content 区域的 <p>
     const fallback = extractArticleFromHtml(html);
     if (fallback?.content && fallback.content.length >= 30) {
       const title = extractHtmlTitle(html);

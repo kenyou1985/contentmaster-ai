@@ -96,6 +96,7 @@ import { transcribeShots } from '../services/localAsrService';
 import { optimizeSubtitles } from '../services/subtitleOptimizer';
 import { prewarmFfmpeg } from '../services/audioExtractor';
 import { extractScriptFromUrl, ExtractError } from '../services/scriptExtractor';
+import { transcribeVideoFile } from '../services/scriptExtractor/adapters/douyin';
 import {
   CustomTracksPanel,
   createEmptyCustomTracksState,
@@ -458,6 +459,34 @@ const CopyBasedPanel: React.FC<{
   /** v10.6：链接提取文案 loading 状态（文案成片面板） */
   const [extractingUrl, setExtractingUrl] = useState<boolean>(false);
 
+  /** v10.6.2：视频文件上传 ASR 状态 */
+  const [transcribingVideo, setTranscribingVideo] = useState<boolean>(false);
+  const extractVideoFileRef = useRef<HTMLInputElement | null>(null);
+
+  /**
+   * v10.6.2：当 extractScriptFromUrl 抛 NEEDS_VIDEO_FILE 时，由 UI 触发：
+   *   - 用户点的是「提取文案」按钮，但平台拿不到 desc / play_addr
+   *   - 此函数让用户上传抖音视频文件（mp4/mov），走 audioExtractor + Whisper ASR 全链路
+   */
+  const handleExtractVideoFile = useCallback(async (file: File) => {
+    setTranscribingVideo(true);
+    toast.info(`正在识别视频文案：${file.name}（Whisper ASR）...`, { autoClose: 3000 });
+    try {
+      const result = await transcribeVideoFile(file);
+      const trimmed = result.text.slice(0, SCRIPT_MAX_LEN);
+      setRawCopy(trimmed);
+      toast.success(`✓ 已转写 ${trimmed.length} 字（${file.name}）`, { autoClose: 4000 });
+    } catch (e: any) {
+      const msg = e instanceof ExtractError
+        ? `[${e.code}] ${e.message}`
+        : (e?.message || String(e));
+      console.error('[CopyBasedPanel] transcribeVideoFile failed:', e);
+      toast.error(`视频转写失败：${msg}`, { autoClose: 6000 });
+    } finally {
+      setTranscribingVideo(false);
+    }
+  }, [toast]);
+
   /**
    * v10.6：链接一键提取文案（抖音 / 今日头条）
    * - 用户粘贴抖音/头条链接 → 自动识别平台 → 提取文案 → 填入 rawCopy
@@ -481,11 +510,18 @@ const CopyBasedPanel: React.FC<{
         result.source === 'article' ? '文章正文' : '降级提取';
       toast.success(`✓ 已提取 ${trimmed.length} 字（${sourceLabel}）`, { autoClose: 3000 });
     } catch (e: any) {
-      const msg = e instanceof ExtractError
-        ? `[${e.code}] ${e.message}`
-        : (e?.message || String(e));
-      console.error('[CopyBasedPanel] extractScript failed:', e);
-      toast.error(`提取失败：${msg}`, { autoClose: 5000 });
+      // v10.6.2：抖音适配器拿不到 desc + play_addr 时，引导用户上传视频文件
+      if (e instanceof ExtractError && e.code === 'NEEDS_VIDEO_FILE') {
+        toast.warning(e.message, { autoClose: 6000 });
+        // 自动弹出文件选择器
+        setTimeout(() => extractVideoFileRef.current?.click(), 100);
+      } else {
+        const msg = e instanceof ExtractError
+          ? `[${e.code}] ${e.message}`
+          : (e?.message || String(e));
+        console.error('[CopyBasedPanel] extractScript failed:', e);
+        toast.error(`提取失败：${msg}`, { autoClose: 5000 });
+      }
     } finally {
       setExtractingUrl(false);
     }
@@ -2068,31 +2104,53 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
             </span>
           </div>
 
+          {/* v10.6.2：隐藏的视频文件 input（抖音 NEEDS_VIDEO_FILE 时自动触发） */}
+          <input
+            ref={extractVideoFileRef}
+            type="file"
+            accept="video/mp4,video/quicktime,video/*"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) handleExtractVideoFile(f);
+              // reset so selecting same file again still fires change
+              e.target.value = '';
+            }}
+          />
+
           <div>
             <div className="flex items-center justify-between mb-1">
               <label className="text-xs text-slate-400 font-semibold block">
                 你的文案（500 字以上最佳）
               </label>
               {/* v10.6：链接一键提取文案（抖音 / 今日头条） */}
-              <button
-                type="button"
-                onClick={handleExtractScript}
-                disabled={extractingUrl || analyzing}
-                title="粘贴抖音/今日头条链接后点击，自动提取文案填入下方输入框"
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium bg-violet-600 hover:bg-violet-500 text-white shadow transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {extractingUrl ? (
-                  <>
+              <div className="flex items-center gap-1">
+                {transcribingVideo ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-1 text-[11px] text-violet-300 bg-violet-500/10 rounded">
                     <Loader2 size={11} className="animate-spin" />
-                    <span>提取中</span>
-                  </>
-                ) : (
-                  <>
-                    <Link2 size={11} />
-                    <span>提取文案</span>
-                  </>
-                )}
-              </button>
+                    <span>视频转写中</span>
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={handleExtractScript}
+                  disabled={extractingUrl || transcribingVideo || analyzing}
+                  title="粘贴抖音/今日头条链接后点击，自动提取文案填入下方输入框"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium bg-violet-600 hover:bg-violet-500 text-white shadow transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {extractingUrl ? (
+                    <>
+                      <Loader2 size={11} className="animate-spin" />
+                      <span>提取中</span>
+                    </>
+                  ) : (
+                    <>
+                      <Link2 size={11} />
+                      <span>提取文案</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
             <textarea
               value={rawCopy}

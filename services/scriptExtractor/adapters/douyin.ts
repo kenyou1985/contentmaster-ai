@@ -32,6 +32,22 @@ import { extractAudioFromVideo } from '../../audioExtractor';
 
 const PROXY_BASE_DEFAULT = '/api';
 
+/**
+ * v10.6.2 真实可行性说明：
+ *   - 抖音现代页面（SPA）在 SSR HTML 中只渲染骨架（_ROUTER_DATA 里只有
+ *     metadata：ua / webId / itemId / commonContext），不在 SSR 里携带
+ *     aweme.desc / aweme.video.play_addr
+ *   - 真正的 desc / play_addr 走前端 SDK + a_bogus 签名 + msToken XHR 异步
+ *     加载（`/aweme/v1/web/aweme/detail/`），无法在浏览器直接抓取
+ *   - 因此 SSR 路径只能拿到 metadata，desc 通常为空
+ *
+ * 务实策略：
+ *   1) 尽量从 SSR / <meta> / <title> / og:description 拿"作者手写文案"
+ *      （90% 情况拿不到，2026 抖音 SSR 已不内嵌）
+ *   2) 拿不到时 → 抛 NEEDS_VIDEO_FILE，UI 捕获后弹出文件选择器
+ *      让用户上传抖音视频 → 走 audioExtractor + Whisper ASR 全链路
+ */
+
 /** 1) 嗅探链接，提取 aweme_id（如果识别为抖音） */
 function sniffDouyinId(input: string): string | null {
   const raw = (input || '').trim();
@@ -212,12 +228,19 @@ export const douyinExtractor: IScriptExtractor = {
 
     const routerData = parseRouterData(html);
     if (!routerData) {
-      throw new ExtractError('PARSE_FAILED', '解析 _ROUTER_DATA 失败，页面结构可能已变更');
+      // SSR 数据缺失（典型 2026 抖音 SPA 行为）
+      throw new ExtractError(
+        'NEEDS_VIDEO_FILE',
+        '抖音 SSR 已不再内嵌作者文案与视频直链。请上传抖音视频文件（mp4/mov），将走 ASR 转写。',
+      );
     }
 
     const aweme = findAwemeInRouterData(routerData);
     if (!aweme) {
-      throw new ExtractError('PARSE_FAILED', '未找到 aweme 数据');
+      throw new ExtractError(
+        'NEEDS_VIDEO_FILE',
+        '抖音 SSR 未携带作者文案（2026 SPA 行为）。请上传抖音视频文件，将走 ASR 转写。',
+      );
     }
 
     const desc = (aweme.desc || '').trim();
@@ -237,7 +260,11 @@ export const douyinExtractor: IScriptExtractor = {
     // 策略 2：作者没写文案 → 走 ASR
     const videoUrl = extractVideoUrl(aweme);
     if (!videoUrl) {
-      throw new ExtractError('NO_CONTENT', '该视频无作者文案且无法获取视频直链');
+      // SSR 找不到 video url（抖音 2026 典型行为），提示用户上传文件
+      throw new ExtractError(
+        'NEEDS_VIDEO_FILE',
+        '未找到视频直链。请上传抖音视频文件，将走 ASR 转写。',
+      );
     }
     if (!opts.asrBase) {
       throw new ExtractError('NO_CONTENT', '该视频无作者文案，且 ASR 服务未配置');
@@ -246,6 +273,52 @@ export const douyinExtractor: IScriptExtractor = {
     return await transcribeDouyinVideo(videoUrl, title, opts, id);
   },
 };
+
+/**
+ * v10.6.2 新增：当 douyin 抛 NEEDS_VIDEO_FILE 时，UI 调用此函数
+ * 直接对用户上传的 File 对象做 ASR → Whisper 转写
+ */
+export async function transcribeVideoFile(
+  file: File,
+  opts: ExtractOptions = {},
+): Promise<ExtractResult> {
+  // 抽音 → 16kHz mono WAV
+  let wavBlob: Blob;
+  try {
+    wavBlob = await extractAudioFromVideo(file, { targetSampleRate: 16000, targetChannels: 1 });
+  } catch (e: any) {
+    throw new ExtractError('PARSE_FAILED', `音频提取失败：${e?.message || String(e)}`);
+  }
+
+  // 调 Whisper ASR
+  const asrResult = await transcribeAudio(
+    await blobToDataUrl(wavBlob),
+    file.name.replace(/\.[^.]+$/, '') + '.wav',
+  );
+  if (!asrResult.ok) {
+    throw new ExtractError('ASR_FAILED', asrResult.error || 'ASR 返回失败状态');
+  }
+  const cleaned = (asrResult.text || '').trim();
+  if (!cleaned) {
+    throw new ExtractError('NO_CONTENT', 'ASR 未识别出有效文字');
+  }
+  return {
+    platform: 'douyin',
+    text: cleaned,
+    source: 'asr',
+    suspicious: cleaned.length < 8,
+    raw: { filename: file.name, size: file.size },
+  };
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error('FileReader failed'));
+    reader.readAsDataURL(blob);
+  });
+}
 
 /** 6) 视频下载 → 抽音 → Whisper ASR */
 async function transcribeDouyinVideo(
