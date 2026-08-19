@@ -1778,12 +1778,38 @@ function scrubBodyUrls(text: string): string {
   return s;
 }
 
+/**
+ * 移除正文中所有 Markdown 标题符号（##、###、####、# 等）
+ *   - 模型有时会输出 `## 第一段标题`、`### 论证主体` 等违反频道格式的内容
+ *   - 频道要求纯口播，不分小节、不加小标题、不加粗标注
+ *   - 兜底清理，避免 UI 上出现奇怪的大字号
+ */
+function scrubBodyMarkdown(text: string): string {
+  let s = text;
+  // 移除 1-6 个 # 开头的整行（包括行内的标题标记）
+  s = s.replace(/^[ \t]*#{1,6}[ \t]+.+$/gm, '');
+  // 移除行内残留的 # 标记（不在行首的）
+  s = s.replace(/[ \t]#{1,6}[ \t]+/g, ' ');
+  // 移除粗体标记 **...**（避免与频道「不加粗标注」冲突）
+  s = s.replace(/\*\*([^*\n]+)\*\*/g, '$1');
+  // 移除行内代码块 `...`
+  s = s.replace(/`([^`\n]+)`/g, '$1');
+  // 移除水平分割线 ---、***、___
+  s = s.replace(/^[ \t]*([-*_]){3,}[ \t]*$/gm, '');
+  // 移除多余的空行（连续 3 个以上 \n → 2 个）
+  s = s.replace(/\n{3,}/g, '\n\n');
+  return s.trim();
+}
+
 function applyOneShotPostProcessing(content: string, niche: NicheType, scriptLengthMode: 'LONG' | 'SHORT', greatPowerLanguage?: 'zh' | 'en', customMinChars?: number | null): string {
   // 第一步：从正文输出中剥离 Phase/【稿件统计】等结构化分析块
   let text = scrubBodyOfThinking(content);
   // 第二步：移除正文中嵌入的具体 URL（出处链接应留在思考流的【素材引用说明】）
   text = scrubBodyUrls(text);
-  // 第三步：过 AI 味清除器（兜底）
+  // 第三步：去除正文中残留的 Markdown 标题符号（##、###、**、--- 等）
+  // 模型有时会输出 `## 标题` 违反频道「纯口播正文」要求
+  text = scrubBodyMarkdown(text);
+  // 第四步：过 AI 味清除器（兜底）
   let scrubbed = scrubScriptAiTaste(text);
   let clamped = clampOneShotLength(scrubbed.trim(), niche, scriptLengthMode, customMinChars);
 
