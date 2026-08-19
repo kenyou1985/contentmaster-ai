@@ -3971,10 +3971,23 @@ ${segmentSourceText}
         nlIdx = thinkingStreamBuf.indexOf('\n');
       }
       // 正文追加（thinkingStreamBuf 已被上面消费，剩余的就是正文内容）
+      // v2：正文追加前先判断是否真的进入正文模式（bodyCursor >= 0），
+      // 在此之前所有内容都缓存到 thinkingStreamBuf，等【正文】标签出现后再一次性追加。
       if (bodyCursor >= 0) {
+        // 【正文】已出现，正式开始追加正文
         liveContentClean += thinkingStreamBuf;
         bodyCursor = liveContentClean.length;
         thinkingStreamBuf = '';
+      } else {
+        // 仍在 Phase 预分析阶段
+        // v2：行缓冲超 200 字或累积超过 500 字时主动 flush，避免长行等不到换行符
+        // 一直不显示
+        if (lineBuf.length > 200 || thinkingStreamBuf.length > 500) {
+          if (currentPhase !== 'idle' && lineBuf.trim()) {
+            pushThinkingLine(currentPhase, lineBuf.trim());
+            lineBuf = '';
+          }
+        }
       }
     };
 
@@ -4102,6 +4115,10 @@ ${segmentSourceText}
         setBatchProgress({ current: 90, total: 100, hint: '自检完成，正在根据诊断修订正文…' });
         const previousBody = liveContentClean;
         liveContentClean = '';  // 重置 buffer，让修订输出完整替换初稿
+        // v2：立即通知 UI 清空 body panel，避免旧初稿残留
+        setGeneratedContents([{ topic: topic.title, content: '' }]);
+        setYiJingMergedOutput('');
+        setTcmMergedOutput('');
         try {
           await streamContentGeneration(
             buildScriptRevisionPrompt(previousBody, selfCheckReport, topic.title, revisionPlan),
