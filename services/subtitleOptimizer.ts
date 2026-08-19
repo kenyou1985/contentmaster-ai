@@ -69,7 +69,16 @@ export async function optimizeSubtitles(
         (localStorage as any).getItem('OPENAI_API_KEY')
       : null);
 
+  console.log('[subtitleOptimizer] 开始优化字幕', {
+    cueCount: cues.length,
+    hasApiKey: !!effectiveKey,
+    apiKeyPrefix: effectiveKey ? effectiveKey.substring(0, 8) + '...' : null,
+    primaryModel: options?.primaryModel || 'gpt-5.6-luna',
+    fallbackModel: options?.fallbackModel || 'gpt-5.4-mini'
+  });
+
   if (!effectiveKey) {
+    console.error('[subtitleOptimizer] API Key 未配置');
     return {
       success: false,
       optimizedCues: cues,
@@ -89,9 +98,16 @@ export async function optimizeSubtitles(
         let fullContent = '';
         let aborted = false;
 
+        console.log('[subtitleOptimizer] 准备调用 streamContentGeneration', {
+          model: PRIMARY_MODEL,
+          fallback: FALLBACK_MODEL,
+          keyPrefix: effectiveKey.substring(0, 8)
+        });
+
         const timeoutId = setTimeout(() => {
           if (!aborted) {
             aborted = true;
+            console.error('[subtitleOptimizer] 超时（120秒）');
             reject(new Error('AI 优化超时（120秒），请稍后重试或减少字幕条数'));
           }
         }, 120_000);
@@ -111,13 +127,15 @@ export async function optimizeSubtitles(
             fallbackModelOnStall: FALLBACK_MODEL // 备用模型
           }
         )
-          .then(() => {
+          .then((result) => {
+            console.log('[subtitleOptimizer] streamContentGeneration 成功');
             if (!aborted) {
               clearTimeout(timeoutId);
               resolve(fullContent.trim());
             }
           })
           .catch((err) => {
+            console.error('[subtitleOptimizer] streamContentGeneration 失败:', err.message);
             if (!aborted) {
               clearTimeout(timeoutId);
               reject(err);
@@ -126,6 +144,7 @@ export async function optimizeSubtitles(
       });
     };
   } catch (e) {
+    console.error('[subtitleOptimizer] geminiService 加载失败:', e);
     return {
       success: false,
       optimizedCues: cues,

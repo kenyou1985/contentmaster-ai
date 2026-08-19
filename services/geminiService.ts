@@ -790,6 +790,15 @@ async function streamYunwuOpenAIOnce(
   referenceDataUrls?: string[],
   referenceMultimodalPreamble?: string
 ): Promise<void> {
+  console.log('[streamYunwuOpenAIOnce] 开始请求', {
+    model: resolvedModel,
+    baseUrl,
+    hasApiKey: !!apiKey,
+    keyPrefix: apiKey ? apiKey.substring(0, 8) : null,
+    promptLength: prompt.length,
+    systemLength: systemInstruction.length
+  });
+
   if (!apiKey) {
     throw new Error("API Key 未設置。請在設置中輸入您的 API Key。");
   }
@@ -867,14 +876,18 @@ async function streamYunwuOpenAIOnce(
 
     let response: Response;
     try {
-      response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      const fetchUrl = `${baseUrl}/v1/chat/completions`;
+      console.log('[streamYunwuOpenAIOnce] 发送请求到:', fetchUrl);
+      response = await fetch(fetchUrl, {
         method: "POST",
         headers,
         body: JSON.stringify(payload),
         signal: ac.signal,
         keepalive: false,
       } as RequestInit);
+      console.log('[streamYunwuOpenAIOnce] 收到响应:', response.status, response.statusText);
     } catch (fetchError: any) {
+      console.error('[streamYunwuOpenAIOnce] fetch 错误:', fetchError?.message, fetchError?.name);
       const name = fetchError?.name || "";
       const msg = fetchError?.message || String(fetchError);
       if (!gotFirstChunk && (name === "AbortError" || ac.signal.aborted || msg.toLowerCase().includes("abort"))) {
@@ -891,6 +904,7 @@ async function streamYunwuOpenAIOnce(
 
     if (!response.ok) {
       const errorText = await response.text();
+      console.error('[streamYunwuOpenAIOnce] HTTP 错误:', response.status, errorText);
       let errorMsg = `HTTP ${response.status}: ${errorText}`;
       if (response.status === 401 || response.status === 403) {
         errorMsg = "API Key 無效或未授權。請檢查您的 API Key。";
