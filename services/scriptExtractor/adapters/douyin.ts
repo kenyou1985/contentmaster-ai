@@ -275,7 +275,7 @@ export const douyinExtractor: IScriptExtractor = {
 };
 
 /**
- * v10.6.2 新增：当 douyin 抛 NEEDS_VIDEO_FILE 时，UI 调用此函数
+ * v10.6.3：当 douyin 抛 NEEDS_VIDEO_FILE 时，UI 调用此函数
  * 直接对用户上传的 File 对象做 ASR → Whisper 转写
  */
 export async function transcribeVideoFile(
@@ -318,6 +318,36 @@ function blobToDataUrl(blob: Blob): Promise<string> {
     reader.onerror = () => reject(new Error('FileReader failed'));
     reader.readAsDataURL(blob);
   });
+}
+
+/**
+ * v10.6.3 新增：当用户提供「无水印视频直链」时（比如从外部解析工具拿到的 mp4 URL），
+ * 下载该 URL 后走 ASR 链路。
+ *  - 仍受抖音防盗链影响：URL 通常带 Referer / User-Agent 校验
+ *  - 我们的 /api/video-proxy 已配置 iPhone UA，但 Referer 可能不够
+ *  - 大概率会失败，但失败时 UI 可引导用户改用文件上传
+ */
+export async function transcribeVideoFromUrl(
+  videoUrl: string,
+  opts: ExtractOptions = {},
+): Promise<ExtractResult> {
+  const proxyBase = opts.proxyBase || PROXY_BASE_DEFAULT;
+  let blob: Blob;
+  try {
+    const r = await fetch(`${proxyBase}/video-proxy?url=${encodeURIComponent(videoUrl)}`);
+    if (!r.ok) {
+      throw new Error(`HTTP ${r.status}`);
+    }
+    blob = await r.blob();
+    if (blob.size < 1024) {
+      throw new Error('响应太小，可能防盗链拦截');
+    }
+  } catch (e: any) {
+    throw new ExtractError('FETCH_FAILED', `视频下载失败：${e?.message || String(e)}`);
+  }
+
+  const file = new File([blob], 'douyin-video.mp4', { type: blob.type || 'video/mp4' });
+  return transcribeVideoFile(file, opts);
 }
 
 /** 6) 视频下载 → 抽音 → Whisper ASR */

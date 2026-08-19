@@ -96,7 +96,7 @@ import { transcribeShots } from '../services/localAsrService';
 import { optimizeSubtitles } from '../services/subtitleOptimizer';
 import { prewarmFfmpeg } from '../services/audioExtractor';
 import { extractScriptFromUrl, ExtractError } from '../services/scriptExtractor';
-import { transcribeVideoFile } from '../services/scriptExtractor/adapters/douyin';
+import { transcribeVideoFile, transcribeVideoFromUrl } from '../services/scriptExtractor/adapters/douyin';
 import {
   CustomTracksPanel,
   createEmptyCustomTracksState,
@@ -461,6 +461,10 @@ const CopyBasedPanel: React.FC<{
 
   /** v10.6.2：视频文件上传 ASR 状态 */
   const [transcribingVideo, setTranscribingVideo] = useState<boolean>(false);
+  /** v10.6.3：抖音短链需要视频文件时，显示引导条 */
+  const [needsVideoUpload, setNeedsVideoUpload] = useState<boolean>(false);
+  /** v10.6.3：用户粘贴的无水印视频直链（从外部解析工具获取） */
+  const [videoUrlInput, setVideoUrlInput] = useState<string>('');
   const extractVideoFileRef = useRef<HTMLInputElement | null>(null);
 
   /**
@@ -475,6 +479,7 @@ const CopyBasedPanel: React.FC<{
       const result = await transcribeVideoFile(file);
       const trimmed = result.text.slice(0, SCRIPT_MAX_LEN);
       setRawCopy(trimmed);
+      setNeedsVideoUpload(false);
       toast.success(`✓ 已转写 ${trimmed.length} 字（${file.name}）`, { autoClose: 4000 });
     } catch (e: any) {
       const msg = e instanceof ExtractError
@@ -486,6 +491,41 @@ const CopyBasedPanel: React.FC<{
       setTranscribingVideo(false);
     }
   }, [toast]);
+
+  /**
+   * v10.6.3：从用户粘贴的「无水印视频直链」下载 + 转写
+   * 适用：用户从抖音 app 下载到本地后，复制视频文件 URL（云盘/COS 链接）
+   *       或从外部解析工具拿到 mp4 CDN URL
+   */
+  const handleExtractVideoUrl = useCallback(async () => {
+    const url = videoUrlInput.trim();
+    if (!url) {
+      toast.warning('请粘贴视频直链');
+      return;
+    }
+    if (!/^https?:\/\//i.test(url)) {
+      toast.warning('视频直链应以 http:// 或 https:// 开头');
+      return;
+    }
+    setTranscribingVideo(true);
+    toast.info('正在下载并转写视频文案...', { autoClose: 3000 });
+    try {
+      const result = await transcribeVideoFromUrl(url);
+      const trimmed = result.text.slice(0, SCRIPT_MAX_LEN);
+      setRawCopy(trimmed);
+      setNeedsVideoUpload(false);
+      setVideoUrlInput('');
+      toast.success(`✓ 已转写 ${trimmed.length} 字（视频直链）`, { autoClose: 4000 });
+    } catch (e: any) {
+      const msg = e instanceof ExtractError
+        ? `[${e.code}] ${e.message}`
+        : (e?.message || String(e));
+      console.error('[CopyBasedPanel] transcribeVideoFromUrl failed:', e);
+      toast.error(`视频转写失败：${msg}`, { autoClose: 6000 });
+    } finally {
+      setTranscribingVideo(false);
+    }
+  }, [videoUrlInput, toast]);
 
   /**
    * v10.6：链接一键提取文案（抖音 / 今日头条）
@@ -510,11 +550,11 @@ const CopyBasedPanel: React.FC<{
         result.source === 'article' ? '文章正文' : '降级提取';
       toast.success(`✓ 已提取 ${trimmed.length} 字（${sourceLabel}）`, { autoClose: 3000 });
     } catch (e: any) {
-      // v10.6.2：抖音适配器拿不到 desc + play_addr 时，引导用户上传视频文件
+      // v10.6.3：抖音适配器拿不到 desc + play_addr 时，弹引导条让用户选「上传文件」或「粘贴视频 URL」
       if (e instanceof ExtractError && e.code === 'NEEDS_VIDEO_FILE') {
         toast.warning(e.message, { autoClose: 6000 });
-        // 自动弹出文件选择器
-        setTimeout(() => extractVideoFileRef.current?.click(), 100);
+        // 标记需要引导视频输入（不自动 click file input，避免误以为打开访达）
+        setNeedsVideoUpload(true);
       } else {
         const msg = e instanceof ExtractError
           ? `[${e.code}] ${e.message}`
@@ -2177,6 +2217,63 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
               </button>
             </div>
           </div>
+
+          {/* v10.6.3：抖音短链 → 需要视频文件，引导条（不再自动 click file input） */}
+          {needsVideoUpload && (
+            <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 space-y-3">
+              <div className="flex items-start gap-2">
+                <span className="text-amber-400 text-base leading-none">⚠️</span>
+                <div className="flex-1 text-xs text-amber-200/90 leading-relaxed">
+                  <div className="font-semibold text-amber-300 mb-1">抖音 SSR 不再内嵌作者文案</div>
+                  <div className="text-amber-200/70">
+                    现代抖音页面（2026+ SPA）的详情数据走前端 SDK + 签名，前端无法直接抓。
+                    请通过以下任一方式提供视频源，系统会用 Whisper ASR 转写为文案：
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setNeedsVideoUpload(false)}
+                  className="text-amber-400/60 hover:text-amber-300 text-xs"
+                  title="关闭引导"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-2">
+                {/* 方式 1：上传本地视频文件 */}
+                <button
+                  type="button"
+                  onClick={() => extractVideoFileRef.current?.click()}
+                  disabled={transcribingVideo}
+                  className="flex items-center justify-center gap-2 px-3 py-2 rounded-md bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium shadow transition-all disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                >
+                  {transcribingVideo ? <Loader2 size={12} className="animate-spin" /> : '📁'}
+                  <span>上传视频文件 (mp4/mov)</span>
+                </button>
+
+                {/* 方式 2：粘贴视频直链 */}
+                <div className="flex items-stretch gap-1">
+                  <input
+                    type="text"
+                    value={videoUrlInput}
+                    onChange={(e) => setVideoUrlInput(e.target.value)}
+                    placeholder="或粘贴无水印视频直链 https://..."
+                    disabled={transcribingVideo}
+                    className="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-md px-2 py-1.5 text-[11px] text-slate-100 focus:outline-none focus:border-violet-500 placeholder-slate-600"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleExtractVideoUrl}
+                    disabled={transcribingVideo || !videoUrlInput.trim()}
+                    className="px-3 py-1.5 rounded-md bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium shadow transition-all disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                  >
+                    转写
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div>
             <label className="text-xs text-slate-400 font-semibold mb-1 block">

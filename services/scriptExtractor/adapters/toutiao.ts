@@ -205,44 +205,50 @@ function extractFromUrlEncodedArticleInfo(html: string): { title?: string; conte
     const slice = html.slice(tagStart, tagStart + 200_000);
     if (slice.length < 30) return null;
 
-    // 渐进式解码 + balance walk
-    let decoded = '';
+    // v10.6.3 关键修复：
+    //   之前用 String.fromCharCode(byte) 把每个 %xx 字节当 Latin-1 单字符
+    //   → 中文 UTF-8 是 3 字节序列（如 "朱" = E6 9C B1），被拆成 3 个 mojibake
+    //   → 正确做法：decodeURIComponent 整段 URL-decode（UTF-8-aware）
+    //   → 再对 decoded JSON 做 balance walk
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(slice);
+    } catch {
+      // decode 失败（HTML 里其他位置的 % 干扰）
+      // 退而求其次：只 decode "%22articleInfo%22" 开始到下一个未配对 %xx token
+      const lastOk = slice.lastIndexOf('%22');
+      if (lastOk < 0) return null;
+      try {
+        decoded = decodeURIComponent(slice.slice(0, lastOk + 3));
+      } catch {
+        return null;
+      }
+    }
+
+    // decoded 是纯 JSON 字符串（含 "articleInfo":{...}）
+    // balance walk
     let depth = 0;
     let inStr = false;
     let esc = false;
     let finalEnd = -1;
-    let i = 0;
-
-    while (i < slice.length) {
-      // 检测 %xx 三字符 token
-      let ch = '';
-      if (slice[i] === '%' && i + 2 < slice.length && /^[0-9A-Fa-f]{2}$/.test(slice.substr(i + 1, 2))) {
-        ch = String.fromCharCode(parseInt(slice.substr(i + 1, 2), 16));
-        i += 3;
-      } else {
-        ch = slice[i];
-        i += 1;
-      }
-      decoded += ch;
-
-      // balance walk
+    for (let i = 0; i < decoded.length; i++) {
+      const c = decoded[i];
       if (esc) { esc = false; continue; }
-      if (ch === '\\') { esc = true; continue; }
-      if (ch === '"') { inStr = !inStr; continue; }
+      if (c === '\\') { esc = true; continue; }
+      if (c === '"') { inStr = !inStr; continue; }
       if (inStr) continue;
-      if (ch === '{') {
+      if (c === '{') {
         depth++;
-      } else if (ch === '}') {
+      } else if (c === '}') {
         if (depth > 0) depth--;
         if (depth === 0 && decoded.indexOf('{') >= 0) {
-          finalEnd = decoded.length;
+          finalEnd = i + 1;
           break;
         }
       }
     }
     if (finalEnd < 0) return null;
 
-    // 从 decoded 中找到第一个 `{` 作为 JSON 起点（前面是 `"articleInfo":`）
     const objStart = decoded.indexOf('{');
     if (objStart < 0) return null;
     const jsonText = decoded.slice(objStart, finalEnd);
