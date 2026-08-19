@@ -1213,8 +1213,28 @@ export const streamContentGeneration = async (
       };
 
       let lastError: any = null;
+
+      // 先尝试主模型（gpt-5.6-luna），失败后才进入 fallback 链
+      console.log('[streamContentGeneration] 尝试主模型:', primaryModel);
+      try {
+        await streamWithRetry(primaryModel, firstChunkMs);
+        return; // 主模型成功
+      } catch (err: any) {
+        lastError = err;
+        console.warn(`[streamContentGeneration] 主模型失败: ${err?.message || err}`);
+      }
+
+      console.log('[streamContentGeneration] 开始 fallback 链检查', {
+        lastError,
+        shouldFallbackNull: shouldFallback(null),
+        isChannelUnavailableNull: isChannelUnavailable(null),
+        isRetryableNull: isRetryableForFallback(null)
+      });
       for (const fb of FALLBACK_CHAIN) {
-        if (!shouldFallback(lastError)) break;
+        if (!shouldFallback(lastError)) {
+          console.log('[streamContentGeneration] shouldFallback 返回 false，break 循环');
+          break;
+        }
         console.warn(`[Gemini Service] 主模型 ${primaryModel} 失败，切备用: ${fb.model}`);
         await wait(1000);
         try {
