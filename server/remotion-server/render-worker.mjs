@@ -440,10 +440,14 @@ async function main() {
         clearWebpackCache(PROJECT_ROOT);
         logInfo('[bundle] 已清空 webpack 缓存');
       }
-      bundleLocation = await bundler.bundle({
-        entryPoint: ENTRY_FILE,
-        enableCaching: true,
-      });
+      // bundler.bundle 加 180s 超时保护
+      bundleLocation = await Promise.race([
+        bundler.bundle({
+          entryPoint: ENTRY_FILE,
+          enableCaching: true,
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('bundler.bundle 超时（>180s）')), 180_000))
+      ]);
       recordBundleResult(cacheCheck.cacheKey, bundleLocation);
       logInfo(`[bundle] 🔧 已重新打包（耗时 ${Date.now() - t0}ms）`);
       logProgress(10, 'Remotion 项目打包完成');
