@@ -29,17 +29,29 @@ export interface OptimizationResult {
 }
 
 /**
+ * 字幕优化选项
+ */
+export interface OptimizeSubtitlesOptions {
+  /** 主模型名称，默认 gemini-3.1-pro-preview */
+  model?: string;
+  /** 备用模型名称，默认 gpt-5.6-luna */
+  fallbackModel?: string;
+}
+
+/**
  * 批量优化字幕（单次 AI 调用，性能更好）
  *
  * @param cues 原始字幕数组（按时间顺序）
  * @param apiKey AI API Key（YUNWU_API_KEY / GEMINI_API_KEY）
  * @param onProgress 进度回调 (current, total)
+ * @param options 优化选项
  * @returns 优化后的字幕数组
  */
 export async function optimizeSubtitles(
   cues: SubtitleCue[],
   apiKey?: string | null,
-  onProgress?: (current: number, total: number) => Promise<void> | void
+  onProgress?: (current: number, total: number) => Promise<void> | void,
+  options?: OptimizeSubtitlesOptions
 ): Promise<OptimizationResult> {
   if (!cues || cues.length === 0) {
     return { success: true, optimizedCues: [], correctedCount: 0 };
@@ -65,6 +77,9 @@ export async function optimizeSubtitles(
     };
   }
 
+  const PRIMARY_MODEL = options?.model || 'gemini-3.1-pro-preview';
+  const FALLBACK_MODEL = options?.fallbackModel || 'gpt-5.6-luna';
+
   let apiCall: (prompt: string, systemInstruction: string) => Promise<string>;
   try {
     const { streamContentGeneration } = await import('../services/geminiService');
@@ -81,14 +96,28 @@ export async function optimizeSubtitles(
           }
         }, 120_000);
 
+        // 根据模型名称判断 provider
+        const isGeminiModel = PRIMARY_MODEL.includes('gemini');
+        const effectiveProvider = isGeminiModel ? 'google' : 'yunwu';
+        const effectiveBaseUrl = isGeminiModel
+          ? 'https://generativelanguage.googleapis.com'
+          : 'https://api.openlux.ai';
+
         streamContentGeneration(
           prompt,
           systemInstruction,
           (chunk) => {
             if (!aborted) fullContent += chunk;
           },
-          'gpt-5.6-luna', // 优先使用 gpt-5.6-luna 模型
-          { temperature: 0.3, maxTokens: 8192, apiKeyOverride: effectiveKey }
+          PRIMARY_MODEL, // 主模型
+          {
+            temperature: 0.3,
+            maxTokens: 8192,
+            apiKeyOverride: effectiveKey,
+            provider: effectiveProvider as 'google' | 'yunwu',
+            baseUrl: effectiveBaseUrl,
+            fallbackModelOnStall: FALLBACK_MODEL // 备用模型
+          }
         )
           .then(() => {
             if (!aborted) {

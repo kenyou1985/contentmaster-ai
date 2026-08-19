@@ -64,6 +64,10 @@ export type StreamContentOptions = {
   referenceMultimodalPreamble?: string;
   /** 直接传入 API Key，跳过 localStorage 读取（用于传参调用场景） */
   apiKeyOverride?: string;
+  /** 强制使用指定 provider（yunwu | google） */
+  provider?: 'yunwu' | 'google';
+  /** 强制使用指定 baseUrl */
+  baseUrl?: string;
 };
 
 export type StreamModelArgs = Parameters<typeof streamContentGeneration>;
@@ -988,9 +992,18 @@ export const streamContentGeneration = async (
   try {
       if (options?.apiKeyOverride) {
         apiKey = options.apiKeyOverride;
-        // 根据 key 判断 provider（简单 heuristic）
-        provider = 'yunwu';
-        baseUrl = YUNWU_BASE_URL.replace(/\/$/, "");
+        // 根据 key 或 options.provider 判断 provider
+        if (options.provider) {
+          provider = options.provider;
+        } else {
+          provider = 'yunwu'; // 默认用 yunwu
+        }
+        // 使用 options.baseUrl 或根据 provider 选择默认 URL
+        if (options.baseUrl) {
+          baseUrl = options.baseUrl.replace(/\/$/, "");
+        } else {
+          baseUrl = provider === 'google' ? GOOGLE_BASE_URL.replace(/\/$/, "") : YUNWU_BASE_URL.replace(/\/$/, "");
+        }
         model = modelName || 'gpt-5.6-luna';
       } else {
         if (!apiKey) {
