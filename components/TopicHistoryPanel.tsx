@@ -1,12 +1,13 @@
 /**
  * 历史选题记录面板
  * 按赛道 key 显示最近 50 条已生成的选题，避免跨次重复。
- * 折叠式 UI，默认收起。展示选题 + 生成时间，支持一键复制。
+ * 折叠式 UI，默认收起。展示选题 + 生成时间，支持一键复制 / 点击立即生成正文。
  * v10.3 增强：始终显示（含空状态）；支持 localStorage 跨刷新持久化。
+ * v10.5 增强：点击历史选题可直接生成正文（无需勾选）。
  */
 
 import React, { useState, useEffect } from 'react';
-import { History, ChevronDown, ChevronRight, Copy, Check, Inbox } from 'lucide-react';
+import { History, ChevronDown, ChevronRight, Copy, Check, Inbox, Sparkles } from 'lucide-react';
 
 export interface TopicHistoryEntry {
   title: string;
@@ -21,6 +22,10 @@ interface TopicHistoryPanelProps {
   onCopyTitle?: (title: string) => void;
   /** 一键清空某赛道历史 */
   onClearNiche?: (key: string) => void;
+  /** 点击历史选题直接生成正文（面板只显示当前赛道的标题） */
+  onSelectTitle?: (title: string) => void;
+  /** 当前是否正在生成（用于禁用按钮） */
+  isGenerating?: boolean;
 }
 
 /** localStorage key 前缀，避免与其他存储冲突 */
@@ -52,6 +57,8 @@ export const TopicHistoryPanel: React.FC<TopicHistoryPanelProps> = ({
   currentNicheKey,
   onCopyTitle,
   onClearNiche,
+  onSelectTitle,
+  isGenerating,
 }) => {
   const [expanded, setExpanded] = useState(false);
   /** 首次挂载时尝试从 localStorage 恢复历史快照（用于 UI 初次渲染） */
@@ -135,7 +142,9 @@ export const TopicHistoryPanel: React.FC<TopicHistoryPanelProps> = ({
           </span>
         </div>
         <span className="text-[10px] text-slate-500 hidden sm:inline">
-          {totalCount > 0 ? '点击展开 / 收起' : '跨刷新自动保存到 localStorage'}
+          {totalCount > 0
+            ? '点击历史选题 → 直接生成正文'
+            : '跨刷新自动保存到 localStorage'}
         </span>
       </button>
 
@@ -162,35 +171,61 @@ export const TopicHistoryPanel: React.FC<TopicHistoryPanelProps> = ({
                 return (
                   <li
                     key={`${entry.generatedAt}-${idx}`}
-                    className={`group flex items-start gap-3 rounded-md px-3 py-2 text-sm transition-colors border ${
-                      isCurrentKey
-                        ? 'bg-slate-950/50 border-slate-800 hover:border-amber-500/40'
-                        : 'bg-slate-900/30 border-slate-800/50 opacity-60'
+                    className={`group flex items-start gap-3 rounded-md px-3 py-2 text-sm transition-colors border bg-slate-950/50 border-slate-800 hover:border-amber-500/40 ${
+                      onSelectTitle && !isGenerating ? 'cursor-pointer' : ''
                     }`}
+                    onClick={() => {
+                      if (onSelectTitle && !isGenerating) {
+                        onSelectTitle(entry.title);
+                      }
+                    }}
+                    title={onSelectTitle ? '点击直接生成正文' : undefined}
+                    role={onSelectTitle ? 'button' : undefined}
+                    tabIndex={onSelectTitle ? 0 : -1}
+                    onKeyDown={(e) => {
+                      if (!onSelectTitle || isGenerating) return;
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onSelectTitle(entry.title);
+                      }
+                    }}
                   >
                     <span className="text-[10px] text-slate-500 font-mono shrink-0 mt-1 w-[60px]">
                       {formatTime(entry.generatedAt)}
                     </span>
-                    <span className="flex-1 min-w-0 text-slate-300 break-words leading-relaxed">
+                    <span className="flex-1 min-w-0 text-slate-300 break-words leading-relaxed group-hover:text-slate-100">
                       {entry.title}
                     </span>
-                    {onCopyTitle && (
-                      <button
-                        type="button"
-                        onClick={() => onCopyTitle(entry.title)}
-                        className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-emerald-400 transition-all shrink-0"
-                        title="复制此选题"
-                      >
-                        <Copy size={14} />
-                      </button>
-                    )}
+                    <div className="flex items-center gap-1 shrink-0">
+                      {onSelectTitle && (
+                        <span
+                          className="opacity-0 group-hover:opacity-100 text-amber-400 transition-all"
+                          title="点击生成正文"
+                        >
+                          <Sparkles size={14} />
+                        </span>
+                      )}
+                      {onCopyTitle && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onCopyTitle(entry.title);
+                          }}
+                          className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-emerald-400 transition-all"
+                          title="复制此选题"
+                        >
+                          <Copy size={14} />
+                        </button>
+                      )}
+                    </div>
                   </li>
                 );
               })}
             </ul>
           )}
           <div className="mt-3 pt-3 border-t border-slate-800 text-[10px] text-slate-500 leading-relaxed">
-            💡 历史选题用于跨次生成去重，本次生成会自动避开最近 50 条内的相似标题。
+            💡 点击任意历史选题 → 自动勾选并生成正文（无需手动选择）。
             {currentCount > 0 && onClearNiche && (
               <button
                 type="button"

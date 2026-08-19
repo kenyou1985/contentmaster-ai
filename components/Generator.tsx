@@ -2397,6 +2397,12 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   
   // Stores the content of all articles
   const [generatedContents, setGeneratedContents] = useState<GeneratedContent[]>([]);
+
+  // v10.5：让 setTimeout 回调拿到最新的 handleBatchGenerate
+  const handleBatchGenerateRef = useRef<() => Promise<void>>(async () => undefined);
+  useEffect(() => {
+    handleBatchGenerateRef.current = handleBatchGenerate;
+  });
   
   // Set of indices that are currently being generated (for loading spinners)
   const [activeIndices, setActiveIndices] = useState<Set<number>>(new Set());
@@ -9527,6 +9533,7 @@ ${segmentSourceText}
                 (niche === NicheType.STORY_LIFE_DUNGEON ? `:${lifeDungeonSubMode}` : '') +
                 (niche === NicheType.GENERAL_VIRAL ? `:${newsSubMode}` : '')
             }
+            isGenerating={status === GenerationStatus.WRITING || status === GenerationStatus.GENERATING}
             onCopyTitle={(title) => {
                 navigator.clipboard?.writeText(title);
                 toast.success('已复制');
@@ -9545,6 +9552,26 @@ ${segmentSourceText}
                     }
                 }
                 toast.success('已清空当前赛道历史');
+            }}
+            onSelectTitle={(title) => {
+                // v10.5：点击历史选题 → 直接把该选题填入 topics，
+                // 标记为 selected，并自动触发 handleBatchGenerate 生成正文。
+                if (status === GenerationStatus.WRITING || status === GenerationStatus.GENERATING) {
+                    toast.warning('当前正在生成正文，请稍后再试。');
+                    return;
+                }
+                const newTopic: Topic = {
+                    id: `history-${Date.now()}`,
+                    title,
+                    selected: true,
+                };
+                setTopics([newTopic]);
+                setStatus(GenerationStatus.IDLE);
+                toast.success(`已选中历史选题：「${title}」· 准备生成正文…`);
+                // 等待 React 提交 topics 后再触发批量生成（用 ref 拿最新 handleBatchGenerate）
+                setTimeout(() => {
+                    handleBatchGenerateRef.current();
+                }, 60);
             }}
         />
 
