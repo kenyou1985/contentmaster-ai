@@ -32,9 +32,9 @@ export interface OptimizationResult {
  * 字幕优化选项
  */
 export interface OptimizeSubtitlesOptions {
-  /** 主模型名称，默认 gemini-3.1-pro-preview */
-  model?: string;
-  /** 备用模型名称，默认 gpt-5.6-luna */
+  /** 主模型名称，默认 gpt-5.6-luna */
+  primaryModel?: string;
+  /** 备用模型名称，默认 gpt-5.4-mini */
   fallbackModel?: string;
 }
 
@@ -77,8 +77,8 @@ export async function optimizeSubtitles(
     };
   }
 
-  const PRIMARY_MODEL = options?.model || 'gemini-3.1-pro-preview';
-  const FALLBACK_MODEL = options?.fallbackModel || 'gpt-5.6-luna';
+  const PRIMARY_MODEL = options?.primaryModel || 'gpt-5.6-luna';
+  const FALLBACK_MODEL = options?.fallbackModel || 'gpt-5.4-mini';
 
   let apiCall: (prompt: string, systemInstruction: string) => Promise<string>;
   try {
@@ -96,13 +96,7 @@ export async function optimizeSubtitles(
           }
         }, 120_000);
 
-        // 根据模型名称判断 provider
-        const isGeminiModel = PRIMARY_MODEL.includes('gemini');
-        const effectiveProvider = isGeminiModel ? 'google' : 'yunwu';
-        const effectiveBaseUrl = isGeminiModel
-          ? 'https://generativelanguage.googleapis.com'
-          : 'https://api.openlux.ai';
-
+        // 使用 OpenLux API，通过 modelName 选择具体模型
         streamContentGeneration(
           prompt,
           systemInstruction,
@@ -114,8 +108,6 @@ export async function optimizeSubtitles(
             temperature: 0.3,
             maxTokens: 8192,
             apiKeyOverride: effectiveKey,
-            provider: effectiveProvider as 'google' | 'yunwu',
-            baseUrl: effectiveBaseUrl,
             fallbackModelOnStall: FALLBACK_MODEL // 备用模型
           }
         )
