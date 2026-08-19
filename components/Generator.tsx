@@ -840,6 +840,7 @@ import { fetchPsychologyDigestForPrompt } from '../services/psychologyFeedServic
 import { needsParagraphNormalization, normalizeDenseChineseParagraphs } from '../services/textFormat';
 import { detectAiFeatures, type AiDetectionResult, type NicheTypeForScoring } from '../services/aiDetectionService';
 import { polishTextForAntiAi } from '../services/antiAiPolishService';
+import { TopicHistoryPanel, type TopicHistoryEntry } from './TopicHistoryPanel';
 
 
 
@@ -1696,6 +1697,45 @@ function shouldUseOneShotLongForm(niche: NicheType, scriptLengthMode: 'LONG' | '
  * 即使 AI 没有完全遵守修订铁律，代码层也强制清除残留的 AI 味。
  * 必须在 applyOneShotPostProcessing 之前调用，避免被收尾逻辑干扰。
  */
+/**
+ * 将思考流文本中嵌入的 URL 渲染为可点击链接（其他文本保持原样）
+ *   - 检测 https?://...、www....、http://...
+ *   - 截断到首个空白/中文标点/反引号，避免吞掉后面的内容
+ *   - 限制最多渲染 8 个链接（防止模型一次性输出大量 URL）
+ */
+function renderThinkingContentWithLinks(text: string): React.ReactNode {
+  if (!text) return text;
+  const URL_RE = /\b(?:https?:\/\/|www\.)[^\s,，。；;！!？?\)\)\）】」』"'"]+/gi;
+  const matches: { url: string; index: number }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = URL_RE.exec(text)) !== null && matches.length < 8) {
+    matches.push({ url: m[0], index: m.index });
+  }
+  if (matches.length === 0) return text;
+
+  const out: React.ReactNode[] = [];
+  let cursor = 0;
+  matches.forEach((hit, i) => {
+    if (hit.index > cursor) out.push(text.slice(cursor, hit.index));
+    const normalized = hit.url.startsWith('www.') ? `https://${hit.url}` : hit.url;
+    out.push(
+      <a
+        key={`url-${i}-${hit.index}`}
+        href={normalized}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-cyan-300 underline decoration-cyan-500/40 hover:text-cyan-200 break-all"
+        title={normalized}
+      >
+        {hit.url}
+      </a>
+    );
+    cursor = hit.index + hit.url.length;
+  });
+  if (cursor < text.length) out.push(text.slice(cursor));
+  return <>{out}</>;
+}
+
 function scrubScriptAiTaste(text: string): string {
   let s = text;
 
@@ -2370,8 +2410,12 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   /** 金融·宏观预警：最近一次「一键生成选题」拉取的国际 RSS 摘要，供长文引子对齐 */
   const financeMacroNewsDigestRef = useRef<string>('');
   const newsMacroNewsDigestRef = useRef<string>('');
-  /** 全赛道选题历史追踪（避免跨次重复）：key=赛道类型，value=最近30条选题 */
+  /** 全赛道选题历史追踪（避免跨次重复）：key=赛道类型，value=最近50条选题 */
   const recentTopicHistoryRef = useRef<Record<string, string[]>>({});
+  /** UI 显示用的历史选题快照（最近50条） */
+  const [topicHistory, setTopicHistory] = useState<Record<string, { title: string; generatedAt: number }[]>>({});
+  /** 历史选题面板是否展开 */
+  const [showTopicHistoryPanel, setShowTopicHistoryPanel] = useState(false);
 
   // 历史记录相关状态
   const [showHistorySelector, setShowHistorySelector] = useState(false);
@@ -3395,12 +3439,21 @@ Hard rules:
       });
       setTopics(newTopics);
 
-      // 全赛道选题去重：更新历史记录（保留最近30条）
+      // 全赛道选题去重：更新历史记录（保留最近50条）
       const key = niche + (niche === NicheType.TCM_METAPHYSICS ? `:${tcmSubMode}` : niche === NicheType.FINANCE_CRYPTO ? `:${financeSubMode}` : niche === NicheType.STORY_LIFE_DUNGEON ? `:${lifeDungeonSubMode}` : niche === NicheType.GENERAL_VIRAL ? `:${newsSubMode}` : '');
+      const existingTitles = recentTopicHistoryRef.current[key] ?? [];
+      const now = Date.now();
+      const newEntries = dedupedRawTopics.map((t) => ({ title: t, generatedAt: now }));
       recentTopicHistoryRef.current = {
         ...recentTopicHistoryRef.current,
-        [key]: [...(recentTopicHistoryRef.current[key] ?? []).slice(-30), ...dedupedRawTopics]
+        [key]: [...existingTitles.slice(-50), ...dedupedRawTopics]
       };
+      // 同步 UI 状态：保留最近 50 条，带时间戳
+      setTopicHistory((prev) => {
+        const existing = prev[key] ?? [];
+        const merged = [...existing, ...newEntries].slice(-50);
+        return { ...prev, [key]: merged };
+      });
       setStatus(GenerationStatus.IDLE);
     } catch (err: any) {
       console.error(err);
@@ -3438,10 +3491,18 @@ Hard rules:
             }));
             setTopics(newTopics);
             const key = niche + `:${newsSubMode}`;
+            const existingTitles = recentTopicHistoryRef.current[key] ?? [];
+            const now2 = Date.now();
+            const newEntries = safeFinal.map((t) => ({ title: t, generatedAt: now2 }));
             recentTopicHistoryRef.current = {
               ...recentTopicHistoryRef.current,
-              [key]: [...(recentTopicHistoryRef.current[key] ?? []).slice(-30), ...safeFinal]
+              [key]: [...existingTitles.slice(-50), ...safeFinal]
             };
+            setTopicHistory((prev) => {
+              const existing = prev[key] ?? [];
+              const merged = [...existing, ...newEntries].slice(-50);
+              return { ...prev, [key]: merged };
+            });
             setStatus(GenerationStatus.IDLE);
             toast.success('安全版选题已生成');
             return;
@@ -9389,6 +9450,22 @@ ${segmentSourceText}
 
         {/* 错误提示已改用 Toast 通知 */}
 
+        {/* 历史选题面板（最近50条，按当前赛道过滤） */}
+        <TopicHistoryPanel
+            history={topicHistory}
+            currentNicheKey={
+                niche +
+                (niche === NicheType.TCM_METAPHYSICS ? `:${tcmSubMode}` : '') +
+                (niche === NicheType.FINANCE_CRYPTO ? `:${financeSubMode}` : '') +
+                (niche === NicheType.STORY_LIFE_DUNGEON ? `:${lifeDungeonSubMode}` : '') +
+                (niche === NicheType.GENERAL_VIRAL ? `:${newsSubMode}` : '')
+            }
+            onCopyTitle={(title) => {
+                navigator.clipboard?.writeText(title);
+                toast.success('已复制');
+            }}
+        />
+
         {/* Topics List */}
         {topics.length > 0 && (
             <div className="mt-8 animate-in slide-in-from-bottom-4 duration-500">
@@ -10660,7 +10737,7 @@ ${segmentSourceText}
                   <div key={line.id} className="flex items-start gap-2">
                     <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded shrink-0 mt-0.5 ${labelBg}`}>{labelText}</span>
                     <p className="text-[11px] leading-relaxed whitespace-pre-wrap font-mono text-slate-300">
-                      {line.content}
+                      {renderThinkingContentWithLinks(line.content)}
                     </p>
                   </div>
                 );
