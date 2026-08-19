@@ -79,13 +79,60 @@ const REMOTION_PROJECT_ROOT =
 
 const REMOTION_PROJECT_ENTRY = join(REMOTION_PROJECT_ROOT, 'src', 'index.tsx');
 
+// 递归清除 payload 中的 data URL（避免 body 解析 OOM）
+// 过大的 data URL 字段替换为占位符，文件实际通过 uploadInlineDataUrlsToServer 上传
+const DATA_URL_PLACEHOLDER = '__DATA_URL_PLACEHOLDER__';
+function cleanPayloadDataUrls(obj) {
+  if (typeof obj === 'string') {
+    return obj.startsWith('data:') ? DATA_URL_PLACEHOLDER : obj;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map((v) => cleanPayloadDataUrls(v));
+  }
+  if (obj && typeof obj === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) {
+      out[k] = cleanPayloadDataUrls(v);
+    }
+    return out;
+  }
+  return obj;
+}
+
 const IS_RAILWAY = !!process.env.RAILWAY_ENVIRONMENT || !!process.env.RAILWAY_PROJECT_ID;
 const IS_VERCEL = !!process.env.VERCEL;
 const PORT = process.env.PORT || 10000;
 
 const app = express();
-app.use(express.json({ limit: '2gb' }));
-app.use(express.urlencoded({ extended: true, limit: '2gb' }));
+// 流式 JSON body 解析（替代 express.json({ limit:'2gb' })，避免 OOM）
+// 接受 application/json 和 multipart/form-data（后者含 data URL）
+app.use((req, res, next) => {
+  if (req.headers['content-type']?.includes('application/json') ||
+      req.headers['content-type']?.includes('multipart/form-data')) {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      try {
+        const raw = Buffer.concat(chunks);
+        if (raw.length === 0) { req.body = {}; return next(); }
+        // 大 body 分块解析，过大的 data URL 字段过滤（实际文件由 uploadInlineDataUrlsToServer 上传）
+        const MAX_BODY_MB = 5;
+        if (raw.length > MAX_BODY_MB * 1024 * 1024) {
+          try {
+            const parsed = JSON.parse(raw.toString());
+            req.body = cleanPayloadDataUrls(parsed);
+          } catch { req.body = {}; }
+        } else {
+          req.body = JSON.parse(raw.toString());
+        }
+      } catch { req.body = {}; }
+      next();
+    });
+    req.on('error', () => { req.body = {}; next(); });
+  } else {
+    next();
+  }
+});
 
 const CORS_ALLOWED = [
   /localhost(:\d+)?$/,

@@ -8,6 +8,8 @@ const DEFAULT_YUNWU_MODEL = "gpt-5.4-mini";
 /** Google 主力模型 */
 const GOOGLE_PRIMARY_MODEL = "gemini-2.0-flash";
 const GOOGLE_FALLBACK_MODEL = "gemini-3.1-pro-preview";
+/** 流式生成专用：强制使用 gpt-5.6-luna（不允许被 localStorage 覆盖） */
+const STREAM_PRIMARY_MODEL = "gpt-5.6-luna";
 
 /** OpenLux 支持的模型列表（用户可在 UI 选择） */
 export const YUNWU_MODELS = [
@@ -29,8 +31,13 @@ export const RUNNINGHUB_MODELS = [
 
 /** 流式输出在首段文本出现前的最长等待；超时后 Yunwu 会改用备用模型重试一次 */
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = 120_000;
-/** Yunwu OpenAI 兼容通道上的备用模型（主模型排队/首包过慢时使用） */
-export const STREAM_FALLBACK_MODEL_OPENAI = "gpt-5.6-luna";
+/** Yunwu OpenAI 兼容通道的兜底模型链（按顺序尝试，主模型失败后依次切换）：
+ *   1. gpt-5.6-luna   （默认主模型）
+ *   2. gpt-5.4-mini   （Yunwu 第二兜底）
+ *   3. Gemini-3.1-pro （跨平台最终兜底，走 Google API）
+ */
+export const STREAM_FALLBACK_MODEL_OPENAI = "gpt-5.4-mini"; // Yunwu 第二兜底（不是 gpt-5.6-luna）
+export const STREAM_YUNWU_PRIMARY_MODEL = "gpt-5.6-luna";   // Yunwu 主模型常量
 
 const STREAM_FIRST_CHUNK_STALL = "STREAM_FIRST_CHUNK_STALL";
 const GOOGLE_GENERATION_STALL = "GOOGLE_GENERATION_STALL";
@@ -1093,7 +1100,7 @@ export const streamContentGeneration = async (
         }
       }
 
-      const primaryModel = modelName || model;
+      const primaryModel = modelName || STREAM_PRIMARY_MODEL; // 流式强制用 gpt-5.6-luna
 
       const isQuotaError = (err: any): boolean => {
         const msg = (err?.message || String(err)).toLowerCase();
@@ -1177,51 +1184,43 @@ export const streamContentGeneration = async (
         }
       };
 
-      try {
-        // 主模型：一次尝试，失败立即切备用（不再重试同一模型浪费时间）
-        await streamWithRetry(primaryModel, firstChunkMs);
-      } catch (err: any) {
-        // "无可用渠道"错误或其他可重试错误，立即切备用模型，不重试
-        if (isChannelUnavailable(err) || isRetryableForFallback(err)) {
-          console.warn(
-            `[Gemini Service] Yunwu 主模型无可用渠道或可重试错误 (${primaryModel})，错误: ${err?.message || err}，立即切换备用模型: ${fallbackOpenAI}`
-          );
-          await wait(1000);
-          try {
-            await streamWithRetry(
-              fallbackOpenAI,
-              firstChunkMs,
-              `${systemInstruction}${FALLBACK_STREAM_FORMAT_HINT}`
+      // 模型兜底链（主 → Yunwu 兜底 → Google 最终兜底）
+      const FALLBACK_CHAIN: Array<{ model: string; baseUrl?: string; isGoogle?: boolean }> = [
+        { model: STREAM_FALLBACK_MODEL_OPENAI, baseUrl: YUNWU_BASE_URL }, // gpt-5.4-mini
+        { model: GOOGLE_FALLBACK_MODEL, baseUrl: GOOGLE_BASE_URL, isGoogle: true }, // gemini-3.1-pro-preview
+      ];
+
+      const shouldFallback = (err: any): boolean => {
+        if (isChannelUnavailable(err)) return true;
+        return isRetryableForFallback(err);
+      };
+
+      let lastError: any = null;
+      for (const fb of FALLBACK_CHAIN) {
+        if (!shouldFallback(lastError)) break;
+        console.warn(`[Gemini Service] 主模型 ${primaryModel} 失败，切备用: ${fb.model}`);
+        await wait(1000);
+        try {
+          if (fb.isGoogle) {
+            // Google 最终兜底：非流式，整体返回
+            const googleResult = await callGoogleAPI(fb.model, prompt, systemInstruction);
+            const text = extractGoogleText(googleResult);
+            if (text) { onChunk(text); return; }
+          } else {
+            // Yunwu 兜底：流式
+            await streamYunwuOpenAIOnce(
+              fb.model, prompt, systemInstruction,
+              temperature, maxTokens, onChunk,
+              firstChunkMs, idleTimeoutMs, refUrls, refPreamble
             );
-          } catch (err2: any) {
-            throw new Error(
-              `主模型无可用渠道，备用模型也失败。\n主模型错误: ${err?.message || err}\n备用模型错误: ${err2?.message || err2}`
-            );
+            return;
           }
-        } else if (
-          isRetryableForFallback(err) &&
-          fallbackOpenAI &&
-          primaryModel !== fallbackOpenAI
-        ) {
-          console.warn(
-            `[Gemini Service] Yunwu 主模型失败 (${primaryModel})，错误: ${err?.message || err}，切换备用模型: ${fallbackOpenAI}`
-          );
-          await wait(1000);
-          try {
-            await streamWithRetry(
-              fallbackOpenAI,
-              firstChunkMs,
-              `${systemInstruction}${FALLBACK_STREAM_FORMAT_HINT}`
-            );
-          } catch (err2: any) {
-            throw new Error(
-              `主模型与备用模型均失败。请稍后重试或检查网络与 API。\n主模型错误: ${err?.message || err}\n备用模型错误: ${err2?.message || err2}`
-            );
-          }
-        } else {
-          throw err;
+        } catch (err2: any) {
+          console.warn(`[Gemini Service] 备用模型 ${fb.model} 也失败: ${err2?.message || err2}`);
+          lastError = err2;
         }
       }
+      throw lastError || new Error("所有模型均失败，请稍后重试。");
     } catch (error: any) {
       const errorMsg = error.message || String(error);
       if (errorMsg === STREAM_FIRST_CHUNK_STALL) {
