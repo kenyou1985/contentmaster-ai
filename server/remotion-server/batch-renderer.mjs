@@ -14,6 +14,7 @@ import { spawn, execFile as execFileCb } from 'child_process';
 import { promisify } from 'util';
 import { existsSync, mkdirSync, rmSync, writeFileSync, statSync } from 'fs';
 import { join } from 'path';
+import os from 'os';
 
 const execFile = promisify(execFileCb);
 
@@ -136,45 +137,71 @@ export async function renderLongVideoBatch(payload, renderSegment, opts) {
   const partsDir = join(opts.outputDir, `${taskId}_parts`);
   if (!existsSync(partsDir)) mkdirSync(partsDir, { recursive: true });
 
-  // 渲染每段
-  const renderedParts = [];
-  for (let i = 0; i < segments.length; i++) {
-    const segShots = segments[i];
-    const partPath = join(partsDir, `part_${String(i + 1).padStart(3, '0')}.mp4`);
-    opts.onLog?.(`[batch] 第 ${i + 1}/${segments.length} 段: ${segShots.length} 个镜头 → ${partPath}`);
-    try {
-      const result = await renderSegment(segShots, partPath);
-      renderedParts.push({ path: partPath, durationSec: result.durationSec });
-    } catch (e) {
-      opts.onLog?.(`[batch] 第 ${i + 1} 段失败: ${e.message}`);
-      throw new Error(`分批渲染第 ${i + 1}/${segments.length} 段失败: ${e.message}`);
+  // v1.11：段间并行渲染（受 maxParallelSegments 限制）
+  //  - 每个段内 renderMedia 仍开自己的 concurrency=16，CPU 已吃满
+  //  - 所以段间并行度不能太高，避免相互抢资源反而变慢
+  //  - 公式：保留 ~6 核给系统 + 每段预留 ~3 核作为 chunk 并行预算
+  const cpuCount = Math.max(1, os.cpus()?.length || 1);
+  const maxParallelSegments = Math.max(
+    1,
+    Math.min(segments.length, Math.floor((cpuCount - 4) / 3))
+  );
+  opts.onLog?.(`[batch] 段间并行: cpu=${cpuCount} → maxParallelSegments=${maxParallelSegments}`);
+
+  // 渲染每段（受并发上限限制）
+  const renderedParts = new Array(segments.length);
+  let nextIdx = 0;
+  let failed = null;
+
+  const worker = async (workerId) => {
+    while (!failed) {
+      const i = nextIdx++;
+      if (i >= segments.length) return;
+      const segShots = segments[i];
+      const partPath = join(partsDir, `part_${String(i + 1).padStart(3, '0')}.mp4`);
+      opts.onLog?.(`[batch][w${workerId}] 第 ${i + 1}/${segments.length} 段: ${segShots.length} 个镜头 → ${partPath}`);
+      try {
+        const result = await renderSegment(segShots, partPath);
+        renderedParts[i] = { path: partPath, durationSec: result.durationSec };
+      } catch (e) {
+        opts.onLog?.(`[batch][w${workerId}] 第 ${i + 1} 段失败: ${e.message}`);
+        failed = new Error(`分批渲染第 ${i + 1}/${segments.length} 段失败: ${e.message}`);
+        return;
+      }
     }
-  }
+  };
+
+  const workers = Array.from({ length: maxParallelSegments }, (_, k) => worker(k + 1));
+  await Promise.all(workers);
+  if (failed) throw failed;
+
+  // 过滤掉空槽（防御性，正常情况不会发生）
+  const validParts = renderedParts.filter(Boolean);
 
   // 拼接
   const finalPath = join(opts.outputDir, `${taskId}.mp4`);
-  opts.onLog?.(`[batch] 拼接 ${renderedParts.length} 段 → ${finalPath}`);
-  await concatMp4(renderedParts.map((p) => p.path), finalPath, opts.onLog);
+  opts.onLog?.(`[batch] 拼接 ${validParts.length} 段 → ${finalPath}`);
+  await concatMp4(validParts.map((p) => p.path), finalPath, opts.onLog);
 
   // 清理 parts（保留最后一段用于排查）
   try {
-    for (let i = 0; i < renderedParts.length - 1; i++) {
-      rmSync(renderedParts[i].path, { force: true });
+    for (let i = 0; i < validParts.length - 1; i++) {
+      rmSync(validParts[i].path, { force: true });
     }
   } catch {
     /* ignore */
   }
 
   return {
-    segmentCount: renderedParts.length,
-    segments: renderedParts.map((p, i) => ({
+    segmentCount: validParts.length,
+    segments: validParts.map((p, i) => ({
       index: i,
       shots: segments[i],
       path: p.path,
       durationSec: p.durationSec,
     })),
     finalPath,
-    totalDurationSec: renderedParts.reduce((sum, p) => sum + p.durationSec, 0),
+    totalDurationSec: validParts.reduce((sum, p) => sum + p.durationSec, 0),
   };
 }
 

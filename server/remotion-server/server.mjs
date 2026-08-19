@@ -201,6 +201,59 @@ app.use('/download', (req, res) => {
   stream.pipe(res);
 });
 
+// v1.11：清理过期的输出文件
+//   - 默认保留 24 小时（REMOTION_KEEP_OUTPUT_HOURS 可覆盖）
+//   - 跳过 _parts 子目录和 logs 子目录
+//   - 每次清理打印统计，方便线上观察
+const OUTPUT_KEEP_HOURS = Number(process.env.REMOTION_KEEP_OUTPUT_HOURS ?? 24);
+const OUTPUT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 每小时一次
+
+function cleanupExpiredOutputs() {
+  if (!existsSync(OUTPUT_DIR)) return { scanned: 0, deleted: 0, bytes: 0 };
+  const now = Date.now();
+  const maxAgeMs = OUTPUT_KEEP_HOURS * 60 * 60 * 1000;
+  let scanned = 0;
+  let deleted = 0;
+  let bytesFreed = 0;
+  let entries;
+  try {
+    entries = fs.readdirSync(OUTPUT_DIR, { withFileTypes: true });
+  } catch (e) {
+    console.warn(`[cleanup] 读取 OUTPUT_DIR 失败: ${e.message}`);
+    return { scanned: 0, deleted: 0, bytes: 0 };
+  }
+  for (const ent of entries) {
+    if (!ent.isFile()) continue; // 跳过 _parts 子目录等
+    if (!ent.name.endsWith('.mp4')) continue;
+    scanned++;
+    const full = join(OUTPUT_DIR, ent.name);
+    let st;
+    try { st = statSync(full); } catch { continue; }
+    const ageMs = now - st.mtimeMs;
+    if (ageMs < maxAgeMs) continue;
+    try {
+      rmSync(full, { force: true });
+      deleted++;
+      bytesFreed += st.size;
+      console.log(`[cleanup] 删除过期文件: ${ent.name} (${(ageMs / 3600_000).toFixed(1)}h, ${(st.size / 1024 / 1024).toFixed(1)}MB)`);
+    } catch (e) {
+      console.warn(`[cleanup] 删除失败 ${ent.name}: ${e.message}`);
+    }
+  }
+  if (scanned > 0) {
+    console.log(`[cleanup] 扫描 ${scanned} 个 MP4，删除 ${deleted} 个，释放 ${(bytesFreed / 1024 / 1024).toFixed(1)}MB（保留 ${OUTPUT_KEEP_HOURS}h）`);
+  }
+  return { scanned, deleted, bytes: bytesFreed };
+}
+
+function scheduleOutputCleanup() {
+  // 启动后 60s 跑一次（避开启动高峰 IO），然后每小时
+  setTimeout(() => {
+    cleanupExpiredOutputs();
+    setInterval(cleanupExpiredOutputs, OUTPUT_CLEANUP_INTERVAL_MS);
+  }, 60_000);
+}
+
 // ── 任务队列 ───────────────────────────────
 const renderTasks = new Map();
 const TASK_TTL_MS = 1000 * 60 * 60;
@@ -218,8 +271,24 @@ function scheduleQueueTick() {
   });
 }
 
+function getMaxParallelRenders() {
+  // v1.11：根据 CPU/内存动态计算可同时跑的 Remotion worker 数
+  //  - 每个 Chromium tab + 一个 Remotion 进程约吃 1.5-2 核 + 2-3GB
+  //  - 留 1-2 核给 Chromium 进程外的辅助任务（ASR/Express/系统）
+  const cpuCount = Math.max(1, os.cpus()?.length || 1);
+  const totalMemGB = Math.round(os.totalmem() / 1024 / 1024 / 1024);
+  const byCpu = Math.max(1, Math.floor((cpuCount - 2) / 2));
+  const byMem = Math.max(1, Math.floor(totalMemGB / 4));
+  // 保险下限 1，上限 4（再多会导致 IO/上下文切换反而更慢，且单个任务内已开 concurrency=16）
+  const n = Math.min(4, Math.max(1, byCpu, byMem));
+  console.log(`[queue] cpu=${cpuCount} mem=${totalMemGB}GB → maxParallelRenders=${n} (cpu-budget=${byCpu}, mem-budget=${byMem})`);
+  return n;
+}
+
+const MAX_PARALLEL_RENDERS = getMaxParallelRenders();
+
 function tickQueue() {
-  while (activeWorkers.size < 1 && renderQueue.length > 0) {
+  while (activeWorkers.size < MAX_PARALLEL_RENDERS && renderQueue.length > 0) {
     const next = renderQueue.shift();
     activeWorkers.add(next.taskId);
     next.run().finally(() => {
@@ -1251,7 +1320,7 @@ app.get('/render/queue', (_req, res) => {
   res.json({
     queueLength: renderQueue.length,
     activeCount: activeWorkers.size,
-    maxParallel: 1,
+    maxParallel: MAX_PARALLEL_RENDERS,
     queue: queueItems,
   });
 });
@@ -1492,4 +1561,10 @@ app.listen(PORT, () => {
       console.error('[remotion-server] ❌ Remotion 模块加载失败，将在首次渲染时重试');
     }
   });
+
+  // v1.11：启动时 + 每小时清理过期的 MP4 文件
+  //   - 默认保留 24 小时（由 REMOTION_KEEP_OUTPUT_HOURS 覆盖）
+  //   - 仅清理 OUTPUT_DIR 下的 *.mp4 文件（不动 parts 子目录里的临时分段）
+  //   - 这样即使容器不重启，用户完成下载后我们也能腾出磁盘
+  scheduleOutputCleanup();
 });
