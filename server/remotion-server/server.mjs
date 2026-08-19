@@ -115,8 +115,9 @@ app.use((req, res, next) => {
       try {
         const raw = Buffer.concat(chunks);
         if (raw.length === 0) { req.body = {}; return next(); }
-        // 大 body 分块解析，过大的 data URL 字段过滤（实际文件由 uploadInlineDataUrlsToServer 上传）
-        const MAX_BODY_MB = 5;
+        // v1.11: 提高阈值到 100MB（大多数 payload 在此范围内包含完整 data URL）
+        // 只有超过 100MB 的 payload 才会清理 data URL（依赖前端 upload-media 上传）
+        const MAX_BODY_MB = 100;
         if (raw.length > MAX_BODY_MB * 1024 * 1024) {
           try {
             const parsed = JSON.parse(raw.toString());
@@ -383,6 +384,31 @@ async function extractUrlsToTempFiles(shots, log = console.log) {
   const tempDir = join('/tmp', `remotion_data_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
   mkdirSync(tempDir, { recursive: true });
   const filePathMap = new Map();
+
+  // 检查是否有 placeholder（body 解析时被清理了）
+  const placeholderCount = (() => {
+    let count = 0;
+    const check = (val) => {
+      if (val === DATA_URL_PLACEHOLDER) count++;
+      else if (typeof val === 'string' && val.includes(DATA_URL_PLACEHOLDER)) count++;
+    };
+    for (const shot of shots) {
+      for (const key of ['imageUrl', 'audioUrl', 'voiceoverAudioUrl', 'videoUrl']) {
+        check(shot?.[key]);
+      }
+      if (Array.isArray(shot?.imageUrls)) {
+        for (const u of shot.imageUrls) check(u);
+      }
+    }
+    return count;
+  })();
+
+  if (placeholderCount > 0) {
+    throw new Error(
+      `Payload 包含 ${placeholderCount} 个占位符 __DATA_URL_PLACEHOLDER__，` +
+      `表示媒体文件未上传。请确保前端使用 upload-media 接口上传大文件。`
+    );
+  }
 
   const collectUrls = (shot) => {
     const urls = [];
