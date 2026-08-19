@@ -52,6 +52,10 @@ PKGJSON
 # 安装所有依赖
 RUN npm install --no-audit --no-fund --legacy-peer-deps
 
+# 预下载 Remotion 使用的 Chrome Headless Shell（91MB+，云端下载需要 10+ 分钟）
+# 构建时下载到容器内，运行时直接复用，避免用户每次导出时卡住
+RUN npx --yes remotion install browser || echo "[warn] Remotion 浏览器预下载失败，将运行时重试"
+
 # 渲染输出目录
 RUN mkdir -p /tmp/remotion-out /tmp/remotion-out/logs /tmp/remotion-temp
 
