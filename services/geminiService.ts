@@ -1019,6 +1019,19 @@ async function streamYunwuOpenAIOnce(
   }
 }
 
+// v2：从 localStorage 读取用户选择的模型偏好，忽略 'default'
+// 如果没有选择过任何自定义模型，返回 null（让调用方用默认模型）
+function getLocalStorageModel(): string | null {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  const googleModel = window.localStorage.getItem('GEMINI_GOOGLE_MODEL');
+  if (googleModel && googleModel !== 'default') return googleModel;
+  const yunwuModel = window.localStorage.getItem('GEMINI_YUNWU_MODEL');
+  if (yunwuModel && yunwuModel !== 'default') return yunwuModel;
+  const rhModel = window.localStorage.getItem('GEMINI_RUNNINGHUB_MODEL');
+  if (rhModel && rhModel !== 'default') return rhModel;
+  return null;
+}
+
 export const streamContentGeneration = async (
   prompt: string,
   systemInstruction: string,
@@ -1032,7 +1045,8 @@ export const streamContentGeneration = async (
         // 根据 key 判断 provider（简单 heuristic）
         provider = 'yunwu';
         baseUrl = YUNWU_BASE_URL.replace(/\/$/, "");
-        model = modelName || 'gpt-5.6-luna';
+        // v2：modelName 未传时从 localStorage 读用户选择的模型，不硬编码 gpt-5.6-luna
+        model = modelName || getLocalStorageModel() || 'gpt-5.6-luna';
       } else {
         if (!apiKey) {
           if (typeof window !== "undefined" && window.localStorage) {
