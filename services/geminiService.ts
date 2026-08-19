@@ -33,10 +33,9 @@ export const RUNNINGHUB_MODELS = [
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = 120_000;
 /** Yunwu OpenAI 兼容通道的兜底模型链（按顺序尝试，主模型失败后依次切换）：
  *   1. gpt-5.6-luna   （默认主模型）
- *   2. gpt-5.4-mini   （Yunwu 第二兜底）
- *   3. Gemini-3.1-pro （跨平台最终兜底，走 Google API）
+ *   2. gemini-3.1-pro-preview （Google 最终兜底）
  */
-export const STREAM_FALLBACK_MODEL_OPENAI = "gpt-5.4-mini"; // Yunwu 第二兜底（不是 gpt-5.6-luna）
+export const STREAM_FALLBACK_MODEL_OPENAI = "gemini-3.1-pro-preview"; // Google Gemini 最终兜底
 export const STREAM_YUNWU_PRIMARY_MODEL = "gpt-5.6-luna";   // Yunwu 主模型常量
 
 const STREAM_FIRST_CHUNK_STALL = "STREAM_FIRST_CHUNK_STALL";
@@ -1186,7 +1185,7 @@ export const streamContentGeneration = async (
 
       // 模型兜底链（主 → Yunwu 兜底 → Google 最终兜底）
       const FALLBACK_CHAIN: Array<{ model: string; baseUrl?: string; isGoogle?: boolean }> = [
-        { model: STREAM_FALLBACK_MODEL_OPENAI, baseUrl: YUNWU_BASE_URL }, // gpt-5.4-mini
+        { model: 'gpt-5.4-mini', baseUrl: YUNWU_BASE_URL }, // Yunwu 第二兜底
         { model: GOOGLE_FALLBACK_MODEL, baseUrl: GOOGLE_BASE_URL, isGoogle: true }, // gemini-3.1-pro-preview
       ];
 
