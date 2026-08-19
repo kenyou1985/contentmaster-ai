@@ -31,7 +31,7 @@ let modelLoadingPromise = null;
  *
  * 推荐：production 环境使用 whisper-large-v3 以获得最佳识别效果
  */
-const WHISPER_MODEL = 'Xenova/whisper-large-v3';
+const WHISPER_MODEL = 'Xenova/whisper-small';  // 平衡速度和质量的模型
 
 /**
  * 获取或初始化 ASR pipeline（懒加载 + 全局单例）
