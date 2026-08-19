@@ -914,6 +914,12 @@ async function streamYunwuOpenAIOnce(
       throw new Error(errorMsg);
     }
 
+    // 诊断：打印响应头
+    const contentType = response.headers.get('content-type') || 'unknown';
+    console.log('[streamYunwuOpenAIOnce] Content-Type:', contentType);
+    const transferEncoding = response.headers.get('transfer-encoding') || 'none';
+    console.log('[streamYunwuOpenAIOnce] Transfer-Encoding:', transferEncoding);
+
     const reader = response.body?.getReader();
     const decoder = new TextDecoder();
     if (!reader) {
@@ -921,6 +927,9 @@ async function streamYunwuOpenAIOnce(
     }
 
     let buffer = "";
+    let totalBytesRead = 0;
+    let totalLinesParsed = 0;
+    let chunksReceived = 0;
     try {
       while (true) {
         let readResult: Awaited<ReturnType<typeof reader.read>>;
@@ -946,9 +955,16 @@ async function streamYunwuOpenAIOnce(
 
         const { done, value } = readResult;
         if (done) {
+          console.log('[streamYunwuOpenAIOnce] 流读取完成', {
+            totalBytesRead,
+            totalLinesParsed,
+            chunksReceived,
+            bufferRemaining: buffer.length
+          });
           break;
         }
 
+        totalBytesRead += value?.length || 0;
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
@@ -960,14 +976,17 @@ async function streamYunwuOpenAIOnce(
 
             try {
               const json = JSON.parse(data);
+              totalLinesParsed++;
               const piece =
                 json.choices?.[0]?.delta?.content ||
                 json.choices?.[0]?.message?.content ||
                 "";
               if (piece) {
+                chunksReceived++;
                 if (!gotFirstChunk) {
                   gotFirstChunk = true;
                   clearStall();
+                  console.log('[streamYunwuOpenAIOnce] 收到第一个 chunk:', json.choices?.[0]?.delta?.content?.substring(0, 50));
                 }
                 bumpIdle();
                 onChunk(piece);
@@ -981,9 +1000,17 @@ async function streamYunwuOpenAIOnce(
     } finally {
       clearStall();
       clearIdle();
+      console.log('[streamYunwuOpenAIOnce] finally 块执行', {
+        gotFirstChunk,
+        totalBytesRead,
+        totalLinesParsed,
+        chunksReceived,
+        bufferRemaining: buffer.length
+      });
     }
 
     if (!gotFirstChunk) {
+      console.error('[streamYunwuOpenAIOnce] 未收到任何有效 chunk，抛出 STREAM_FIRST_CHUNK_STALL');
       throw new Error(STREAM_FIRST_CHUNK_STALL);
     }
   } finally {
