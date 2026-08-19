@@ -590,13 +590,142 @@ async function main() {
       taskId,
     });
 
-    logProgress(100, '渲染完成');
-    process.exit(0);
-  } catch (e) {
-    logError(e);
-    console.error('[render-worker] 失败:', e);
-    process.exit(1);
+/**
+ * 单段渲染函数（可被 batch-renderer 导入复用）
+ * @param {Array} shots - 镜头数组
+ * @param {string} outputPath - 输出文件路径
+ * @param {object} opts - { config, onProgress }
+ */
+export async function renderSegment(shots, outputPath, opts = {}) {
+  const config = opts.config || {};
+  const { logInfo, logError, logProgress } = opts.logger || createSegmentLogger();
+
+  // 加载 Remotion 模块
+  logInfo('加载 Remotion 模块...');
+  const loaded = await loadRemotionModules();
+  if (!loaded) {
+    throw new Error('无法加载 Remotion 模块');
   }
+
+  if (shots.length === 0) {
+    throw new Error('shots 为空');
+  }
+
+  logInfo(`镜头数: ${shots.length}`);
+  logInfo(`输出路径: ${outputPath}`);
+
+  if (!existsSync(ENTRY_FILE)) {
+    throw new Error(`Remotion 入口文件不存在: ${ENTRY_FILE}`);
+  }
+
+  logInfo('处理媒体文件...');
+  const dataShots = await convertMediaToDataUrls(shots);
+  logInfo(`已转换 ${dataShots.length} 个镜头的媒体`);
+
+  logInfo('打包 Remotion 项目...');
+  const t0 = Date.now();
+  const cacheCheck = await prepareBundleCache(PROJECT_ROOT, ENTRY_FILE);
+  let bundleLocation;
+
+  if (cacheCheck.hit && cacheCheck.bundleUrl) {
+    bundleLocation = cacheCheck.bundleUrl;
+    logInfo(`缓存命中（跳过 ${Date.now() - t0}ms）`);
+  } else {
+    if (cacheCheck.needWebpackClear) {
+      clearWebpackCache(PROJECT_ROOT);
+    }
+    bundleLocation = await bundler.bundle({
+      entryPoint: ENTRY_FILE,
+      enableCaching: true,
+    });
+    recordBundleResult(cacheCheck.cacheKey, bundleLocation);
+    logInfo(`已打包（耗时 ${Date.now() - t0}ms）`);
+  }
+
+  const safeConfig = {
+    ...config,
+    output: config.output ? { target: config.output.target } : { target: 'browser' },
+  };
+  const inputProps = { shots: dataShots, config: safeConfig };
+
+  logInfo('选择 Composition...');
+  const selectTimer = setTimeout(() => {
+    throw new Error('selectComposition 超时（>95s）');
+  }, 95_000);
+
+  let composition;
+  try {
+    composition = await renderer.selectComposition({
+      serveUrl: bundleLocation,
+      id: 'MyVideo',
+      inputProps,
+    });
+  } finally {
+    clearTimeout(selectTimer);
+  }
+
+  logInfo(`Composition: ${composition.width}x${composition.height} @ ${composition.fps}fps, ${composition.durationInFrames} 帧`);
+
+  logInfo('渲染 MP4...');
+  const concurrency = getConcurrency();
+  const offthreadThreads = getOffthreadVideoThreads();
+
+  const videoDurationSec = composition.durationInFrames / composition.fps;
+
+  await renderer.renderMedia({
+    composition,
+    serveUrl: bundleLocation,
+    codec: config.codec === 'h265' ? 'h265' : 'h264',
+    outputLocation: outputPath,
+    inputProps,
+    concurrency,
+    chromiumOptions: {
+      args: [
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-setuid-sandbox',
+        '--enable-gpu',
+        '--use-gl=swiftshader',
+        '--enable-features=Vulkan',
+        '--ignore-gpu-blocklist',
+      ],
+    },
+    offthreadVideoThreads: offthreadThreads,
+    x264Preset: 'ultrafast',
+    parallelEncoding: true,
+    onProgress: ({ progress, renderedFrames, totalFrames }) => {
+      logProgress?.(10 + Math.round(progress * 80), `渲染中 (${renderedFrames}/${totalFrames} 帧)`);
+    },
+    onBrowserLog: (info) => {
+      if (info.type === 'error') {
+        logInfo(`[browser error] ${info.text.slice(0, 200)}`);
+      }
+    },
+    ...(config.bitrate ? { videoBitrate: config.bitrate } : {}),
+  });
+
+  if (!existsSync(outputPath)) {
+    throw new Error('渲染完成后输出文件不存在');
+  }
+
+  const stats = statSync(outputPath);
+  logInfo(`输出文件大小: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
+
+  return {
+    outputPath,
+    durationSec: videoDurationSec,
+    videoSizeBytes: stats.size,
+    resolution: `${composition.width}x${composition.height}`,
+    fps: composition.fps,
+  };
+}
+
+function createSegmentLogger() {
+  return {
+    logInfo: (msg) => console.log(`[segment] ${msg}`),
+    logError: (msg) => console.error(`[segment] ❌ ${msg}`),
+    logProgress: (p, m) => console.log(`[segment] ${p}% ${m}`),
+  };
 }
 
 main();

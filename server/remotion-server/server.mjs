@@ -976,6 +976,108 @@ app.post('/audio/extract', async (req, res) => {
   }
 });
 
+// ── 长视频分批渲染 ─────────────────────
+/**
+ * POST /render/long
+ * Body: { shots, config } — 与 /render/start 相同
+ * 行为：总时长 > 30 分钟时自动分批渲染，每段 ≤ 20 分钟
+ * 成功返回: { success, taskId, mode, segmentCount, childTaskIds }
+ */
+app.post('/render/long', async (req, res) => {
+  try {
+    const payload = req.body || {};
+    if (!Array.isArray(payload.shots) || payload.shots.length === 0) {
+      return res.status(400).json({ success: false, error: 'shots 不能为空' });
+    }
+
+    // 估算总时长（与前端 remotionExportService 保持一致）
+    const totalDuration = (payload.shots || []).reduce(
+      (s, x) => s + (x?.audioDurationExact ?? x?.audioDurationSec ?? x?.duration ?? 4),
+      0
+    );
+
+    // 若短于阈值（30 分钟），降级到普通渲染
+    if (totalDuration <= 1800) {
+      // 自动转向 /render/start
+      return res.redirect(307, '/render/start');
+    }
+
+    const task = createRenderTask(payload);
+    const taskId = task.taskId;
+    updateTask(taskId, { status: 'running', progress: 0, message: `长视频检测（${(totalDuration / 60).toFixed(1)} 分钟），分批渲染中...` });
+
+    // 提取 media URL 为文件
+    const { cleanedShots, tempDir, filePathMap } = await extractUrlsToTempFiles(payload.shots);
+    const baseUrl = process.env.MEDIA_BASE_URL || `http://127.0.0.1:${PORT}`;
+    const shotsWithHttpUrls = replaceFilePathsWithHttpUrls(cleanedShots, filePathMap, baseUrl);
+    const normalizedPayload = { ...payload, shots: shotsWithHttpUrls, _tempDir: tempDir, _taskId: taskId };
+
+    // 异步执行分批渲染
+    renderQueue.push({
+      taskId,
+      run: async () => {
+        try {
+          const { renderLongVideoBatch } = await import('./batch-renderer.mjs');
+          const { renderSegment } = await import('./render-worker.mjs');
+
+          const logger = {
+            logInfo: (msg) => updateTask(taskId, { message: msg }),
+            logError: (msg) => updateTask(taskId, { message: `❌ ${msg}` }),
+            logProgress: (p, m) => updateTask(taskId, { progress: p, message: m }),
+          };
+
+          const result = await renderLongVideoBatch(
+            normalizedPayload,
+            (segmentShots, segmentOutputPath) =>
+              renderSegment(segmentShots, segmentOutputPath, {
+                config: normalizedPayload.config,
+                logger,
+              }),
+            {
+              outputDir: OUTPUT_DIR,
+              maxSegmentDurationSec: 1200, // 每段 ≤ 20 分钟
+              onLog: (msg) => logger.logInfo(msg),
+            }
+          );
+
+          // 更新任务状态
+          updateTask(taskId, {
+            status: 'success',
+            progress: 100,
+            message: `分批渲染完成（${result.segmentCount} 段）`,
+            result: {
+              outputPath: result.finalPath,
+              outputUrl: `/download/${taskId}.mp4`,
+              durationSec: result.totalDurationSec,
+              videoSizeBytes: existsSync(result.finalPath) ? statSync(result.finalPath).size : 0,
+              resolution: '1920x1080',
+              fps: 30,
+              format: 'mp4',
+              taskId,
+              segmentCount: result.segmentCount,
+            },
+          });
+        } catch (e) {
+          console.error('[render/long] 渲染失败:', e);
+          updateTask(taskId, { status: 'failed', error: e.message });
+        }
+      },
+    });
+    scheduleQueueTick();
+
+    res.json({
+      success: true,
+      taskId,
+      mode: 'batch',
+      estimatedDurationSec: totalDuration,
+      message: `长视频（${(totalDuration / 60).toFixed(1)} 分钟）将分 ${Math.ceil(totalDuration / 1200)} 段渲染`,
+    });
+  } catch (e) {
+    console.error('[remotion] render/long 失败:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ── 异步提交渲染任务 ─────────────────────
 app.post('/render/start', async (req, res) => {
   try {
