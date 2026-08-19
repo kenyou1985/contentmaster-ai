@@ -381,8 +381,14 @@ function scriptExtractorProxyDevPlugin(opts: {
             });
             const buf = Buffer.from(await r.arrayBuffer());
             const ct = r.headers.get('content-type') || 'application/octet-stream';
+            // v10.6.1：把最终 URL（follow redirect 之后）通过 x-final-url 头传给前端
+            //  - 短链 v.douyin.com/xxx follow 后会变成 iesdouyin.com/share/video/{id}/...
+            //  - 前端用它来提取视频 ID
+            const finalUrl = r.url || target;
             res.statusCode = r.status;
             res.setHeader('Content-Type', ct);
+            res.setHeader('x-final-url', finalUrl);
+            res.setHeader('Access-Control-Expose-Headers', 'x-final-url');
             res.end(buf);
           } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : String(e);

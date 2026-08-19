@@ -78,7 +78,7 @@ export async function extractScriptFromUrl(
  */
 function extractFirstUrl(input: string): string | null {
   const m = (input || '').match(/https?:\/\/[^\s\u4e00-\u9fff"']+/);
-  return m ? m[1] : null;
+  return m ? m[0] : null;
 }
 
 /** 重新导出类型，方便上层 import */
