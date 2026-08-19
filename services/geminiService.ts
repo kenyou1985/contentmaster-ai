@@ -1115,8 +1115,9 @@ export const streamContentGeneration = async (
       }
 
       // Yunwu 流式调用
-      console.log('[Gemini Service] 使用 Yunwu provider，模型:', primaryModel);
+      console.log('[Gemini Service] 使用 Yunwu provider');
       const primaryModel = modelName || STREAM_PRIMARY_MODEL; // 流式强制用 gpt-5.6-luna
+      console.log('[Gemini Service] 主模型:', primaryModel);
 
       const isQuotaError = (err: any): boolean => {
         const msg = (err?.message || String(err)).toLowerCase();
