@@ -220,7 +220,7 @@ function cleanupExpiredOutputs() {
   let bytesFreed = 0;
   let entries;
   try {
-    entries = fs.readdirSync(OUTPUT_DIR, { withFileTypes: true });
+    entries = readdirSync(OUTPUT_DIR, { withFileTypes: true });
   } catch (e) {
     console.warn(`[cleanup] 读取 OUTPUT_DIR 失败: ${e.message}`);
     return { scanned: 0, deleted: 0, bytes: 0 };
