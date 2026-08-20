@@ -89,13 +89,53 @@ function normalizeChinesePunct(text) {
 }
 
 /**
+ * 检测音频文件真实格式（通过魔数）
+ * 支持：WAV (RIFF), MP3 (ID3/MPEG), OGG, FLAC
+ * 返回扩展名字符串（wav|mp3|ogg|flac），未知则回退 'bin'
+ */
+function detectAudioFormat(audioPath) {
+  const buf = readFileSync(audioPath);
+  if (buf.length < 4) return 'bin';
+
+  // WAV: "RIFF" + ... + "WAVE"
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46) {
+    if (buf.length >= 12 &&
+        buf[8] === 0x57 && buf[9] === 0x41 && buf[10] === 0x56 && buf[11] === 0x45) {
+      return 'wav';
+    }
+  }
+
+  // MP3: "ID3" (v2.x) 或 0xFF 0xFB/0xF3/0xE3 (MPEG sync)
+  if (buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) {
+    return 'mp3';
+  }
+  if (buf[0] === 0xFF && (buf[1] & 0xE0) === 0xE0) {
+    return 'mp3';
+  }
+
+  // OGG: "OggS"
+  if (buf[0] === 0x4F && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53) {
+    return 'ogg';
+  }
+
+  // FLAC: "fLaC"
+  if (buf[0] === 0x66 && buf[1] === 0x4C && buf[2] === 0x61 && buf[3] === 0x43) {
+    return 'flac';
+  }
+
+  return 'bin';
+}
+
+/**
  * 把任意支持的音频（mp3/wav）转 16kHz mono Float32Array
  * - mp3 → mpg123-decoder (WASM)
  * - wav → wavefile
  * 输出 Float32Array，元素范围 -1..1
  */
 async function decodeAudioToFloat32Mono16k(audioPath) {
-  const ext = (audioPath.split('.').pop() || '').toLowerCase();
+  // 通过文件魔数检测真实格式，不依赖扩展名
+  const ext = detectAudioFormat(audioPath);
+  console.log(`[ASR] 音频格式检测: ${audioPath} → .${ext}`);
 
   let samples;     // Int16Array / Float32Array
   let sampleRate;  // number
@@ -152,7 +192,10 @@ async function decodeAudioToFloat32Mono16k(audioPath) {
       throw new Error('mp3 decoder 未返回 channelData');
     }
   } else {
-    throw new Error(`不支持的音频格式: .${ext}（仅支持 mp3 / wav）`);
+    const hint = (ext === 'ogg' || ext === 'flac')
+      ? '（请将音频转为 mp3 或 wav 格式）'
+      : '（目前仅支持 mp3 / wav）';
+    throw new Error(`不支持的音频格式: .${ext}${hint}`);
   }
 
   // 重采样到 16kHz（线性插值，简单够用）
