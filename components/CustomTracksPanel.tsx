@@ -506,6 +506,77 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
   });
 }
 
+/**
+ * 把 Blob 上传到 /upload-media → 返回服务端路径
+ *
+ * 兼容新旧服务端实现：
+ * - 新服务端（多 part 支持）：优先用 multipart/form-data 流式上传，零 base64 膨胀
+ * - 旧服务端（只 JSON）：发送 { items: [{ mime, data: base64 }] }
+ *
+ * 选择策略：
+ * - 大文件（≥5MB）→ multipart（避免 Railway 代理切断）
+ * - 小文件       → JSON（兼容性最好）
+ */
+async function uploadAudioFile(blob: Blob, filename: string): Promise<string> {
+  const baseUrl = (window as any).__REMOTION_SERVER_URL__ || getRemotionApiBase();
+  const mime = blob.type || 'audio/mpeg';
+
+  // 大文件：multipart
+  if (blob.size >= 5 * 1024 * 1024) {
+    const form = new FormData();
+    form.append('file', blob, filename);
+    form.append('mime', mime);
+    const resp = await fetch(`${baseUrl}/upload-media`, { method: 'POST', body: form });
+    if (resp.ok) {
+      const json = await resp.json();
+      if (json?.paths?.[0]) return json.paths[0] as string;
+    }
+    // 旧服务端没有 multipart 路径；回退到下面 JSON 流程
+    console.warn('[ASR] multipart 上传不被服务端支持，回退到 JSON');
+  }
+
+  // 默认/小文件：JSON base64（兼容所有服务端）
+  const base64 = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(String(reader.result).split(',')[1] || '');
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+  const resp = await fetch(`${baseUrl}/upload-media`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items: [{ mime, data: base64 }] }),
+  });
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => '');
+    throw new Error(`上传音频失败: HTTP ${resp.status} ${txt.slice(0, 200)}`);
+  }
+  const json = await resp.json();
+  if (!json?.paths?.[0]) throw new Error('上传响应无路径: ' + JSON.stringify(json).slice(0, 120));
+  return json.paths[0] as string;
+}
+
+/**
+ * 调用 ASR：先上传音频到服务端拿路径，再传路径给 /asr/transcribe
+ * 替代之前直接把 data URL 塞进 JSON body 的做法（大数据会被 Railway 代理切断）
+ */
+async function transcribeViaServer(blobUrl: string, filename: string): Promise<any> {
+  const baseUrl = (window as any).__REMOTION_SERVER_URL__ || getRemotionApiBase();
+  // 1. blob → 服务器路径
+  const blob = await fetch(blobUrl).then((r) => r.blob());
+  const serverPath = await uploadAudioFile(blob, filename);
+  // 2. 传路径给 ASR
+  //    兼容新旧服务端实现：
+  //    - 新服务端优先读 audioPath 字段，没有再回退 audioUrl
+  //    - 旧服务端只读 audioUrl；服务端路径以 / 开头，所以传 audioUrl 也能被解析
+  const resp = await fetch(`${baseUrl}/asr/transcribe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ audioPath: serverPath, audioUrl: serverPath, language: 'zh' }),
+  });
+  return resp.json();
+}
+
   // ── 上传音频 / 视频（支持视频文件自动提取音轨）───
   const audioInputRef = useRef<HTMLInputElement>(null);
   const [asrLoading, setAsrLoading] = useState<boolean>(false);
@@ -584,15 +655,8 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
       setAudioProgress(0);
       log('ASR', `▸ 开始 Whisper ASR 识别（音频 ${durationSec.toFixed(1)}s）…`);
       try {
-        // blob: URL → data: URL（服务端 fetch 不到 blob URL）
-        const dataUrl = await blobUrlToDataUrl(url);
-        const baseUrl = (window as any).__REMOTION_SERVER_URL__ || getRemotionApiBase();
-        const resp = await fetch(`${baseUrl}/asr/transcribe`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ audioUrl: dataUrl, language: 'zh' }),
-        });
-        const data = await resp.json();
+        // 走 /upload-media → /asr/transcribe 两步流程，避免大 data URL 被 Railway 代理切断
+        const data = await transcribeViaServer(url, displayName);
         if (data.success && data.cues?.length > 0) {
           // Whisper 输出默认为繁体中文 → 自动转简体
           const cuesText = data.cues.map((c: any) => c.text).join(' ');
@@ -1199,14 +1263,8 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
                   setAsrLoading(true);
                   log('ASR', `▸ 重新 Whisper ASR 识别…`);
                   try {
-                    const dataUrl = await blobUrlToDataUrl(state.audioUrl);
-                    const baseUrl = (window as any).__REMOTION_SERVER_URL__ || getRemotionApiBase();
-                    const resp = await fetch(`${baseUrl}/asr/transcribe`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ audioUrl: dataUrl, language: 'zh' }),
-                    });
-                    const data = await resp.json();
+                    // 走 /upload-media → /asr/transcribe 两步流程，避免大 data URL 被 Railway 代理切断
+                    const data = await transcribeViaServer(state.audioUrl, state.audioName || 'audio.mp3');
                     if (data.success && data.cues?.length > 0) {
                       // 重新识别时也做繁→简转换
                       const cuesText = data.cues.map((c: any) => c.text).join(' ');

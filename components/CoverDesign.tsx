@@ -16,7 +16,7 @@ import { Copy, Check, Loader2, Upload, Sparkles, Image as ImageIcon, X, Download
 const MAX_REFERENCE_IMAGES = 12;
 
 /** 封面绘图模型配置 */
-type CoverImageModelId = 'gemini-flash' | 'gpt-image-2-all' | 'grok-imagine';
+type CoverImageModelId = 'gemini-flash' | 'gpt-image-2' | 'gpt-image-2-c' | 'grok-imagine';
 const COVER_IMAGE_MODELS: {
   id: CoverImageModelId;
   name: string;
@@ -24,13 +24,18 @@ const COVER_IMAGE_MODELS: {
 }[] = [
   {
     id: 'gemini-flash',
-    name: 'Gemini Flash（默认）',
-    desc: 'gemini-3.1-flash-image-preview，备用 gemini-2.5-flash-image-preview',
+    name: 'Gemini 3.1 Flash（默认）',
+    desc: 'gemini-3.1-flash-image-preview，备用 gemini-2.5-flash → grok-imagine',
   },
   {
-    id: 'gpt-image-2-all',
-    name: 'GPT Image 2（OpenAI）',
-    desc: '固定使用 gpt-image-2，失败不静默回退到其它模型',
+    id: 'gpt-image-2',
+    name: 'GPT Image 2（/generations）',
+    desc: 'gpt-image-2，失败自动回退 gemini-3.1-flash → grok-imagine',
+  },
+  {
+    id: 'gpt-image-2-c',
+    name: 'GPT Image 2（/edits）',
+    desc: '需要参考图，走 /v1/images/edits 端点，失败回退同上',
   },
   {
     id: 'grok-imagine',
@@ -1297,7 +1302,8 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
     try {
       const modelMap: Record<CoverImageModelId, string> = {
         'gemini-flash': 'cover-gemini-flash',
-        'gpt-image-2-all': 'gpt-image-2-all',
+        'gpt-image-2': 'gpt-image-2',
+        'gpt-image-2-c': 'gpt-image-2-c',
         'grok-imagine': 'grok-imagine',
       };
       const res = await generateImage(apiKey, {

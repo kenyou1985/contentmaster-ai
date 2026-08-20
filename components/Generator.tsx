@@ -2392,6 +2392,12 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
   /** Thinking log lines for news/general output (实时思考流) */
   const [thinkingLines, setThinkingLines] = useState<ThoughtLine[]>([]);
 
+  /** 并行选题思考流：每个选题独立的思考日志 */
+  const [parallelTopicThinkingLinesMap, setParallelTopicThinkingLinesMap] = useState<Record<string, ThoughtLine[]>>({});
+
+  /** 当前显示的思考流选题 ID（用于标签切换） */
+  const [activeThinkingTopicId, setActiveThinkingTopicId] = useState<string | null>(null);
+
   // Adaptation mode: store adapted content
   const [adaptedContent, setAdaptedContent] = useState('');
   const [isAdapting, setIsAdapting] = useState(false);
@@ -4255,9 +4261,20 @@ ${segmentSourceText}
     setThinkingLines((prev) => [...prev, { id, phase, content, ts: Date.now() }]);
   }, []);
 
+  /** Push a line to a specific parallel topic's thinking log */
+  const pushParallelTopicThinkingLine = useCallback((topicId: string, phase: ThinkingPhase, content: string) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setParallelTopicThinkingLinesMap((prev) => {
+      const existing = prev[topicId] || [];
+      return { ...prev, [topicId]: [...existing, { id, phase, content, ts: Date.now() }] };
+    });
+  }, []);
+
   /** Reset thinking log (called at start of a new generation) */
   const resetThinkingLines = useCallback(() => {
     setThinkingLines([]);
+    setParallelTopicThinkingLinesMap({});
+    setActiveThinkingTopicId(null);
   }, []);
 
   const collectStreamText = useCallback(
@@ -4669,9 +4686,11 @@ ${segmentSourceText}
       setTcmMergedOutput(content);
       setParallelTopicRuns([]);
       setActiveParallelTopicId(null);
+      setActiveThinkingTopicId(null);
       setParallelTopicOutlineMap({});
       setParallelTopicSegDraftsMap({});
       setParallelTopicSegStatusMap({});
+      setParallelTopicThinkingLinesMap({});
       setStatus(GenerationStatus.COMPLETED);
       setActiveIndices(new Set());
       setBatchProgress({ current: 100, total: 100, hint: `已完成，最终约 ${content.length} 字` });
@@ -4711,7 +4730,7 @@ ${segmentSourceText}
     initializeGemini(apiKey, { provider });
 
     // ── 为并发任务创建独立的 thinking 解析器 ─────────────────────────────────
-    const makeThinkingParser = (topicTitle: string) => {
+    const makeThinkingParser = (topicId: string, topicTitle: string) => {
       // 初始 phase 改为 'phase1'，确保【正文】之前的thinking内容也能被 flush 到 UI
       let phase: ThinkingPhase = 'phase1';
       let buf = '';
@@ -4745,12 +4764,12 @@ ${segmentSourceText}
             }
             if (m.ph === 'body') {
               // 【正文】到达：flush 所有 pending thinking 内容
-              if (buf.trim()) pushThinkingLine(phase, `[${topicTitle}] ${buf.trim()}`);
+              if (buf.trim()) pushParallelTopicThinkingLine(topicId, phase, `[${topicTitle}] ${buf.trim()}`);
               phase = 'idle';
               buf = '';
               cursor = m.idx + 4;
             } else {
-              if (phase !== 'idle' && buf.trim()) pushThinkingLine(phase, `[${topicTitle}] ${buf.trim()}`);
+              if (phase !== 'idle' && buf.trim()) pushParallelTopicThinkingLine(topicId, phase, `[${topicTitle}] ${buf.trim()}`);
               phase = m.ph;
               const after = text.slice(m.idx + m.tag.length + 1);
               buf = after.replace(/^】/, '');
@@ -4763,7 +4782,7 @@ ${segmentSourceText}
           }
         },
         flush: () => {
-          if (phase !== 'idle' && buf.trim()) pushThinkingLine(phase, `[${topicTitle}] ${buf.trim()}`);
+          if (phase !== 'idle' && buf.trim()) pushParallelTopicThinkingLine(topicId, phase, `[${topicTitle}] ${buf.trim()}`);
           buf = '';
           phase = 'idle';
         },
@@ -4779,6 +4798,7 @@ ${segmentSourceText}
     setGeneratedContents(sel.map((t) => ({ topic: t.title, content: '' })));
     setViewIndex(0);
     setActiveIndices(new Set(sel.map((_, i) => i)));
+    setActiveThinkingTopicId(sel[0]?.id || null);
     setBatchProgress({ current: 0, total: sel.length, hint: `正在并发生成 ${sel.length} 个选题…` });
 
     const totalSteps = sel.length;
@@ -4821,7 +4841,7 @@ ${segmentSourceText}
               : config?.systemInstruction || '';
 
             try {
-              const parser = makeThinkingParser(topic.title);
+              const parser = makeThinkingParser(topicId, topic.title);
               let liveContent = '';
               let thinkingOutput = ''; // 并发任务专用：收集所有 thinking 流输出
               setConcurrentLongFormProgress((prev) => ({ ...prev, [topicId]: 5 }));
@@ -4861,7 +4881,7 @@ ${segmentSourceText}
                 let selfCheckReport = '';
                 setConcurrentLongFormProgress((prev) => ({ ...prev, [topicId]: 88 }));
                 try {
-                  const thinkingParser = makeThinkingParser(topic.title);
+                  const thinkingParser = makeThinkingParser(topicId, topic.title);
                   await streamContentGeneration(
                     buildScriptSelfCheckPrompt(content, topic.title),
                     NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH,
@@ -6027,6 +6047,7 @@ ${segmentSourceText}
     }));
     setParallelTopicRuns(initRuns);
     setActiveParallelTopicId(sel[0].id);
+    setActiveThinkingTopicId(sel[0].id);
 
     const totalSteps = sel.length * (plannedSeg + 2);
     let finishedSteps = 0;
@@ -6391,6 +6412,7 @@ ${segmentSourceText}
       }));
       setParallelTopicRuns(runItems);
       setActiveParallelTopicId(selectedTopics[0]?.id || null);
+      setActiveThinkingTopicId(selectedTopics[0]?.id || null);
       setParallelTopicOutlineMap({});
       setParallelTopicSegDraftsMap({});
       setParallelTopicSegStatusMap({});
@@ -10832,19 +10854,66 @@ ${segmentSourceText}
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-slate-900/80">
             <div className="flex items-center gap-2">
-              <div className={`w-2 h-2 rounded-full ${status === GenerationStatus.GENERATING ? 'bg-cyan-400 animate-pulse' : thinkingLines.length > 0 ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+              <div className={`w-2 h-2 rounded-full ${status === GenerationStatus.GENERATING ? 'bg-cyan-400 animate-pulse' : thinkingLines.length > 0 || Object.keys(parallelTopicThinkingLinesMap).length > 0 ? 'bg-emerald-400' : 'bg-slate-600'}`} />
               <span className="text-xs font-mono text-slate-400">【 实时思考流 】</span>
+              {/* 选题标签切换 */}
+              {Object.keys(parallelTopicThinkingLinesMap).length > 1 && (
+                <div className="flex items-center gap-1 ml-2">
+                  <button
+                    type="button"
+                    onClick={() => setActiveThinkingTopicId(null)}
+                    className={`px-2 py-0.5 rounded text-[10px] font-mono transition-all ${
+                      activeThinkingTopicId === null
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                    }`}
+                  >
+                    全部
+                  </button>
+                  {parallelTopicRuns.filter(r => parallelTopicThinkingLinesMap[r.id]?.length > 0).map((run) => (
+                    <button
+                      key={run.id}
+                      type="button"
+                      onClick={() => setActiveThinkingTopicId(run.id)}
+                      className={`px-2 py-0.5 rounded text-[10px] font-mono transition-all max-w-[120px] truncate ${
+                        activeThinkingTopicId === run.id
+                          ? 'bg-emerald-600 text-white'
+                          : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                      }`}
+                      title={run.title}
+                    >
+                      {run.title.length > 15 ? run.title.slice(0, 12) + '…' : run.title}
+                    </button>
+                  ))}
+                </div>
+              )}
               <span className="text-[10px] text-slate-600 font-mono">
-                {thinkingLines.length > 0 ? `${thinkingLines.length} 行` : status === GenerationStatus.GENERATING ? '生成中…' : '等待生成'}
+                {activeThinkingTopicId
+                  ? `${(parallelTopicThinkingLinesMap[activeThinkingTopicId] || []).length} 行`
+                  : (thinkingLines.length > 0
+                    ? `${thinkingLines.length} 行`
+                    : (Object.keys(parallelTopicThinkingLinesMap).length > 0
+                      ? `${Object.values(parallelTopicThinkingLinesMap).flat().length} 行`
+                      : (status === GenerationStatus.GENERATING ? '生成中…' : '等待生成')))
+                }
               </span>
             </div>
-            {thinkingLines.length > 0 && (
+            {(thinkingLines.length > 0 || Object.keys(parallelTopicThinkingLinesMap).length > 0) && (
               <button
                 type="button"
                 onClick={() => {
-                  const text = thinkingLines
-                    .map(l => `[${l.phase}] ${l.content}`)
-                    .join('\n');
+                  const text = activeThinkingTopicId
+                    ? (parallelTopicThinkingLinesMap[activeThinkingTopicId] || [])
+                        .map(l => `[${l.phase}] ${l.content}`)
+                        .join('\n')
+                    : (Object.values(parallelTopicThinkingLinesMap).length > 0
+                      ? Object.entries(parallelTopicThinkingLinesMap)
+                          .map(([topicId, lines]) => {
+                            const run = parallelTopicRuns.find(r => r.id === topicId);
+                            return `[${run?.title || topicId}]\n${lines.map(l => `[${l.phase}] ${l.content}`).join('\n')}`;
+                          })
+                          .join('\n\n')
+                      : thinkingLines.map(l => `[${l.phase}] ${l.content}`).join('\n'));
                   navigator.clipboard.writeText(text);
                   toast.success('思考流已复制到剪贴板');
                 }}
@@ -10859,17 +10928,31 @@ ${segmentSourceText}
             className="h-[320px] overflow-y-auto px-4 py-3 space-y-1 custom-scrollbar"
             ref={(el) => { if (el) setTimeout(() => { el.scrollTop = el.scrollHeight; }, 50); }}
           >
-            {thinkingLines.length === 0 && status !== GenerationStatus.GENERATING ? (
-              <div className="flex flex-col items-center justify-center h-full text-slate-600 text-xs font-mono gap-3">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <path d="M12 2L2 7l10 5 10-5-10-5z"/>
-                  <path d="M2 17l10 5 10-5"/>
-                  <path d="M2 12l10 5 10-5"/>
-                </svg>
-                <span className="text-center leading-relaxed">Phase 1-4 分析过程<br/>及终稿统计将在此实时显示</span>
-              </div>
-            ) : (
-              thinkingLines.map((line) => {
+            {/* 获取当前显示的思考流行 */}
+            {(() => {
+              const currentLines = activeThinkingTopicId
+                ? (parallelTopicThinkingLinesMap[activeThinkingTopicId] || [])
+                : (Object.keys(parallelTopicThinkingLinesMap).length > 0
+                  ? Object.values(parallelTopicThinkingLinesMap).flat()
+                  : thinkingLines);
+              const activeRun = activeThinkingTopicId ? parallelTopicRuns.find(r => r.id === activeThinkingTopicId) : null;
+
+              if (currentLines.length === 0 && status !== GenerationStatus.GENERATING) {
+                return (
+                  <div className="flex flex-col items-center justify-center h-full text-slate-600 text-xs font-mono gap-3">
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                      <path d="M2 17l10 5 10-5"/>
+                      <path d="M2 12l10 5 10-5"/>
+                    </svg>
+                    <span className="text-center leading-relaxed">
+                      {activeRun ? `选题「${activeRun.title}」的思考流\n将在生成时实时显示` : 'Phase 1-4 分析过程\n及终稿统计将在此实时显示'}
+                    </span>
+                  </div>
+                );
+              }
+
+              return currentLines.map((line) => {
                 const isPhase = line.phase !== 'idle' && line.phase !== 'done';
                 const isDone = line.phase === 'done';
                 const borderColor = isDone
@@ -10899,6 +10982,7 @@ ${segmentSourceText}
                   return (
                     <div key={line.id} className={`border-l-2 ${borderColor} pl-3 py-2 rounded-r bg-amber-500/5`}>
                       <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${labelBg}`}>{labelText}</span>
+                      {activeRun && <span className="text-[10px] text-slate-500 ml-2">[{activeRun.title}]</span>}
                       <p className="text-[11px] text-slate-200 mt-1.5 leading-relaxed whitespace-pre-wrap font-mono">{line.content}</p>
                     </div>
                   );
@@ -10907,13 +10991,14 @@ ${segmentSourceText}
                 return (
                   <div key={line.id} className="flex items-start gap-2">
                     <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded shrink-0 mt-0.5 ${labelBg}`}>{labelText}</span>
+                    {activeRun && <span className="text-[10px] text-slate-500 shrink-0 mt-0.5">{activeRun.title.length > 12 ? activeRun.title.slice(0, 10) + '…' : activeRun.title}</span>}
                     <p className="text-[11px] leading-relaxed whitespace-pre-wrap font-mono text-slate-300">
                       {renderThinkingContentWithLinks(line.content)}
                     </p>
                   </div>
                 );
-              })
-            )}
+              });
+            })()}
             {/* Cursor blink when generating */}
             {status === GenerationStatus.GENERATING && (
               <div className="flex items-center gap-2 text-slate-500 text-[11px] font-mono">

@@ -18,6 +18,14 @@ import wavefilePkg from 'wavefile';
 import { MPEGDecoder } from 'mpg123-decoder';
 const { WaveFile } = wavefilePkg;
 
+// HF Transformers 环境配置：
+// - cacheDir: 模型缓存目录（默认在 node_modules/@huggingface/transformers/.cache/）
+// - allowRemoteModels: 当本地缓存命中时不需要联网；离线场景可以设为 false 避免偶发 fetch failed
+// - allowLocalModels: 必须为 true 才能加载本地缓存
+env.allowLocalModels = true;
+// 不要完全禁止 remote：若用户改用更大模型（如 whisper-small/medium），仍需联网下载一次
+// env.allowRemoteModels = true;
+
 // ── 全局单例 ──────────────────────────────────────────────
 let asrPipeline = null;
 let modelLoadingPromise = null;
@@ -31,7 +39,9 @@ let modelLoadingPromise = null;
  *
  * 推荐：production 环境使用 whisper-large-v3 以获得最佳识别效果
  */
-const WHISPER_MODEL = 'Xenova/whisper-small';  // 平衡速度和质量的模型
+// 使用本地已缓存的 whisper-base（避免离线/网络限制）
+// 备选模型（需联网下载）：whisper-small / whisper-medium / whisper-large-v3
+const WHISPER_MODEL = 'Xenova/whisper-base';
 
 /**
  * 获取或初始化 ASR pipeline（懒加载 + 全局单例）
@@ -44,17 +54,17 @@ export async function getPipeline() {
   }
 
   modelLoadingPromise = (async () => {
-    env.allowLocalModels = false;
+    // 关键：必须 allowLocalModels=true，否则会触发网络请求下载模型
+    env.allowLocalModels = true;
+    env.allowRemoteModels = true; // 允许从 HF Hub 下载缺失的模型文件（如 quantized）
     env.useBrowserCache = false;
+    // 不强制量化 dtype：whisper-base 本地缓存里只有 fp32 的 .onnx 文件
+    // 如果硬要 q8，会触发 fetch failed（需要联网下载 quantized 变体）
+    // 质量/速度优先：fp32 + whisper-base 本地缓存可用，零网络依赖
 
     asrPipeline = await pipeline('automatic-speech-recognition', WHISPER_MODEL, {
       device: 'cpu',
-      // v1.11：whisper 默认 fp32（慢、内存大）；改 q8（int8 量化）后
-      //   - 模型大小约减半（whisper-small fp32≈460MB → q8≈230MB）
-      //   - CPU 推理速度提升 ~1.3-1.8x
-      //   - 中文识别准确率损失极小（<1%）
-      // 备注：dtype 也可以写 'fp16'（更快但需要 wasm 端 AVX512 支持），保守起见选 q8
-      dtype: 'q8',
+      // dtype 留空：使用模型仓库里实际存在的 .onnx 文件（默认 fp32）
       progress_callback: (info) => {
         if (info.status === 'initiate' || info.status === 'loading') {
           console.log(`[ASR] 加载模型: ${Math.round(info.progress ?? 0)}%`);

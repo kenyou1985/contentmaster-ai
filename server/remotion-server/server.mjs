@@ -19,7 +19,7 @@
 import express from 'express';
 import cors from 'cors';
 import { spawn, execFile, execSync } from 'child_process';
-import { existsSync, mkdirSync, writeFileSync, createReadStream, statSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, createReadStream, statSync, readFileSync, rmSync, readdirSync } from 'fs';
 import { join, dirname, basename, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { promises as fs } from 'fs';
@@ -106,7 +106,9 @@ const PORT = process.env.PORT || 10000;
 const app = express();
 // 流式 JSON body 解析（替代 express.json({ limit:'2gb' })，避免 OOM）
 // 接受 application/json 和 multipart/form-data（后者含 data URL）
+// 跳过 /upload-media：让 multer 直接接管流（避免重复 Buffer.concat 内存爆炸）
 app.use((req, res, next) => {
+  if (req.path === '/upload-media') return next();
   if (req.headers['content-type']?.includes('application/json') ||
       req.headers['content-type']?.includes('multipart/form-data')) {
     const chunks = [];
@@ -117,8 +119,9 @@ app.use((req, res, next) => {
         if (raw.length === 0) { req.body = {}; return next(); }
         // v1.11: 提高阈值到 100MB（大多数 payload 在此范围内包含完整 data URL）
         // 只有超过 100MB 的 payload 才会清理 data URL（依赖前端 upload-media 上传）
+        // 排除 /asr/transcribe：audioUrl 本身就是 data URL，清理后服务端会得到占位符导致 fetch 失败
         const MAX_BODY_MB = 100;
-        if (raw.length > MAX_BODY_MB * 1024 * 1024) {
+        if (raw.length > MAX_BODY_MB * 1024 * 1024 && !req.path.startsWith('/asr/transcribe')) {
           try {
             const parsed = JSON.parse(raw.toString());
             req.body = cleanPayloadDataUrls(parsed);
@@ -871,8 +874,32 @@ const healthHandler = (_req, res) => {
 app.get('/health', healthHandler);
 
 // ── Data URL 上传 ─────────────────────
+// 支持两种格式：
+//   A. application/json: { items: [{ mime, data: "base64" }] }   // 兼容旧版
+//   B. multipart/form-data: file=<File>, mime=<string>             // 大文件流式上传（不走 base64）
 app.post('/upload-media', async (req, res) => {
+  const contentType = req.headers['content-type'] || '';
   try {
+    // B. multipart（推荐用于大音频/视频）
+    if (contentType.includes('multipart/form-data')) {
+      const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1024 * 1024 * 1024 } }).single('file');
+      await new Promise((resolve, reject) => {
+        upload(req, res, (err) => {
+          if (err) reject(err); else resolve();
+        });
+      });
+      const f = req.file;
+      if (!f) return res.status(400).json({ success: false, error: 'multipart 缺少 file 字段' });
+      const mime = (f.mimetype || req.body?.mime || 'application/octet-stream').toLowerCase();
+      const ext = MIME_EXT[mime] || '.bin';
+      const tempDir = join('/tmp', `remotion_data_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+      mkdirSync(tempDir, { recursive: true });
+      const filePath = join(tempDir, `media_0000${ext}`);
+      writeFileSync(filePath, f.buffer);
+      return res.json({ success: true, paths: [filePath], tempDir, count: 1 });
+    }
+
+    // A. JSON（兼容旧版）
     const { items } = req.body || {};
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ success: false, error: 'items 不能为空' });
@@ -1375,15 +1402,19 @@ app.post('/render/sync', async (req, res) => {
  */
 app.post('/asr/transcribe', async (req, res) => {
   try {
-    const { audioUrl, language = 'zh' } = req.body || {};
-    if (!audioUrl) {
-      return res.status(400).json({ success: false, error: 'audioUrl 不能为空' });
+    const { audioUrl, audioPath, language = 'zh' } = req.body || {};
+    // 兼容两种入参：
+    //   1. audioUrl: data: URL 直接 inline（不推荐，大文件会被 fetch 切断）
+    //   2. audioPath: /tmp/remotion_data_xxx/media_0000.mp3（前端先 /upload-media 拿到的服务端路径）
+    const audioSource = audioUrl || audioPath;
+    if (!audioSource) {
+      return res.status(400).json({ success: false, error: 'audioUrl 或 audioPath 不能为空' });
     }
 
     // 从 data URL 的 MIME 类型推断文件扩展名，支持 wav/mp3/m4a/ogg 等格式
     let audioExt = '.mp3'; // 默认 mp3
-    if (audioUrl.startsWith('data:')) {
-      const mimeMatch = audioUrl.match(/^data:([^;]+)/);
+    if (audioSource.startsWith('data:')) {
+      const mimeMatch = audioSource.match(/^data:([^;]+)/);
       if (mimeMatch) {
         const mime = mimeMatch[1].toLowerCase();
         if (mime.includes('wav')) audioExt = '.wav';
@@ -1392,27 +1423,37 @@ app.post('/asr/transcribe', async (req, res) => {
         else if (mime.includes('ogg')) audioExt = '.ogg';
         else if (mime.includes('flac')) audioExt = '.flac';
       }
-    } else {
-      // http(s) URL：根据路径扩展名判断
-      const urlMatch = audioUrl.match(/\.([a-z0-9]+)(\?|$)/i);
-      if (urlMatch) audioExt = '.' + urlMatch[1].toLowerCase();
+    } else if (audioSource.startsWith('/')) {
+      // 服务端文件路径：按扩展名推断
+      const ext = audioSource.match(/\.([a-z0-9]+)$/i);
+      if (ext) audioExt = '.' + ext[1].toLowerCase();
     }
     const tempFile = `/tmp/whisper_audio_${Date.now()}${audioExt}`;
     try {
-      let audioData;
       let mimeType = 'audio/wav';
-      if (audioUrl.startsWith('data:')) {
+      if (audioSource.startsWith('data:')) {
         // data: URL → 直接解码
-        const base64 = audioUrl.replace(/^data:[^;]+;base64,/, '');
-        const mimeMatch = audioUrl.match(/^data:([^;]+)/);
+        const base64 = audioSource.replace(/^data:[^;]+;base64,/, '');
+        const mimeMatch = audioSource.match(/^data:([^;]+)/);
         mimeType = mimeMatch ? mimeMatch[1] : 'audio/wav';
         const { writeFileSync } = await import('fs');
         const buffer = Buffer.from(base64, 'base64');
         console.log(`[ASR] 接收 data: URL, MIME=${mimeType}, 大小=${buffer.length} bytes, 扩展名=${audioExt}`);
         writeFileSync(tempFile, buffer);
+      } else if (audioSource.startsWith('/')) {
+        // 服务端路径：直接读取 copy（upload-media 路径下文件生命周期与请求一致即可）
+        const { readFileSync, copyFileSync, writeFileSync } = await import('fs');
+        try {
+          copyFileSync(audioSource, tempFile);
+        } catch (copyErr) {
+          // 兜底：直接读取写到一个新文件
+          const buf = readFileSync(audioSource);
+          writeFileSync(tempFile, buf);
+        }
+        console.log(`[ASR] 接收服务端路径 audioPath=${audioSource} → ${tempFile}`);
       } else {
         // http(s) URL → 下载
-        const response = await fetch(audioUrl);
+        const response = await fetch(audioSource);
         if (!response.ok) {
           return res.status(400).json({ success: false, error: `下载音频失败: HTTP ${response.status}` });
         }

@@ -156,12 +156,13 @@ function pickCharactersMentionedInTitles(
 }
 
 // ── 封面比例（与 CoverDesign.tsx 的 COVER_ASPECT_OPTIONS 完全对齐） ───
+// 注意：4:3 使用 1440x1080（1920x1080 的 3/4），保持像素为 16 的倍数
 const COVER_RATIOS = [
   { id: '16:9', label: '16:9 横屏', w: 1920, h: 1080 },
-  { id: '9:16', label: '9:16 竖屏', w: 1080, h: 1920 },
-  { id: '1:1', label: '1:1 方图', w: 1080, h: 1080 },
+  { id: '9:16', label: '9:16 竖屏', w: 1088, h: 1920 },
+  { id: '1:1', label: '1:1 方图', w: 1024, h: 1024 },
   { id: '4:3', label: '4:3 标屏', w: 1440, h: 1080 },
-  { id: '3:4', label: '3:4 海报', w: 1080, h: 1440 },
+  { id: '3:4', label: '3:4 海报', w: 1088, h: 1440 },
 ] as const;
 
 // Tailwind aspect ratio class（用于封面图容器，匹配生图尺寸）
@@ -600,6 +601,9 @@ const CopyBasedPanel: React.FC<{
   const [coverRatio, setCoverRatio] = useState<CoverRatioId>(
     (initial.coverRatio as CoverRatioId) ?? '16:9'
   );
+
+  /** 绘图模型 */
+  const [coverImageModel, setCoverImageModel] = useState<'gpt-image-2' | 'gpt-image-2-c' | 'gemini-flash' | 'grok-imagine-image'>('gpt-image-2');
 
   /** v1.4：参与封面生成的人物名单（按名字勾选；不勾选的人物不出现在画面里）
    *  默认：解析完成后按"6 套标题中出现过的人名"自动勾选，用户可手动调整 */
@@ -1408,7 +1412,7 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
         const combinedName = allCharacterNames.join(',');
 
         const r = await generateImage(apiKey, {
-          model: 'gpt-image-2',
+          model: coverImageModel,
           prompt: fullPrompt,
           size,
           quality: 'high',
@@ -2802,6 +2806,20 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
           {/* 批量生成封面按钮 */}
           {analysisResult && (
             <div className="space-y-2">
+              {/* 绘图模型选择 */}
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-slate-500 shrink-0">绘图模型：</span>
+                <select
+                  value={coverImageModel}
+                  onChange={(e) => setCoverImageModel(e.target.value as 'gpt-image-2' | 'gpt-image-2-c' | 'gemini-flash' | 'grok-imagine-image')}
+                  className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-amber-500 min-w-[200px]"
+                >
+                  <option value="gpt-image-2">gpt-image-2（/v1/images/generations）</option>
+                  <option value="gpt-image-2-c">gpt-image-2-c（/v1/images/edits，需参考图）</option>
+                  <option value="gemini-flash">gemini-3.1-flash-image-preview</option>
+                  <option value="grok-imagine-image">grok-imagine-image</option>
+                </select>
+              </div>
               {/* 全局限流状态条（仅在冷却或等待时显示） */}
               {(limiterState.cooldownMs > 0 || limiterState.waiters > 0) && (
                 <div className="bg-orange-900/30 border border-orange-700 rounded p-2 text-[10px] text-orange-200 space-y-1">

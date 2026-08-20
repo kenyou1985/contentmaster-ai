@@ -419,6 +419,7 @@ export async function normalizeReferenceDataUrls(urls: string[]): Promise<string
 
 /** 封面设计 Tab：主模型失败时自动切换备用 */
 export const COVER_GEMINI_IMAGE_MODEL = 'cover-gemini-flash' as const;
+export const COVER_GPT_IMAGE_2_C_MODEL = 'gpt-image-2-c' as const;
 const COVER_GEMINI_PRIMARY = 'gemini-3.1-flash-image-preview';
 const COVER_GEMINI_FALLBACK = 'gemini-2.5-flash-image-preview';
 
@@ -603,10 +604,36 @@ async function yunwuGeminiNativeImageOnce(
     options.referenceMultimodalPreamble,
     options.characterName
   );
+  // 使用 /v1beta/models/{model}:generateContent 端点
   const endpoint = `/v1beta/models/${geminiModelId}:generateContent`;
+
+  // 构建 generationConfig（使用 snake_case 格式）
+  const generationConfig: Record<string, unknown> = {
+    response_modalities: ['IMAGE', 'TEXT'],
+  };
+
+  // 构建 imageConfig
+  if (options.size || options.quality) {
+    const imageConfig: Record<string, string> = {};
+    if (options.size) {
+      const [w, h] = options.size.split('x').map(Number);
+      if (w && h) {
+        const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+        const divisor = gcd(w, h);
+        imageConfig.aspectRatio = `${w / divisor}:${h / divisor}`;
+      }
+    }
+    if (options.quality === 'high') {
+      imageConfig.imageSize = '2K';
+    }
+    if (Object.keys(imageConfig).length > 0) {
+      generationConfig.imageConfig = imageConfig;
+    }
+  }
+
   const body: Record<string, unknown> = {
     contents: [{ role: 'user', parts }],
-    generationConfig: buildGeminiImageGenerationConfig(options),
+    generationConfig,
   };
   const response = await fetch(`${baseUrl}${endpoint}`, {
     method: 'POST',
@@ -1148,13 +1175,14 @@ const generateImageInner = async (
     }
 
     // 封面设计：Gemini Flash 图模，三级备用链：gemini-3.1-flash → gpt-image-2 → grok-imagine-image-pro
-    if (opts.model === COVER_GEMINI_IMAGE_MODEL) {
+    // 支持 cover-gemini-flash 和 gemini-flash 两种 model id
+    if (opts.model === COVER_GEMINI_IMAGE_MODEL || opts.model === 'gemini-flash') {
       try {
         return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, COVER_GEMINI_PRIMARY, opts);
       } catch (primaryErr: any) {
         console.warn('[OpenLuxService] 封面生图 Gemini 主模型失败，切换 gpt-image-2:', primaryErr?.message);
         try {
-          return await yunwuOpenAiImageOnce(apiKey, baseUrl, 'gpt-image-2', opts, {
+          return await yunwuOpenAiImageOnce(apiKey, baseUrl, 'grok-imagine-image:stable', opts, {
             externalSignal: opts.externalSignal,
             timeoutMs: opts.timeoutMs,
           });
@@ -1172,13 +1200,59 @@ const generateImageInner = async (
       return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, modelName, opts);
     }
 
-    // gpt-image-2-all：固定只走 gpt-image-2（不静默回退到其它模型，
-    // 避免 yunwu 后台出现用户未授权的模型调用记录）。失败时直接抛错，由调用方重试或更换模型。
-    if (opts.model === 'gpt-image-2-all') {
-      return await yunwuOpenAiImageOnce(apiKey, baseUrl, 'gpt-image-2', opts, {
-        externalSignal: opts.externalSignal,
-        timeoutMs: opts.timeoutMs,
-      });
+    // gpt-image-2：优先使用 gpt-image-2（/v1/images/generations），失败时自动回退到 gemini-3.1-flash-image-preview → grok-imagine-image-pro
+    if (opts.model === 'grok-imagine-image:stable') {
+      try {
+        return await yunwuOpenAiImageOnce(apiKey, baseUrl, 'grok-imagine-image:stable', opts, {
+          externalSignal: opts.externalSignal,
+          timeoutMs: opts.timeoutMs,
+        });
+      } catch (gptErr: any) {
+        console.warn('[OpenLuxService] 封面生图 gpt-image-2 失败，切换 gemini-3.1-flash-image-preview:', gptErr?.message);
+        try {
+          return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, COVER_GEMINI_PRIMARY, opts);
+        } catch (geminiErr: any) {
+          console.warn('[OpenLuxService] 封面生图 gemini-3.1-flash 失败，切换 grok-imagine-image-pro:', geminiErr?.message);
+          return await yunwuGrokImageOnce(apiKey, baseUrl, 'grok-imagine-image-pro', opts);
+        }
+      }
+    }
+
+    // gpt-image-2-c：使用 /v1/images/generations 端点（支持文生图和图生图），失败时回退到 gemini-3.1-flash → grok-imagine
+    if (opts.model === COVER_GPT_IMAGE_2_C_MODEL) {
+      try {
+        // 优先使用 /v1/images/generations，文生图和图生图都支持
+        return await yunwuOpenAiImageOnce(apiKey, baseUrl, 'grok-imagine-image:stable', opts, {
+          externalSignal: opts.externalSignal,
+          timeoutMs: opts.timeoutMs,
+        });
+      } catch (gptErr: any) {
+        console.warn('[OpenLuxService] 封面生图 gpt-image-2-c 失败，切换 gemini-3.1-flash-image-preview:', gptErr?.message);
+        try {
+          return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, COVER_GEMINI_PRIMARY, opts);
+        } catch (geminiErr: any) {
+          console.warn('[OpenLuxService] 封面生图 gemini-3.1-flash 失败，切换 grok-imagine-image-pro:', geminiErr?.message);
+          return await yunwuGrokImageOnce(apiKey, baseUrl, 'grok-imagine-image-pro', opts);
+        }
+      }
+    }
+
+    // grok-imagine-image：使用 /v1/images/generations 端点
+    if (opts.model === 'grok-imagine-image') {
+      try {
+        return await yunwuOpenAiImageOnce(apiKey, baseUrl, 'grok-imagine-image:stable', opts, {
+          externalSignal: opts.externalSignal,
+          timeoutMs: opts.timeoutMs,
+        });
+      } catch (gptErr: any) {
+        console.warn('[OpenLuxService] 封面生图 grok-imagine-image 失败，切换 gemini-3.1-flash-image-preview:', gptErr?.message);
+        try {
+          return await yunwuGeminiNativeImageOnce(apiKey, baseUrl, COVER_GEMINI_PRIMARY, opts);
+        } catch (geminiErr: any) {
+          console.warn('[OpenLuxService] 封面生图 gemini-3.1-flash 失败，切换 grok-imagine-image-pro:', geminiErr?.message);
+          return await yunwuGrokImageOnce(apiKey, baseUrl, 'grok-imagine-image-pro', opts);
+        }
+      }
     }
 
     // grok-3-image / grok-4-image / grok-imagine：均走 chat/completions + vision 多段 content（云雾 images/generations 无参考图参数）
@@ -1283,7 +1357,9 @@ async function yunwuOpenAiImageOnce(
     try {
       let response: Response;
 
-      if (hasRef && modelId === 'gpt-image-2') {
+      // grok-imagine-image:stable 支持 /v1/images/generations，文生图和图生图都支持
+      // 有参考图时用 images/edits，否则用 images/generations
+      if (hasRef) {
         // images/edits 端点（需要参考图）
         const endpoint = '/v1/images/edits';
         const formData = new FormData();
@@ -1326,6 +1402,7 @@ async function yunwuOpenAiImageOnce(
         });
       } else {
         // images/generations 端点
+        // grok-imagine-image:stable 使用 aspect_ratio, resolution 参数
         const endpoint = '/v1/images/generations';
         let finalPrompt = options.prompt || '';
         // 在 prompt 中明确标注比例，确保模型正确理解尺寸需求
@@ -1339,11 +1416,20 @@ async function yunwuOpenAiImageOnce(
         }
         const body: Record<string, unknown> = { model: modelId, prompt: finalPrompt };
         if (options.size) {
-          // Yunwu 后端只支持 size 参数（"WxH" 像素），不支持 aspect_ratio（会 400 报错）
-          // gpt-image-2 官方只支持 5 个尺寸，其他会被静默忽略
-          body.size = convertSizeForGptImage2(options.size);
+          // grok-imagine-image:stable 使用 aspect_ratio 参数
+          const [w, h] = options.size.split('x').map(Number);
+          if (w && h) {
+            const g = (a: number, b: number) => (b === 0 ? a : g(b, a % b));
+            const d = g(w, h);
+            body.aspect_ratio = `${w / d}:${h / d}`;
+          }
         }
-        if (options.quality) body.quality = options.quality;
+        if (options.quality === 'high') {
+          body.resolution = '2K';
+        } else {
+          body.resolution = '1K';
+        }
+        body.response_format = 'url';
         if (options.n) body.n = options.n;
 
         response = await fetch(`${baseUrl}${endpoint}`, {
