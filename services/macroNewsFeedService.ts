@@ -139,7 +139,12 @@ const CN_DOMESTIC_FEEDS: { url: string; label: string; tag?: MacroNewsHeadline['
 ];
 
 // 英文主流媒体 RSS
+// v11.0：补充用户指定的中国权威中文媒体（报道国际新闻，事实核查方便） +
+//      全球主流通讯社原始电讯稿（Reuters/AP/AFP/Bloomberg/RIA Novosti）
+//      + 国际知名媒体英文原版（BBC/Guardian/Al Jazeera/CNN/WSJ）
+//      由于国内浏览器/Cursor IDE 直连海外 RSS 经常被墙，统一走 RSSHub 镜像 + 兜底镜像
 const EN_FEEDS: { url: string; label: string; tag?: MacroNewsHeadline['tag'] }[] = [
+  // ─── 直接可访问的官方 RSS ───
   { url: 'https://feeds.bbci.co.uk/news/world/rss.xml', label: 'BBC World', tag: 'geopolitics' },
   { url: 'https://rss.dw.com/rdf/rss-en-world', label: 'DW World', tag: 'geopolitics' },
   { url: 'https://www.aljazeera.com/xml/rss/all.xml', label: 'Al Jazeera', tag: 'mideast' },
@@ -148,6 +153,59 @@ const EN_FEEDS: { url: string; label: string; tag?: MacroNewsHeadline['tag'] }[]
   { url: 'https://feeds.reuters.com/reuters/technologyNews', label: 'Reuters Tech', tag: 'tech' },
   { url: 'https://www.theguardian.com/world/rss', label: 'Guardian World', tag: 'geopolitics' },
   { url: 'https://www.spiegel.de/international/index.rss', label: 'Spiegel Intl', tag: 'geopolitics' },
+
+  // ─── 国内权威中文媒体（国际新闻事实核查友好）— 走 RSSHub 镜像 + 兜底 ───
+  { url: 'https://rsshub.app/xinhuanet/world', label: '新华网国际', tag: 'geopolitics' },
+  { url: 'https://rsshub.rssforever.com/xinhuanet/world', label: '新华网国际-rsfb', tag: 'geopolitics' },
+  { url: 'https://hub.slarker.com/xinhuanet/world', label: '新华网国际-slk', tag: 'geopolitics' },
+  { url: 'https://rsshub.app/cctv/world', label: '央视网国际', tag: 'geopolitics' },
+  { url: 'https://rsshub.rssforever.com/cctv/world', label: '央视网国际-rsfb', tag: 'geopolitics' },
+  { url: 'https://hub.slarker.com/cctv/world', label: '央视网国际-slk', tag: 'geopolitics' },
+  { url: 'https://rsshub.app/chinanews/world', label: '中新网国际', tag: 'geopolitics' },
+  { url: 'https://rsshub.rssforever.com/chinanews/world', label: '中新网国际-rsfb', tag: 'geopolitics' },
+  { url: 'https://hub.slarker.com/chinanews/world', label: '中新网国际-slk', tag: 'geopolitics' },
+  { url: 'https://rsshub.app/huanqiu', label: '环球网', tag: 'geopolitics' },
+  { url: 'https://rsshub.rssforever.com/huanqiu', label: '环球网-rsfb', tag: 'geopolitics' },
+  { url: 'https://hub.slarker.com/huanqiu', label: '环球网-slk', tag: 'geopolitics' },
+  { url: 'https://rsshub.app/zaobao/news/world', label: '联合早报国际', tag: 'indo_pacific' },
+  { url: 'https://rsshub.rssforever.com/zaobao/news/world', label: '联合早报国际-rsfb', tag: 'indo_pacific' },
+  { url: 'https://hub.slarker.com/zaobao/news/world', label: '联合早报国际-slk', tag: 'indo_pacific' },
+
+  // ─── 全球主流通讯社（原始电讯稿）— 走 RSSHub 镜像 ───
+  // 路透社 Reuters
+  { url: 'https://rsshub.app/reuters/world', label: 'Reuters World-rsshub', tag: 'geopolitics' },
+  { url: 'https://rsshub.rssforever.com/reuters/world', label: 'Reuters World-rsfb', tag: 'geopolitics' },
+  // 法新社 AFP
+  { url: 'https://rsshub.app/afp/world', label: 'AFP World-rsshub', tag: 'geopolitics' },
+  { url: 'https://rsshub.rssforever.com/afp/world', label: 'AFP World-rsfb', tag: 'geopolitics' },
+  // 美联社 AP
+  { url: 'https://rsshub.app/apnews/topics/world-news', label: 'AP World News-rsshub', tag: 'geopolitics' },
+  { url: 'https://rsshub.rssforever.com/apnews/topics/world-news', label: 'AP World News-rsfb', tag: 'geopolitics' },
+  // 彭博 Bloomberg（侧重财经 + 国际政治）
+  { url: 'https://rsshub.app/bloomberg/news', label: 'Bloomberg-rsshub', tag: 'finance' },
+  { url: 'https://rsshub.rssforever.com/bloomberg/news', label: 'Bloomberg-rsfb', tag: 'finance' },
+  { url: 'https://rsshub.app/bloomberg/markets', label: 'Bloomberg Markets-rsshub', tag: 'finance' },
+  { url: 'https://rsshub.rssforever.com/bloomberg/markets', label: 'Bloomberg Markets-rsfb', tag: 'finance' },
+  // 俄新社 RIA Novosti
+  { url: 'https://rsshub.app/ria/world', label: 'RIA Novosti-rsshub', tag: 'geopolitics' },
+  { url: 'https://rsshub.rssforever.com/ria/world', label: 'RIA Novosti-rsfb', tag: 'geopolitics' },
+
+  // ─── 国际知名媒体英文原版 — 走 RSSHub 镜像 ───
+  // BBC News（已有直接源 + RSSHub 镜像兜底）
+  { url: 'https://rsshub.app/bbc/world', label: 'BBC World-rsshub', tag: 'geopolitics' },
+  { url: 'https://rsshub.rssforever.com/bbc/world', label: 'BBC World-rsfb', tag: 'geopolitics' },
+  // 卫报 The Guardian（已有直接源）
+  { url: 'https://rsshub.app/guardian/world', label: 'Guardian World-rsshub', tag: 'geopolitics' },
+  { url: 'https://rsshub.rssforever.com/guardian/world', label: 'Guardian World-rsfb', tag: 'geopolitics' },
+  // 半岛电视台 Al Jazeera（已有直接源）
+  { url: 'https://rsshub.app/aljazeera/news', label: 'Al Jazeera-rsshub', tag: 'mideast' },
+  { url: 'https://rsshub.rssforever.com/aljazeera/news', label: 'Al Jazeera-rsfb', tag: 'mideast' },
+  // CNN（美国有线电视新闻网）
+  { url: 'https://rsshub.app/cnn/world', label: 'CNN World-rsshub', tag: 'geopolitics' },
+  { url: 'https://rsshub.rssforever.com/cnn/world', label: 'CNN World-rsfb', tag: 'geopolitics' },
+  // 华尔街日报 WSJ（全球财经 + 国际政治）
+  { url: 'https://rsshub.app/wsj/world', label: 'WSJ World-rsshub', tag: 'geopolitics' },
+  { url: 'https://rsshub.rssforever.com/wsj/world', label: 'WSJ World-rsfb', tag: 'geopolitics' },
 ];
 
 // ============ 子赛道 → RSS tag 映射（v10.0）============
@@ -347,79 +405,76 @@ const JSON_HOT_API_SOURCES: { url: string; label: string; tag: MacroNewsHeadline
 ];
 
 // ============ 内置备选新闻（48小时时效·覆盖8大赛道）============
+// v7.0: 所有选题必须锚定2026年最新事件，禁止使用泛化选题
 
 const FALLBACK_HEADLINES: MacroNewsHeadline[] = [
-  // 地缘冲突（v6.0：以大国为主·加入俄乌/美以伊/南海/朝鲜半岛等主战场，剔除冷门小国）
-  { title: 'Middle East tensions escalate as Iran threatens proportional response', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
-  { title: 'US carrier group enters South China Sea amid sovereignty disputes', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
-  { title: 'Zelensky urges NATO allies to deliver long-range missiles as Russia pounds Donetsk', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'geopolitics' },
-  { title: 'Trump administration weighs new sanctions package on Iran over nuclear program', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
-  { title: 'Israel-Hezbollah ceasefire holds as Trump brokers Lebanon border deal', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
-  { title: 'Houthi Red Sea attacks force rerouting of 30% of global container traffic', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
-  { title: 'China and Philippines clash near Scarborough Shoal as US carrier looms', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
-  { title: 'Kim Jong Un unveils new ICBM as US-South Korea launch joint drills', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
-  { title: 'Putin-Xi summit signals deeper Sino-Russian military coordination', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'geopolitics' },
+  // 地缘冲突 / 中东（必须锚定2026年最新事件）
+  { title: 'Feb 28, 2026: US-Israel-Iran conflict erupts, Strait of Hormuz tensions surge', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
+  { title: 'March 2026: Iran nuclear activities trigger emergency IAEA response after Feb 28 conflict', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
+  { title: 'Feb 2026: Houthi forces launch new Red Sea attacks, US carrier group enters combat position', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
+  { title: 'March 2026: Iran-Russia deepen energy cooperation amid escalating US sanctions', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
+  { title: 'Feb 2026: Israel-Lebanon border clashes intensify, Trump ceasefire deal faces critical test', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
+  // 俄乌
+  { title: 'March 2026: Russian forces launch major assault on Donetsk, Zelensky urges NATO long-range missiles', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'geopolitics' },
+  { title: 'Feb 2026: Putin-Xi meeting coordinates voting positions in UN Security Council', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'geopolitics' },
+  // 印太
+  { title: 'Feb 2026: China-Philippines clash near Scarborough Shoal, US Indo-Pacific Command issues warning', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
+  { title: 'March 2026: Kim Jong Un unveils new ICBM, US-South Korea joint drills reach record scale', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
   // 金融货币战
-  { title: 'Federal Reserve holds rates steady, signals inflation concerns', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'finance' },
-  { title: 'Yuan faces pressure as trade war tariffs take effect', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'finance' },
+  { title: 'March 2026: Federal Reserve announces latest rate decision, dollar index shocks emerging markets', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'finance' },
+  { title: 'Feb 2026: Yuan breaks key support level, trade war tariffs continue to weigh on outlook', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'finance' },
   // 科技封锁
-  { title: 'US expands chip export controls to additional Chinese entities', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'tech' },
-  { title: 'ASML shipments to China under renewed scrutiny amid tech war', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'tech' },
+  { title: 'March 2026: US Commerce Department adds multiple Chinese tech firms to entity list, chip war escalates', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'tech' },
+  { title: 'Feb 2026: Netherlands tightens ASML export licenses, new tech war dynamics emerge', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'tech' },
   // 大国博弈
-  { title: 'US-China talks stall over trade and Taiwan Strait tensions', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'us_china' },
-  { title: 'G7 nations coordinate on economic security amid great power rivalry', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'us_china' },
-  // 台海局势（v6.0：加入财经/社会/民生/科技/食安等非军购议题，避免 LLM 雷同刷军购）
-  { title: 'PLA conducts new round of exercises around Taiwan Strait', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan' },
-  { title: 'Congress approves new arms package for Taiwan amid tensions', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan' },
-  { title: '台积电法说会释出展望，AI 需求推升全年资本支出', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_finance' },
-  { title: '台湾健保保费调涨方案出炉，工商团体反弹喊价过高', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_society' },
-  { title: '苏丹红食安风暴延烧，下游食品厂下架潮扩大', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_society' },
-  { title: '凯米台风外围环流袭台，农业灾损初估破亿', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_life' },
-  { title: '台股盘中重挫千点，电子权值股拖累大盘失守月线', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_finance' },
-  { title: '新北捷运工安意外 3 死 2 伤，劳动部勒令停工调查', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_society' },
+  { title: 'March 2026: Top US-China officials hold secret talks in third country, Taiwan and trade in focus', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'us_china' },
+  { title: '2026 G7 Summit approaches, member nations show rare divisions on Russia sanctions', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'us_china' },
+  // 台海局势
+  { title: 'Feb 2026: PLA launches new military exercises around Taiwan Strait, sends strong signal', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan' },
+  { title: 'March 2026: US Congress approves new Taiwan arms package, Pentagon releases detailed list', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan' },
   // 印太战略
-  { title: 'Quad nations deepen military cooperation in Indo-Pacific drills', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
-  { title: 'Japan and Philippines sign defense pact amid China pressure', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
+  { title: 'March 2026: Quad nations hold summit, Indo-Pacific joint exercises reach record scale', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
+  { title: 'Feb 2026: Japan-Philippines sign new defense agreement, strengthen first island chain deployment', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
   // 能源
-  { title: 'OPEC+ production cuts extend as energy markets remain volatile', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'energy' },
-  { title: 'Oil shipments through Strait of Hormuz face heightened risks', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'energy' },
+  { title: 'March 2026: OPEC+ announces latest production cuts, international oil prices jump', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'energy' },
+  { title: '2026 Middle East tensions push shipping insurance premiums higher, Hormuz tanker costs surge', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'energy' },
 ];
 
 const ZH_FALLBACK_HEADLINES: MacroNewsHeadline[] = [
-  // 地缘冲突 / 中东（v6.0：以大国为主·增加俄乌/美以伊/南海/朝鲜半岛样本，剔除冷门小国）
-  { title: '中东局势骤然升温，伊朗警告将作出对等回应', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
-  { title: '胡塞武装封锁红海要道，国际航运保险费率飙升', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
-  { title: '泽连斯基敦促北约交付远程导弹，俄军猛攻顿涅茨克', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'geopolitics' },
-  { title: '特朗普政府酝酿新一轮对伊朗制裁，直指核项目', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
-  { title: '以色列与真主党停火生效，特朗普斡旋黎以边境协议', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
-  { title: '胡塞红海袭击致全球三成集装箱航运被迫绕行', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
-  { title: '中菲黄岩岛海域再对峙，美航母战斗群逼近', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
-  { title: '金正恩亮相新型洲际导弹，美韩启动联合军演反制', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
-  { title: '普京-习近平会晤定调中俄军事协作深化', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'geopolitics' },
-  // 金融货币战
-  { title: '美联储维持高利率立场，美元指数强势冲击新兴市场', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'finance' },
-  { title: '人民币汇率承压，贸易战关税落地后出口商避险情绪升温', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'finance' },
+  // 地缘冲突 / 中东（v7.0：必须锚定2026年最新事件，禁止使用泛化选题）
+  // ⚠️ 核心约束：以下每条选题必须关联2026年2月28日之后的事件
+  // 禁止出现"酝酿""考虑""或将"等模糊时态，必须是已发生的具体事件
+  { title: '2026年2月28日美以伊爆发大规模军事冲突，霍尔木兹海峡局势骤然升温', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
+  { title: '2026年2月美以伊冲突升级后，伊朗核活动引发国际原子能机构紧急关注', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
+  { title: '2026年3月伊朗与俄罗斯深化能源合作，中俄伊三角关系出现新动向', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
+  { title: '2026年2月胡塞武装在红海发动新一轮袭击，美军航母战斗群进入战位', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
+  { title: '2026年2月以色列与黎巴嫩边境冲突加剧，特朗普斡旋停火协议面临考验', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'mideast' },
+  { title: '2026年3月俄军猛攻顿涅茨克，泽连斯基紧急呼吁北约提供远程导弹', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'geopolitics' },
+  { title: '2026年2月中菲在黄岩岛再次对峙，美军印太司令部发布航行警告', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
+  { title: '2026年3月金正恩展示新型洲际导弹，美韩联合军演规模创历史新高', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
+  { title: '2026年2月普京与习近平举行会谈，中俄在联合国安理会投票立场协调', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'geopolitics' },
+  // 金融货币战（锚定近期具体事件）
+  { title: '2026年3月美联储宣布最新利率决定，美元指数走势震动新兴市场', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'finance' },
+  { title: '2026年2月人民币汇率跌破重要关口，贸易战关税影响持续发酵', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'finance' },
   // 科技封锁与反制
-  { title: '美国扩大芯片出口管制实体清单，更多中国科技企业受波及', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'tech' },
-  { title: '荷兰收紧光刻机出口许可，ASML对华供货引发新一轮博弈', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'tech' },
+  { title: '2026年3月美国商务部将多家中国科技企业列入实体清单，芯片战升级', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'tech' },
+  { title: '2026年2月荷兰政府收紧光刻机出口许可，ASML对华供货引发新博弈', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'tech' },
   // 大国政治角力
-  { title: '中美高层会谈陷入僵局，台湾与贸易问题成核心分歧', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'us_china' },
-  { title: 'G7峰会协调经济安全策略，大国竞争格局加速重塑', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'us_china' },
-  // 台海局势（v6.0：加入财经/社会/民生/科技/食安等非军购议题，避免 LLM 雷同刷军购）
-  { title: '解放军台海演习常态化释放强烈信号，军事震慑意图明显', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan' },
-  { title: '美方新一轮对外军售计划获批，区域安全动态引关注', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan' },
-  { title: '台积电法说会释出展望，AI 需求推升全年资本支出', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_finance' },
-  { title: '健保保费调涨方案出炉，工商团体反弹喊价过高', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_society' },
-  { title: '苏丹红食安风暴延烧，下游食品厂下架潮扩大', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_society' },
-  { title: '凯米台风外围环流袭台，农业灾损初估破亿', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_life' },
-  { title: '台股盘中重挫千点，电子权值股拖累大盘失守月线', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_finance' },
-  { title: '新北捷运工安意外 3 死 2 伤，劳动部勒令停工调查', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_society' },
+  { title: '2026年3月中美高层在第三国举行秘密会谈，台海与贸易问题成焦点', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'us_china' },
+  { title: '2026年G7峰会召开在即，成员国在制裁俄罗斯问题上出现罕见分歧', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'us_china' },
+  // 台海局势（锚定近期具体事件）
+  { title: '2026年2月解放军在台海周边展开新一轮军事演习，释放强烈信号', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan' },
+  { title: '2026年3月美国国会通过新一轮对台军售案，五角大楼公布军售清单', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan' },
+  // 台湾本地（财经/社会/民生）
+  { title: '2026年台积电法说会释出最新展望，AI芯片需求推动资本支出大幅上调', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_finance' },
+  { title: '2026年台湾健保费率调整方案出炉，工商团体与医界反弹激烈', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_society' },
+  { title: '2026年台风季节来临，气象局发布首个台风警报，全台戒备', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'taiwan_life' },
   // 印太战略
-  { title: '四方安全对话深化军事合作，印太海域联合军演规模扩大', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
-  { title: '日本与菲律宾签署防卫协议，深化第一岛链战略部署', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
+  { title: '2026年3月四方安全对话举行峰会，印太联合军演规模创纪录', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
+  { title: '2026年2月日本与菲律宾签署新版防卫协议，强化第一岛链战略部署', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'indo_pacific' },
   // 能源产业
-  { title: '欧佩克+延长减产协议，能源市场波动加剧', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'energy' },
-  { title: '霍尔木兹海峡油轮保险费率飙升，航运风险溢价陡升', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'energy' },
+  { title: '2026年3月欧佩克+宣布最新减产决定，国际油价应声上涨', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'energy' },
+  { title: '2026年中东局势紧张推高航运保险费，霍尔木兹海峡油轮通行成本飙升', source: 'Fallback', pubDate: new Date().toISOString(), tag: 'energy' },
 ];
 
 // 内存缓存（v5.0：按 UTC 日期+小时桶分片）
@@ -1131,6 +1186,10 @@ export async function fetchMacroNewsDigestForPrompt(
   const time48hAgo = new Date(Date.now() - FRESH_THRESHOLD_MS).toISOString();
   const time7dAgo = new Date(Date.now() - MAX_AGE_MS).toISOString();
   const utcBucket = getUtcTimeBucket();
+  const _now = new Date();
+  const _currentYear = _now.getUTCFullYear();
+  const _currentMonth = _now.getUTCMonth() + 1;
+  const _currentDay = _now.getUTCDate();
 
   const rssInfo =
     successCount > 0
@@ -1178,15 +1237,40 @@ export async function fetchMacroNewsDigestForPrompt(
   - 房产/汽车品牌日常发布（除非涉及重大变革）
   - 单纯的零食小吃/美食探店/旅游打卡
 
+# 🔴⚠️ 标题格式铁律（最高优先级 - 违反视为不合格）
+**【本规则的优先级高于一切其他铁律，必须 100% 严格遵守】**
+
+每条标题 EXACT 格式：
+
+【事件发生日期·地点】标题正文
+
+约束：
+- 事件发生日期：X月X日（事件实际发生日期，禁止全 10 条同一天）
+- 地点：城市或国家名（2-8 字）
+- ✅ 正确示例：
+  - 【8月20日·北京】国务院发布房地产新政
+  - 【8月19日·成都】暴雨突袭：地铁站变水帘洞
+  - 【8月17日·晋江】鞋厂大火 12 人遇难，国务院挂牌督办
+- ❌ 错误示例：
+  - 没有【】包围的标题
+  - 全 10 条都用同一个日期
+
+**禁止事项（简要）**：
+- 禁止选择过去 12 个月内反复出现、热度早已消退的旧议题
+- 禁止复读之前已输出过的选题
+- 优先从下方【参考新闻列表】中提取事件，禁止凭空编造
+
 # 🔴 热搜词改写铁律
 百度新闻/微博给的是热搜短词（如「习近平对晋江一鞋厂火灾作重要指示」「台风巴威最新路径」），你必须做新闻姐视角的改写和扩展：
 - **不要**直接照搬热搜词原句作为标题
 - **必须**给每条加上：悬念/反问/数字冲击/反差/情绪词中至少 2 个
+- **必须**在每条标题前加【X月X日·地点】标注（参照上方时间地点铁律）
 - 改写示例：
-  - 热搜词「成都暴雨」→ 标题「成都暴雨突袭：地铁站变水帘洞，市民拍下震撼画面」
-  - 热搜词「台风巴威」→ 标题「超强台风巴威登陆倒计时！这些地区停课停工，3 万人紧急撤离」
-  - 热搜词「晋江一鞋厂火灾」→ 标题「晋江鞋厂大火 12 人遇难，国务院紧急挂牌督办！真相何在？」
+  - 热搜词「成都暴雨」→ 标题「【8月19日·成都】暴雨突袭：地铁站变水帘洞，市民拍下震撼画面」
+  - 热搜词「台风巴威」→ 标题「【8月18日·浙江】超强台风巴威登陆倒计时！这些地区停课停工，3 万人紧急撤离」
+  - 热搜词「晋江一鞋厂火灾」→ 标题「【8月17日·晋江】鞋厂大火 12 人遇难，国务院紧急挂牌督办！真相何在？」
 - 每条标题 15-35 字，必须覆盖：人物 + 事件 + 情绪/悬念/数字中至少 2 个
+- ✅ 每条标题前必须有【事件发生日期·地点】标注（如【8月19日·成都】），与上方时间地点铁律一致
 
 # 🔴 占位词铁律
 绝对禁止「某顶流/某地/某主播/某某/某品牌」等占位词。热搜词里的具体人名/地名/品牌**必须直接用**。
@@ -1198,12 +1282,67 @@ export async function fetchMacroNewsDigestForPrompt(
 ${rssInfo}${hotInfo}
 `
       : lang === 'zh'
-        ? `# 【国际要闻投喂 v5.0】系统自动抓取·UTC小时桶·每次生成强制刷新
-|- 来源：Reuters、BBC World、Al Jazeera、Guardian、DW World、BBC中文、DW中文、中央社、CNA 等${rssInfo}
-|- 抓取时间（UTC ISO）：${iso}
-|- 时间桶（UTC）：${utcBucket}（跨小时自动失效重新抓取）
-|- 时效规则：**优先最近 48 小时热门**（${time48hAgo} 后），同时保留 7 天内持续发酵事件（${time7dAgo} 后）
-|- 当前子赛道：**${subModeName(subMode)}**（已按赛道标签过滤）— 你必须据此写选题标题，所有标题都必须围绕该赛道主题，**禁止**输出与该赛道无关的国际新闻。
+        ? `# 【国际要闻投喂 v11.0】${new Date().getUTCFullYear()} 年·UTC小时桶·每次生成强制刷新
+||- 来源：Reuters / BBC / Al Jazeera / Guardian / DW / 新华网 / 央视网 / 中新网 / 环球网 / 联合早报 / Bloomberg / AP / AFP / RIA / CNA / 中央社 等${rssInfo}
+||- 抓取时间（UTC ISO）：${iso}
+||- 时间桶（UTC）：${utcBucket}（跨小时自动失效重新抓取）
+||- 当前是 **${new Date().getUTCFullYear()} 年** —— 严格禁止选任何 ${new Date().getUTCFullYear() - 1} 年及更早的事件
+
+---
+
+## 🎯 三类万能标题模板（机器随机匹配 — 10 条须覆盖至少 3 类）
+
+**T1. 【突发】+ 国家主体 + 重大动作 + 带来什么影响**
+> 示例：\`【2026年8月20日·华盛顿】突发：特朗普签署对华芯片新禁令，全球半导体供应链一夜动荡\`
+
+**T2. 局势突变！XX出手了，这一次和以往完全不同**
+> 示例：\`【2026年8月19日·莫斯科】局势突变！俄罗斯突然从赫尔松撤军，这一次和以往完全不同\`
+
+**T3. 时隔X年！国际大局再次重演，普通人要看懂**
+> 示例：\`【2026年8月18日·东京】时隔35年！日本再次启动核电机组，普通人要看懂能源大变局\`
+
+---
+
+## ✅ 5 条硬性过滤规则（符合即输出成文）
+
+**【必选·优先输出】**
+1. **大国动态**：美国 / 俄罗斯 / 中国 / 中东 / 朝鲜半岛 / 东亚 / 俄乌战争 / 美伊战争
+2. **制裁、冲突、谈判、翻脸、结盟**（有输赢、有剧情）
+3. **能源、油价、粮食、全球经济波动**（贴近生活）
+4. **历史呼应事件**：和过去几十年局势能对照的内容
+5. **反转、突发、最新宣判、最新声明**（时效性强）
+
+**【❌ 直接过滤·不做】**
+- 🚫 **【硬红线·最高优先级】所有香港/澳门/西藏/新疆/台湾 任何政治议题、历史事件、当代政策、人物、机构、事件**（如：香港国安法、支联会、苹果日报、黎智英、雨伞革命、占中、反修例、维园、铜锣湾、831、721、林郑、李家超、澳门博彩、台湾半导体、台海军演等）—— 即使新闻列表中出现也**必须忽略**，绝不输出
+- 小众国家琐碎新闻、科技细枝末节、娱乐圈国际新闻
+- 纯学术、纯数据、无故事性内容
+- 过于偏激、敏感、纯负面煽动内容
+
+**【🚨 地点不在已知列表·则兜底为「国际」】** 严禁在没有识别出具体国家/城市时输出空地点「【年月日·】」（系统会在年份后自动写入「国际」兜底），生成时必须从以下国家/国际组织中找到匹配：美/俄/中/英/法/德/日/韩/朝/印/巴/以/伊/沙特/阿联酋/土耳其/乌克/叙/埃及/南非/巴西/阿根廷/联合国/北约/G7/G20/金砖/上合。
+
+---
+
+## ⚠️ 输出格式铁律（违反视为不合格）
+
+| 规则 | 要求 |
+|------|------|
+| 数量 | 严格 10 条，不多不少 |
+| 格式 | \`【2026年X月X日·地点】标题正文\` —— **必须有4位年份 + 完整日期 + 地点** |
+| 句式 | 10 条标题使用**至少 3 种模板**（T1/T2/T3），禁止 10 条都用同一模板 |
+| 地点 | 必须是具体国家/城市（如「华盛顿」「莫斯科」「东京」），禁用「待补」「某地」 |
+| 钩子 | 每条须含：**具体人物/数字/对比/悬念**至少其一 |
+| 长度 | 22–45 字 |
+| 多样性 | 10 条**至少覆盖 5 种不同事件**（事件主线/话题维度/地区维度均不同），禁止同一条新闻用 3 个不同钩子写 3 条 |
+| 同事件多视角 | 同一事件可以**用不同角度**输出 1-2 条标题（如「俄副外长称愿与美谈」+「美俄谈判桌摆上筹码」），但不能 3 条以上都围绕同一事件换皮 |
+| 禁止 | 任何前言/结语/分析/分小标题/解释/道歉/对话/列表符号 |
+| 禁止 | 编造时间地点不明的"网络传言" |
+| 禁止 | 复读已输出选题、两条标题指同一事件 |
+| 禁止 | 选任何 ${new Date().getUTCFullYear() - 1} 年及更早事件（即使 LLM 知识库中存有强烈记忆） |
+
+**❌ 错误示例**：所有标题都写"2026年8月21日"、地点都是"待补"、10 条都用同一句式
+**✅ 正确示例**：见上方 T1/T2/T3 模板
+
+当前子赛道：**${subModeName(subMode)}**（已按赛道标签过滤）
 ${subModeCoverageLine(subMode)}
 `
         : `# 【International Intelligence Feed v5.0】Auto-fetched · UTC hour bucket · Force refresh every generation
@@ -1217,25 +1356,49 @@ ${subModeCoverageLine(subMode)}
 `;
 
   // v7.0：每条新闻保留 pubDate 标注，让 LLM 知道事件发生时间
-  // cn-domestic 全失败时，body 输出「自搜指令」而非空列表
+  // v9.2：cn-domestic 始终使用带时间地点标注的选题指令，不管 feeds 是否成功
   let body: string;
-  if (lang === 'cn-domestic' && merged.length === 0) {
+  if (lang === 'cn-domestic') {
     const now = new Date();
     const nowUtcIso = now.toISOString();
     const currentYear = now.getUTCFullYear();
     const currentMonth = now.getUTCMonth() + 1;
     const currentDay = now.getUTCDate();
-    const currentHour = now.getUTCHours();
 
-    body = `【实时热点自搜】实时数据源抓取失败（当前UTC时间：${nowUtcIso}）。
-现要求你结合自身知识库，写出 **10 条抖音爆款选题**，**严禁**使用"某顶流"、"某地"、"某主播"、"某某"等占位词。
-格式：每行一条标题，不要任何前缀、说明、思考过程、非标题内容。
-要点：
-- 选题须是 ${currentYear} 年 ${currentMonth} 月 真实发生的热点事件
-- 每条必须含具体人名/地名/品牌/数字（如：XX演唱会翻车、XX地突发XX、XX品牌致歉）
+    // 如果有成功抓取的新闻，追加到提示中
+    const newsContext = merged.length > 0
+      ? `\n\n## 参考新闻（已按时效性过滤，可结合这些事件生成选题）：\n${merged.map((h, i) => `${i + 1}. [${h.source}] ${h.title}${h.pubDate ? `（${formatPubDate(h.pubDate)}）` : ''}`).join('\n')}`
+      : '';
+
+    body = `【⚠️ 强制时间锚点 - 最高优先级】当前UTC时间：${nowUtcIso}。今天是 ${currentYear} 年 ${currentMonth} 月 ${currentDay} 日。
+
+现要求你结合【下方参考新闻列表】+ 自身知识库，写出 **10 条抖音爆款选题**，**严禁**使用"某顶流"、"某地"、"某主播"、"某某"等占位词。${newsContext}
+
+**🔴 必填格式：每条标题必须有【事件发生日期·地点】标注**
+（必须是事件本身的实际发生日期，不是今天。10 条日期必须分布不同日期）
+
+格式：【X月X日·地点】标题正文
+
+✅ 示例：
+- 【8月20日·北京】国务院发布房地产新政
+- 【8月19日·东京】台风"格美"登陆日本，千人紧急疏散
+- 【8月17日·晋江】鞋厂大火 12 人遇难，国务院挂牌督办
+
+❌ 错误示例：
+- 没有【】包围的标题
+- 所有标题都写同一个日期
+
+**🔴 禁止事项**：
+- 禁止选择过去 12 个月已多次反复出现的旧议题、多年周期反复发酵的陈年话题
+- 禁止复读之前已输出的选题，禁止两条标题指向同一事件
+
+格式: 每行一个【事件发生日期·地点】+ 标题，不要任何前缀、说明、思考过程。
+要点:
+- 必须从下方【参考新闻列表】中提取事件，每条事件对应独立标题
+- 每条必须含具体人名/地名/品牌/数字
 - 优先选：突发事件/自然灾害/明星塌房/直播翻车/政策争议/网络热梗/社会民生焦点
 - 严禁占位词（某顶流/某地/某主播/某某/某品牌/某公司）
-**10 条全部必须真实具体，不许拒绝、不许说不知道、不许空缺**`;
+**10 条全部必须真实具体，带【事件发生日期·地点】标注，10 条必须是不重复的真实事件，不许拒绝、不许说不知道、不许空缺**`;
   } else {
     body = merged
       .map((h, i) => {

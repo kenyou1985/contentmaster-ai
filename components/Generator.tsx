@@ -1160,15 +1160,162 @@ function sanitizeMindfulPsychologyTopicLine(raw: string): string {
 }
 
 function sanitizeViralTopicLine(raw: string): string {
-  return raw
+  // 先提取【时间·地点】标注前缀（如果有）
+  const timeLocationMatch = raw.match(/^【[^】]+】/);
+  const timeLocationPrefix = timeLocationMatch ? timeLocationMatch[0] : '';
+  
+  let cleaned = raw
+    .replace(/^【[^】]+】/, '')
     .replace(/^\s*[-*+•]\s*/, '')
     .replace(/^\s*\d+[.)、：:\-]\s*/, '')
     .replace(/^\s*第\s*\d+\s*[条项]\s*/, '')
-    .replace(/^\s*(标题|选题|题目)\s*[：:：-]\s*/i, '')
-    .replace(/^\s*["'“”‘’]+|["'“”‘’]+\s*$/g, '')
+    .replace(/^\s*(标题|选题|题目)\s*[：:：\-]\s*/i, '')
+    .replace(/^\s*["'"'"''""'"']+|["'"'"''""'"']+\s*$/g, '')
     .replace(/\*+/g, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
+  
+  if (timeLocationPrefix) {
+    cleaned = timeLocationPrefix + cleaned;
+  }
+  
+  return cleaned;
+}
+
+/**
+ * 强制给标题注入【时间·地点】前缀（前端兜底）
+ *  - 仅在标题没有【...】前缀时执行
+ *  - 时间：使用当前日期（兜底事件日期不可知时）
+ *  - 地点：尝试从标题推断城市/国家，否则用「待补」
+ *  - 这是前端兜底，确保红色【时间·地点】标签永远可见
+ */
+function injectTimeLocationPrefix(raw: string): string {
+  const cleaned = sanitizeViralTopicLine(raw);
+  if (!cleaned) return cleaned;
+
+  // 已带【...】前缀：检查是否含年份，含则直接返回
+  if (/^【[^】]+】/.test(cleaned)) {
+    // 如果前缀含年份（如【8月15日·华盛顿】），直接返回（前端已强制用当前年）
+    // 如果前缀缺少年份（如【2025年8月15日·华盛顿】），需修正为当前年
+    const year = new Date().getUTCFullYear();
+    const tagMatch = cleaned.match(/^【([^】]+)·([^】]+)】/);
+    if (tagMatch) {
+      const datePart = tagMatch[1]; // 如 "8月15日" 或 "2025年8月15日"
+      const location = tagMatch[2];
+      // 如果含年份（旧数据/幻觉年份），替换为当前年
+      if (/^\d{4}年/.test(datePart)) {
+        return `【${year}年${datePart.replace(/^\d{4}年/, '')}·${location}】${cleaned.replace(/^【[^】]+·[^】]+】/, '')}`;
+      }
+    }
+    return cleaned;
+  }
+  // 推断地点关键词（优先城市/国家）
+  const KNOWN_LOCATIONS = [
+    '北京', '上海', '广州', '深圳', '杭州', '成都', '重庆', '武汉', '西安', '南京',
+    '天津', '苏州', '厦门', '青岛', '大连', '沈阳', '哈尔滨', '长春', '郑州', '济南',
+    '福州', '昆明', '贵阳', '南昌', '长沙', '合肥', '石家庄', '太原', '兰州', '银川',
+    '西宁', '乌鲁木齐', '拉萨', '海口', '南宁',
+    '华盛顿', '纽约', '洛杉矶', '芝加哥', '休斯顿', '旧金山', '西雅图', '波士顿',
+    '莫斯科', '圣彼得堡', '柏林', '巴黎', '伦敦', '罗马', '马德里', '里斯本',
+    '东京', '大阪', '京都', '首尔', '釜山', '平壤', '河内', '胡志明',
+    '曼谷', '雅加达', '马尼拉', '吉隆坡', '新加坡', '新德里', '孟买',
+    '耶路撒冷', '特拉维夫', '加沙', '德黑兰', '利雅得', '迪拜', '多哈',
+    '基辅', '明斯克', '华沙', '布达佩斯', '维也纳', '雅典', '布鲁塞尔',
+    '日内瓦', '斯德哥尔摩', '奥斯陆', '哥本哈根', '赫尔辛基',
+    '渥太华', '多伦多', '温哥华', '墨西哥', '哈瓦那', '巴拿马', '利马',
+    '圣地亚哥', '布宜诺斯艾利斯', '里约', '圣保罗', '波哥大', '加拉加斯',
+    '开罗', '内罗毕', '开普敦', '拉各斯', '阿尔及尔',
+    '堪培拉', '悉尼', '墨尔本',
+  ];
+  // 从标题中查找第一个出现的位置作为地点
+  let inferredLocation = '';
+  let earliestIdx = Infinity;
+  for (const loc of KNOWN_LOCATIONS) {
+    const idx = cleaned.indexOf(loc);
+    if (idx >= 0 && idx < earliestIdx) {
+      earliestIdx = idx;
+      inferredLocation = loc;
+    }
+  }
+  // 当未找到任何地点时，从标题推断涉及国家/人物作为标注
+  // 用于替代"待补"，让标注仍然有信息量
+  let fallbackTag = '';
+  const titleLower = cleaned;
+  if (titleLower.includes('美国') || titleLower.includes('特朗普') || titleLower.includes('拜登')) fallbackTag = '美国';
+  else if (titleLower.includes('俄罗斯') || titleLower.includes('普京')) fallbackTag = '俄罗斯';
+  else if (titleLower.includes('乌克兰') || titleLower.includes('泽连斯基')) fallbackTag = '乌克兰';
+  else if (titleLower.includes('中国') || titleLower.includes('习近平') || titleLower.includes('北京')) fallbackTag = '中国';
+  else if (titleLower.includes('日本')) fallbackTag = '日本';
+  else if (titleLower.includes('菲律宾') || titleLower.includes('小马科斯')) fallbackTag = '菲律宾';
+  else if (titleLower.includes('中东') || titleLower.includes('以色列') || titleLower.includes('伊朗')) fallbackTag = '中东';
+  else if (titleLower.includes('欧洲') || titleLower.includes('欧盟') || titleLower.includes('北约')) fallbackTag = '欧洲';
+  else if (titleLower.includes('朝鲜') || titleLower.includes('金正恩')) fallbackTag = '朝鲜';
+  else if (titleLower.includes('韩国')) fallbackTag = '韩国';
+  else if (titleLower.includes('联合国') || titleLower.includes('安理会')) fallbackTag = '联合国';
+  else if (titleLower.includes('G7') || titleLower.includes('G20') || titleLower.includes('金砖') || titleLower.includes('上合')) fallbackTag = '国际';
+  // 时间：使用当前 UTC 日期（含年份）
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth() + 1;
+  const day = now.getUTCDate();
+  // 兜底：仍然未识别时，强制写入「国际」而不是空地点
+  const locationPart = inferredLocation || fallbackTag || '国际';
+  return `【${year}年${month}月${day}日·${locationPart}】${cleaned}`;
+}
+
+/**
+ * 过滤包含敏感词的标题（白熊效应防御）
+ *  - 一些 LLM 会持续输出特定敏感议题（无论 prompt 如何禁止）
+ *  - 前端直接把这些标题从结果中剔除
+ *  - 剔除后通过续生成补齐
+ */
+const BLOCKED_TOPIC_KEYWORDS = [
+  // 反复出现的多年陈案（白熊防御）- 全部香港相关
+  '香港', '港府', '港人', '港区', '港警', '港独', '港产', '在港',
+  '香港国安', '国安案', '国安法', '国安审判', '雨伞革命', '占中',
+  '香港民主', '香港示威', '香港抗议', '香港选举', '反修例', '逃犯条例',
+  '铜锣湾', '维园', '支联会', '黎智英', '苹果日报', '立场新闻',
+  '教协', '民阵', '社民连', '黄丝', '蓝丝', '831', '721',
+  '林郑', '李家超', '陈茂波', '郑若骅', '骆惠宁', '夏宝龙',
+  '天安门', '六四', '坦克人', '8964',
+  // 反复出现的多年陈案
+  '佩洛西访台', '特朗普关税', '拜登退选', '阿富汗撤军', '中美贸易战',
+  '华为禁令', '孟晚舟', 'TikTok封禁',
+];
+
+function isBlockedTopicTitle(raw: string): boolean {
+  const t = raw.replace(/【[^】]+】/, ''); // 先去掉时间地点标签
+  return BLOCKED_TOPIC_KEYWORDS.some((kw) => t.includes(kw));
+}
+
+function filterBlockedTopics(topics: string[]): string[] {
+  return topics.filter((t) => !isBlockedTopicTitle(t));
+}
+
+/**
+ * 解析标题中的【时间·地点】标注，返回标注内容和去除标注后的标题
+ * 验证：地点必须含有中文/英文城市/国家名才能解析成功，否则视为不规范
+ */
+function parseTimeLocationTag(title: string): { tag: string; plainTitle: string } | null {
+  const match = title.match(/^(【[^】]+】)\s*(.*)$/);
+  if (!match) return null;
+  const tag = match[1];
+  const plainTitle = match[2].trim();
+  // 检查 tag 形如 【X月X日·地点】或【X年X月X日·地点】——必须含"·"分隔符
+  const tagMatch = tag.match(/^【([^】]+)·([^】]+)】$/);
+  if (!tagMatch) return null;
+  const location = tagMatch[2].trim();
+  // 地点合法性校验：必须是真实地点（不能是事件描述/事件名词）
+  // 拒绝纯事件词、地点过短（<2字符）、非典型地名词等
+  const EVENT_WORDS = ['峰会', '会议', '事件', '新闻', '热搜', '事发', '某地', '某处', '某市', '某国', '某某'];
+  const isInvalidLocation = EVENT_WORDS.some((w) => location.includes(w))
+    || location.length < 2
+    || /^[\d\s]+$/.test(location);
+  if (isInvalidLocation) return null;
+  // 验证日期格式：必须包含"月"和数字
+  const datePart = tagMatch[1];
+  if (!/\d+月\d+日?/.test(datePart)) return null;
+  return { tag, plainTitle };
 }
 
 /**
@@ -1243,6 +1390,9 @@ function dedupTopicsBySimilarity(topics: string[], threshold = 0.6): string[] {
   };
 
   const result: string[] = [];
+  // v11.2：同事件不同角度保留 —— 只对"完全相同关键词组合"才视为换皮
+  // 旧逻辑 jaccard >= 0.7 太严，会把「俄副外长称愿与美谈」+「联合国海湾重返谈判」这种
+  // 主题相关但角度不同的标题也干掉。新逻辑：任一「强核心词」完全重叠 + 主题 jaccard>=0.85 才算换皮
   for (const topic of topics) {
     let isDup = false;
     const cur = tokenCache.get(topic) ?? extractTokens(topic);
@@ -1252,8 +1402,9 @@ function dedupTopicsBySimilarity(topics: string[], threshold = 0.6): string[] {
       tokenCache.set(kept, prev);
       const countrySim = jaccard(cur.countries, prev.countries);
       const themeSim = jaccard(cur.themes, prev.themes);
-      // 任一重合度超阈值即视为换皮
-      if (countrySim >= threshold || themeSim >= threshold) {
+      // 仅当主题重合度极高（≥0.85）且国家有重合（≥0.5）才视为换皮
+      // 这样「俄美谈乌」+「美以叙军事」+「联合国海湾」可共存
+      if (themeSim >= 0.85 && countrySim >= 0.5) {
         isDup = true;
         break;
       }
@@ -1266,6 +1417,13 @@ function dedupTopicsBySimilarity(topics: string[], threshold = 0.6): string[] {
 function looksLikeViralTopicLine(raw: string): boolean {
   const line = sanitizeViralTopicLine(raw);
   if (!line) return false;
+  // v9.5：允许带【时间·地点】标注的标题通过
+  const hasTimeLocation = /^【[^】]+】/.test(line);
+  if (hasTimeLocation) {
+    // 带标注的标题：长度要求放宽到 15-80
+    if (line.length < 15 || line.length > 80) return false;
+    return true;
+  }
   if (line.length < 10 || line.length > 60) return false;
   // v9.3 防御性回复黑名单（LLM 拒绝 / 解释 / 让用户输入关键词时）
   if (/^(我不能|我无法|我无法直接|抱歉|对不起|很抱歉|无法|不知道|无法确定|我需要|请提供|请输入|请告诉我|如果你想|以下是|以下是我|以下这些是|这是一些|下面是|这些是一些|按你给的|按你给的结论|如果你要|重新写|我现在就直接|我可以|让我|我帮你|我先|我们先|当然可以|可以的|好的|好的以下是|好的，按|明白|明白，以下|了解|了解了|了解，以下|I'm|I cannot|I can't|sorry|Sorry|as an AI)/i.test(line)) return false;
@@ -3136,7 +3294,7 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 
       prompt += `\n\n【猫主题铁律·最高优先级】本次须恰好输出 ${n} 条标题，其中**至少 ${catMin} 条**必须显式包含猫/喵星人元素（英文标题须含 cat、kitten、meow、feline、whisker、purr 等关键词之一；中文标题须含"猫""喵星人""喵主子""毛孩子""猫咪"等）。`;
 
-      prompt += `\n\n【人类心理健康铁律·最高优先级】本次须恰���输出 ${n} 条标题，其中**至少 ${humanMin} 条**必须围绕人类情感/心理健康/人际关系主题（如：情绪管理、焦虑疗愈、人与人的关系、亲密关系、自我成长等），不得出现猫狗宠物元素。`;
+      prompt += `\n\n【人类心理健康铁律·最高优先级】本次须恰好输出 ${n} 条标题，其中**至少 ${humanMin} 条**必须围绕人类情感/心理健康/人际关系主题（如：情绪管理、焦虑疗愈、人与人的关系、亲密关系、自我成长等），不得出现猫狗宠物元素。`;
 
       prompt += `\n\n【狗主题补充·次优先级】本次须恰好输出 ${n} 条标题，其中**至少 ${dogMin} 条**可包含狗/宠物元素（英文标题须含 dog、puppy、paw、canine、man's best friend、furry、pet、companion 等关键词之一；中文标题须含"狗""汪星人""毛孩子"等）。`;
 
@@ -3147,18 +3305,47 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
     // v9.4 注意：TAIWAN_STRAIT 子赛道已通过 subModeConfig 注入台湾专属 prompt，
     // 不在此覆盖，避免输出地缘冲突选题
     if (niche === NicheType.GREAT_POWER_GAME && newsSubMode !== NewsSubModeId.TAIWAN_STRAIT) {
+      // v9.6：强制使用当前UTC时间作为时间锚点
+      const now = new Date();
+      const currentYear = now.getUTCFullYear();
+      const currentMonth = now.getUTCMonth() + 1;
+      const currentDay = now.getUTCDate();
+
       if (greatPowerLanguage === 'zh') {
         // 中文模式：完整中文选题 prompt（RSS digest 在下面追加）
-        prompt = `【强制语言声明】本文档所有内容必须使用简体中文。选题标题必须是中文。每行一个标题。不要输出任何英文。
-【角色】你是时事评论频道「盒子里的秘密」主笔，按当前国际局势生成 10 个大国博弈角度的爆款标题。
+        // v9.6：追加时间地点标注格式 + 查理芒格人设 + 强制年份约束
+        prompt = `【⚠️ 强制时间锚点 - 最高优先级】当前UTC时间：${now.toISOString()}。今天是 ${currentYear} 年 ${currentMonth} 月 ${currentDay} 日。
+
+【强制语言声明】本文档所有内容必须使用简体中文。选题标题必须是中文。每行一个标题。不要输出任何英文。
+【角色】你是查理·芒格式的顶级分析师，兼具巴菲特的商业洞察力和芒格的多元思维模型。你不是新闻搬运工，而是透过现象看本质的利益博弈拆解者。
 
 【用户输入】${inputVal.trim() || '（用户未指定方向，从当前最震撼的地缘政治角度生成）'}
 
-【选题方向（盒子里的秘密风格·数据分析·逻辑拆解）】
-- 用数字说话：撤资规模、伤亡数字、制裁金额、汇率波动——数字背后藏着利益格局
-- 拆利益链条：谁在推这件事？谁的账单在涨？谁在偷着受益？
-- 逻辑推演：表面动作背后是什么算计？历史有没有出现过类似的局面？
-- 风险评估：这件事下一步最可能往哪个方向走？哪个节点最容易爆？
+【查理·芒格式选题框架】
+- 用第一性原理拆解：数字背后是谁在受益？谁在买单？
+- 逆向思维：如果这件事对谁都没有好处，为什么会发生？
+- 跨学科模型：结合历史博弈论、心理学、金融逻辑解读地缘政治
+- 风险清单：最坏情况下这个棋局会往哪个方向崩溃？
+
+【⚠️ 时间地点标注格式（必须遵守 - 违反视为不合格）】：
+- 每条标题必须标注【事件发生日期·地点】—— 时间必须是事件本身的真实发生日期，不是今天
+- 如果你的训练知识中知道某个事件发生在哪一天，就用那一天；不清楚就用这个事件涉及的最近日期
+- 禁止所有标题都写同一个日期；10 条标题的时间应该分布在最近 7 天内
+- 格式：【X月X日·地点】标题正文
+- 地点必须是事件发生的具体地名（如城市、国家）
+- ✅ 正确示例 1：【8月20日·华盛顿】布林肯突访东南亚，背后藏着什么算计？
+- ✅ 正确示例 2：【8月19日·莫斯科】普京紧急召开战时会议，释放什么信号？
+- ✅ 正确示例 3：【8月18日·东京】日本央行突然加息，打了谁的脸？
+- ❌ 错误示例：所有标题都写"2026年8月21日"（时间必须按事件真实日期分布）
+- ❌ 错误示例：【2025年8月·北京】这是旧事件，禁止输出！
+
+【🚫 严格禁止旧事件（最高优先级 - 违反视为不合格）】：
+- ❌ **必须选 2026 年事件**：当前是 ${currentYear} 年。**严格禁止输出任何 2025 年及更早的事件**（包括：阿拉斯加会晤、泽连斯基访华、特朗普关税战、拜登退选等所有 2025 年记忆）。即使下方新闻投喂不够丰富，也**必须从 2026 年内的事件中选题**，宁可减少数量也不许用旧年事件。
+- ❌ 拒绝所有过去 12 个月内反复出现、热度早已消退的旧议题、多年周期反复发酵的陈年话题
+- ❌ 禁止复读之前已输出的选题（每条必须是新事件）
+- ❌ 禁止编造时间地点不明的"网络传言"
+- ✅ 必须选 ${currentYear} 年真实发生的热点事件
+- ✅ 10 条事件必须真实具体，时间地点明确，人物/事件可查证
 
 【选题风格铁律】
 - 禁止写成新闻播报导语——这不是通讯社简报，这是逻辑拆解
@@ -3166,21 +3353,48 @@ export const Generator: React.FC<GeneratorProps> = ({ apiKey, provider, toast: e
 - 禁止「据报道」「专家表示」「数据显示」——你是分析师，不是传声筒
 - 标题要有让人想点进去的冲动：数字、反直觉判断、悬念，三有其一
 - 可用冒号/破折号/问号制造节奏，总长建议 20–45 汉字
-- 必须输出纯中文标题，不要任何英文`;
+- 必须输出纯中文标题，不要任何英文
+- 必须输出 ${resolvedPlanTopicCount} 条，每条带【事件发生日期·地点】标注`;
       } else {
         // 英文模式：强制输出双语爆款标题，格式固定为 English Title | 中文标题
-        prompt = `You are Bo Yi, a geopolitical insider analyst channel producer.
+        // v9.5：追加时间地点标注格式 + 查理芒格人设
+        const now = new Date();
+        const currentYear = now.getUTCFullYear();
+        const currentMonth = now.getUTCMonth() + 1;
+        const currentDay = now.getUTCDate();
 
-User direction: ${inputVal.trim() || 'No specific direction given — draw from the most explosive geopolitical insider angles from the current international situation.'}
+        prompt = `【⚠️ MANDATORY TIME ANCHOR - HIGHEST PRIORITY】Current UTC time: ${now.toISOString()}. Today is ${currentYear} year ${currentMonth} month ${currentDay} day.
 
-Topic direction:
-- military blind spots, missile math, actual battle damage, command failures
-- strategic deception, hidden bargains, sanctions arithmetic, oil routes, naval choke points
-- China / US / Russia / Middle East / Iran / Israel / Taiwan / NATO power plays
-- internal memo logic, what leaders say in public versus what the numbers reveal
-- historical pattern repeats, regime overreach, battlefield reality versus propaganda
+You are Charlie Munger — the master of multidisciplinary thinking, Berkshire Hathaway's vice chairman, and the ultimate "first principles" analyst. You don't report news; you decode the hidden game behind events.
 
-Hard rules:
+【User Input】${inputVal.trim() || 'No specific direction given — draw from the most explosive geopolitical insider angles from the current international situation.'}
+
+【Munger Framework — Decoding the Hidden Game】
+- First principles breakdown: Who benefits? Who's paying the bill? Follow the money and power.
+- Inverse thinking: If this event helps no one, why is it happening?
+- Multi-disciplinary models: Apply game theory, psychology, and financial logic to geopolitics.
+- Risk checklist: In the worst case, which node in this chess game is most likely to collapse?
+
+【⚠️ Time & Location Annotation (MANDATORY - VIOLATION = FAILURE)】：
+- Each title MUST have 【Event Date·Location】 prefix — the date must be when the event ACTUALLY HAPPENED, not today
+- If your training data knows the event date, use that date; otherwise use the most recent date relevant to the event
+- DO NOT make all 10 titles use the same date; dates should be distributed across the last 7 days
+- Format: 【Aug 20·Washington】Title
+- Location must be the specific place where the event occurred
+- ✅ CORRECT 1: 【Aug 20·Washington】Blinken's surprise Southeast Asia visit...
+- ✅ CORRECT 2: 【Aug 19·Moscow】Putin's emergency wartime meeting...
+- ❌ WRONG: All titles use the same date like "2026/8/21" (dates must vary by event)
+- ❌ WRONG: 【2025/8/21·Beijing】This is OLD EVENT, do NOT output!
+
+【🚫 Strictly Banned Old Events (HIGHEST PRIORITY - VIOLATION = FAILURE)】：
+- ❌ Do NOT output events from ${currentYear - 1} year or earlier
+- ❌ Do NOT output Hong Kong national security law cases (2020 events, years old)
+- ❌ Do NOT repeat the same topic from previous generations
+- ❌ Do NOT fabricate events without verifiable time/location
+- ✅ Only select events that actually happened in ${currentYear} year
+- ✅ All 10 topics must be distinct, real, traceable events
+
+【Hard Rules】：
 - Output exactly ${resolvedPlanTopicCount} lines.
 - Each line must be ONE viral title only, not a paragraph.
 - Each line must use this exact bilingual format: English Title | 中文标题
@@ -3190,7 +3404,8 @@ Hard rules:
 - No numbering, no bullets, no intro, no analysis, no markdown, no quotes.
 - Every title must feel like an insider revelation, not a Reuters-style summary.
 - Keep each English side concise and clickable; keep each Chinese side concise and explosive.
-- Do not output pure English only. Do not output pure Chinese only. Every line must be bilingual.`;
+- Do not output pure English only. Do not output pure Chinese only. Every line must be bilingual.
+- All topics must include 【Event Date·Location】 prefix (NOT today's date, but the actual event date).`;
       }
     }
 
@@ -3319,6 +3534,8 @@ Hard rules:
 - ❌ 任何网红带货/直播翻车
 - ❌ 任何「奢侈品涨价」「网红景点打卡」「美食探店」` : '上方投喂是国际新闻，按地缘政治偏好：地缘冲突/军事/金融/制裁/能源/科技封锁类优先。'}
 
+${!isDouyinHot ? `\n【🚨 年份铁律·最高优先级】当前是 2026 年。**严格禁止输出任何 2025 年及更早的事件**（包括但不限于：阿拉斯加会晤、泽连斯基访华、特朗普关税、拜登退选、俄乌开战、佩洛西访台等所有 2025 年及更早的记忆事件）。即使下方新闻投喂不够丰富，也**必须从 2026 年内的事件中选题**，宁可减少数量也不许用旧年事件。` : ''}
+
 **【热搜词改写铁律】**${isDouyinHot ? '上方投喂是「百度新闻热搜 / 微博热搜 / 观察者网 / 财新 / 澎湃 / 人民日报」综合，每天 5 分钟自动更新。你必须做新闻姐视角的改写：不要直接照搬热搜词原句，必须给每条加上悬念/反问/数字/反差/情绪词至少 2 个。改写示例：热搜词「晋江一鞋厂火灾」→ 标题「晋江鞋厂火灾致 12 人遇难！国务院挂牌督办，事故原因是什么？」' : '国际新闻改写：地缘/军事/政策类。'}` +
             `\n【禁止占位词铁律】${isDouyinHot ? '国内热点' : '国际要闻'}中出现的人物/品牌/地名必须在标题中直接写出，禁止用「某顶流明星/某知名品牌/某地」等模糊表述。` +
             `\n【禁止通用议题铁律】禁止把抽象的"权益/维权/就业/政策"当孤立选题（如单纯「外卖骑手权益」「小区物业纠纷」「35岁就业」），必须锚定真实具体事件并结合政策解读/社会争议视角。` +
@@ -3328,8 +3545,8 @@ Hard rules:
             (!isDouyinHot && newsSubMode && newsSubMode !== 'DOUYIN_HOT'
               ? `\n【⚠️ 子赛道对齐铁律·v10.0 · 最高优先级 ⚠️】当前子赛道为「${subModeName(newsSubMode)}」。10 条标题**必须全部围绕该子赛道主题**（参考上方投喂中「本赛道覆盖」段落）。**严格禁止**输出与该子赛道无关的国际新闻（如：选了中东冲突却输出俄乌战争/台海/金融/AI 芯片），否则视为不合格。`
               : '') +
-            `\n【⚠️ 强制生成铁律·v9.3 · 最高优先级 ⚠️】**严禁**输出"抱歉/对不起/无法/我不知道/无法确定/作为一个AI/请提供关键词/以下是"等任何拒绝/解释/反问/条件句式。**严禁**输出一整段连贯段落回复。**只输出 10 行纯标题**（每行一个，15-35 字），不写前言、不写解释、不写结语、不与用户对话、不要求输入关键词、不分小标题分类。如果上方投喂为空或检索失败，直接根据你的训练知识生成 10 条当前月份国内热点标题（按用户偏好：政策解读/社会民生/国家发展/重大工程/经济改革）。这是新闻姐的标准化创作输出，不是对话。` +
-            `\n【抖音新闻姐风格锚点】**只输出纯标题**，每行一个，不要 Markdown、不要引号、不要序号、不要任何前缀。标题要像真人发的抖音：短、爆、有钩子、有情绪、有具体人物/事件/数字。`;
+            `\n【⚠️ 强制生成铁律·v11.0 · 最高优先级 ⚠️】**严禁**输出"抱歉/对不起/无法/我不知道/无法确定/作为一个AI/请提供关键词/以下是"等任何拒绝/解释/反问/条件句式。**严禁**输出一整段连贯段落回复（包括"截至本文成稿"、"本文讨论的是"等说明性散文）。**只输出 10 行纯标题**（每行一个，22–45 字），不写前言、不写解释、不写结语、不与用户对话、不要求输入关键词、不分小标题分类。如果上方投喂为空或检索失败，仍必须按上方「三类万能标题模板」+「5 条硬性过滤规则」输出 10 条国际热点标题。这是新闻姐的标准化创作输出，不是对话。` +
+            `\n【标题党铁律】**只输出纯标题**，每行一个，不要 Markdown、不要引号、不要序号、不要任何前缀。标题要像真人发布的国际热点：爆、有钩子、有具体人物/事件/数字/地点，禁止写成通讯社导语或说明性散文。`;
           prompt = `${digest}\n\n---\n\n` + prompt + extraRules;
         } else if (niche === NicheType.FINANCE_CRYPTO && financeSubMode === FinanceSubModeId.GEOPOLITICAL_FLASH) {
           const extraRules =
@@ -3356,7 +3573,28 @@ Hard rules:
     // Status already set above
 
     // v9.3 临时改用"标题生成专用" system instruction，避免"小美主播"风格引导模型输出辣评段落而非 10 个标题
-    const titleListSystemInstruction = `你是抖音「新闻姐」标题生成器。用户会给「百度新闻/微博/观察者网/财新/澎湃」等 RSS 热搜词列表。\n你的唯一任务：基于这些热搜词生成 10 条抖音风格的新闻标题。\n铁律：\n- 只输出 10 行纯标题，每行一个标题，不带任何前缀/序号/引号/分类/小标题/前言/结语/解释\n- 不要展开成段落\n- 不要对话（"我不能""请提供"等）\n- 不要分类小标题（如"政策类："、"军事类："）\n- 标题必须有具体人名/地名/品牌/数字\n- 标题 15-35 字，含钩子（悬念/反问/数字/反差/情绪词）\n- 严格按用户的选题偏好（政策解读/社会民生/国家发展/重大工程/经济改革/灾害应急）\n- 严格避开禁止类（演唱会/明星塌房/网红带货/娱乐八卦）\n\n只输出 10 行标题，禁止任何其他文字。`;
+    const titleListSystemInstruction = `你是抖音「新闻姐」标题生成器。用户会给「百度新闻/微博/观察者网/财新/澎湃」等 RSS 热搜词列表。
+你的唯一任务：基于这些热搜词生成 10 条抖音风格的新闻标题。
+
+【🔴 最高优先级铁律 - 标题格式】
+- 每条标题必须以【事件发生日期·地点】开头
+- 格式 EXACT：【X月X日·地点】标题正文
+- 日期：事件实际发生日期（X月X日，禁止全 10 条同一天）
+- 地点：城市或国家名（2-8 字）
+- 示例：【8月20日·北京】国务院发布房地产新政
+
+铁律：
+- 只输出 10 行纯标题，每行一个标题，不带任何前缀/序号/引号/分类/小标题/前言/结语/解释
+- 不要展开成段落
+- 不要对话（"我不能""请提供"等）
+- 不要分类小标题（如"政策类："、"军事类："）
+- 标题必须有具体人名/地名/品牌/数字
+- 标题 15-35 字，含钩子（悬念/反问/数字/反差/情绪词）
+- 严格按用户的选题偏好（政策解读/社会民生/国家发展/重大工程/经济改革/灾害应急）
+- 严格避开禁止类（演唱会/明星塌房/网红带货/娱乐八卦）
+- 禁止选择过去 12 个月内反复出现的旧议题、多年周期反复发酵的陈年话题
+
+只输出 10 行标题，禁止任何其他文字。`;
 
     try {
       // 子赛道使用 prompt 中自带的角色设定，避免被通用 titleListSystemInstruction 覆盖
@@ -3430,6 +3668,14 @@ Hard rules:
                 .slice(0, resolvedPlanTopicCount)
             : rawTopics;
 
+      // v11.0：白熊效应防御——剔除包含反复出现敏感词的标题
+      const normalizedFiltered = filterBlockedTopics(normalizedRawTopics);
+      const blockedCount = normalizedRawTopics.length - normalizedFiltered.length;
+      if (blockedCount > 0) {
+        console.warn(`[Generator] 过滤掉 ${blockedCount} 条含敏感词的标题`);
+      }
+      const safeNormalizedRawTopics = normalizedFiltered;
+
       const fallbackTopics =
         niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'en'
           ? rawTopics
@@ -3440,14 +3686,15 @@ Hard rules:
             ? rawTopics.map((t) => sanitizeViralTopicLine(t)).filter(Boolean).slice(0, resolvedPlanTopicCount)
             : rawTopics;
 
+      // v11.1：fallback 也必须经过白熊过滤——避免被剔除的敏感词标题从 fallback 流回来
+      const safeFallbackTopics = filterBlockedTopics(fallbackTopics);
       const finalRawTopics =
-        normalizedRawTopics.length >= resolvedPlanTopicCount
-          ? normalizedRawTopics.slice(0, resolvedPlanTopicCount)
-          : Array.from(new Set([...normalizedRawTopics, ...fallbackTopics])).slice(0, resolvedPlanTopicCount);
+        safeNormalizedRawTopics.length >= resolvedPlanTopicCount
+          ? safeNormalizedRawTopics.slice(0, resolvedPlanTopicCount)
+          : Array.from(new Set([...safeNormalizedRawTopics, ...safeFallbackTopics])).slice(0, resolvedPlanTopicCount);
 
-      // v10.3：换皮检测——剔除同一国家+同一主题的"换汤不换药"标题
-      // 例如：「加沙人道危机加剧」与「以色列加沙行动升级」会被视为同一议题
-      // 阈值从 0.6 提升到 0.7，允许"同一事件+略微不同视角"的标题共存
+      // v11.2：换皮检测（宽松版）—— 主题重合度≥0.85 + 国家重合度≥0.5 才视为换皮
+      // 允许「同事件不同角度」共存（如「俄副外长称愿与美谈」+「联合国海湾重返谈判」+「美以叙利亚军事」）
       let dedupedRawTopics =
         finalRawTopics.length > 1 ? dedupTopicsBySimilarity(finalRawTopics, 0.7) : finalRawTopics;
       console.log('[Generator] 去重前/后', {
@@ -3504,7 +3751,7 @@ Hard rules:
             });
             extraRaw = collected;
           }
-          // 过滤掉已存在的 + 应用 sanitize（与主线一致）
+          // v11.1：补齐阶段也必须经过白熊过滤——避免敏感词标题从补齐流回来
           const sanitizedExtra = (
             sanitizeLikeViral
               ? extraRaw
@@ -3513,6 +3760,8 @@ Hard rules:
               : extraRaw
           )
             .filter((t) => t && !fillSeen.has(t))
+            .map((t) => t.trim())
+            .filter((t) => !isBlockedTopicTitle(t))
             .slice(0, need);
           for (const t of sanitizedExtra) fillSeen.add(t);
           dedupedRawTopics = [...dedupedRawTopics, ...sanitizedExtra];
@@ -3529,7 +3778,7 @@ Hard rules:
             : niche === NicheType.GREAT_POWER_GAME && greatPowerLanguage === 'en'
               ? sanitizeGreatPowerBilingualTopicLine(t)
               : niche === NicheType.GENERAL_VIRAL || niche === NicheType.GREAT_POWER_GAME
-                ? sanitizeViralTopicLine(t)
+                ? injectTimeLocationPrefix(t) // v11.0：兜底注入【时间·地点】前缀，确保红色标签一定显示
                 : t;
         const roleLabel =
           niche === NicheType.STORY_LIFE_DUNGEON
@@ -3547,7 +3796,8 @@ Hard rules:
         greatPowerLanguage,
         requestedCount: resolvedPlanTopicCount,
         rawTopicsCount: rawTopics.length,
-        normalizedCount: normalizedRawTopics.length,
+        normalizedCount: safeNormalizedRawTopics.length,
+        blockedCount,
         fallbackCount: fallbackTopics.length,
         finalCount: finalRawTopics.length,
         dedupedCount: dedupedRawTopics.length,
@@ -3602,7 +3852,7 @@ Hard rules:
           if (safeFinal.length > 0) {
             const newTopics: Topic[] = safeFinal.map((t, i) => ({
               id: `topic-${i}`,
-              title: sanitizeViralTopicLine(t),
+              title: injectTimeLocationPrefix(t), // v11.0：兜底注入【时间·地点】前缀
               selected: true,
             }));
             setTopics(newTopics);
@@ -4542,9 +4792,11 @@ ${segmentSourceText}
               ? 98304
               : scriptLengthMode === 'SHORT'
                 ? 4096
-                : 32768,
-          idleTimeoutMs: 120000,
-          firstChunkTimeoutMs: 180000,
+                : isGreatPowerZh
+                  ? 49152 // 大国博弈中文 3000-6000字 + Phase思考，给到 48K 防止超出截断
+                  : 32768,
+          idleTimeoutMs: isGreatPowerZh ? 180000 : 120000,
+          firstChunkTimeoutMs: isGreatPowerZh ? 240000 : 180000,
         }
       );
 
@@ -4708,10 +4960,21 @@ ${segmentSourceText}
       toast.success('已按赛道要求一次性生成完整终稿');
       return true;
     } catch (e: any) {
-      toast.error(e?.message || '生成失败');
+      const rawMsg = e?.message || String(e) || '生成失败';
+      console.error('[Generator] 大国博弈/单文本生成失败:', e);
+      // 给用户友好错误提示，并附上重试建议
+      let userMsg = rawMsg;
+      if (rawMsg.includes('首段文本') || rawMsg.includes('firstChunk')) {
+        userMsg = '模型在设定时间内未返回首段文本（可能是事件过冷门或网络较慢）。建议：1)重试几次 2)换一个事件更具体的选题 3)检查网络';
+      } else if (rawMsg.includes('网络') || rawMsg.includes('Failed to fetch') || rawMsg.includes('fetch')) {
+        userMsg = '网络连接失败，请检查 API Key 和网络连接后重试';
+      } else if (rawMsg.includes('超时') || rawMsg.includes('idle')) {
+        userMsg = '生成超时（模型长时间无输出）。建议重试，或换更具体的事件';
+      }
+      toast.error(userMsg, { duration: 6000 });
       setStatus(GenerationStatus.ERROR);
       setActiveIndices(new Set());
-      setBatchProgress({ current: 100, total: 100, hint: `生成失败：${e?.message || e}` });
+      setBatchProgress({ current: 100, total: 100, hint: `生成失败：${userMsg}` });
       return false;
     }
   }, [topics, apiKey, provider, niche, toast, inputVal, getParallelHistorySubModeId, greatPowerLanguage]);
@@ -4868,7 +5131,11 @@ ${segmentSourceText}
                       ? 98304
                       : scriptLengthMode === 'SHORT'
                         ? 4096
-                        : 32768,
+                        : isGreatPowerZh
+                          ? 49152
+                          : 32768,
+                  idleTimeoutMs: isGreatPowerZh ? 180000 : 120000,
+                  firstChunkTimeoutMs: isGreatPowerZh ? 240000 : 180000,
                 }
               );
 
@@ -9720,7 +9987,22 @@ ${segmentSourceText}
                                   副本身份：{displayRoleLabel}
                                 </span>
                               )}
-                              <span className="text-sm text-slate-200 leading-snug font-medium">{topic.title}</span>
+                              <span className="text-sm text-slate-200 leading-snug font-medium">
+                                {(() => {
+                                  const parsed = parseTimeLocationTag(topic.title);
+                                  if (parsed) {
+                                    return (
+                                      <>
+                                        <span className="inline-block text-[10px] font-bold text-red-400 bg-red-500/15 border border-red-500/40 rounded px-1.5 py-0.5 mb-1">
+                                          {parsed.tag}
+                                        </span>
+                                        <span className="block">{parsed.plainTitle}</span>
+                                      </>
+                                    );
+                                  }
+                                  return topic.title;
+                                })()}
+                              </span>
                             </div>
                         </div>
                       );

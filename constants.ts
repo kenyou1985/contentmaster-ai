@@ -1146,11 +1146,17 @@ const BO_YI_TOPIC_PROMPT_GEO_FLASH = `
 - 10 条中**美国/特朗普相关 ≥3 条**（用户偏好）
 - 10 条中**中国相关 ≥2 条**（中俄关系/南海/台海军售/对美反制/上合金砖）
 
-# 实时情报投喂（RSS·每次生成强制刷新 v5.0）
-每次点击「一键生成爆款选题」，应用先经CORS代理拉取BBC World/DW/Al Jazeera/France24/Sky News/CNBC/Reuters等公开RSS，将**【国际要闻投喂 v5.0】**自动插在本prompt最上方。你**必须**以投喂列表为选店主轴，覆盖至少5条不同新闻主线。
+# 实时情报投喂（RSS·每次生成强制刷新 v7.0）
+每次点击「一键生成爆款选题」，应用先经CORS代理拉取BBC World/DW/Al Jazeera/France24/Sky News/CNBC/Reuters等公开RSS，将**【国际要闻投喂 v6.0】**自动插在本prompt最上方。你**必须**以投喂列表为选店主轴，覆盖至少5条不同新闻主线。
 - 若投喂列表中**冷门国家**（阿富汗/塔利班/乍得/苏丹/刚果/索马里等）出现，**必须忽略**，不作为选题依据。
 - 若抓取失败或列表过短，须结合当前 UTC 日期与近 48 小时内心智中的重大地缘冲突新闻自行发挥；优先从上文「第一圈·第二圈·第三圈」中选题；禁止虚构国名、战争名。
 - 禁止整组标题与投喂完全脱节；禁止十条只围绕同一事件换皮。
+
+**⚠️ 选题时效性硬约束（最高优先级）**：
+- 严格禁止：以超过 **7 天前** 的事件作为选题核心（即使 RSS 投喂中出现）
+- 允许例外：仅当该事件在 **7 天内有重大新进展**（如：冲突升级/新制裁/谈判破裂/新协议签署等）时方可使用
+- 若无法确认事件是否有新进展，默认视为过期，禁止使用
+- 时效性判断错误（如：以 18 个月前的特朗普签署备忘录为核心选题）视为选题不合格
 
 # 📅 事件日期标注铁律（最高优先级）
 - 如果上方投喂列表中的某条新闻是**具体事件**（如「某次军事行动」、「某次军演」、「某次外交会晤」），且投喂中明确标注了事件发生日期（UTC），**你必须在对应的选题标题中包含该事件实际发生的日期**（如「2026年7月7日XX事件」），让事件真实感更强、更有说服力
@@ -1192,6 +1198,7 @@ const BO_YI_TOPIC_PROMPT_GEO_FLASH = `
 - 脱离地缘博弈核心的纯财经或纯娱乐选题
 - **把钩子短语（"你以为""你的钱包"）当成完整标题输出**
 - **前言/结语/分类小标题/序号/Markdown/对话/道歉/反问/条件句式**
+- **禁止：不经投喂确认就从训练知识中选取事件；拒绝任何"周期性反复"的多年陈案**
 
 # 芒格式+博弈内幕底色
 - 嘲讽政客的愚蠢与短视
@@ -1199,13 +1206,20 @@ const BO_YI_TOPIC_PROMPT_GEO_FLASH = `
 - 禁止时间词：本周/上周/未来X个月/下半年
 - 标题党化——每条让人一看就想点进去
 
+# ⚠️ 时间地点标注格式（最高优先级·v7.0新增）
+- **每条标题前必须加【时间·地点】标注**
+- 格式：\`【8月21日·北京】\` 或 \`【8月21日·华盛顿】\`
+- 时间：必须来自上方新闻列表中标注的日期（如：8月20日、8月21日）
+- 地点：必须来自上方新闻列表中的地点（如：北京、华盛顿、德黑兰）
+- 示例：\`【8月20日·德黑兰】伊朗核谈判破裂，美国发出最后通牒——霍尔木兹命悬一线\`
+- **禁止**凭空编造时间地点，必须严格从投喂列表中选取
+
 # 示例（参考风格，真实输出须对齐当次RSS）
-- 《福建舰刚传重大进展，美国印太战略却已开始松动——这不是巧合》
-- 《你还在看南海？真正的博弈已经在印度洋悄悄开打了》
-- 《中东局势一夜之间彻底反转——中国手里的牌，比所有人预想的都多》
+- \`【8月21日·北京】解放军台海演习常态化释放强烈信号，军事震慑意图明显\`
+- \`【8月20日·华盛顿】美联储宣布最新利率决定，美元指数走势震动新兴市场\`
 
 # 格式（严格）
-只输出 **10条** 纯中文标题，每行一条，**不要**任何分析/前言/结语/列表标记/引号/Markdown。
+每行一个【时间·地点】+ 标题，共10行，不要前缀/分析/结语/列表标记。
 `;
 
 const BO_YI_TOPIC_PROMPT_CAPITAL = `
@@ -1215,6 +1229,11 @@ const BO_YI_TOPIC_PROMPT_CAPITAL = `
 
 # 实时情报投喂（RSS）
 每次点击「一键生成爆款选题」，应用先经CORS代理拉取BBC World/DW/Al Jazeera/France24/Sky News/CNBC/Reuters等公开RSS，将**【国际情报投喂】**自动插在本prompt最上方。你**必须**以投喂列表为选店主轴，覆盖至少5条不同新闻主线。
+
+**⚠️ 选题时效性硬约束（最高优先级）**：
+- 严格禁止：以超过 **7 天前** 的事件作为选题核心
+- 允许例外：仅当该事件在 **7 天内有重大新进展**时方可使用
+- 若无法确认事件是否有新进展，默认视为过期，禁止使用
 
 # 标题格式（强制）
 **每行一条纯中文标题，22-48个汉字**，不要前缀、不要列表标记。
@@ -1273,6 +1292,11 @@ const BO_YI_TOPIC_PROMPT_INVERSE = `
 # 实时情报投喂（RSS）
 每次点击「一键生成爆款选题」，应用先经CORS代理拉取BBC World/DW/Al Jazeera/France24/Sky News/CNBC/Reuters等公开RSS，将**【国际情报投喂】**自动插在本prompt最上方。
 
+**⚠️ 选题时效性硬约束（最高优先级）**：
+- 严格禁止：以超过 **7 天前** 的事件作为选题核心
+- 允许例外：仅当该事件在 **7 天内有重大新进展**时方可使用
+- 若无法确认事件是否有新进展，默认视为过期，禁止使用
+
 # 标题格式（强制）
 **每行一条纯中文标题，22-48个汉字**，不要前缀、不要列表标记。
 
@@ -1318,6 +1342,11 @@ const BO_YI_TOPIC_PROMPT_POWER = `
 
 # 实时情报投喂（RSS）
 每次点击「一键生成爆款选题」，应用先经CORS代理拉取BBC World/DW/Al Jazeera/France24/Sky News/CNBC/Reuters等公开RSS，将**【国际情报投喂】**自动插在本prompt最上方。
+
+**⚠️ 选题时效性硬约束（最高优先级）**：
+- 严格禁止：以超过 **7 天前** 的事件作为选题核心
+- 允许例外：仅当该事件在 **7 天内有重大新进展**时方可使用
+- 若无法确认事件是否有新进展，默认视为过期，禁止使用
 
 # 标题格式（强制）
 **每行一条纯中文标题，22-48个汉字**，不要前缀、不要列表标记。
@@ -1365,6 +1394,11 @@ const BO_YI_TOPIC_PROMPT_SURVIVAL = `
 
 # 实时情报投喂（RSS）
 每次点击「一键生成爆款选题」，应用先经CORS代理拉取BBC World/DW/Al Jazeera/France24/Sky News/CNBC/Reuters等公开RSS，将**【国际情报投喂】**自动插在本prompt最上方。
+
+**⚠️ 选题时效性硬约束（最高优先级）**：
+- 严格禁止：以超过 **7 天前** 的事件作为选题核心
+- 允许例外：仅当该事件在 **7 天内有重大新进展**时方可使用
+- 若无法确认事件是否有新进展，默认视为过期，禁止使用
 
 # 标题格式（强制）
 **每行一条纯中文标题，22-48个汉字**，不要前缀、不要列表标记。
@@ -2677,10 +2711,16 @@ const NEWS_GREAT_POWER_GAME_PROMPT = `
 时事一致性：美国现任总统为 **特朗普**。
 
 # ⚠️ 实时国际要闻（48小时动态投喂·每次生成强制刷新）
-每次点击「一键生成爆款选题」，应用先经 CORS 代理拉取 Reuters、BBC World、Al Jazeera、Guardian、DW 等主流 RSS，将**【国际要闻投喂 v5.0】**自动插在本 prompt 最上方（**仅保留近 48 小时内发布**的头条）。
+每次点击「一键生成爆款选题」，应用先经 CORS 代理拉取 Reuters、BBC World、Al Jazeera、Guardian、DW 等主流 RSS，将**【国际要闻投喂 v6.0】**自动插在本 prompt 最上方（**仅保留近 48 小时内发布**的头条）。
 - **必须**以该投喂列表为选店主轴：至少覆盖其中 **5 条以上不同新闻主线**。
 - 若抓取失败，须结合近 48 小时内心智中的大国博弈重大新闻自行发挥。
 - 禁止整组标题与投喂完全脱节。
+
+**⚠️ 选题时效性硬约束（最高优先级）**：
+- 严格禁止：以超过 **7 天前** 的事件作为选题核心（即使 RSS 投喂中出现）
+- 允许例外：仅当该事件在 **7 天内有重大新进展**（如：冲突升级/新制裁/谈判破裂/新协议签署等）时方可使用
+- 若无法确认事件是否有新进展，默认视为过期，禁止使用
+- 时效性判断错误（如：以 18 个月前的特朗普签署备忘录为核心选题）视为选题不合格
 
 # 📅 事件日期标注铁律（最高优先级）
 - 如果上方投喂列表中的某条新闻是**具体事件**（如「某国外长访问」、「某国签署协议」、「某地军事行动」），且投喂中明确标注了事件发生日期（UTC），**你必须在对应的选题标题中包含该事件实际发生的日期**（如「2026年7月7日XX会晤」），让事件真实感更强、更有说服力
@@ -3252,6 +3292,14 @@ Use this exactly once, at the single most consequential pivot point of the scrip
 - No emotional shouting — power comes from restraint
 - No optimistic notes — end in the cold truth
 - No "The game continues." or "The game never stops." anywhere in the body — these are ONLY for the final sentence
+- **MANDATORY: Date Anchoring (HIGHEST PRIORITY)** — The script's CORE event MUST be within 7 days of the current date (e.g., if today is August 21, 2026, the core event must be between August 14-21, 2026). 
+  - If the topic involves an older event (e.g., February 2025 memo), you MUST: (1) state the original date in paragraphs 1-2, then (2) pivot to the LATEST developments within 7 days by paragraphs 3-4
+  - **FORBIDDEN**: Building the entire script's core argument around events older than 7 days (e.g., "After Trump signed the memo in February 2025, Iran responded..." as the main thesis)
+  - **ALLOWED**: Mentioning historical background in early paragraphs, but you MUST pivot to events within 7 days in the next paragraph
+  - The script **MUST include at least ONE specific date from August 2026** (e.g., "August 15, 2026"), otherwise it is INVALID
+  - Do NOT use vague phrases like "in recent years," "since 2018," "recently" without any specific date
+- **First Paragraph Must Have Date** — The opening paragraph MUST explicitly state when the topic event occurred (year/month/day). Subsequent paragraphs may add more dates as needed.
+- **Dates Must Read Naturally** — Embed dates as narrative flow, not parenthetical notes (write: "On February 4, 2025, Trump signed the memo" NOT "February 4, 2025 (when Trump signed the memo)").
 `;
 
 /** 大国博弈中文版系统提示词 */
@@ -3305,6 +3353,15 @@ export const NEWS_GREAT_POWER_GAME_SCRIPT_PROMPT_ZH = `
 - 禁止"内幕""机密""爆料""揭露""被掩盖""被隐藏""普通媒体不会告诉你"等任何暗示绕过官方信源的措辞
 - 禁止在正文任何位置出现"咱们下期见"或"咱们下期继续拆"——这些仅用于最后一句
 - 禁止空洞结论，如"我们要保持清醒""这值得深思"——删除或换成有具体内容的判断
+- **⚠️ 时间锚点硬约束（最高优先级）**：
+  - 正文的**核心事件**必须是**当前时间前后7天内**发生的事件（如：当前是2026年8月，核心事件必须是2026年8月15日至21日之间发生的事件）
+  - 如果选题涉及较早的事件（如2025年2月的备忘录），必须在正文**前两段内**明确写出该事件的初始时间，然后在**第三段或第四段**立即转向分析该事件在**7天内**的最新进展
+  - **禁止**：以超过7天前的事件作为正文核心论点（如"2025年2月特朗普签署备忘录后，伊朗如何应对"作为全文核心论点）
+  - **允许**：在历史背景段落中提及较早事件，但必须在下一段立即回到7天内的最新动态
+  - 全文**必须出现至少一个2026年8月的具体日期**（如"2026年8月X日"），否则视为不合格
+  - 禁止只讲"2018年以来""近年来""近年"等模糊表述而没有任何具体日期
+- **正文首段必须出现具体日期**：第一段或第二段中必须明确写出选题事件发生的日期（年/月/日）。后续段落可根据需要补充更多时间节点。
+- **时间锚点要自然融入正文**：不要在时间后加括号注释，要像叙事一样自然提及（如："2025年2月4日，特朗普签署备忘录"而不是"2025年2月4日（特朗普签署备忘录）"）。
 `;
 
 

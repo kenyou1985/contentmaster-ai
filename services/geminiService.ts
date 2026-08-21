@@ -239,7 +239,6 @@ async function callYunwuAPI(
     model: model,
     messages: messages,
     temperature: temperature,
-    top_p: 0.95,
     max_tokens: maxTokens,
     stream: stream
   };
@@ -876,7 +875,6 @@ async function streamYunwuOpenAIOnce(
       model: resolvedModel,
       messages,
       temperature,
-      top_p: 0.95,
       max_tokens: maxTokens,
       stream: true,
     };
