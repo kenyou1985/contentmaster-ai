@@ -603,7 +603,7 @@ const CopyBasedPanel: React.FC<{
   );
 
   /** 绘图模型 */
-  const [coverImageModel, setCoverImageModel] = useState<'gpt-image-2' | 'gpt-image-2-c' | 'gemini-flash' | 'grok-imagine-image'>('gpt-image-2');
+  const [coverImageModel, setCoverImageModel] = useState<'gpt-image-2' | 'gpt-image-2-c' | 'gemini-flash'>('gpt-image-2');
 
   /** v1.4：参与封面生成的人物名单（按名字勾选；不勾选的人物不出现在画面里）
    *  默认：解析完成后按"6 套标题中出现过的人名"自动勾选，用户可手动调整 */
@@ -2811,13 +2811,12 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                 <span className="text-[10px] text-slate-500 shrink-0">绘图模型：</span>
                 <select
                   value={coverImageModel}
-                  onChange={(e) => setCoverImageModel(e.target.value as 'gpt-image-2' | 'gpt-image-2-c' | 'gemini-flash' | 'grok-imagine-image')}
+                  onChange={(e) => setCoverImageModel(e.target.value as 'gpt-image-2' | 'gpt-image-2-c' | 'gemini-flash')}
                   className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-amber-500 min-w-[200px]"
                 >
                   <option value="gpt-image-2">gpt-image-2（/v1/images/generations）</option>
                   <option value="gpt-image-2-c">gpt-image-2-c（/v1/images/edits，需参考图）</option>
                   <option value="gemini-flash">gemini-3.1-flash-image-preview</option>
-                  <option value="grok-imagine-image">grok-imagine-image</option>
                 </select>
               </div>
               {/* 全局限流状态条（仅在冷却或等待时显示） */}

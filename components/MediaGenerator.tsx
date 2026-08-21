@@ -496,6 +496,7 @@ const IMAGE_MODELS = [
   { id: 'grok-3-image', name: 'Grok 3 Image', endpoint: '/v1/chat/completions', supportsImageToImage: false },
   { id: 'grok-4-image', name: 'Grok 4 Image', endpoint: '/v1/chat/completions', supportsImageToImage: false },
   { id: 'gpt-image-2-all', name: 'GPT Image 2 (gpt-image-2)', endpoint: '/v1/images/generations', apiModelName: 'gpt-image-2', supportsImageToImage: false },
+  { id: 'gpt-image-2-c', name: 'GPT Image 2 (/edits)', endpoint: '/v1/images/generations', apiModelName: 'gpt-image-2-c:stable', supportsImageToImage: false },
   { id: 'jimeng-5.0', name: '即梦 5.0 (Jimeng)', endpoint: 'jimeng', isJimeng: true, supportsImageToImage: true, jimengModel: 'jimeng-5.0' },
   { id: 'jimeng-4.0', name: '即梦 4.0 (Jimeng)', endpoint: 'jimeng', isJimeng: true, supportsImageToImage: true, jimengModel: 'jimeng-4.0' },
 ];
@@ -1976,7 +1977,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
     // 图片和配音真正并行执行（走不同模型/服务，互不干扰）
     // GPT Image 2 使用最大 20 并发 + 500ms 间隔，其他模型使用 100 并发 + 200ms 错开（避免 yunwu 限流 503/429）
-    const isGptImage2 = selectedImageModel === 'gpt-image-2-all';
+    const isGptImage2 = selectedImageModel === 'gpt-image-2-all' || selectedImageModel === 'gpt-image-2-c';
     const imageConcurrency = isGptImage2 ? 20 : 100;
     const imageStaggerMs = isGptImage2 ? 500 : 200;
     const imageGenPromise = (async () => {
@@ -3312,15 +3313,15 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
 
   // 获取适合模型的尺寸（DALL-E 3 和 Sora Image 有特殊限制）
   // 返回值约定：
-  //   - gpt-image-2-all：返回 "WxH" 像素字符串（如 "1536x864"），云雾按 OpenAI images API 标准走 size 字段；
+  //   - gpt-image-2-all / gpt-image-2-c：返回 "WxH" 像素字符串（如 "1536x864"），云雾按 OpenAI images API 标准走 size 字段；
   //     同时 yunwuService 内部会额外发 aspect_ratio 字段，向后兼容某些中转后端
   //   - 其他模型保持旧行为：返回 "WxH" 像素
   const getImageSize = (model: string, ratioId: string): string => {
     const selectedRatio = IMAGE_RATIOS.find(r => r.id === ratioId);
     if (!selectedRatio) return '1024x1024';
 
-    // gpt-image-2：返回 WxH 像素，yunwu 后端按 OpenAI 标准识别 size 字段
-    if (model === 'gpt-image-2-all') {
+    // gpt-image-2 / gpt-image-2-c：返回 WxH 像素，yunwu 后端按 OpenAI 标准识别 size 字段
+    if (model === 'gpt-image-2-all' || model === 'gpt-image-2-c') {
       if (selectedRatio.gptImage2Supported) {
         return `${selectedRatio.width}x${selectedRatio.height}`;
       }
@@ -3677,7 +3678,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
         }
       } else {
         // 其他模型：如果生成多张，需要多次调用（因为某些模型可能不支持 n 参数或支持有限）
-        const isGptImage2 = selectedImageModel === 'gpt-image-2-all';
+        const isGptImage2 = selectedImageModel === 'gpt-image-2-all' || selectedImageModel === 'gpt-image-2-c';
         if (generateImageCount > 1) {
           // 多次调用生成多张图片
           for (let i = 0; i < generateImageCount; i++) {
@@ -4782,7 +4783,7 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       
       // 对 GPT Image 2 使用最大 20 并发 + 500ms 间隔，避免 api.openlux.ai 后端限流报错
       // 其他模型（z-image-turbo、sora_image、grok 等）也加上 200ms 错开，进一步降低 503/429 概率
-    const isGptImage2 = selectedImageModel === 'gpt-image-2-all';
+    const isGptImage2 = selectedImageModel === 'gpt-image-2-all' || selectedImageModel === 'gpt-image-2-c';
     const concurrency = isGptImage2 ? 20 : runningHubConcurrency;
     const staggerMs = isGptImage2 ? 500 : 200;
     const results = await runConcurrentTasks(
