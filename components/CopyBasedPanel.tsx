@@ -461,10 +461,9 @@ const CopyBasedPanel: React.FC<{
   /** v2.0：智能解析前勾选"同时生成5段并行配音"，解析完成后自动开始配音 */
   const [parallelTtsEnabled, setParallelTtsEnabled] = useState<boolean>(false);
 
-  /** v2.0：5段并行配音中，每段是否使用手动上传音频（路径 string | null 表示已上传待用） */
-  const [manualAudioOverrides, setManualAudioOverrides] = useState<Map<number, string>>(new Map());
-  /** v2.0：5段并行配音中，每段是否跳过AI配音（使用手动上传音频） */
-  const [skipTtsSegments, setSkipTtsSegments] = useState<Set<number>>(new Set());
+  // v2.2：手动上传音频（单段）—— 上传一个完整配音音频后，5 段配音任务全部跳过 AI
+  const [uploadedFullAudio, setUploadedFullAudio] = useState<string | null>(null);
+  const [uploadedFullAudioBlob, setUploadedFullAudioBlob] = useState<Blob | null>(null);
 
   /** v10.6：链接提取文案 loading 状态（文案成片面板） */
   const [extractingUrl, setExtractingUrl] = useState<boolean>(false);
@@ -1615,7 +1614,65 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
   // 5 段并行配音 — 复用多镜头分镜的语音库
   // 注：选中的音色若未同步到 RunningHub，会先上传再调用 TTS，保证真正使用自选音色
   // ──────────────────────────────────────────────
+
+  /** v2.2 helper：通过 HTMLAudioElement 解码任意 audio Blob 取时长（秒） */
+  const getAudioBlobDuration = useCallback((blob: Blob): Promise<number> => {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio();
+      audio.preload = 'metadata';
+      audio.src = url;
+      audio.onloadedmetadata = () => {
+        const d = audio.duration;
+        URL.revokeObjectURL(url);
+        if (!isFinite(d) || d <= 0) reject(new Error('音频时长解析失败'));
+        else resolve(d);
+      };
+      audio.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error('音频解码失败，请确认文件格式'));
+      };
+    });
+  }, []);
+
   const handleGenerateTts = useCallback(async () => {
+    if (rawCopy.trim().length < 50) {
+      toast.error('文案过短，无法配音', 3000);
+      return;
+    }
+
+    // ── v2.2 短路：用户上传了手动音频 → 直接用上传的音频，跳过 AI 配音 ──
+    if (uploadedFullAudio && uploadedFullAudioBlob) {
+      appendLog('STAGE', '▶ 使用手动上传的音频（跳过 AI 配音）');
+      appendLog('TTS', `音频文件：${uploadedFullAudio}`);
+      try {
+        const durationSec = await getAudioBlobDuration(uploadedFullAudioBlob);
+        const url = URL.createObjectURL(uploadedFullAudioBlob);
+        const fakeResult: ParallelTtsResult = {
+          mergedAudioUrl: url,
+          mergedAudioBlob: uploadedFullAudioBlob,
+          totalDuration: durationSec,
+          segments: [
+            {
+              index: 0,
+              text: rawCopy.trim(),
+              audioUrl: url,
+              duration: durationSec,
+              success: true,
+            },
+          ],
+        };
+        setTtsResult(fakeResult);
+        setTtsError(null);
+        appendLog('TTS', `✓ 手动音频已就绪，时长 ${durationSec.toFixed(1)} 秒`);
+        toast.success(`已使用手动上传的音频（${durationSec.toFixed(1)}s）`, 3000);
+      } catch (e: any) {
+        appendLog('ERROR', `读取手动音频失败：${e?.message || e}`);
+        toast.error(`读取手动音频失败：${e?.message || e}`, 5000);
+      }
+      return;
+    }
+
     if (selectedOptionList.length === 0) {
       toast.error('请先选择至少 1 套方案', 3000);
       return;
@@ -1623,10 +1680,6 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
     if (!runningHubApiKey?.trim()) {
       appendLog('ERROR', 'RunningHub API Key 未配置');
       toast.error('请先在顶部输入 RunningHub API Key', 4000);
-      return;
-    }
-    if (rawCopy.trim().length < 50) {
-      toast.error('文案过短，无法配音', 3000);
       return;
     }
     appendLog('STAGE', '▶ 开始 5 段并行配音（使用最终选定方案的标题作为字幕参考）');
@@ -1727,6 +1780,8 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
     selectedVoice,
     toast,
     appendLog,
+    uploadedFullAudio,
+    uploadedFullAudioBlob,
   ]);
 
   const handleCancelTts = () => {
@@ -2960,92 +3015,67 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
             </div>
           </details>
 
-          {/* v2.0：5段手动上传音频（支持替换AI配音） */}
-          <div className="bg-slate-900/40 border border-purple-800/50 rounded p-3 space-y-2">
-            <div className="flex items-center gap-2">
-              <Upload size={13} className="text-purple-400" />
-              <span className="text-xs font-bold text-purple-300">手动上传音频（可选）</span>
-              <span className="text-[10px] text-slate-500">
-                上传后将替换对应段落的AI配音；未上传则使用AI配音
-              </span>
-            </div>
-            <div className="grid grid-cols-5 gap-2">
-              {Array.from({ length: 5 }, (_, i) => {
-                const uploaded = manualAudioOverrides.get(i);
-                const skipped = skipTtsSegments.has(i);
-                return (
-                  <div key={i} className="flex flex-col items-center gap-1">
-                    <span className="text-[10px] text-slate-500">段{i + 1}</span>
-                    {uploaded ? (
-                      <div className="flex flex-col items-center gap-0.5">
-                        <CheckCircle size={12} className="text-emerald-400" />
-                        <span className="text-[9px] text-emerald-400 truncate max-w-full" title={uploaded}>
-                          {uploaded.split('/').pop()}
-                        </span>
-                        <button
-                          onClick={() => {
-                            setManualAudioOverrides((prev) => {
-                              const next = new Map(prev);
-                              next.delete(i);
-                              return next;
-                            });
-                            setSkipTtsSegments((prev) => {
-                              const next = new Set(prev);
-                              next.delete(i);
-                              return next;
-                            });
-                          }}
-                          className="text-[9px] text-red-400 hover:text-red-300"
-                          type="button"
-                        >
-                          移除
-                        </button>
-                      </div>
-                    ) : (
-                      <label className="cursor-pointer">
-                        <input
-                          type="file"
-                          accept="audio/*"
-                          className="hidden"
-                          onChange={async (e) => {
-                            const file = e.target.files?.[0];
-                            if (!file) return;
-                            try {
-                              const baseUrl =
-                                (window as any).__REMOTION_SERVER_URL__ || getRemotionApiBase();
-                              const fd = new FormData();
-                              fd.append('file', file, file.name);
-                              const up = await fetch(`${baseUrl}/upload-media`, {
-                                method: 'POST',
-                                body: fd,
-                              });
-                              const json = await up.json();
-                              if (!json.success || !json.paths?.[0]) throw new Error(json.error || '上传失败');
-                              setManualAudioOverrides((prev) => {
-                                const next = new Map(prev);
-                                next.set(i, json.paths[0]);
-                                return next;
-                              });
-                              setSkipTtsSegments((prev) => {
-                                const next = new Set(prev);
-                                next.add(i);
-                                return next;
-                              });
-                              toast.success(`段${i + 1} 已上传手动音频`);
-                            } catch (err: any) {
-                              toast.error(`上传失败：${err.message}`);
-                            }
-                            e.target.value = '';
-                          }}
-                        />
-                        <div className="w-8 h-8 border border-purple-700 hover:border-purple-500 rounded flex items-center justify-center bg-slate-800 hover:bg-slate-700 transition-colors">
-                          <Plus size={12} className="text-purple-400" />
-                        </div>
-                      </label>
-                    )}
-                  </div>
-                );
-              })}
+          {/* v2.2：手动上传音频（单段）—— 上传一个完整音频后，5 段全部跳过 AI 配音 */}
+          <div className="bg-slate-900/40 border border-purple-800/50 rounded p-3">
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <Upload size={13} className="text-purple-400" />
+                <span className="text-xs font-bold text-purple-300">手动上传音频</span>
+                <span className="text-[10px] text-slate-500">（可选，上传后跳过 AI 配音，直接使用此音频）</span>
+              </div>
+              {uploadedFullAudio ? (
+                <div className="flex items-center gap-2 ml-auto">
+                  <CheckCircle size={14} className="text-emerald-400 flex-shrink-0" />
+                  <span className="text-xs text-emerald-400 truncate max-w-[260px]" title={uploadedFullAudio}>
+                    {uploadedFullAudio.split('/').pop()}
+                  </span>
+                  {uploadedFullAudioBlob && (
+                    <audio src={URL.createObjectURL(uploadedFullAudioBlob)} controls className="h-7" />
+                  )}
+                  <button
+                    onClick={() => {
+                      setUploadedFullAudio(null);
+                      setUploadedFullAudioBlob(null);
+                      toast.info('已移除手动音频，恢复 AI 配音');
+                    }}
+                    className="text-[10px] text-red-400 hover:text-red-300"
+                    type="button"
+                  >
+                    移除
+                  </button>
+                </div>
+              ) : (
+                <label className="ml-auto cursor-pointer px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-purple-300 rounded text-xs flex items-center gap-1">
+                  <input
+                    type="file"
+                    accept="audio/*"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      try {
+                        const baseUrl =
+                          (window as any).__REMOTION_SERVER_URL__ || getRemotionApiBase();
+                        const fd = new FormData();
+                        fd.append('file', file, file.name);
+                        const up = await fetch(`${baseUrl}/upload-media`, {
+                          method: 'POST',
+                          body: fd,
+                        });
+                        const json = await up.json();
+                        if (!json.success || !json.paths?.[0]) throw new Error(json.error || '上传失败');
+                        setUploadedFullAudio(json.paths[0]);
+                        setUploadedFullAudioBlob(file);
+                        toast.success('✓ 手动音频已上传，将跳过 AI 配音');
+                      } catch (err: any) {
+                        toast.error(`上传失败：${err.message}`);
+                      }
+                      e.target.value = '';
+                    }}
+                  />
+                  <Plus size={12} /> 选择音频文件
+                </label>
+              )}
             </div>
           </div>
 
