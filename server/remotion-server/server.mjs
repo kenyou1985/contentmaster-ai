@@ -106,13 +106,32 @@ const PORT = process.env.PORT || 10000;
 const app = express();
 // 流式 JSON body 解析（替代 express.json({ limit:'2gb' })，避免 OOM）
 // 接受 application/json 和 multipart/form-data（后者含 data URL）
-// 跳过 /upload-media：让 multer 直接接管流（避免重复 Buffer.concat 内存爆炸）
+// /upload-media 同时支持两种格式：JSON { items } 和 multipart (file 字段)
+// 为了避免重复 Buffer.concat 内存爆炸：
+//   - multipart → 让 /upload-media 内部的 multer 处理（已配置 1GB 上限）
+//   - JSON → 这里用流式解析后给 req.body
 app.use((req, res, next) => {
-  if (req.path === '/upload-media') return next();
-  if (req.headers['content-type']?.includes('application/json') ||
-      req.headers['content-type']?.includes('multipart/form-data')) {
+  const ct = req.headers['content-type'] || '';
+  const isUploadMedia = req.path === '/upload-media';
+  // multipart 路径：只在 /upload-media 拦截，其他 multipart 端点也走 multer
+  if (ct.includes('multipart/form-data')) {
+    if (isUploadMedia) return next(); // 让 multer 处理
+    // 其他 multipart：交给下游 multer
+    return next();
+  }
+  if (ct.includes('application/json')) {
     const chunks = [];
-    req.on('data', (c) => chunks.push(c));
+    let totalLen = 0;
+    const MAX = 200 * 1024 * 1024; // 200MB 硬上限（防止 OOM）
+    req.on('data', (c) => {
+      totalLen += c.length;
+      if (totalLen > MAX) {
+        chunks.length = 0;
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
     req.on('end', () => {
       try {
         const raw = Buffer.concat(chunks);
@@ -171,6 +190,12 @@ const SYSTEM_CHROMIUM_PATHS = [
   '/usr/bin/chromium',
   '/usr/bin/google-chrome',
   '/usr/bin/chrome',
+  // macOS：本机安装位置
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/Applications/Chromium.app/Contents/MacOS/Chromium',
+  // macOS：当前用户 Homebrew
+  '/opt/homebrew/bin/chromium',
+  '/opt/homebrew/opt/chromium/bin/chromium',
 ];
 const SYSTEM_CHROMIUM = SYSTEM_CHROMIUM_PATHS.find((p) => p && existsSync(p)) || null;
 if (SYSTEM_CHROMIUM) {
@@ -717,6 +742,8 @@ async function runRenderInProcess(payload, taskId) {
       serveUrl: bundleLocation,
       id: 'MyVideo',
       inputProps,
+      // 见 renderMedia 处的 v1.x 修复：macOS Chrome 访问 serveUrl 需要 IPv4
+      forceIPv4: true,
       ...(SYSTEM_CHROMIUM ? { browserExecutable: SYSTEM_CHROMIUM } : {}),
     });
 
@@ -751,6 +778,11 @@ async function runRenderInProcess(payload, taskId) {
       outputLocation: outputPath,
       inputProps,
       concurrency,
+      // 修复 v1.x：macOS 上 Chrome 访问 serveUrl 失败
+      // Remotion serveStatic 默认按 IPv6 → '::' bind，Chrome 用 localhost 解析到 IPv4 127.0.0.1
+      // → bind 地址和访问地址不一致，连接超时（"got no response"）。
+      // 强制 IPv4 让 serveStatic 用 0.0.0.0 bind，避免与 Vite 3000 等其他进程的 IPv4/V6 冲突。
+      forceIPv4: true,
       ...(SYSTEM_CHROMIUM ? { browserExecutable: SYSTEM_CHROMIUM } : {}),
       chromiumOptions: {
         args: [
@@ -823,15 +855,43 @@ const healthHandler = (_req, res) => {
   let chromiumVersion = null;
   let ffmpegOk = false;
   let ffmpegVersion = null;
+
+  // Chromium/chrome：优先用 SYSTEM_CHROMIUM（实际会被 Remotion 渲染用到的二进制），
+  // 这样健康检查和实际渲染路径一致，避免误报"OK 但渲染失败"。
+  // Chrome 启动慢，给 8 秒超时。
+  if (SYSTEM_CHROMIUM) {
+    try {
+      chromiumVersion = execSync(`"${SYSTEM_CHROMIUM}" --version`, { timeout: 8000 })
+        .toString().trim();
+      chromiumOk = /Chromium|Google Chrome|Chrome/i.test(chromiumVersion);
+    } catch (e) {
+      chromiumVersion = `(exec failed: ${e?.message?.slice(0, 80) || 'unknown'})`;
+    }
+  }
+  if (!chromiumOk) {
+    // 兜底：PATH 命令
+    try {
+      chromiumVersion = execSync('chromium --version 2>/dev/null || google-chrome --version 2>/dev/null || echo ""', { timeout: 3000 })
+        .toString().trim();
+      chromiumOk = /Chromium|Google Chrome/i.test(chromiumVersion);
+    } catch {}
+  }
+
+  // ffmpeg：优先 ffmpeg-static（项目自带），其次 PATH 命令
   try {
-    chromiumVersion = execSync('chromium --version 2>/dev/null || google-chrome --version 2>/dev/null || echo ""', { timeout: 3000 })
-      .toString().trim();
-    chromiumOk = /Chromium|Google Chrome/i.test(chromiumVersion);
+    const nmdir = localRequire.resolve('ffmpeg-static').replace('/index.js', '');
+    const fsBin = join(nmdir, 'ffmpeg');
+    if (existsSync(fsBin)) {
+      ffmpegVersion = execSync(`"${fsBin}" -version`, { timeout: 3000 }).toString().split('\n')[0].trim();
+      ffmpegOk = /ffmpeg/i.test(ffmpegVersion);
+    }
   } catch {}
-  try {
-    ffmpegVersion = execSync('ffmpeg -version 2>&1 | head -1', { timeout: 3000 }).toString().trim();
-    ffmpegOk = /ffmpeg/i.test(ffmpegVersion);
-  } catch {}
+  if (!ffmpegOk) {
+    try {
+      ffmpegVersion = execSync('ffmpeg -version 2>&1 | head -1', { timeout: 3000 }).toString().trim();
+      ffmpegOk = /ffmpeg/i.test(ffmpegVersion);
+    } catch {}
+  }
 
   const totalMemMB = Math.round(os.totalmem() / 1024 / 1024);
   const freeMemMB = Math.round(os.freemem() / 1024 / 1024);
@@ -860,6 +920,7 @@ const healthHandler = (_req, res) => {
     runtime: {
       chromium: chromiumOk,
       chromiumVersion,
+      chromiumPath: SYSTEM_CHROMIUM,
       ffmpeg: ffmpegOk,
       ffmpegVersion,
       cpus: os.cpus()?.length || 0,

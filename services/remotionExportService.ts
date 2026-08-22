@@ -20,7 +20,11 @@ import {
 } from './remotionRenderTypes';
 import { cacheVideo } from './videoCacheService';
 
-const V8_MAX_SAFE_STRING = 480 * 1024 * 1024; // 与剪映一致
+// 服务端 raw body 阈值 100MB（server.mjs:123）。前端 JSON.stringify 长度是 UTF-16 单元数，
+// 与 HTTP body 字节数比值约 1.5-2 倍（含中文时接近 2）。设 50MB 留缓冲，确保：
+//   JSON.stringify(payload).length ≤ 50MB → HTTP body ≤ 100MB → 服务端不会清理 data URL
+const SAFE_INLINE_PAYLOAD_BYTES = 50 * 1024 * 1024;
+const V8_MAX_SAFE_STRING = 480 * 1024 * 1024; // V8 字符串上限（防御性保留）
 
 function isLocalSiteOrigin(): boolean {
   if (typeof window === 'undefined') return false;
@@ -176,16 +180,55 @@ async function ensurePayloadSerializable(
   apiBase: string,
   onProgress?: (p: number, m: string) => void,
 ): Promise<Record<string, unknown>> {
+  // 第一道闸：服务端 raw body 阈值 100MB，超出会清理 data URL 留下占位符导致渲染失败。
+  // 必须在 V8 阈值之前触发，提前把 data URL 上传走 upload-media 流程。
   let size = 0;
+  let hasInlineData = hasInlineDataUrl(payload);
   try {
     size = JSON.stringify(payload).length;
   } catch (e: any) {
     console.warn('[RemotionExport] payload 初次序列化失败', e?.message);
   }
+  if (size > SAFE_INLINE_PAYLOAD_BYTES && hasInlineData) {
+    console.warn(
+      `[RemotionExport] payload ${(size / 1024 / 1024).toFixed(1)}MB 超过安全阈值 ` +
+      `${(SAFE_INLINE_PAYLOAD_BYTES / 1024 / 1024).toFixed(0)}MB，提取内嵌 data URL 到服务端临时文件`
+    );
+    onProgress?.(8, `Payload ${(size / 1024 / 1024).toFixed(1)}MB 超阈值，提前上传内嵌媒体...`);
+    return await uploadInlineDataUrlsToServer(payload, apiBase);
+  }
+  // 第二道闸：V8 字符串上限兜底（极端大文件保护）
   if (size <= V8_MAX_SAFE_STRING) return payload;
   console.warn(`[RemotionExport] payload 过大 (${(size / 1024 / 1024).toFixed(1)}MB)，提取 data URL`);
   onProgress?.(8, 'Payload 过大，提取内嵌媒体到本地临时文件...');
   return await uploadInlineDataUrlsToServer(payload, apiBase);
+}
+
+/**
+ * 递归扫描 payload 是否包含任何 data URL 字符串。
+ * 仅检查 shot.{imageUrl,imageUrls,audioUrl,voiceoverAudioUrl,videoUrl} 以及顶层已知字段。
+ * 用来在体积阈值判断时给"内联 data URL 多"的情况一个明确信号。
+ */
+function hasInlineDataUrl(payload: Record<string, unknown>): boolean {
+  const check = (val: unknown): boolean => {
+    if (typeof val === 'string') return val.startsWith('data:');
+    if (Array.isArray(val)) return val.some(check);
+    return false;
+  };
+  const shots = Array.isArray(payload.shots) ? (payload.shots as any[]) : [];
+  for (const shot of shots) {
+    if (!shot || typeof shot !== 'object') continue;
+    if (check(shot.imageUrl)) return true;
+    if (check(shot.imageUrls)) return true;
+    if (check(shot.audioUrl)) return true;
+    if (check(shot.voiceoverAudioUrl)) return true;
+    if (check(shot.videoUrl)) return true;
+  }
+  // 兜底：顶层任何字符串字段
+  for (const v of Object.values(payload)) {
+    if (check(v)) return true;
+  }
+  return false;
 }
 
 // ── 媒体预处理：blob: → data URL（仅当需要）────────────────────
