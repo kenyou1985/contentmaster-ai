@@ -597,15 +597,19 @@ async function extractUrlsToTempFiles(shots, log = console.log) {
         } catch {}
         const filePath = await downloadRemote(val, ext);
         filePathMap.set(val, filePath);
-      } else if (val.startsWith('/tmp/')) {
-        // 兜底：前端调 /upload-media 拿到的本地路径（/tmp/remotion_data_xxx/...）
-        // 已落地，无需重新下载，直接入 filePathMap 让后续 replaceFilePathsWithHttpUrls
-        // 转成 HTTP URL。这样任何忘了转换的调用方（CustomTracksPanel/CopyBasedPanel）
-        // 也不会让 shot.audioUrl 留 /tmp/... 让 Remotion staticFile 包成 3001/public/... 报错。
-        const filePath = val;
+      } else if (val.startsWith('/tmp/') || val.startsWith('/api/remotion/media/')) {
+        // 兜底：前端调 /upload-media 后被 toRemotionMediaHttpUrl 转成的相对路径，
+        // 或未经转换的本地路径（/tmp/remotion_data_xxx/...）。两者都映射到同一个
+        // filePath，让后续 replaceFilePathsWithHttpUrls 转成绝对 HTTP URL。
+        // 这样任何忘了转换的调用方（CustomTracksPanel/CopyBasedPanel/老 build）
+        // 也不会让 shot.audioUrl 留 /tmp/... 或 /api/remotion/media/... 让
+        // Remotion staticFile 包成 3001/public/... 报错。
+        const filePath = val.startsWith('/api/remotion/media/')
+          ? '/tmp/' + val.slice('/api/remotion/media/'.length)
+          : val;
         try {
           if (!existsSync(filePath)) {
-            log(`⚠️ 本地路径不存在: ${val}`);
+            log(`⚠️ 本地路径不存在: ${val} → ${filePath}`);
             continue;
           }
           filePathMap.set(val, filePath);
@@ -634,10 +638,10 @@ async function extractUrlsToTempFiles(shots, log = console.log) {
 }
 
 /**
- * 把文件路径替换为 HTTP URL（Remotion webpack dev server 需要 HTTP URL）
+ * 把文件路径替换为 HTTP URL（Remotion Chrome 需要绝对 URL 才能直接 fetch）
  * @param {Array} shots - 包含文件路径的 shots
  * @param {Map} filePathMap - data URL → 文件路径 的映射
- * @param {string} baseUrl - 如 http://localhost:8080
+ * @param {string} baseUrl - 如 http://localhost:18093
  */
 function replaceFilePathsWithHttpUrls(shots, filePathMap, baseUrl) {
   const reversedMap = new Map();
@@ -647,6 +651,11 @@ function replaceFilePathsWithHttpUrls(shots, filePathMap, baseUrl) {
     // 需要去掉 /tmp 前缀
     const urlPath = filePath.replace(/^\/tmp/, '');
     reversedMap.set(filePath, `${baseUrl}/media${urlPath}`);
+    // 同时把 /api/remotion/media/... 相对路径也映射成绝对 URL
+    // 修复：前端 toRemotionMediaHttpUrl 把 /tmp/... 转成 /api/remotion/media/... 相对路径，
+    // 后端需要再 normalize 成 http://...:18093/media/... 否则 Remotion staticFile() 会
+    // 包成 http://<Remotion端口>/public/api/remotion/... → Chrome 找不到媒体。
+    reversedMap.set(`/api/remotion/media${urlPath}`, `${baseUrl}/media${urlPath}`);
   }
 
   const result = JSON.parse(JSON.stringify(shots));
@@ -654,12 +663,26 @@ function replaceFilePathsWithHttpUrls(shots, filePathMap, baseUrl) {
     for (const key of ['imageUrl', 'audioUrl', 'voiceoverAudioUrl', 'videoUrl']) {
       if (shot[key] && reversedMap.has(shot[key])) {
         shot[key] = reversedMap.get(shot[key]);
+      } else if (shot[key]?.startsWith?.('/api/remotion/media/')) {
+        // 兜底：filePathMap 没记录的（理论上不会发生，但保险起见）
+        const subPath = shot[key].slice('/api/remotion/media/'.length);
+        shot[key] = `${baseUrl}/media/${subPath}`;
+      } else if (shot[key]?.startsWith?.('/tmp/')) {
+        // 兜底：前端没转换的本地路径
+        shot[key] = `${baseUrl}/media${shot[key].replace(/^\/tmp/, '')}`;
       }
     }
     if (Array.isArray(shot.imageUrls)) {
-      shot.imageUrls = shot.imageUrls.map((u) =>
-        u && reversedMap.has(u) ? reversedMap.get(u) : u
-      );
+      shot.imageUrls = shot.imageUrls.map((u) => {
+        if (u && reversedMap.has(u)) return reversedMap.get(u);
+        if (u?.startsWith?.('/api/remotion/media/')) {
+          return `${baseUrl}/media/${u.slice('/api/remotion/media/'.length)}`;
+        }
+        if (u?.startsWith?.('/tmp/')) {
+          return `${baseUrl}/media${u.replace(/^\/tmp/, '')}`;
+        }
+        return u;
+      });
     }
   }
   return result;
@@ -1551,9 +1574,17 @@ app.post('/asr/transcribe', async (req, res) => {
         writeFileSync(tempFile, buffer);
       } else if (audioSource.startsWith('/')) {
         // 服务端路径：直接读取 copy（upload-media 路径下文件生命周期与请求一致即可）
+        // 兼容前端调 /upload-media 后被 toRemotionMediaHttpUrl 转成的相对路径
+        // （形如 /api/remotion/media/remotion_data_xxx/...）：把 /api/remotion/media 前缀反向
+        // 映射回真实 /tmp 路径，避免文件不存在报错
         const { readFileSync, copyFileSync, writeFileSync } = await import('fs');
+        let realPath = audioSource;
+        if (audioSource.startsWith('/api/remotion/media/')) {
+          realPath = '/tmp/' + audioSource.slice('/api/remotion/media/'.length);
+          console.log(`[ASR] 解析相对路径 ${audioSource} → ${realPath}`);
+        }
         try {
-          copyFileSync(audioSource, tempFile);
+          copyFileSync(realPath, tempFile);
         } catch (copyErr) {
           // 兜底：直接读取写到一个新文件
           const buf = readFileSync(audioSource);
