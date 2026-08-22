@@ -26,6 +26,7 @@ import { promises as fs } from 'fs';
 import { Readable } from 'stream';
 import os from 'os';
 import multer from 'multer';
+import { Worker } from 'worker_threads';
 // ESM 文件中创建本地 require，用于解析 ffmpeg-static 等 CommonJS 模块
 import { createRequire } from 'module';
 const localRequire = createRequire(import.meta.url);
@@ -280,6 +281,60 @@ function scheduleOutputCleanup() {
     cleanupExpiredOutputs();
     setInterval(cleanupExpiredOutputs, OUTPUT_CLEANUP_INTERVAL_MS);
   }, 60_000);
+}
+
+// ── ASR Worker（避免 Whisper 阻塞主 event loop）────────────
+// 复用一个 Worker 串行处理 ASR 任务，避免每个请求都新启一个进程/加载模型
+let asrWorker = null;
+const asrPending = new Map(); // id -> { resolve, reject }
+let asrNextId = 1;
+
+function getAsrWorker() {
+  if (asrWorker) return asrWorker;
+  const workerPath = join(__dirname, 'asr-worker.mjs');
+  console.log('[asr-worker] 启动:', workerPath);
+  asrWorker = new Worker(workerPath);
+
+  asrWorker.on('message', (msg) => {
+    if (msg.ready) {
+      console.log('[asr-worker] 就绪');
+      return;
+    }
+    const pending = asrPending.get(msg.id);
+    if (!pending) return;
+    asrPending.delete(msg.id);
+    pending.resolve(msg);
+  });
+
+  asrWorker.on('error', (err) => {
+    console.error('[asr-worker] error:', err);
+    // reject 所有 pending
+    for (const [id, p] of asrPending) {
+      p.reject(err);
+      asrPending.delete(id);
+    }
+  });
+
+  asrWorker.on('exit', (code) => {
+    console.warn(`[asr-worker] exit code=${code}`);
+    asrWorker = null;
+    // reject 所有 pending
+    for (const [id, p] of asrPending) {
+      p.reject(new Error(`ASR worker exited code=${code}`));
+      asrPending.delete(id);
+    }
+  });
+
+  return asrWorker;
+}
+
+async function runAsrInWorker(audioPath, language = 'zh') {
+  const worker = getAsrWorker();
+  const id = asrNextId++;
+  return new Promise((resolve, reject) => {
+    asrPending.set(id, { resolve, reject });
+    worker.postMessage({ id, audioPath, language });
+  });
 }
 
 // ── 任务队列 ───────────────────────────────
@@ -1602,9 +1657,9 @@ app.post('/asr/transcribe', async (req, res) => {
         writeFileSync(tempFile, Buffer.from(arrayBuffer));
       }
 
-      // 懒加载 ASR 服务（首次调用时才初始化模型）
-      const { transcribeAudio } = await import('./asr-service.mjs');
-      const result = await transcribeAudio(tempFile, language);
+      // 跑 ASR 在 worker thread 里，不阻塞主进程 event loop
+      // （transformers.js WASM 是 CPU-bound，长音频会卡死整个 Express → /health 也会 hang）
+      const result = await runAsrInWorker(tempFile, language);
 
       if (!result.ok) {
         return res.json({

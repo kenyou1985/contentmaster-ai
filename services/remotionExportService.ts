@@ -70,10 +70,13 @@ export function buildRemotionUrl(outputUrl: string): string {
 
 /**
  * 健康检查
+ * 超时延长到 30s：本地开发时如果服务端正在跑 Whisper ASR（transformers.js WASM），
+ * 整个 Node 主线程会被占用几十秒到几分钟（事件循环阻塞），期间 /health 也会卡。
+ * 10 秒太短 → 前端误判"服务不可用"。30 秒足够覆盖大多数 ASR 任务。
  */
-export async function checkRemotionHealth(): Promise<any> {
+export async function checkRemotionHealth(timeoutMs = 30000): Promise<any> {
   const base = getRemotionApiBase();
-  const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(10000) });
+  const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(timeoutMs) });
   if (!res.ok) throw new Error(`服务不可用 (${res.status})`);
   return res.json();
 }
