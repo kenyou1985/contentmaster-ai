@@ -65,6 +65,7 @@ import {
   ChevronUp,
   Link2,
   ClipboardList,
+  CheckCircle,
 } from 'lucide-react';
 import { useToast } from './Toast';
 import { VoiceLibrary } from './VoiceLibrary';
@@ -456,6 +457,14 @@ const CopyBasedPanel: React.FC<{
   const [analysisResult, setAnalysisResult] = useState<CopyAnalysisResult | null>(null);
   const [analyzing, setAnalyzing] = useState<boolean>(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+
+  /** v2.0：智能解析前勾选"同时生成5段并行配音"，解析完成后自动开始配音 */
+  const [parallelTtsEnabled, setParallelTtsEnabled] = useState<boolean>(false);
+
+  /** v2.0：5段并行配音中，每段是否使用手动上传音频（路径 string | null 表示已上传待用） */
+  const [manualAudioOverrides, setManualAudioOverrides] = useState<Map<number, string>>(new Map());
+  /** v2.0：5段并行配音中，每段是否跳过AI配音（使用手动上传音频） */
+  const [skipTtsSegments, setSkipTtsSegments] = useState<Set<number>>(new Set());
 
   /** v10.6：链接提取文案 loading 状态（文案成片面板） */
   const [extractingUrl, setExtractingUrl] = useState<boolean>(false);
@@ -1000,6 +1009,14 @@ const CopyBasedPanel: React.FC<{
       });
       setAnalysisResult(r);
       appendLog('PARSE', `解析成功：${r.titleOptions.length} 套方案 + 人物「${r.characterInfo.name || '未识别'}」`);
+
+      // v2.0：解析前勾选了"同时生成5段并行配音" → 解析完成后自动开始配音
+      if (parallelTtsEnabled) {
+        appendLog('TTS', '🔔 勾选了并行配音，解析完成后自动开始 5 段配音...');
+        // handleGenerateTts 依赖 selectedOptionList，但解析后已自动 select，
+        // 故延迟一点让 setSelectedIndices 渲染完成
+        setTimeout(() => handleGenerateTts(), 100);
+      }
       if (r.summary) appendLog('PARSE', `摘要：${r.summary}`);
       r.titleOptions.forEach((opt, i) => {
         appendLog('PARSE', `方案${i + 1}[${opt.schemeId}·${opt.schemeName}][${opt.styleTag}]：${opt.title}`);
@@ -1029,7 +1046,7 @@ const CopyBasedPanel: React.FC<{
     } finally {
       setAnalyzing(false);
     }
-  }, [apiKey, rawCopy, toast, appendLog]);
+  }, [apiKey, rawCopy, toast, appendLog, parallelTtsEnabled]);
 
   // ──────────────────────────────────────────────
   // 角色参考图
@@ -2337,6 +2354,20 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
               </>
             )}
           </button>
+          {analyzing && (
+            <label className="flex items-center gap-2 bg-slate-800/50 border border-purple-700 rounded-lg px-3 py-2 cursor-pointer hover:bg-slate-700/50 transition-colors">
+              <input
+                type="checkbox"
+                checked={parallelTtsEnabled}
+                onChange={(e) => setParallelTtsEnabled(e.target.checked)}
+                className="w-4 h-4 accent-purple-500"
+              />
+              <Mic size={14} className="text-purple-400" />
+              <span className="text-xs text-purple-300">
+                解析完成后自动生成 5 段并行配音
+              </span>
+            </label>
+          )}
 
           {analysisError && (
             <div className="bg-red-900/30 border border-red-700 rounded p-2 text-xs text-red-300 flex items-start gap-1">
@@ -2928,6 +2959,95 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
             </div>
           </details>
 
+          {/* v2.0：5段手动上传音频（支持替换AI配音） */}
+          <div className="bg-slate-900/40 border border-purple-800/50 rounded p-3 space-y-2">
+            <div className="flex items-center gap-2">
+              <Upload size={13} className="text-purple-400" />
+              <span className="text-xs font-bold text-purple-300">手动上传音频（可选）</span>
+              <span className="text-[10px] text-slate-500">
+                上传后将替换对应段落的AI配音；未上传则使用AI配音
+              </span>
+            </div>
+            <div className="grid grid-cols-5 gap-2">
+              {Array.from({ length: 5 }, (_, i) => {
+                const uploaded = manualAudioOverrides.get(i);
+                const skipped = skipTtsSegments.has(i);
+                return (
+                  <div key={i} className="flex flex-col items-center gap-1">
+                    <span className="text-[10px] text-slate-500">段{i + 1}</span>
+                    {uploaded ? (
+                      <div className="flex flex-col items-center gap-0.5">
+                        <CheckCircle size={12} className="text-emerald-400" />
+                        <span className="text-[9px] text-emerald-400 truncate max-w-full" title={uploaded}>
+                          {uploaded.split('/').pop()}
+                        </span>
+                        <button
+                          onClick={() => {
+                            setManualAudioOverrides((prev) => {
+                              const next = new Map(prev);
+                              next.delete(i);
+                              return next;
+                            });
+                            setSkipTtsSegments((prev) => {
+                              const next = new Set(prev);
+                              next.delete(i);
+                              return next;
+                            });
+                          }}
+                          className="text-[9px] text-red-400 hover:text-red-300"
+                          type="button"
+                        >
+                          移除
+                        </button>
+                      </div>
+                    ) : (
+                      <label className="cursor-pointer">
+                        <input
+                          type="file"
+                          accept="audio/*"
+                          className="hidden"
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            try {
+                              const baseUrl =
+                                (window as any).__REMOTION_SERVER_URL__ || getRemotionApiBase();
+                              const fd = new FormData();
+                              fd.append('file', file, file.name);
+                              const up = await fetch(`${baseUrl}/upload-media`, {
+                                method: 'POST',
+                                body: fd,
+                              });
+                              const json = await up.json();
+                              if (!json.success || !json.paths?.[0]) throw new Error(json.error || '上传失败');
+                              setManualAudioOverrides((prev) => {
+                                const next = new Map(prev);
+                                next.set(i, json.paths[0]);
+                                return next;
+                              });
+                              setSkipTtsSegments((prev) => {
+                                const next = new Set(prev);
+                                next.add(i);
+                                return next;
+                              });
+                              toast.success(`段${i + 1} 已上传手动音频`);
+                            } catch (err: any) {
+                              toast.error(`上传失败：${err.message}`);
+                            }
+                            e.target.value = '';
+                          }}
+                        />
+                        <div className="w-8 h-8 border border-purple-700 hover:border-purple-500 rounded flex items-center justify-center bg-slate-800 hover:bg-slate-700 transition-colors">
+                          <Plus size={12} className="text-purple-400" />
+                        </div>
+                      </label>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
           <div className="flex items-center gap-2">
             <button
               onClick={handleGenerateTts}
@@ -3009,32 +3129,28 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                       if (!ttsResult) return;
                       try {
                         const baseUrl = (window as any).__REMOTION_SERVER_URL__ || getRemotionApiBase();
-                        // 将 blob URL 转为 data URL
+                        // 1. 将 blob URL 转为 ArrayBuffer → 发给服务端转换
                         const res = await fetch(ttsResult.mergedAudioUrl);
                         const blob = await res.blob();
-                        const reader = new FileReader();
-                        reader.onloadend = async () => {
-                          const dataUrl = String(reader.result);
-                          // 调用服务端转换
-                          const resp = await fetch(`${baseUrl}/audio/convert-to-mp3`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ audioUrl: dataUrl }),
-                          });
-                          const result = await resp.json();
-                          if (result.success && result.mp3Url) {
-                            // 触发下载
-                            const a = document.createElement('a');
-                            a.href = result.mp3Url;
-                            a.download = `tts_${Date.now()}.mp3`;
-                            a.click();
-                            toast.success('MP3 下载成功！');
-                          } else {
-                            toast.error(result.error || 'MP3 转换失败');
-                          }
-                        };
-                        reader.onerror = () => toast.error('读取音频失败');
-                        reader.readAsDataURL(blob);
+                        const arrayBuffer = await blob.arrayBuffer();
+                        // 2. 发给服务端转 MP3（用 FormData 传二进制，避免大 base64 溢出）
+                        const fd = new FormData();
+                        fd.append('audio', new File([arrayBuffer], 'merged.wav', { type: 'audio/wav' }));
+                        const resp = await fetch(`${baseUrl}/audio/convert-to-mp3`, {
+                          method: 'POST',
+                          body: fd,
+                        });
+                        const result = await resp.json();
+                        if (result.success && result.mp3Url) {
+                          // 3. 触发下载（mp3Url 为 data: URL，直接 a.click 即可）
+                          const a = document.createElement('a');
+                          a.href = result.mp3Url;
+                          a.download = `tts_${Date.now()}.mp3`;
+                          a.click();
+                          toast.success('MP3 下载成功！');
+                        } else {
+                          toast.error(result.error || 'MP3 转换失败');
+                        }
                       } catch (e: any) {
                         toast.error(e.message || 'MP3 下载失败');
                       }
