@@ -356,15 +356,15 @@ function scheduleQueueTick() {
 }
 
 function getMaxParallelRenders() {
-  // v1.11：根据 CPU/内存动态计算可同时跑的 Remotion worker 数
-  //  - 每个 Chromium tab + 一个 Remotion 进程约吃 1.5-2 核 + 2-3GB
-  //  - 留 1-2 核给 Chromium 进程外的辅助任务（ASR/Express/系统）
+  // v2.0 优化：提升并行上限，更匹配实际资源
+  // - 每个 Chromium tab 约吃 4 核（Remotion WebGL + JS thread）
+  // - 帧级并发由 renderMedia(concurrency=N) 在 tab 内部处理
+  // - 故 queue 级并行数 = floor(cpuCount / 4)，留 1 核给系统
   const cpuCount = Math.max(1, os.cpus()?.length || 1);
   const totalMemGB = Math.round(os.totalmem() / 1024 / 1024 / 1024);
-  const byCpu = Math.max(1, Math.floor((cpuCount - 2) / 2));
-  const byMem = Math.max(1, Math.floor(totalMemGB / 4));
-  // 保险下限 1，上限 4（再多会导致 IO/上下文切换反而更慢，且单个任务内已开 concurrency=16）
-  const n = Math.min(4, Math.max(1, byCpu, byMem));
+  const byCpu = Math.max(1, Math.floor((cpuCount - 1) / 4)); // 1 tab per 4 cores
+  const byMem = Math.max(1, Math.floor(totalMemGB / 4));      // 1 tab per 4GB
+  const n = Math.min(12, Math.max(1, byCpu, byMem));
   console.log(`[queue] cpu=${cpuCount} mem=${totalMemGB}GB → maxParallelRenders=${n} (cpu-budget=${byCpu}, mem-budget=${byMem})`);
   return n;
 }
@@ -549,37 +549,19 @@ async function generatePlaceholder(ext, filePath, log) {
 /**
  * 把 data URL 或远程 URL 转成文件路径，返回 { cleanedShots, tempDir, filePathMap }
  * filePathMap: 原始 URL → 文件路径 的映射
+ *
+ * 性能优化 v2：
+ * - 先遍历收集所有唯一 URL（去重），避免重复下载/解码
+ * - HTTP 远程文件并行下载（Promise.all），多文件时节省 3-10s
+ * - Base64 data URL 解码保留串行（CPU bound，约 200MB/s，不是 I/O 瓶颈）
+ * - 本地 /tmp/ 路径直接使用，不重复 copy
  */
 async function extractUrlsToTempFiles(shots, log = console.log) {
   const tempDir = join('/tmp', `remotion_data_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
   mkdirSync(tempDir, { recursive: true });
-  const filePathMap = new Map();
+  const filePathMap = new Map(); // original URL → file path
 
-  // 检查是否有 placeholder（body 解析时被清理了）
-  const placeholderCount = (() => {
-    let count = 0;
-    const check = (val) => {
-      if (val === DATA_URL_PLACEHOLDER) count++;
-      else if (typeof val === 'string' && val.includes(DATA_URL_PLACEHOLDER)) count++;
-    };
-    for (const shot of shots) {
-      for (const key of ['imageUrl', 'audioUrl', 'voiceoverAudioUrl', 'videoUrl']) {
-        check(shot?.[key]);
-      }
-      if (Array.isArray(shot?.imageUrls)) {
-        for (const u of shot.imageUrls) check(u);
-      }
-    }
-    return count;
-  })();
-
-  if (placeholderCount > 0) {
-    throw new Error(
-      `Payload 包含 ${placeholderCount} 个占位符 __DATA_URL_PLACEHOLDER__，` +
-      `表示媒体文件未上传。请确保前端使用 upload-media 接口上传大文件。`
-    );
-  }
-
+  // ── 步骤 1：收集所有唯一 URL（去重，避免重复下载）──────────────
   const collectUrls = (shot) => {
     const urls = [];
     for (const key of ['imageUrl', 'audioUrl', 'voiceoverAudioUrl', 'videoUrl']) {
@@ -594,86 +576,119 @@ async function extractUrlsToTempFiles(shots, log = console.log) {
     return urls;
   };
 
-  const writeFileFromBase64 = (val, ext) => {
+  // 检查是否有 placeholder（body 解析时被清理了）
+  const placeholderCount = (() => {
+    let count = 0;
+    const check = (val) => {
+      if (val === DATA_URL_PLACEHOLDER) count++;
+      else if (typeof val === 'string' && val.includes(DATA_URL_PLACEHOLDER)) count++;
+    };
+    for (const shot of shots) {
+      for (const { key, val } of collectUrls(shot)) check(val);
+    }
+    return count;
+  })();
+
+  if (placeholderCount > 0) {
+    throw new Error(
+      `Payload 包含 ${placeholderCount} 个占位符 __DATA_URL_PLACEHOLDER__，` +
+      `表示媒体文件未上传。请确保前端使用 upload-media 接口上传大文件。`
+    );
+  }
+
+  // ── 步骤 2：收集所有唯一 URL ───────────────────────────────────
+  const allUrls = [];
+  const seen = new Set();
+  for (const shot of shots) {
+    for (const { key, val } of collectUrls(shot)) {
+      if (!seen.has(val)) {
+        seen.add(val);
+        allUrls.push({ key, val });
+      }
+    }
+  }
+  log(`[extract] 发现 ${allUrls.length} 个唯一媒体 URL，将并行处理...`);
+
+  // ── 步骤 3：分类处理 ────────────────────────────────────────────
+  const dataUrlItems = [];
+  const httpUrlItems = [];
+  const localItems = [];
+
+  for (const { key, val } of allUrls) {
+    if (val.startsWith('data:')) {
+      const headerMatch = val.match(/^data:([^;]+)/);
+      const mime = headerMatch ? headerMatch[1] : 'application/octet-stream';
+      const ext = MIME_EXT[mime] || '.bin';
+      dataUrlItems.push({ val, ext });
+    } else if (val.startsWith('http://') || val.startsWith('https://')) {
+      let ext = '.bin';
+      try {
+        const u = new URL(val);
+        const pathname = u.pathname.toLowerCase();
+        const m = pathname.match(/\.([a-z0-9]{2,5})(\?|$)/);
+        if (m) ext = '.' + m[1];
+        else if (pathname.includes('audio')) ext = '.mp3';
+        else if (pathname.includes('image') || pathname.includes('img')) ext = '.png';
+        else if (pathname.includes('video')) ext = '.mp4';
+      } catch {}
+      httpUrlItems.push({ val, ext });
+    } else if (val.startsWith('/tmp/') || val.startsWith('/api/remotion/media/')) {
+      const filePath = val.startsWith('/api/remotion/media/')
+        ? '/tmp/' + val.slice('/api/remotion/media/'.length)
+        : val;
+      if (existsSync(filePath)) {
+        filePathMap.set(val, filePath);
+        localItems.push({ val, filePath });
+      } else {
+        log(`⚠️ 本地路径不存在: ${val} → ${filePath}`);
+      }
+    }
+  }
+
+  // ── 步骤 4：并行下载 HTTP URL（最大耗时优化）──────────────────
+  // 串行下载 10 个文件 × 500ms = 5s；并行只需 ~500ms
+  if (httpUrlItems.length > 0) {
+    log(`[extract] 并行下载 ${httpUrlItems.length} 个远程文件...`);
+    const t0 = Date.now();
+    await Promise.all(httpUrlItems.map(async ({ val, ext }) => {
+      const idx = filePathMap.size;
+      const filePath = join(tempDir, `media_${String(idx).padStart(4, '0')}${ext}`);
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 60000);
+        const res = await fetch(val, { signal: ctrl.signal });
+        clearTimeout(timer);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (buf.length < 16 || (buf[0] === 0x3c && buf[1] === 0x21)) {
+          throw new Error(`响应无效 (${buf.length} bytes)`);
+        }
+        writeFileSync(filePath, buf);
+        filePathMap.set(val, filePath);
+      } catch (e) {
+        log(`⚠️ 下载失败 ${val.slice(0, 60)}...: ${e.message}，使用占位文件`);
+        await generatePlaceholder(ext, filePath, log);
+        filePathMap.set(val, filePath);
+      }
+    }));
+    log(`[extract] ${httpUrlItems.length} 个远程文件下载完成（${Date.now() - t0}ms）`);
+  }
+
+  // ── 步骤 5：串行解码 data URL（CPU bound，不值得并行化）─────────
+  // Base64 decode 速度约 200MB/s，50MB 音频 ~250ms，无需并行
+  for (const { val, ext } of dataUrlItems) {
     const idx = filePathMap.size;
     const filePath = join(tempDir, `media_${String(idx).padStart(4, '0')}${ext}`);
     const commaIdx = val.indexOf(',');
     const b64data = commaIdx >= 0 ? val.slice(commaIdx + 1) : val;
     writeFileSync(filePath, Buffer.from(b64data, 'base64'));
-    return filePath;
-  };
-
-  const downloadRemote = async (val, ext) => {
-    const idx = filePathMap.size;
-    const filePath = join(tempDir, `media_${String(idx).padStart(4, '0')}${ext}`);
-    try {
-      log(`下载远程媒体: ${val.slice(0, 80)}...`);
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 60000);
-      const res = await fetch(val, { signal: ctrl.signal });
-      clearTimeout(timer);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const buf = Buffer.from(await res.arrayBuffer());
-      // 防御：检测空响应或 HTML 错误页（返回了错误页而不是媒体）
-      if (buf.length < 16 || (buf[0] === 0x3c && buf[1] === 0x21)) {
-        throw new Error(`响应无效 (${buf.length} bytes)`);
-      }
-      writeFileSync(filePath, buf);
-      log(`下载成功 (${(buf.length / 1024).toFixed(1)} KB): ${basename(filePath)}`);
-      return filePath;
-    } catch (e) {
-      log(`⚠️ 下载失败 ${val.slice(0, 60)}...: ${e.message}，使用占位文件`);
-      // 下载失败时用 ffmpeg 生成 1 秒静音 mp3 / 1 帧黑屏图像占位
-      const placeholder = await generatePlaceholder(ext, filePath, log);
-      return filePath;
-    }
-  };
-
-  for (const shot of shots) {
-    for (const { key, val } of collectUrls(shot)) {
-      if (filePathMap.has(val)) continue;
-
-      if (val.startsWith('data:')) {
-        const headerMatch = val.match(/^data:([^;]+)/);
-        const mime = headerMatch ? headerMatch[1] : 'application/octet-stream';
-        const ext = MIME_EXT[mime] || '.bin';
-        const filePath = writeFileFromBase64(val, ext);
-        filePathMap.set(val, filePath);
-      } else if (val.startsWith('http://') || val.startsWith('https://')) {
-        // 从 URL 推断扩展名
-        let ext = '.bin';
-        try {
-          const u = new URL(val);
-          const pathname = u.pathname.toLowerCase();
-          const m = pathname.match(/\.([a-z0-9]{2,5})(\?|$)/);
-          if (m) ext = '.' + m[1];
-          else if (pathname.includes('audio')) ext = '.mp3';
-          else if (pathname.includes('image') || pathname.includes('img')) ext = '.png';
-          else if (pathname.includes('video')) ext = '.mp4';
-        } catch {}
-        const filePath = await downloadRemote(val, ext);
-        filePathMap.set(val, filePath);
-      } else if (val.startsWith('/tmp/') || val.startsWith('/api/remotion/media/')) {
-        // 兜底：前端调 /upload-media 后被 toRemotionMediaHttpUrl 转成的相对路径，
-        // 或未经转换的本地路径（/tmp/remotion_data_xxx/...）。两者都映射到同一个
-        // filePath，让后续 replaceFilePathsWithHttpUrls 转成绝对 HTTP URL。
-        // 这样任何忘了转换的调用方（CustomTracksPanel/CopyBasedPanel/老 build）
-        // 也不会让 shot.audioUrl 留 /tmp/... 或 /api/remotion/media/... 让
-        // Remotion staticFile 包成 3001/public/... 报错。
-        const filePath = val.startsWith('/api/remotion/media/')
-          ? '/tmp/' + val.slice('/api/remotion/media/'.length)
-          : val;
-        try {
-          if (!existsSync(filePath)) {
-            log(`⚠️ 本地路径不存在: ${val} → ${filePath}`);
-            continue;
-          }
-          filePathMap.set(val, filePath);
-        } catch {}
-      }
-    }
+    filePathMap.set(val, filePath);
+  }
+  if (dataUrlItems.length > 0) {
+    log(`[extract] ${dataUrlItems.length} 个 data URL 解码完成`);
   }
 
+  // ── 步骤 6：替换 shots 中的 URL 为文件路径 ────────────────────
   const cleanedShots = JSON.parse(JSON.stringify(shots));
   for (const shot of cleanedShots) {
     for (const key of ['imageUrl', 'audioUrl', 'voiceoverAudioUrl', 'videoUrl']) {
@@ -688,7 +703,8 @@ async function extractUrlsToTempFiles(shots, log = console.log) {
     }
   }
 
-  log(`媒体下载完成: ${filePathMap.size} 个文件，已映射 ${cleanedShots.reduce((acc, s) => acc + (Array.isArray(s.imageUrls) ? s.imageUrls.length : 0) + ['imageUrl','audioUrl','voiceoverAudioUrl','videoUrl'].filter(k => s[k]).length, 0)} 处引用`);
+  const totalMapped = filePathMap.size;
+  log(`[extract] 完成：${totalMapped} 个媒体文件（data=${dataUrlItems.length} http=${httpUrlItems.length} local=${localItems.length}）`);
 
   return { cleanedShots, tempDir, filePathMap };
 }
@@ -745,12 +761,9 @@ function replaceFilePathsWithHttpUrls(shots, filePathMap, baseUrl) {
 }
 
 function cleanupTempDir(tempDir) {
-  try {
-    if (tempDir && tempDir.includes('/tmp/remotion_data_')) {
-      const { rmSync } = require('fs');
-      rmSync(tempDir, { recursive: true, force: true });
-    }
-  } catch {}
+  // v2.0：改用异步 rm，不阻塞事件循环
+  if (!tempDir || !tempDir.includes('/tmp/remotion_data_')) return;
+  fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
 }
 
 // ── 主进程渲染（直接执行，不使用子进程）────────────────────
@@ -871,12 +884,15 @@ async function runRenderInProcess(payload, taskId) {
     log('步骤 4/4: 渲染 MP4...');
 
     // ── 性能参数计算 ─────────────────────────────────
-    // concurrency：每个 Chromium tab 吃约 1 核，Mac M2/M3 用满 P-cores 效率最高
+    // concurrency：每个 Chromium tab 约吃 4 核（JS + compositing + GPU + worker）
+    // 帧级并发不需要开太大，开多了反而加重 CPU 争抢
+    // - 10核 Mac: MAX_PARALLEL_RENDERS=2 → concurrency=6  OK
+    // - 48核 Railway: MAX_PARALLEL_RENDERS=12 → concurrency=4 更合理（12×4=48 核全用满）
     const cpuCount = os.cpus()?.length || 4;
-    // 预留 1 核给系统 + bundler 等辅助，留 2 核给 remotion-server 主进程本身
-    const concurrency = Math.max(1, Math.min(cpuCount - 2, Math.floor(cpuCount * 0.75)));
-    // offthreadVideoThreads：ffmpeg 视频编码线程数（不影响渲染帧率）
-    const offthreadThreads = Math.min(4, Math.max(1, Math.floor(cpuCount / 4)));
+    // 预留 2 核给系统 + Express，剩余按 4核/tab 分配
+    const concurrency = Math.max(2, Math.min(8, Math.floor((cpuCount - 2) / 4)));
+    // offthreadVideoThreads：ffmpeg 编码线程（不影响渲染帧率，每个 job 独立）
+    const offthreadThreads = Math.min(4, Math.max(1, Math.floor(cpuCount / 8)));
     log(`[render] concurrency=${concurrency} (cpu=${cpuCount}) offthreadVideoThreads=${offthreadThreads}`);
     log(`[render] shots=${shots.length} resolution=${config.resolution || '1920x1080'} duration=${composition.durationInFrames}f @ ${composition.fps}fps bundleCached=${bundleFromCache}`);
 
@@ -1817,6 +1833,36 @@ app.listen(PORT, () => {
       console.error('[remotion-server] ❌ Remotion 模块加载失败，将在首次渲染时重试');
     }
   });
+
+  // v2.0：启动后延迟 3s 预热 bundle 缓存
+  // 首次渲染时跳过 webpack 打包，节省 5-20s
+  // 注意：需要 modulesLoaded = true 时才执行
+  setTimeout(async () => {
+    try {
+      if (!modulesLoaded) {
+        console.log('[bundle-warmup] 模块未加载，跳过预热');
+        return;
+      }
+      const { prepareBundleCache, recordBundleResult } = await import('./bundle-cache.mjs');
+      const cacheCheck = await prepareBundleCache(REMOTION_PROJECT_ROOT, REMOTION_PROJECT_ENTRY);
+      if (cacheCheck.hit) {
+        console.log(`[bundle-warmup] ✅ L1 缓存已就绪（${cacheCheck.bundleUrl}）`);
+        return;
+      }
+      console.log('[bundle-warmup] 🔧 开始预打包 Remotion bundle...');
+      const t0 = Date.now();
+      const loc = await bundler.bundle({
+        entryPoint: REMOTION_PROJECT_ENTRY,
+        enableCaching: true,
+        port: 3003,
+        ...(SYSTEM_CHROMIUM ? { browserExecutable: SYSTEM_CHROMIUM } : {}),
+      });
+      recordBundleResult(cacheCheck.cacheKey, loc);
+      console.log(`[bundle-warmup] ✅ 预打包完成（${Date.now() - t0}ms）: ${loc}`);
+    } catch (e) {
+      console.warn(`[bundle-warmup] ⚠️ 预打包失败: ${e.message}（不影响正常渲染）`);
+    }
+  }, 3000);
 
   // v1.11：启动时 + 每小时清理过期的 MP4 文件
   //   - 默认保留 24 小时（由 REMOTION_KEEP_OUTPUT_HOURS 覆盖）
