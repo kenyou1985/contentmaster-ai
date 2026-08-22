@@ -861,20 +861,48 @@ async function runRenderInProcess(payload, taskId) {
       recordBundleResult(cacheInfo.cacheKey, bundleLocation);
     }
 
-    // ── 步骤 3/3：选择 Composition ────────────────────────
+    // v2.3：缓存 selectComposition 结果（composition 只取决于视频参数，与具体媒体内容无关）
+// Railway vCPU 比 M1 慢 7x，每次 selectComposition 重新探测需要 ~19s
+// 5 分钟 TTL，足够覆盖单次导出的所有 shot（通常只有 1-5 个）
+const compositionCache = new Map(); // key → { composition, ts }
+const COMPOSITION_CACHE_TTL_MS = 5 * 60 * 1000;
+
+function getCompositionCacheKey(config, shotCount) {
+  const w = config?.resolution?.split('x')[0] ?? config?.width ?? 1920;
+  const h = config?.resolution?.split('x')[1] ?? config?.height ?? 1080;
+  const fps = config?.fps ?? 30;
+  const codec = config?.codec ?? 'h264';
+  return `${w}x${h}@${fps}_${codec}_shots${shotCount}`;
+}
+
+function cachedSelectComposition(bundlerRef, rendererRef, bundleLocation, inputProps, browserExec) {
+  const key = getCompositionCacheKey(inputProps.config, inputProps.shots.length);
+  const cached = compositionCache.get(key);
+  if (cached && Date.now() - cached.ts < COMPOSITION_CACHE_TTL_MS) {
+    console.log(`[composition] ✅ 缓存命中（TTL）: ${key}`);
+    return Promise.resolve(cached.composition);
+  }
+  return rendererRef.selectComposition({
+    serveUrl: bundleLocation,
+    id: 'MyVideo',
+    inputProps,
+    forceIPv4: true,
+    ...(browserExec ? { browserExecutable: browserExec } : {}),
+  }).then((comp) => {
+    compositionCache.set(key, { composition: comp, ts: Date.now() });
+    return comp;
+  });
+}
+
+    // ── 步骤 3/3：选择 Composition（可缓存）─────────────────────
     // selectComposition 需要 bundler dev server 完全启动后才能访问 serveUrl，
-    // 故在 bundler.bundle() 之后串行执行。耗时 ~1-3s，远小于 bundling（5-30s）。
+    // 故在 bundler.bundle() 之后串行执行。Railway 上首次访问慢（~19s），已加 5 分钟缓存。
     updateTask(taskId, { progress: 15, message: '选择 Composition...' });
     log('步骤 3/3: 选择 Composition...');
     const tComp = Date.now();
-    composition = await renderer.selectComposition({
-      serveUrl: bundleLocation,
-      id: 'MyVideo',
-      inputProps,
-      // macOS Chrome 访问 serveUrl 需要 IPv4
-      forceIPv4: true,
-      ...(SYSTEM_CHROMIUM ? { browserExecutable: SYSTEM_CHROMIUM } : {}),
-    });
+    composition = await cachedSelectComposition(
+      bundler, renderer, bundleLocation, inputProps, SYSTEM_CHROMIUM
+    );
     log(`Composition 选择完成（${Date.now() - tComp}ms）: ${composition.width}x${composition.height} @ ${composition.fps}fps, ${composition.durationInFrames} 帧`);
 
     updateTask(taskId, { 
@@ -913,15 +941,16 @@ async function runRenderInProcess(payload, taskId) {
           '--no-sandbox',
           '--disable-dev-shm-usage',
           '--disable-setuid-sandbox',
-          // 性能优化：禁止后台节流，释放渲染速度
+          // v2.3：Railway 有 NVIDIA T4，优先用 GPU 硬件加速
           '--disable-background-timer-throttling',
           '--disable-backgrounding-occluded-windows',
           '--disable-renderer-backgrounding',
-          // GPU：优先用硬件加速（auto 会在有 GPU 时自动用，无 GPU 时 fallback）
+          // GPU 优先级：angle → swiftshader（angle 不可用时自动 fallback）
           '--enable-gpu-rasterization',
-          '--use-gl=angle',
           '--ignore-gpu-blocklist',
           '--disable-gpu-sandbox',
+          '--use-gl=angle',
+          '--enable-features=Vulkan',
         ],
       },
       offthreadVideoThreads: offthreadThreads,

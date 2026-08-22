@@ -544,9 +544,11 @@ async function main() {
           '--disable-dev-shm-usage',
           '--disable-setuid-sandbox',
           '--enable-gpu',
-          '--use-gl=swiftshader',
-          '--enable-features=Vulkan',
+          // v2.3：Railway 有 NVIDIA T4，优先用 GPU 硬件加速
           '--ignore-gpu-blocklist',
+          '--disable-gpu-sandbox',
+          '--use-gl=angle',
+          '--enable-features=Vulkan',
         ],
       },
       offthreadVideoThreads: offthreadThreads,
