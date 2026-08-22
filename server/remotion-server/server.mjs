@@ -850,47 +850,82 @@ async function runRenderInProcess(payload, taskId) {
 }
 
 // ── 健康检查 ─────────────────────
-const healthHandler = (_req, res) => {
-  let chromiumOk = false;
-  let chromiumVersion = null;
-  let ffmpegOk = false;
-  let ffmpegVersion = null;
+// 健康检查不能在 ASR 跑时被卡死 → 缓存子进程结果 + 用 Promise.race 超时保护
+const healthCache = {
+  chromiumVersion: null,
+  chromiumOk: false,
+  ffmpegVersion: null,
+  ffmpegOk: false,
+  lastChecked: 0,
+};
+const HEALTH_CACHE_TTL_MS = 30_000; // 30 秒内复用同一次结果
 
-  // Chromium/chrome：优先用 SYSTEM_CHROMIUM（实际会被 Remotion 渲染用到的二进制），
-  // 这样健康检查和实际渲染路径一致，避免误报"OK 但渲染失败"。
-  // Chrome 启动慢，给 8 秒超时。
-  if (SYSTEM_CHROMIUM) {
-    try {
-      chromiumVersion = execSync(`"${SYSTEM_CHROMIUM}" --version`, { timeout: 8000 })
-        .toString().trim();
-      chromiumOk = /Chromium|Google Chrome|Chrome/i.test(chromiumVersion);
-    } catch (e) {
-      chromiumVersion = `(exec failed: ${e?.message?.slice(0, 80) || 'unknown'})`;
-    }
-  }
-  if (!chromiumOk) {
-    // 兜底：PATH 命令
-    try {
-      chromiumVersion = execSync('chromium --version 2>/dev/null || google-chrome --version 2>/dev/null || echo ""', { timeout: 3000 })
-        .toString().trim();
-      chromiumOk = /Chromium|Google Chrome/i.test(chromiumVersion);
-    } catch {}
-  }
-
-  // ffmpeg：优先 ffmpeg-static（项目自带），其次 PATH 命令
+async function execWithTimeout(cmd, args, timeoutMs) {
+  // 异步执行 cmd，避免阻塞 Node 主线程（防止 ASR 跑时健康检查拖死）
   try {
-    const nmdir = localRequire.resolve('ffmpeg-static').replace('/index.js', '');
-    const fsBin = join(nmdir, 'ffmpeg');
-    if (existsSync(fsBin)) {
-      ffmpegVersion = execSync(`"${fsBin}" -version`, { timeout: 3000 }).toString().split('\n')[0].trim();
-      ffmpegOk = /ffmpeg/i.test(ffmpegVersion);
+    const { execFile } = await import('child_process');
+    return await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(null), timeoutMs);
+      execFile(cmd, args, { timeout: timeoutMs + 1000 }, (err, stdout) => {
+        clearTimeout(timer);
+        resolve(err ? null : (stdout || '').toString().trim());
+      });
+    });
+  } catch {
+    return null;
+  }
+}
+
+const healthHandler = async (_req, res) => {
+  const now = Date.now();
+  const cacheFresh = (now - healthCache.lastChecked) < HEALTH_CACHE_TTL_MS && healthCache.lastChecked > 0;
+
+  let chromiumOk = healthCache.chromiumOk;
+  let chromiumVersion = healthCache.chromiumVersion;
+  let ffmpegOk = healthCache.ffmpegOk;
+  let ffmpegVersion = healthCache.ffmpegVersion;
+
+  if (!cacheFresh) {
+    // Chromium/chrome：优先用 SYSTEM_CHROMIUM（实际会被 Remotion 渲染用到的二进制），
+    // 这样健康检查和实际渲染路径一致，避免误报"OK 但渲染失败"。
+    // 用 async execFile，不要阻塞主线程（ASR/Remotion 跑时也能正常返回 200）。
+    if (SYSTEM_CHROMIUM) {
+      chromiumVersion = await execWithTimeout(SYSTEM_CHROMIUM, ['--version'], 5000);
+      chromiumOk = !!chromiumVersion && /Chromium|Google Chrome|Chrome/i.test(chromiumVersion);
+      if (!chromiumOk) chromiumVersion = '(exec failed or unknown)';
     }
-  } catch {}
-  if (!ffmpegOk) {
+    if (!chromiumOk) {
+      // 兜底：PATH 命令（仅当 SYSTEM_CHROMIUM 不存在时跑）
+      chromiumVersion = await execWithTimeout('/bin/sh', ['-c', 'chromium --version 2>/dev/null || google-chrome --version 2>/dev/null || echo ""'], 2000);
+      chromiumOk = !!chromiumVersion && /Chromium|Google Chrome/i.test(chromiumVersion);
+    }
+
+    // ffmpeg：优先 ffmpeg-static（项目自带），其次 PATH 命令
     try {
-      ffmpegVersion = execSync('ffmpeg -version 2>&1 | head -1', { timeout: 3000 }).toString().trim();
-      ffmpegOk = /ffmpeg/i.test(ffmpegVersion);
+      const nmdir = localRequire.resolve('ffmpeg-static').replace('/index.js', '');
+      const fsBin = join(nmdir, 'ffmpeg');
+      if (existsSync(fsBin)) {
+        const v = await execWithTimeout(fsBin, ['-version'], 2000);
+        if (v && /ffmpeg/i.test(v)) {
+          ffmpegVersion = v.split('\n')[0].trim();
+          ffmpegOk = true;
+        }
+      }
     } catch {}
+    if (!ffmpegOk) {
+      const v = await execWithTimeout('/bin/sh', ['-c', 'ffmpeg -version 2>&1 | head -1'], 2000);
+      if (v && /ffmpeg/i.test(v)) {
+        ffmpegVersion = v.trim();
+        ffmpegOk = true;
+      }
+    }
+
+    // 写回缓存
+    healthCache.chromiumOk = chromiumOk;
+    healthCache.chromiumVersion = chromiumVersion;
+    healthCache.ffmpegOk = ffmpegOk;
+    healthCache.ffmpegVersion = ffmpegVersion;
+    healthCache.lastChecked = now;
   }
 
   const totalMemMB = Math.round(os.totalmem() / 1024 / 1024);
