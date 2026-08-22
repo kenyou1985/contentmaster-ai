@@ -151,21 +151,7 @@ async function uploadInlineDataUrlsToServer(
     throw new Error(`路径数不匹配: ${paths.length} vs ${items.length}`);
   }
 
-  // 把服务端返回的本地路径（如 /tmp/remotion_data_xxx/media_0000.png）转成 HTTP URL：
-  //   - 不转的话，发到后端时 extractUrlsToTempFiles 只认 data: 和 http:，
-  //     filePathMap 为空 → replaceFilePathsWithHttpUrls 不动它 → shot.imageUrl 仍是 /tmp/...
-  //   - 然后 Remotion webpack 看到绝对路径会自动包成 http://localhost:3001/tmp/...
-  //     但 3001 是 Remotion 内部 serveStatic，不 mount /tmp，Chrome 找不到媒体 → "Error loading image"
-  // 用 apiBase（如 http://127.0.0.1:18093）加 /media + urlPath，命中 server.mjs 的
-  //   app.use('/media', express.static('/tmp', ...)) 路由，Chrome/Remotion 都能访问。
-  const baseUrl = apiBase.replace(/\/$/, '');
-  const toHttpUrl = (p: string) => {
-    if (!p) return p;
-    if (p.startsWith('http://') || p.startsWith('https://')) return p;
-    if (p.startsWith('/')) return `${baseUrl}/media${p.replace(/^\/tmp/, '')}`;
-    return `${baseUrl}/media/${p.replace(/^\//, '')}`;
-  };
-  const httpPaths = paths.map(toHttpUrl);
+  const httpPaths = paths.map((p) => toRemotionMediaHttpUrl(p, apiBase));
 
   const replace = (val: any): any => {
     if (typeof val !== 'string') return val;
@@ -189,6 +175,23 @@ async function uploadInlineDataUrlsToServer(
   });
 
   return { ...payload, shots: newShots };
+}
+
+/**
+ * 把服务端返回的本地路径（如 /tmp/remotion_data_xxx/media_0000.mp3）转成 HTTP URL：
+ *   - 不转的话，发到后端时 extractUrlsToTempFiles 只认 data: 和 http:，
+ *     filePathMap 为空 → replaceFilePathsWithHttpUrls 不动它 → shot.audioUrl 仍是 /tmp/...
+ *   - 然后 Remotion webpack 看到绝对路径会自动包成 http://localhost:3001/public/tmp/...
+ *     但 3001 是 Remotion 内部 serveStatic，不 mount /tmp，Chrome 找不到媒体 → "Error loading image/audio"
+ * 用 apiBase（如 http://127.0.0.1:18093）加 /media + urlPath，命中 server.mjs 的
+ *   app.use('/media', express.static('/tmp', ...)) 路由，Chrome/Remotion 都能访问。
+ */
+export function toRemotionMediaHttpUrl(p: string | undefined | null, apiBase?: string): string | undefined {
+  if (!p) return p as any;
+  if (p.startsWith('http://') || p.startsWith('https://') || p.startsWith('data:') || p.startsWith('blob:')) return p;
+  const base = (apiBase || getRemotionApiBase()).replace(/\/$/, '');
+  if (p.startsWith('/')) return `${base}/media${p.replace(/^\/tmp/, '')}`;
+  return `${base}/media/${p.replace(/^\//, '')}`;
 }
 
 async function ensurePayloadSerializable(

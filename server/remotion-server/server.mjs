@@ -597,6 +597,19 @@ async function extractUrlsToTempFiles(shots, log = console.log) {
         } catch {}
         const filePath = await downloadRemote(val, ext);
         filePathMap.set(val, filePath);
+      } else if (val.startsWith('/tmp/')) {
+        // 兜底：前端调 /upload-media 拿到的本地路径（/tmp/remotion_data_xxx/...）
+        // 已落地，无需重新下载，直接入 filePathMap 让后续 replaceFilePathsWithHttpUrls
+        // 转成 HTTP URL。这样任何忘了转换的调用方（CustomTracksPanel/CopyBasedPanel）
+        // 也不会让 shot.audioUrl 留 /tmp/... 让 Remotion staticFile 包成 3001/public/... 报错。
+        const filePath = val;
+        try {
+          if (!existsSync(filePath)) {
+            log(`⚠️ 本地路径不存在: ${val}`);
+            continue;
+          }
+          filePathMap.set(val, filePath);
+        } catch {}
       }
     }
   }
