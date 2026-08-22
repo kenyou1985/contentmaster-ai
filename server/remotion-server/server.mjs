@@ -114,11 +114,13 @@ const app = express();
 //   - JSON → 这里用流式解析后给 req.body
 app.use((req, res, next) => {
   const ct = req.headers['content-type'] || '';
-  const isUploadMedia = req.path === '/upload-media';
-  // multipart 路径：只在 /upload-media 拦截，其他 multipart 端点也走 multer
+  // multipart：跳过 body parser，交给下游 multer 处理
   if (ct.includes('multipart/form-data')) {
-    if (isUploadMedia) return next(); // 让 multer 处理
-    // 其他 multipart：交给下游 multer
+    return next(); // 全部交给 multer
+  }
+  // upload-media 走自己的 base64 解析，不需要这个 body parser
+  // （它有独立的 1GB 限制，Buffer.concat 会 OOM 但那是另一个问题）
+  if (ct.includes('application/json') && req.path === '/upload-media') {
     return next();
   }
   if (ct.includes('application/json')) {
@@ -1100,7 +1102,7 @@ app.get('/health', healthHandler);
 // 支持两种格式：
 //   A. application/json: { items: [{ mime, data: "base64" }] }   // 兼容旧版
 //   B. multipart/form-data: file=<File>, mime=<string>             // 大文件流式上传（不走 base64）
-app.post('/upload-media', async (req, res) => {
+app.post('/upload-media', express.json({ limit: '1gb' }), async (req, res) => {
   const contentType = req.headers['content-type'] || '';
   try {
     // B. multipart（推荐用于大音频/视频）
