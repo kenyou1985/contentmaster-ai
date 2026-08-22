@@ -462,6 +462,8 @@ async function main() {
         bundler.bundle({
           entryPoint: ENTRY_FILE,
           enableCaching: true,
+          // 强制固定端口，避免 Remotion 自动选 3001/3002 与 launchd 残留冲突
+          port: 3003,
           ...(SYSTEM_CHROMIUM ? { browserExecutable: SYSTEM_CHROMIUM } : {}),
         }),
         new Promise((_, reject) => setTimeout(() => reject(new Error('bundler.bundle 超时（>180s）')), 180_000))
@@ -671,6 +673,7 @@ export async function renderSegment(shots, outputPath, opts = {}) {
     bundleLocation = await bundler.bundle({
       entryPoint: ENTRY_FILE,
       enableCaching: true,
+      port: 3003,
       ...(SYSTEM_CHROMIUM ? { browserExecutable: SYSTEM_CHROMIUM } : {}),
     });
     recordBundleResult(cacheCheck.cacheKey, bundleLocation);

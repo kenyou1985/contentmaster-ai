@@ -816,6 +816,9 @@ async function runRenderInProcess(payload, taskId) {
     const bundleLocation = await bundler.bundle({
       entryPoint: REMOTION_PROJECT_ENTRY,
       enableCaching: true,
+      // 强制固定端口，避免 Remotion 自动选 3001/3002 与 launchd 残留进程冲突
+      // 导致 "Visited http://localhost:3001/index.html but got no response"
+      port: 3003,
       ...(SYSTEM_CHROMIUM ? { browserExecutable: SYSTEM_CHROMIUM } : {}),
     });
     log(`打包完成（耗时 ${Date.now() - t0}ms）: ${bundleLocation}`);
