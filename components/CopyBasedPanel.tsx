@@ -2930,7 +2930,8 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
       )}
 
       {/* ═══════════════ 中部：5 段并行配音 ═══════════════ */}
-      {analysisResult && (
+      {/* v2.1：始终显示，无需等解析完成；只要文案够长（≥50 字）就可配音 */}
+      {rawCopy.trim().length >= 50 && (
         <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700 space-y-4">
           <div className="flex items-center gap-2 flex-wrap">
             <Mic size={18} className="text-purple-400" />
