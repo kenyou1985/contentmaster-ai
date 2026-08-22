@@ -30,6 +30,7 @@ import { Worker } from 'worker_threads';
 // ESM 文件中创建本地 require，用于解析 ffmpeg-static 等 CommonJS 模块
 import { createRequire } from 'module';
 const localRequire = createRequire(import.meta.url);
+import { checkBundleCache, recordBundleResult } from './bundle-cache.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -809,39 +810,56 @@ async function runRenderInProcess(payload, taskId) {
     log(`临时目录: ${payload._tempDir || 'N/A'}`);
     log(`镜头数量: ${shots.length}`);
 
+    // ── 步骤 2/3：打包 Remotion 项目（带3级缓存）─────────────
     updateTask(taskId, { progress: 10, message: '打包 Remotion 项目...' });
-    log('步骤 2/4: 打包 Remotion 项目...');
-
-    const t0 = Date.now();
-    const bundleLocation = await bundler.bundle({
-      entryPoint: REMOTION_PROJECT_ENTRY,
-      enableCaching: true,
-      // 强制固定端口，避免 Remotion 自动选 3001/3002 与 launchd 残留进程冲突
-      // 导致 "Visited http://localhost:3001/index.html but got no response"
-      port: 3003,
-      ...(SYSTEM_CHROMIUM ? { browserExecutable: SYSTEM_CHROMIUM } : {}),
-    });
-    log(`打包完成（耗时 ${Date.now() - t0}ms）: ${bundleLocation}`);
-
-    updateTask(taskId, { progress: 15, message: '选择 Composition...' });
-    log('步骤 3/4: 选择 Composition...');
+    log('步骤 2/3: 打包 Remotion 项目...');
 
     const safeConfig = {
       ...config,
       output: config.output ? { target: config.output.target } : { target: 'browser' },
     };
-    const inputProps = { shots: shots, config: safeConfig };
+    const inputProps = { shots, config: safeConfig };
 
-    const composition = await renderer.selectComposition({
+    const t0 = Date.now();
+    let bundleLocation;
+    let composition;
+    let bundleFromCache = false;
+
+    // L1 缓存：本地 manifest（~0.1s 命中）
+    const cacheInfo = await checkBundleCache(REMOTION_PROJECT_ROOT, REMOTION_PROJECT_ENTRY);
+    if (cacheInfo.hit && cacheInfo.bundleUrl) {
+      bundleLocation = cacheInfo.bundleUrl;
+      bundleFromCache = true;
+      log(`[bundle] ✅ L1 缓存命中: ${bundleLocation}`);
+      updateTask(taskId, { progress: 15, message: 'Remotion 项目复用缓存...' });
+    } else {
+      // L2/L3：bundler.bundle（含 webpack 持久化缓存）
+      // Remotion 默认 port=0（自动选），但固定 3003 避免端口冲突
+      bundleLocation = await bundler.bundle({
+        entryPoint: REMOTION_PROJECT_ENTRY,
+        enableCaching: true,
+        port: 3003,
+        ...(SYSTEM_CHROMIUM ? { browserExecutable: SYSTEM_CHROMIUM } : {}),
+      });
+      log(`打包完成（耗时 ${Date.now() - t0}ms）: ${bundleLocation}`);
+      recordBundleResult(cacheInfo.cacheKey, bundleLocation);
+    }
+
+    // ── 步骤 3/3：选择 Composition ────────────────────────
+    // selectComposition 需要 bundler dev server 完全启动后才能访问 serveUrl，
+    // 故在 bundler.bundle() 之后串行执行。耗时 ~1-3s，远小于 bundling（5-30s）。
+    updateTask(taskId, { progress: 15, message: '选择 Composition...' });
+    log('步骤 3/3: 选择 Composition...');
+    const tComp = Date.now();
+    composition = await renderer.selectComposition({
       serveUrl: bundleLocation,
       id: 'MyVideo',
       inputProps,
-      // 见 renderMedia 处的 v1.x 修复：macOS Chrome 访问 serveUrl 需要 IPv4
+      // macOS Chrome 访问 serveUrl 需要 IPv4
       forceIPv4: true,
       ...(SYSTEM_CHROMIUM ? { browserExecutable: SYSTEM_CHROMIUM } : {}),
     });
-
-    log(`Composition: ${composition.width}x${composition.height} @ ${composition.fps}fps, ${composition.durationInFrames} 帧`);
+    log(`Composition 选择完成（${Date.now() - tComp}ms）: ${composition.width}x${composition.height} @ ${composition.fps}fps, ${composition.durationInFrames} 帧`);
 
     updateTask(taskId, { 
       progress: 20, 
@@ -852,18 +870,15 @@ async function runRenderInProcess(payload, taskId) {
 
     log('步骤 4/4: 渲染 MP4...');
 
-    const getConcurrency = () => {
-      const cpuCount = Math.max(1, os.cpus()?.length || 1);
-      const totalMemGB = Math.round(os.totalmem() / 1024 / 1024 / 1024);
-      const concurrencyByCpu = Math.max(1, Math.floor(cpuCount * 0.6));
-      const concurrencyByMem = Math.max(1, Math.floor(totalMemGB / 3));
-      return Math.min(16, concurrencyByCpu, concurrencyByMem);
-    };
-
-    const concurrency = getConcurrency();
-    const offthreadThreads = Math.min(8, Math.max(2, Math.floor((os.cpus()?.length || 4) / 4)));
-    log(`[render] concurrency=${concurrency} offthreadVideoThreads=${offthreadThreads}`);
-    log(`[render] shots=${shots.length} resolution=${config.resolution || '1920x1080'} duration=${composition.durationInFrames}f @ ${composition.fps}fps`);
+    // ── 性能参数计算 ─────────────────────────────────
+    // concurrency：每个 Chromium tab 吃约 1 核，Mac M2/M3 用满 P-cores 效率最高
+    const cpuCount = os.cpus()?.length || 4;
+    // 预留 1 核给系统 + bundler 等辅助，留 2 核给 remotion-server 主进程本身
+    const concurrency = Math.max(1, Math.min(cpuCount - 2, Math.floor(cpuCount * 0.75)));
+    // offthreadVideoThreads：ffmpeg 视频编码线程数（不影响渲染帧率）
+    const offthreadThreads = Math.min(4, Math.max(1, Math.floor(cpuCount / 4)));
+    log(`[render] concurrency=${concurrency} (cpu=${cpuCount}) offthreadVideoThreads=${offthreadThreads}`);
+    log(`[render] shots=${shots.length} resolution=${config.resolution || '1920x1080'} duration=${composition.durationInFrames}f @ ${composition.fps}fps bundleCached=${bundleFromCache}`);
 
     await renderer.renderMedia({
       composition,
@@ -872,10 +887,6 @@ async function runRenderInProcess(payload, taskId) {
       outputLocation: outputPath,
       inputProps,
       concurrency,
-      // 修复 v1.x：macOS 上 Chrome 访问 serveUrl 失败
-      // Remotion serveStatic 默认按 IPv6 → '::' bind，Chrome 用 localhost 解析到 IPv4 127.0.0.1
-      // → bind 地址和访问地址不一致，连接超时（"got no response"）。
-      // 强制 IPv4 让 serveStatic 用 0.0.0.0 bind，避免与 Vite 3000 等其他进程的 IPv4/V6 冲突。
       forceIPv4: true,
       ...(SYSTEM_CHROMIUM ? { browserExecutable: SYSTEM_CHROMIUM } : {}),
       chromiumOptions: {
@@ -883,13 +894,19 @@ async function runRenderInProcess(payload, taskId) {
           '--no-sandbox',
           '--disable-dev-shm-usage',
           '--disable-setuid-sandbox',
-          '--enable-gpu',
-          '--use-gl=swiftshader',
-          '--enable-features=Vulkan',
+          // 性能优化：禁止后台节流，释放渲染速度
+          '--disable-background-timer-throttling',
+          '--disable-backgrounding-occluded-windows',
+          '--disable-renderer-backgrounding',
+          // GPU：优先用硬件加速（auto 会在有 GPU 时自动用，无 GPU 时 fallback）
+          '--enable-gpu-rasterization',
+          '--use-gl=angle',
           '--ignore-gpu-blocklist',
+          '--disable-gpu-sandbox',
         ],
       },
       offthreadVideoThreads: offthreadThreads,
+      // ultrafast 让 x264 牺牲压缩率换速度；videoBitrate 控制最终码率
       x264Preset: 'ultrafast',
       parallelEncoding: true,
       onProgress: ({ progress, renderedFrames, totalFrames }) => {
