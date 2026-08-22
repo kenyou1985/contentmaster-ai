@@ -951,7 +951,9 @@ const CopyBasedPanel: React.FC<{
   const currentRatio = COVER_RATIOS.find((r) => r.id === coverRatio) || COVER_RATIOS[0];
 
   const finalCover: CoverImageEntry | null =
-    finalCoverIndex != null ? generatedCovers.get(finalCoverIndex) || null : null;
+    finalCoverIndex != null
+      ? generatedCovers.get(finalCoverIndex) || null
+      : Array.from(generatedCovers.values())[0] || null; // v2.3：未选定时回退到第 1 张已生成的封面，便于"导出 MP4"立即可用
 
   // ──────────────────────────────────────────────
   // 文案解析
@@ -3064,9 +3066,35 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                         });
                         const json = await up.json();
                         if (!json.success || !json.paths?.[0]) throw new Error(json.error || '上传失败');
+                        // v2.3：上传成功后立即同步设置 ttsResult，让「导出 MP4」按钮可用
+                        // 不再需要先点"5 段并行配音"按钮一次
+                        try {
+                          const blob = file;
+                          const durationSec = await getAudioBlobDuration(blob);
+                          const url = URL.createObjectURL(blob);
+                          const readyResult: ParallelTtsResult = {
+                            mergedAudioUrl: url,
+                            mergedAudioBlob: blob,
+                            totalDuration: durationSec,
+                            segments: [
+                              {
+                                index: 0,
+                                text: rawCopy.trim(),
+                                audioUrl: url,
+                                duration: durationSec,
+                                success: true,
+                              },
+                            ],
+                          };
+                          setTtsResult(readyResult);
+                          setTtsError(null);
+                          appendLog('TTS', `✓ 手动音频就绪，时长 ${durationSec.toFixed(1)} 秒；可直接「导出 MP4」`);
+                        } catch (dErr: any) {
+                          appendLog('WARN', `手动音频解码失败：${dErr?.message || dErr}（仍可点击「5 段并行配音」激活）`);
+                        }
                         setUploadedFullAudio(json.paths[0]);
                         setUploadedFullAudioBlob(file);
-                        toast.success('✓ 手动音频已上传，将跳过 AI 配音');
+                        toast.success('✓ 手动音频已上传，可直接「导出 MP4」');
                       } catch (err: any) {
                         toast.error(`上传失败：${err.message}`);
                       }
@@ -3379,9 +3407,9 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
             title={
               mode === 'ai'
                 ? !finalCover
-                  ? '请先选定终封面'
+                  ? '请先生成至少 1 张封面（或选定终封面）'
                   : !ttsResult
-                  ? '请先生成配音'
+                  ? '请先生成配音（点上方「5 段并行配音」或先上传手动音频）'
                   : '导出 MP4'
                 : customTracks.videoItems.length === 0
                 ? '请先上传视频/图片素材'
