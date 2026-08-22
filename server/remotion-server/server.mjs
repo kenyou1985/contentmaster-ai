@@ -941,16 +941,16 @@ function cachedSelectComposition(bundlerRef, rendererRef, bundleLocation, inputP
           '--no-sandbox',
           '--disable-dev-shm-usage',
           '--disable-setuid-sandbox',
-          // v2.3：Railway 有 NVIDIA T4，优先用 GPU 硬件加速
+          // 性能优化：禁止后台节流，释放渲染速度
           '--disable-background-timer-throttling',
           '--disable-backgrounding-occluded-windows',
           '--disable-renderer-backgrounding',
-          // GPU 优先级：angle → swiftshader（angle 不可用时自动 fallback）
+          // v2.3 reverted：Railway 无 nvidia-container-toolkit，angle 会失败后 fallback，
+          // 比直接用 swiftshader 更慢。改回 swiftshader（CPU 软件模拟，快速失败）
           '--enable-gpu-rasterization',
+          '--use-gl=swiftshader',
           '--ignore-gpu-blocklist',
           '--disable-gpu-sandbox',
-          '--use-gl=angle',
-          '--enable-features=Vulkan',
         ],
       },
       offthreadVideoThreads: offthreadThreads,

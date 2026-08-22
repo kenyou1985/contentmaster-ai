@@ -79,10 +79,6 @@ ENV REMOTION_PROJECT_ROOT=/app/remotion \
     TRANSFORMERS_NO_INFERSCHEMA=1 \
     HF_HOME=/tmp/.huggingface \
     TRANSFORMERS_CACHE=/tmp/.huggingface/cache \
-    # v2.3：Railway 有 NVIDIA T4 GPU，启用硬件加速
-    # --use-gl=angle → 优先用 NVIDIA GPU（nvidia-container-toolkit 已装）
-    # fallback swiftshader → 无 GPU / 驱动不支持时自动回退
-    NVIDIA_DRIVER_CAPABILITIES=compute,utility,video \
     CHROME_PATH=/usr/bin/chromium
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \

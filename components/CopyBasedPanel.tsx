@@ -2019,12 +2019,17 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
       asrAudioUrl = ttsResult!.mergedAudioUrl;
     }
 
-    // ── Whisper ASR（仅当启用字幕 & 字幕 cues 为空）──
+    // ── Whisper ASR（仅当启用字幕 & 字幕 cues 为空 & 非手动上传音频）──
+    // v2.4：手动上传配音音频不需要 ASR（用户已自己配好音，ASR 只是做字幕时间戳）
     const shouldAsr =
       whisperEnabled &&
       asrAudioUrl &&
+      !uploadedFullAudio && // 手动上传音频 → 跳过 ASR，直接用时间戳均分
       ((mode === 'ai') ||
         (mode === 'custom' && customTracks.subtitleEnabled && customTracks.subtitleCues.length === 0));
+    if (uploadedFullAudio) {
+      appendLog('EXPORT', '检测到手动上传音频，跳过 Whisper ASR（使用文案均分字幕）');
+    }
     if (shouldAsr && asrAudioUrl) {
       try {
         setWhisperRunning(true);

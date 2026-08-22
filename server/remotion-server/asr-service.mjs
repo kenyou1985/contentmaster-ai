@@ -58,12 +58,12 @@ export async function getPipeline() {
     env.allowLocalModels = true;
     env.allowRemoteModels = true; // 允许从 HF Hub 下载缺失的模型文件（如 quantized）
     env.useBrowserCache = false;
-    // v2.3：尝试 int8 量化推理（速度比 fp32 快 2-3x）
-    // dtype: { type: 'int8', quantize: true } → ONNX Runtime 自动选量化权重
-    // 加载失败时（如模型不支持量化）静默回退到 fp32，不影响业务
+    // v2.4：尝试 int8 量化推理（速度比 fp32 快 2-3x）
+    // dtype: 'int8' 字符串格式（HuggingFace Transformers.js 正确识别）
+    // 加载失败时静默回退到 fp32，不影响业务
     let dtypeArg;
     try {
-      dtypeArg = { type: 'int8', quantize: true };
+      dtypeArg = 'int8';
     } catch {
       dtypeArg = undefined;
     }
@@ -71,7 +71,6 @@ export async function getPipeline() {
     asrPipeline = await pipeline('automatic-speech-recognition', WHISPER_MODEL, {
       device: 'cpu',
       dtype: dtypeArg,
-      // dtype 留空：使用模型仓库里实际存在的 .onnx 文件（默认 fp32）
       progress_callback: (info) => {
         if (info.status === 'initiate' || info.status === 'loading') {
           console.log(`[ASR] 加载模型: ${Math.round(info.progress ?? 0)}%`);
