@@ -1,0 +1,110 @@
+# ContentMaster AI · Remotion 渲染服务端
+# 用于部署在 Railway
+
+FROM node:20-bookworm-slim
+
+# 关键系统依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    chromium fonts-liberation libnss3 libatk-bridge2.0-0 libxkbcommon0 \
+    libxcomposite1 libxdamage1 libxrandr2 libgbm1 libxss1 libasound2 \
+    libatk1.0-0 libcairo2 libcups2 libdbus-1-3 libdrm2 libgtk-3-0 \
+    libpango-1.0-0 libpangocairo-1.0-0 fonts-liberation fonts-noto-cjk \
+    fonts-noto-color-emoji ffmpeg ca-certificates curl tini \
+ && rm -rf /var/lib/apt/lists/*
+
+# 准备 Chrome 软链接
+RUN mkdir -p /opt/google/chrome && \
+    ln -sf /usr/bin/chromium /usr/local/bin/google-chrome && \
+    ln -sf /usr/bin/chromium /usr/local/bin/chrome
+
+WORKDIR /app
+
+# 复制 Remotion 项目源码
+COPY remotion/ ./remotion/
+
+# 复制 remotion-server 代码（包含 server.mjs + render-worker.mjs + 所有辅助模块）
+COPY server/remotion-server/ ./remotion-server/
+
+# 创建 package.json（使用 cat heredoc 避免引号问题）
+WORKDIR /app/remotion-server
+RUN cat > package.json << 'PKGJSON'
+{
+  "name": "remotion-server",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "^4.0.250",
+    "@remotion/bundler": "^4.0.250",
+    "@remotion/renderer": "^4.0.250",
+    "@huggingface/transformers": "^3.8.1",
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
+    "ffmpeg-static": "^5.3.0",
+    "mpg123-decoder": "^1.0.3",
+    "multer": "^2.2.0",
+    "wavefile": "^11.0.0"
+  }
+}
+PKGJSON
+
+# 安装所有依赖
+RUN npm install --no-audit --no-fund --legacy-peer-deps
+
+# 预下载 Whisper 模型（~140MB）进镜像，构建时下载避免运行时下载超时/403
+# 镜像层缓存 = 模型缓存持久化，重启不需要重新下载
+# 注意：pipeline('asr') 在构建阶段用 fallback 链会报 unsupported model type，
+# 所以改为直接用 AutoModelForSpeechSeq2Seq.from_pretrained，绕过 fallback。
+RUN node --input-type=module -e "
+  import { AutoModelForSpeechSeq2Seq, AutoTokenizer, AutomaticSpeechRecognitionPipeline, env } from '@huggingface/transformers';
+  env.allowLocalModels = true;
+  env.allowRemoteModels = true;
+  console.log('[build] 开始预下载 whisper-base 模型...');
+  const start = Date.now();
+  const model = await AutoModelForSpeechSeq2Seq.from_pretrained('Xenova/whisper-base', {
+    device: 'cpu', dtype: 'fp32', quantized: false,
+  });
+  const tokenizer = await AutoTokenizer.from_pretrained('Xenova/whisper-base', { quantized: false });
+  const pipe = new AutomaticSpeechRecognitionPipeline({ model, tokenizer });
+  console.log('[build] ✓ whisper-base 模型预热完成（' + Math.round((Date.now()-start)/1000) + 's）');
+" 2>&1 | grep -vE "^dtype|libc|onnxruntime" || true
+
+# 预下载 Remotion 使用的 Chrome Headless Shell（91MB+，云端下载需要 10+ 分钟）
+# 构建时下载到容器内，运行时直接复用，避免用户每次导出时卡住
+RUN npx --yes remotion install browser || echo "[warn] Remotion 浏览器预下载失败，将运行时重试"
+
+# 渲染输出目录
+RUN mkdir -p /tmp/remotion-out /tmp/remotion-out/logs /tmp/remotion-temp
+
+# 验证
+RUN echo "=== 验证 ===" && \
+    echo "react: $(test -d /app/remotion-server/node_modules/react && echo yes || echo no)" && \
+    echo "@remotion/renderer: $(test -d /app/remotion-server/node_modules/@remotion/renderer && echo yes || echo no)" && \
+    echo "@remotion/bundler: $(test -d /app/remotion-server/node_modules/@remotion/bundler && echo yes || echo no)" && \
+    echo "@huggingface/transformers: $(test -d /app/remotion-server/node_modules/@huggingface/transformers && echo yes || echo no)" && \
+    echo "=== 验证完成 ==="
+
+# 环境变量
+ENV REMOTION_PROJECT_ROOT=/app/remotion \
+    REMOTION_OUTPUT_DIR=/tmp/remotion-out \
+    NODE_ENV=production \
+    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+    HF_HUB_ENABLE_HF_TRANSFER=1 \
+    HF_HUB_DOWNLOAD_TIMEOUT=120 \
+    TRANSFORMERS_NO_ADVISORY_WARNINGS=1 \
+    TRANSFORMERS_NO_INFERSCHEMA=1 \
+    HF_HOME=/tmp/.huggingface \
+    TRANSFORMERS_CACHE=/tmp/.huggingface/cache \
+    CHROME_PATH=/usr/bin/chromium
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:${PORT:-10000}/health || exit 1
+
+EXPOSE 10000
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
+# 从 /app/remotion-server 启动
+CMD ["node", "server.mjs"]
