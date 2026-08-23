@@ -282,8 +282,7 @@ export const MyVideo: React.FC<RemotionInputProps> = ({ shots, config }) => {
           而非视频整体时间轴位置。放在 AbsoluteFill 顶层，from 就是绝对帧。 */}
       {subtitleEnabled && (
         <AbsoluteFill style={{ pointerEvents: 'none' }}>
-          {segments.map(({ shot, startFrame, leadInFrames, leadOutFrames, audioDurationFrames }) => {
-            const sequenceFrom = Math.max(0, startFrame - leadInFrames);
+          {segments.map(({ shot, startFrame, leadInFrames, leadOutFrames, audioStartFrame, audioDurationFrames }) => {
             // 优先使用 shot 上预计算的 textCues（来自 Whisper ASR 等）
             const externalCues = (shot as any).textCues as SubtitleCue[] | undefined;
             // M2 #7：每个 shot 单独的安全区（自动避开主体）
@@ -291,12 +290,21 @@ export const MyVideo: React.FC<RemotionInputProps> = ({ shots, config }) => {
             const cfgWithSafeZone = shotSafeZone
               ? { ...subtitleCfg, safeZone: shotSafeZone }
               : subtitleCfg;
+            // v2.7 修复字幕-音频不同步 bug：
+            //   - 之前 offsetFrames = sequenceFrom = startFrame - leadInFrames（跟着视频走，提前 leadIn）
+            //   - 但音频起点是 audioStartFrame（严格不重叠，不提前）
+            //   - 结果：镜头切换时字幕比音频提前 leadIn 帧出现（约 0.4s @ 30fps），
+            //           而且每多一个镜头字幕累计领先一个 leadIn
+            //   - 修复：字幕 offset 跟随音频 startFrame 而非视频 sequenceFrom，
+            //           并把 leadIn 帧的差值从 duration 中减去（保持句均分总长度不变）
+            const subtitleOffset = audioStartFrame;
+            const subtitleDuration = audioDurationFrames;
             return (
               <Subtitle
                 key={`sub-${shot.id}`}
                 text={shot.text || shot.caption}
-                durationInFrames={audioDurationFrames}
-                offsetFrames={sequenceFrom}
+                durationInFrames={subtitleDuration}
+                offsetFrames={subtitleOffset}
                 config={cfgWithSafeZone}
                 cues={externalCues}
               />
