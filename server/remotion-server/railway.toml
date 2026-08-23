@@ -1,6 +1,6 @@
 [build]
 builder = "DOCKERFILE"
-dockerfilePath = "Dockerfile"
+dockerfilePath = "../../Dockerfile.remotion"
 
 [deploy]
 # 启动命令由 Dockerfile CMD 决定，这里留空避免冲突

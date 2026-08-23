@@ -54,21 +54,9 @@ RUN npm install --no-audit --no-fund --legacy-peer-deps
 
 # 预下载 Whisper 模型（~140MB）进镜像，构建时下载避免运行时下载超时/403
 # 镜像层缓存 = 模型缓存持久化，重启不需要重新下载
-# 注意：pipeline('asr') 在构建阶段用 fallback 链会报 unsupported model type，
-# 所以改为直接用 AutoModelForSpeechSeq2Seq.from_pretrained，绕过 fallback。
-RUN node --input-type=module -e "
-  import { AutoModelForSpeechSeq2Seq, AutoTokenizer, AutomaticSpeechRecognitionPipeline, env } from '@huggingface/transformers';
-  env.allowLocalModels = true;
-  env.allowRemoteModels = true;
-  console.log('[build] 开始预下载 whisper-base 模型...');
-  const start = Date.now();
-  const model = await AutoModelForSpeechSeq2Seq.from_pretrained('Xenova/whisper-base', {
-    device: 'cpu', dtype: 'fp32', quantized: false,
-  });
-  const tokenizer = await AutoTokenizer.from_pretrained('Xenova/whisper-base', { quantized: false });
-  const pipe = new AutomaticSpeechRecognitionPipeline({ model, tokenizer });
-  console.log('[build] ✓ whisper-base 模型预热完成（' + Math.round((Date.now()-start)/1000) + 's）');
-" 2>&1 | grep -vE "^dtype|libc|onnxruntime" || true
+# 使用独立脚本文件而不是 node -e，避开 Docker 多行字符串解析陷阱
+COPY server/remotion-server/preload-whisper.mjs /app/remotion-server/preload-whisper.mjs
+RUN node preload-whisper.mjs 2>&1 | grep -vE "^dtype|libc|onnxruntime" || true
 
 # 预下载 Remotion 使用的 Chrome Headless Shell（91MB+，云端下载需要 10+ 分钟）
 # 构建时下载到容器内，运行时直接复用，避免用户每次导出时卡住
