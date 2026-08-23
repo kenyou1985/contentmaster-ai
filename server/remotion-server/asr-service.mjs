@@ -70,7 +70,9 @@ export async function getPipeline() {
   modelLoadingPromise = (async () => {
     // 关键：必须 allowLocalModels=true，否则会触发网络请求下载模型
     env.allowLocalModels = true;
-    env.allowRemoteModels = true; // 允许从 HF Hub 下载缺失的模型文件（如 quantized）
+    // 构建时已预下载模型（Dockerfile RUN），运行时优先用本地缓存，减少网络依赖
+    // 如果 Railway 容器重启后本地缓存被清空，再允许远程下载作为 fallback
+    env.allowRemoteModels = true;
     env.useBrowserCache = false;
     // v2.4：尝试 int8 量化推理（速度比 fp32 快 2-3x）
     // 修复 v8.0：旧的 try/catch 包了一层空 catch 实际上永远返回 'int8'

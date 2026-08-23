@@ -35,8 +35,26 @@ async function ensureLoaded() {
   modelLoading = (async () => {
     const mod = await import('./asr-service.mjs');
     transcribeAudio = mod.transcribeAudio;
-    // 触发模型预热（首次会下载/缓存模型，耗时 10-30s）
-    await transcribeAudio; // ensure import is evaluated
+    // v8.2：触发模型预热！之前只引用了函数引用，没有实际调用，导致模型从未被加载
+    // 首次请求到来时才触发 -> 首次请求用户等待时间 +20~60s
+    const warmupFile = '/tmp/asr_warmup_' + process.pid + '.wav';
+    try {
+      const { writeFileSync } = await import('fs');
+      // 写一个 0.5 秒静音 PCM WAV（16kHz mono）
+      const buf = Buffer.alloc(44 + 8000);
+      buf.write('RIFF', 0); buf.writeUInt32LE(36 + 8000, 4);
+      buf.write('WAVE', 8); buf.write('fmt ', 12); buf.writeUInt32LE(16, 16);
+      buf.writeUInt16LE(1, 20); buf.writeUInt16LE(1, 22);
+      buf.writeUInt32LE(16000, 24); buf.writeUInt32LE(32000, 28);
+      buf.writeUInt16LE(2, 32); buf.writeUInt16LE(16, 34);
+      buf.write('data', 36); buf.writeUInt32LE(8000, 40);
+      writeFileSync(warmupFile, buf);
+      await transcribeAudio(warmupFile, 'zh');
+      console.log('[asr-worker] 模型预热完成（仅静音测试，无实际推理）');
+    } catch (e) {
+      // 预热失败不影响 worker 启动，正式请求时仍会触发加载
+      console.warn('[asr-worker] 预热失败:', e?.message);
+    }
     return transcribeAudio;
   })();
   await modelLoading;
