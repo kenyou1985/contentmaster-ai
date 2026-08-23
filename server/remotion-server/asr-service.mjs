@@ -27,6 +27,7 @@ env.allowLocalModels = true;
 // env.allowRemoteModels = true;
 
 // ── 全局单例 ──────────────────────────────────────────────
+
 let asrPipeline = null;
 let modelLoadingPromise = null;
 
@@ -44,6 +45,19 @@ let modelLoadingPromise = null;
 const WHISPER_MODEL = 'Xenova/whisper-base';
 
 /**
+ * v8.0 诊断：在进程启动时打印 transformers 版本与 ASR 任务支持的模型类
+ * 便于区分"版本错"还是"模型文件错"
+ */
+try {
+  console.log(`[ASR] transformers 版本: ${(await import('@huggingface/transformers')).env?.version ?? 'unknown'}`);
+  console.log(`[ASR] 默认模型: ${WHISPER_MODEL}`);
+  console.log(`[ASR] Node: ${process.version}, 平台: ${process.platform}-${process.arch}`);
+  console.log(`[ASR] cacheDir: ${env.cacheDir}`);
+} catch (e) {
+  console.warn('[ASR] 自检失败:', e?.message);
+}
+
+/**
  * 获取或初始化 ASR pipeline（懒加载 + 全局单例）
  */
 export async function getPipeline() {
@@ -59,25 +73,65 @@ export async function getPipeline() {
     env.allowRemoteModels = true; // 允许从 HF Hub 下载缺失的模型文件（如 quantized）
     env.useBrowserCache = false;
     // v2.4：尝试 int8 量化推理（速度比 fp32 快 2-3x）
-    // dtype: 'int8' 字符串格式（HuggingFace Transformers.js 正确识别）
-    // 加载失败时静默回退到 fp32，不影响业务
+    // 修复 v8.0：旧的 try/catch 包了一层空 catch 实际上永远返回 'int8'
+    // 真的写 'int8' 时 transformers 内部会按 dtype 选量化模型文件（如果没有，
+    // 会抛 "Could not locate file" 类型的错），这在 Railway 上更易触发。
+    // 策略：默认 fp32（最稳），当本地缓存了量化模型才上 int8（用环境变量开关）。
     let dtypeArg;
-    try {
+    if (process.env.ASR_INT8 === '1') {
       dtypeArg = 'int8';
-    } catch {
-      dtypeArg = undefined;
+    } else {
+      dtypeArg = 'fp32';
     }
 
-    asrPipeline = await pipeline('automatic-speech-recognition', WHISPER_MODEL, {
+    // v8.1：直接显式使用 WhisperForConditionalGeneration + Pipeline 手动构造，绕开
+    // pipeline('asr') 那条 [AutoModelForSpeechSeq2Seq, AutoModelForCTC] fallback 链。
+    // 已知问题：当 config.model_type 解析异常时，第二个 AutoModelForCTC 会抛
+    //   `Unsupported model type: whisper`，在 Railway 上高频出现。
+    const transformers = await import('@huggingface/transformers');
+    const { AutoModelForSpeechSeq2Seq, AutoTokenizer, AutoProcessor } = transformers;
+
+    const model = await AutoModelForSpeechSeq2Seq.from_pretrained(WHISPER_MODEL, {
       device: 'cpu',
       dtype: dtypeArg,
+      quantized: false,
       progress_callback: (info) => {
         if (info.status === 'initiate' || info.status === 'loading') {
           console.log(`[ASR] 加载模型: ${Math.round(info.progress ?? 0)}%`);
         }
       },
     });
-    console.log(`[ASR] ✓ 模型就绪: ${WHISPER_MODEL}`);
+    const tokenizer = await AutoTokenizer.from_pretrained(WHISPER_MODEL, {
+      quantized: false,
+      progress_callback: (info) => {
+        if (info.status === 'initiate' || info.status === 'loading') {
+          console.log(`[ASR] 加载tokenizer: ${Math.round(info.progress ?? 0)}%`);
+        }
+      },
+    });
+    let processor = null;
+    try {
+      processor = await AutoProcessor.from_pretrained(WHISPER_MODEL, {
+        quantized: false,
+        progress_callback: (info) => {
+          if (info.status === 'initiate' || info.status === 'loading') {
+            console.log(`[ASR] 加载processor: ${Math.round(info.progress ?? 0)}%`);
+          }
+        },
+      });
+    } catch (e) {
+      console.warn(`[ASR] processor 加载失败（可忽略，将自动 fallback）: ${e?.message}`);
+    }
+
+    // 使用 AutomaticSpeechRecognitionPipeline 直接构造，绕过 fallback 链
+    const { AutomaticSpeechRecognitionPipeline } = transformers;
+    asrPipeline = new AutomaticSpeechRecognitionPipeline({
+      model,
+      tokenizer,
+      processor,
+      task: 'automatic-speech-recognition',
+    });
+    console.log(`[ASR] ✓ 模型就绪(显式装配): ${WHISPER_MODEL}`);
   })();
 
   await modelLoadingPromise;
