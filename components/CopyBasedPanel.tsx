@@ -1591,6 +1591,126 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
   );
 
   // ──────────────────────────────────────────────
+  // 手动上传封面（v2.7）：用户可直接上传本地图片作为某个方案的封面，
+  // 跳过 AI 生成。blob URL 保存在 generatedCovers，导出 Remotion 时直接复用。
+  // ──────────────────────────────────────────────
+  const handleUploadManualCover = useCallback(
+    (idx: number, file: File) => {
+      const opt = liveTitleOptions[idx];
+      if (!opt) {
+        // 没点智能解析时也允许上传：用一个默认 placeholder
+        // 让用户可以直接传封面，不依赖 AI 解析
+        try {
+          const probeImg = new Image();
+          const blobUrl = URL.createObjectURL(file);
+          probeImg.onload = () => {
+            const w = probeImg.naturalWidth;
+            const h = probeImg.naturalHeight;
+            const placeholderOpt: CopyTitleOption = {
+              title: rawCopy.trim().slice(0, 20) || `方案${idx + 1}`,
+              emoji: '✨',
+              styleTag: '震惊悬念',
+              styleKeywords: [],
+              coverPromptEn: '',
+              coverDescriptionZh: '手动上传',
+              schemeId: ['A', 'B', 'C', 'D', 'E', 'F'][idx % 6] as 'A' | 'B' | 'C' | 'D' | 'E' | 'F',
+              schemeName: '手动上传',
+            };
+            const entry: CoverImageEntry = {
+              index: idx,
+              url: blobUrl,
+              title: placeholderOpt.title,
+              emoji: placeholderOpt.emoji,
+              styleTag: `${placeholderOpt.styleTag} · 未解析`,
+              schemeId: placeholderOpt.schemeId,
+              schemeName: placeholderOpt.schemeName,
+              ratio: coverRatio,
+              actualWidth: w,
+              actualHeight: h,
+            };
+            setGeneratedCovers((prev) => {
+              const next = new Map(prev);
+              const old = next.get(idx) as CoverImageEntry | undefined;
+              if (old && old.url?.startsWith('blob:')) URL.revokeObjectURL(old.url);
+              next.set(idx, entry);
+              return next;
+            });
+            setCoverErrors((prev) => {
+              if (!prev.has(idx)) return prev;
+              const next = new Map(prev);
+              next.delete(idx);
+              return next;
+            });
+            setFinalCoverIndex((prev) => (prev == null ? idx : prev));
+            appendLog('IMG', `✓ 方案${idx + 1} 手动上传封面成功 (${w}×${h})（未点智能解析）`);
+            toast.success(`方案${idx + 1} 封面已上传（${w}×${h}）`, 2000);
+          };
+          probeImg.onerror = () => {
+            URL.revokeObjectURL(blobUrl);
+            appendLog('ERROR', `方案${idx + 1} 封面图片解析失败`);
+            toast.error('图片解析失败，请使用 PNG/JPG/WebP 格式', 4000);
+          };
+          probeImg.src = blobUrl;
+        } catch (e: any) {
+          appendLog('ERROR', `手动上传封面失败：${e?.message || e}`);
+          toast.error(`上传失败：${e?.message || e}`, 4000);
+        }
+        return;
+      }
+      // 有 analysisResult 时的逻辑
+      try {
+        // 读实际像素宽高（用于封面比例监控）
+        const probeImg = new Image();
+        const blobUrl = URL.createObjectURL(file);
+        probeImg.onload = () => {
+          const w = probeImg.naturalWidth;
+          const h = probeImg.naturalHeight;
+          const entry: CoverImageEntry = {
+            index: idx,
+            url: blobUrl,
+            title: opt.title,
+            emoji: opt.emoji,
+            styleTag: `${opt.styleTag} · 手动上传`,
+            schemeId: opt.schemeId,
+            schemeName: opt.schemeName,
+            ratio: coverRatio,
+            actualWidth: w,
+            actualHeight: h,
+          };
+          setGeneratedCovers((prev) => {
+            const next = new Map(prev);
+            // 释放上一个 blob URL（避免内存泄漏）
+            const old = next.get(idx) as CoverImageEntry | undefined;
+            if (old && old.url?.startsWith('blob:')) URL.revokeObjectURL(old.url);
+            next.set(idx, entry);
+            return next;
+          });
+          setCoverErrors((prev) => {
+            if (!prev.has(idx)) return prev;
+            const next = new Map(prev);
+            next.delete(idx);
+            return next;
+          });
+          // 默认终选第一张手动上传的封面
+          setFinalCoverIndex((prev) => (prev == null ? idx : prev));
+          appendLog('IMG', `✓ 方案${idx + 1} 手动上传封面成功 (${w}×${h})`);
+          toast.success(`方案${idx + 1} 封面已上传（${w}×${h}）`, 2000);
+        };
+        probeImg.onerror = () => {
+          URL.revokeObjectURL(blobUrl);
+          appendLog('ERROR', `方案${idx + 1} 封面图片解析失败`);
+          toast.error('图片解析失败，请使用 PNG/JPG/WebP 格式', 4000);
+        };
+        probeImg.src = blobUrl;
+      } catch (e: any) {
+        appendLog('ERROR', `手动上传封面失败：${e?.message || e}`);
+        toast.error(`上传失败：${e?.message || e}`, 4000);
+      }
+    },
+    [liveTitleOptions, coverRatio, rawCopy, appendLog, toast]
+  );
+
+  // ──────────────────────────────────────────────
   // 下载封面
   // ──────────────────────────────────────────────
   const handleDownloadCover = useCallback(
@@ -1637,6 +1757,80 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
     });
   }, []);
 
+  /**
+   * v2.7 helper：把任意 audio Blob（wav/mp3/m4a）转成 MP3 Blob。
+   * 纯客户端，零服务端依赖。
+   * 原理：用 OfflineAudioContext + AudioBuffer → MediaStreamDestinationNode → MediaRecorder
+   *       MediaRecorder 用 'audio/mpeg'（即 mp3）作为 mimeType 输出。
+   * 浏览器兼容性：
+   *   - Chrome / Edge：✅ audio/mpeg
+   *   - Firefox：✅ audio/mpeg
+   *   - Safari：⚠️ 部分支持；失败时自动降级到服务端
+   */
+  const convertWavBlobToMp3 = useCallback(async (inputBlob: Blob): Promise<Blob> => {
+    if (typeof window === 'undefined') throw new Error('非浏览器环境');
+
+    // 1) 解码音频 → AudioBuffer
+    const arrayBuffer = await inputBlob.arrayBuffer();
+    // AudioContext 必须是用户手势后调用，这里已经是 onClick 内，符合要求
+    const Ctor = (window as any).AudioContext || (window as any).webkitAudioContext;
+    const decodeCtx = new Ctor();
+    let audioBuffer: AudioBuffer;
+    try {
+      audioBuffer = await decodeCtx.decodeAudioData(arrayBuffer.slice(0));
+    } finally {
+      try { decodeCtx.close(); } catch {}
+    }
+
+    // 2) 准备离线渲染：AudioBuffer → MediaStreamDestination
+    const sampleRate = audioBuffer.sampleRate;
+    const channels = audioBuffer.numberOfChannels;
+    const length = audioBuffer.length;
+
+    // MediaStreamDestination 需要 AudioContext（不是 OfflineAudioContext）
+    const streamCtx = new Ctor({ sampleRate });
+    const dest = streamCtx.createMediaStreamDestination();
+
+    const offline = new OfflineAudioContext(channels, length, sampleRate);
+    const source = offline.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(dest);
+    source.start();
+
+    // 3) MediaRecorder 录制（必须先 start，再 startRendering，再 stop）
+    const mimeCandidates = [
+      'audio/mpeg',
+      'audio/mp3',
+      'audio/mpeg;codecs=mp3',
+    ];
+    const supported = mimeCandidates.find((m) => (window as any).MediaRecorder?.isTypeSupported?.(m));
+    if (!supported) {
+      throw new Error('当前浏览器不支持 MediaRecorder 输出 MP3');
+    }
+    const recorder = new MediaRecorder(dest.stream, { mimeType: supported, audioBitsPerSecond: 128_000 });
+    const chunks: Blob[] = [];
+    recorder.ondataavailable = (e) => { if (e.data?.size > 0) chunks.push(e.data); };
+
+    const recordedPromise = new Promise<void>((resolve, reject) => {
+      recorder.onstop = () => resolve();
+      recorder.onerror = (e: any) => reject(new Error(e?.error?.message || 'MediaRecorder 出错'));
+    });
+
+    // 必须在 startRendering 之前启动 recorder，否则会丢失音频数据
+    recorder.start();
+    const renderedBuffer = await offline.startRendering();
+    // 渲染完成后立即停止
+    recorder.stop();
+
+    await recordedPromise;
+
+    if (chunks.length === 0) throw new Error('MediaRecorder 没产生数据');
+
+    const outputBlob = new Blob(chunks, { type: 'audio/mpeg' });
+    if (outputBlob.size < 200) throw new Error('MP3 输出文件过小（可能转码失败）');
+    return outputBlob;
+  }, []);
+
   const handleGenerateTts = useCallback(async () => {
     if (rawCopy.trim().length < 50) {
       toast.error('文案过短，无法配音', 3000);
@@ -1650,9 +1844,21 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
       try {
         const durationSec = await getAudioBlobDuration(uploadedFullAudioBlob);
         const url = URL.createObjectURL(uploadedFullAudioBlob);
+        // v2.7+：如果是 mp3/m4a 等压缩格式，直接把原 blob 当作 mp3 blob 供下载使用
+        //       （用户既然上传了完整配音音频，就用原文件，不再做 wav→mp3 转码）
+        const headBuf = await uploadedFullAudioBlob.slice(0, 16).arrayBuffer();
+        const headBytes = new Uint8Array(headBuf);
+        const isMp3Like =
+          uploadedFullAudioBlob.type.includes('mpeg') ||
+          uploadedFullAudioBlob.type.includes('mp3') ||
+          uploadedFullAudioBlob.type.includes('m4a') ||
+          uploadedFullAudioBlob.type.includes('mp4') ||
+          (headBytes[0] === 0x49 && headBytes[1] === 0x44 && headBytes[2] === 0x33) ||
+          (headBytes[0] === 0xff && (headBytes[1] & 0xe0) === 0xe0);
         const fakeResult: ParallelTtsResult = {
           mergedAudioUrl: url,
           mergedAudioBlob: uploadedFullAudioBlob,
+          mergedMp3Blob: isMp3Like ? uploadedFullAudioBlob : undefined,
           totalDuration: durationSec,
           segments: [
             {
@@ -1675,10 +1881,8 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
       return;
     }
 
-    if (selectedOptionList.length === 0) {
-      toast.error('请先选择至少 1 套方案', 3000);
-      return;
-    }
+    // v2.7：5 段配音不再要求先选方案 — 只要有文案 + 配音声色即可触发
+    // 之前的限制（必须先点「智能解析」并选择方案）让"只有文案"的场景无法配音
     if (!runningHubApiKey?.trim()) {
       appendLog('ERROR', 'RunningHub API Key 未配置');
       toast.error('请先在顶部输入 RunningHub API Key', 4000);
@@ -2416,6 +2620,78 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
               </>
             )}
           </button>
+          {/* v2.7：跳过 AI 直接上传封面（即便不点智能解析也能用） */}
+          {/* v2.7：跳过 AI 直接上传封面 + 即时预览（不依赖智能解析） */}
+          <div className="bg-slate-900/50 border border-emerald-700/60 rounded-lg p-2.5 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[11px] text-emerald-300 font-bold">
+                ✨ 跳过 AI · 手动上传封面
+              </div>
+              {finalCover && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGeneratedCovers(new Map());
+                    setFinalCoverIndex(null);
+                    appendLog('IMG', '已清除终封面');
+                    toast.info('已清除终封面');
+                  }}
+                  className="text-[10px] text-red-400 hover:text-red-300"
+                  title="清除终封面，重新选择"
+                >
+                  ✕ 清除
+                </button>
+              )}
+            </div>
+            {finalCover ? (
+              <>
+                <div
+                  className={`relative w-full ${COVER_RATIO_CLASSES[coverRatio] ?? 'aspect-video'} rounded overflow-hidden border border-slate-700 bg-slate-950`}
+                  data-cover-ratio={coverRatio}
+                  data-actual-size={
+                    finalCover.actualWidth && finalCover.actualHeight
+                      ? `${finalCover.actualWidth}x${finalCover.actualHeight}`
+                      : 'unknown'
+                  }
+                >
+                  <img
+                    src={finalCover.url}
+                    alt="终封面预览"
+                    className="absolute inset-0 w-full h-full object-contain"
+                  />
+                </div>
+                <div className="text-[10px] text-slate-400 truncate" title={finalCover.title}>
+                  {finalCover.emoji} {finalCover.title}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleDownloadCover(finalCover)}
+                  className="w-full text-[10px] px-2 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded flex items-center justify-center gap-1"
+                >
+                  <Download size={10} /> 下载终封面
+                </button>
+              </>
+            ) : (
+              <div className="text-[10px] text-slate-500">尚未上传封面，点下方按钮选择本地图片</div>
+            )}
+            <label
+              className="w-full px-3 py-2 bg-emerald-700/40 hover:bg-emerald-700/60 border border-emerald-600/50 text-emerald-100 rounded-lg flex items-center justify-center gap-2 cursor-pointer transition-all text-xs font-medium"
+              title="上传本地图片作为终封面（PNG/JPG/WebP）"
+            >
+              <Upload size={14} />
+              <span>{finalCover ? '换一张' : '选择本地图片'}</span>
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) handleUploadManualCover(0, f);
+                  e.target.value = '';
+                }}
+              />
+            </label>
+          </div>
           {analyzing && (
             <label className="flex items-center gap-2 bg-slate-800/50 border border-purple-700 rounded-lg px-3 py-2 cursor-pointer hover:bg-slate-700/50 transition-colors">
               <input
@@ -2614,6 +2890,24 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                               </>
                             )}
                           </button>
+                          {/* v2.7：手动上传封面（无需 AI） */}
+                          <label
+                            className="text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1 bg-emerald-700/60 text-emerald-100 hover:bg-emerald-600/80 cursor-pointer"
+                            title="手动上传本地图片作为此方案封面（跳过 AI 生成）"
+                          >
+                            <Upload size={10} />
+                            上传封面
+                            <input
+                              type="file"
+                              accept="image/png,image/jpeg,image/webp"
+                              className="hidden"
+                              onChange={(e) => {
+                                const f = e.target.files?.[0];
+                                if (f) handleUploadManualCover(idx, f);
+                                e.target.value = '';
+                              }}
+                            />
+                          </label>
                         </div>
                       </div>
 
@@ -3115,8 +3409,15 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
           <div className="flex items-center gap-2">
             <button
               onClick={handleGenerateTts}
-              disabled={ttsGenerating || rawCopy.trim().length < 50}
-              className="flex-1 px-4 py-2.5 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-lg flex items-center justify-center gap-2 disabled:opacity-50 transition-all"
+              disabled={ttsGenerating || rawCopy.trim().length < 50 || !runningHubApiKey?.trim()}
+              title={
+                rawCopy.trim().length < 50
+                  ? '文案需 ≥ 50 字才能配音'
+                  : !runningHubApiKey?.trim()
+                  ? '请先在顶部输入 RunningHub API Key'
+                  : '只需有文案即可启动 5 段并行配音（不依赖智能解析）'
+              }
+              className="flex-1 px-4 py-2.5 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-lg flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
               type="button"
             >
               {ttsGenerating ? (
@@ -3187,17 +3488,68 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                   {selectedVoice && ` · 音色：${selectedVoice.name}`}
                 </span>
                 <div className="flex items-center gap-2">
-                  {/* MP3 下载 */}
+                  {/* MP3 下载（v2.7+：直接复用 RunningHub 原始 mp3 段拼接，零重编码损失） */}
                   <button
                     onClick={async () => {
                       if (!ttsResult) return;
+                      const triggerDownload = (blob: Blob, label: string) => {
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `tts_${Date.now()}.mp3`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        setTimeout(() => URL.revokeObjectURL(url), 30000);
+                        toast.success(`MP3 下载成功 · ${label} (${(blob.size / 1024).toFixed(1)} KB)`, 2500);
+                      };
+
+                      // 主路径 1：TTS 已经合并好 mp3（来自 RunningHub 原始 mp3 段拼接，零重编码损失）
+                      if (ttsResult.mergedMp3Blob && ttsResult.mergedMp3Blob.size > 1024) {
+                        try {
+                          triggerDownload(ttsResult.mergedMp3Blob, '来自 RunningHub 原始 mp3');
+                          return;
+                        } catch (e) {
+                          console.warn('[MP3] 原始 mp3 blob 下载失败，降级', e);
+                        }
+                      }
+
+                      // 主路径 2：手动上传的音频本身就是 mp3/m4a，直接用
                       try {
+                        const headBlob = ttsResult.mergedAudioBlob;
+                        const headType = headBlob?.type || '';
+                        const headBuf = await (headBlob || await (await fetch(ttsResult.mergedAudioUrl)).blob()).slice(0, 16).arrayBuffer();
+                        const headBytes = new Uint8Array(headBuf);
+                        // ID3 开头 = "ID3" (0x49 0x44 0x33) → 是 mp3
+                        const isMp3 = headType.includes('mpeg') || headType.includes('mp3') ||
+                          (headBytes[0] === 0x49 && headBytes[1] === 0x44 && headBytes[2] === 0x33) ||
+                          // MP3 sync byte: 0xFF 0xFB / 0xFF 0xFA / 0xFF 0xF3 / 0xFF 0xF2
+                          (headBytes[0] === 0xff && (headBytes[1] & 0xe0) === 0xe0);
+                        if (isMp3 && headBlob && headBlob.size > 1024) {
+                          triggerDownload(headBlob, '原始上传即为 MP3');
+                          return;
+                        }
+                      } catch { /* ignore */ }
+
+                      // 兜底 1：客户端 MediaRecorder 转码
+                      toast.info('正在浏览器内转码 MP3...', 1500);
+                      try {
+                        const mp3Blob = await convertWavBlobToMp3(
+                          ttsResult.mergedAudioBlob || await (await fetch(ttsResult.mergedAudioUrl)).blob()
+                        );
+                        triggerDownload(mp3Blob, '浏览器转码');
+                        return;
+                      } catch (e: any) {
+                        console.warn('[MP3] 客户端 MediaRecorder 转码失败：', e);
+                      }
+
+                      // 兜底 2：服务端 ffmpeg 路径（旧的 /audio/convert-to-mp3）
+                      try {
+                        toast.warning('客户端转码失败，尝试服务端转码...', 3000);
                         const baseUrl = (window as any).__REMOTION_SERVER_URL__ || getRemotionApiBase();
-                        // 1. 将 blob URL 转为 ArrayBuffer → 发给服务端转换
                         const res = await fetch(ttsResult.mergedAudioUrl);
                         const blob = await res.blob();
                         const arrayBuffer = await blob.arrayBuffer();
-                        // 2. 发给服务端转 MP3（用 FormData 传二进制，避免大 base64 溢出）
                         const fd = new FormData();
                         fd.append('audio', new File([arrayBuffer], 'merged.wav', { type: 'audio/wav' }));
                         const resp = await fetch(`${baseUrl}/audio/convert-to-mp3`, {
@@ -3206,17 +3558,16 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                         });
                         const result = await resp.json();
                         if (result.success && result.mp3Url) {
-                          // 3. 触发下载（mp3Url 为 data: URL，直接 a.click 即可）
                           const a = document.createElement('a');
                           a.href = result.mp3Url;
                           a.download = `tts_${Date.now()}.mp3`;
                           a.click();
-                          toast.success('MP3 下载成功！');
+                          toast.success('MP3 下载成功（服务端转码）', 2500);
                         } else {
                           toast.error(result.error || 'MP3 转换失败');
                         }
-                      } catch (e: any) {
-                        toast.error(e.message || 'MP3 下载失败');
+                      } catch (e2: any) {
+                        toast.error(`MP3 下载失败：${e2?.message || e2}`, 6000);
                       }
                     }}
                     className="text-[10px] text-green-400 hover:text-green-300 flex items-center gap-1"
@@ -3277,15 +3628,54 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
             </button>
           </div>
           {finalCover ? (
-            <div className="bg-slate-900/50 border border-emerald-700 rounded p-2 text-xs space-y-1">
-              <div className="text-emerald-400 font-bold">✓ 终封面已选</div>
-              <div className="text-slate-300 truncate">
+            <div className="bg-slate-900/50 border border-emerald-700 rounded p-2 text-xs space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-emerald-400 font-bold">✓ 终封面已选</div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGeneratedCovers(new Map());
+                    setFinalCoverIndex(null);
+                    appendLog('IMG', '已清除终封面');
+                    toast.info('已清除终封面');
+                  }}
+                  className="text-[10px] text-red-400 hover:text-red-300"
+                  title="清除终封面，重新选择"
+                >
+                  ✕ 清除
+                </button>
+              </div>
+              <div className="text-slate-300 truncate" title={finalCover.title}>
                 {finalCover.emoji} [{finalCover.styleTag}] {finalCover.title}
               </div>
+              {/* 实际显示终封面图片（v2.7：跳过 AI 场景的关键，让用户立即看到上传的图） */}
+              <div
+                className={`relative w-full ${COVER_RATIO_CLASSES[coverRatio] ?? 'aspect-video'} rounded overflow-hidden border border-slate-700 bg-slate-950`}
+                data-cover-ratio={coverRatio}
+                data-actual-size={
+                  finalCover.actualWidth && finalCover.actualHeight
+                    ? `${finalCover.actualWidth}x${finalCover.actualHeight}`
+                    : 'unknown'
+                }
+              >
+                <img
+                  src={finalCover.url}
+                  alt="终封面预览"
+                  className="absolute inset-0 w-full h-full object-contain"
+                />
+              </div>
+              {/* 下载按钮 */}
+              <button
+                type="button"
+                onClick={() => handleDownloadCover(finalCover)}
+                className="w-full text-[10px] px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded flex items-center justify-center gap-1"
+              >
+                <Download size={10} /> 下载终封面
+              </button>
             </div>
           ) : (
             <div className="bg-slate-900/50 border border-slate-700 rounded p-2 text-xs text-slate-500">
-              尚未选定终封面
+              尚未选定终封面（点上方「跳过 AI，直接上传封面图」即可手动上传）
             </div>
           )}
           {ttsResult && (
@@ -3397,6 +3787,25 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
               Whisper ASR 进行中 {whisperProgress.done}/{whisperProgress.total} ({whisperProgress.current})
             </div>
           )}
+
+          {/* 导出前置条件提示（缺图/缺音时显示，让用户明确知道还差什么） */}
+          {(() => {
+            const missing: string[] = [];
+            if (mode === 'ai') {
+              if (!finalCover) missing.push('封面');
+              if (!ttsResult) missing.push('配音');
+            } else {
+              if (customTracks.videoItems.length === 0) missing.push('视频/图片素材');
+              if (!customTracks.audioUrl) missing.push('音频');
+            }
+            if (missing.length === 0 || videoGenerating) return null;
+            return (
+              <div className="bg-amber-900/30 border border-amber-700/60 rounded p-2 text-[10px] text-amber-200 flex items-start gap-1.5">
+                <AlertCircle size={12} className="mt-0.5 flex-shrink-0" />
+                <span>导出按钮已置灰，需先添加：<b>{missing.join(' + ')}</b>。提示：封面可点击方案卡片的「上传封面」按钮手动上传；音频可点上方「选择音频文件」按钮。</span>
+              </div>
+            );
+          })()}
 
           {/* MP4 导出按钮 */}
           <button

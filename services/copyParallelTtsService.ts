@@ -49,6 +49,12 @@ export interface ParallelTtsResult {
   mergedAudioUrl: string;
   /** 合并后的 WAV Blob（供上传/导出） */
   mergedAudioBlob: Blob;
+  /**
+   * 合并后的 MP3 Blob（v2.7+）。
+   * 直接来自 RunningHub TTS 任务的 mp3 链接拼接（保留原始 mp3 编码，无 ffmpeg 重编码损失）。
+   * 失败/未生成时为 undefined，前端应降级到客户端 MediaRecorder 或服务端 ffmpeg。
+   */
+  mergedMp3Blob?: Blob;
   /** 合并后的总时长（秒） */
   totalDuration: number;
   /** 每段信息（顺序保留） */
@@ -259,11 +265,20 @@ export async function runParallelTts(
     s.duration = merged.durations[idx] || 0;
   });
 
+  // v2.7+：从原始 mp3 URL 合并 mp3（不经过 wav → mp3 重编码，质量零损失）
+  updateProgress(
+    '合并 MP3',
+    segmentsTotal + 1,
+    `合并 ${successSegments.length} 段 mp3 链接（保留 RunningHub 原始编码）...`
+  );
+  const mergedMp3Blob = await mergeMp3AudioUrls(successSegments.map((s) => s.audioUrl));
+
   updateProgress('完成', segmentsTotal + 1, `合并完成，总时长 ${merged.totalDuration.toFixed(1)} 秒`);
 
   return {
     mergedAudioUrl: merged.mergedUrl,
     mergedAudioBlob: merged.mergedBlob,
+    mergedMp3Blob: mergedMp3Blob ?? undefined,
     totalDuration: merged.totalDuration,
     segments: segmentInfos,
   };
@@ -399,4 +414,161 @@ function encodeWavPcm16(buffer: AudioBuffer): Blob {
   }
 
   return new Blob([buf], { type: 'audio/wav' });
+}
+
+/**
+ * 合并多个 MP3 URL 为单个 MP3 Blob（v2.7+）
+ *
+ * 关键优化：RunningHub TTS 任务返回的 results[].url **本身就是 mp3**（API 文档明文
+ *   "新增：保存为 mp3 格式"）。无需再用 ffmpeg / MediaRecorder 重编码（既慢又损质量）。
+ *
+ * 合并原理：
+ *   - MP3 帧是 self-contained（CBR / VBR 都行），可以跨文件拼接播放
+ *   - 文件头必须去掉 ID3v1 / ID3v2 tag（可能含旧歌名/封面/时长等元数据，会干扰播放器）
+ *   - 文件尾可能有 LAME/Xing/Info VBR header，只保留第一个文件中的，作为新文件 VBR header
+ *   - 中间是连续的 MP3 帧，直接拼接
+ *
+ * 失败兜底：返回 undefined，由调用方决定降级到 WAV / MediaRecorder / 服务端 ffmpeg。
+ *
+ * 浏览器兼容性：所有现代浏览器（Chrome/Firefox/Safari/Edge）都支持 mp3 Blob 拼接。
+ */
+export async function mergeMp3AudioUrls(
+  urls: string[]
+): Promise<Blob | undefined> {
+  if (urls.length === 0) return undefined;
+  try {
+    const buffers: ArrayBuffer[] = [];
+    for (const u of urls) {
+      const res = await fetch(u);
+      if (!res.ok) throw new Error(`mp3 下载失败 ${res.status}: ${u}`);
+      buffers.push(await res.arrayBuffer());
+    }
+
+    // 单段：原样返回（但去掉 ID3v2 tag，避免播放器误读旧元数据）
+    if (buffers.length === 1) {
+      return new Blob([stripId3v2(buffers[0])], { type: 'audio/mpeg' });
+    }
+
+    // 多段：第 1 个文件保留 ID3v2 + 末尾 VBR header；其余文件去掉 ID3 + 末尾 VBR header
+    //       然后按顺序拼接中间 frame 数据
+    const parts: Uint8Array[] = [];
+    let totalLen = 0;
+
+    for (let i = 0; i < buffers.length; i++) {
+      let bytes = new Uint8Array(buffers[i]);
+      if (i === 0) {
+        // 第 1 个文件：去掉 ID3v1（末尾 128 字节 "TAG" 头），保留 ID3v2 和 VBR header
+        bytes = stripId3v1(bytes);
+      } else {
+        // 后续文件：去掉所有头尾元数据，只保留帧数据
+        bytes = stripAllMp3Metadata(bytes);
+      }
+      parts.push(bytes);
+      totalLen += bytes.length;
+    }
+
+    const merged = new Uint8Array(totalLen);
+    let offset = 0;
+    for (const p of parts) {
+      merged.set(p, offset);
+      offset += p.length;
+    }
+
+    return new Blob([merged], { type: 'audio/mpeg' });
+  } catch (e) {
+    console.warn('[mergeMp3AudioUrls] 合并失败（调用方应降级到 WAV / MediaRecorder）：', e);
+    return undefined;
+  }
+}
+
+/** 去掉 ID3v1 tag（文件末尾 128 字节，若以 "TAG" 开头） */
+function stripId3v1(bytes: Uint8Array): Uint8Array {
+  if (bytes.length < 128) return bytes;
+  const tagStart = bytes.length - 128;
+  if (
+    bytes[tagStart] === 0x54 && // 'T'
+    bytes[tagStart + 1] === 0x41 && // 'A'
+    bytes[tagStart + 2] === 0x47 // 'G'
+  ) {
+    return bytes.subarray(0, tagStart);
+  }
+  return bytes;
+}
+
+/** 去掉 ID3v2 tag（文件头部，若以 "ID3" 开头） */
+function stripId3v2(buf: ArrayBuffer): Uint8Array {
+  const bytes = new Uint8Array(buf);
+  if (bytes.length < 10) return bytes;
+  if (
+    bytes[0] === 0x49 && // 'I'
+    bytes[1] === 0x44 && // 'D'
+    bytes[2] === 0x33 // '3'
+  ) {
+    // ID3v2 header: 10 bytes, then sync-safe size (4 bytes, big-endian, each byte bit 7 = 0)
+    const b4 = bytes[6] & 0x7f;
+    const b5 = bytes[7] & 0x7f;
+    const b6 = bytes[8] & 0x7f;
+    const b7 = bytes[9] & 0x7f;
+    const tagSize = (b4 << 21) | (b5 << 14) | (b6 << 7) | b7;
+    const headerEnd = 10 + tagSize;
+    if (headerEnd < bytes.length) return bytes.subarray(headerEnd);
+  }
+  return bytes;
+}
+
+/**
+ * 完整去元数据：去 ID3v2 + ID3v1 + 末尾 VBR header（Xing/LAME/Info）
+ * - 用于"中间段"，保证拼接后只保留第 1 个文件的 VBR header
+ */
+function stripAllMp3Metadata(bytes: Uint8Array): Uint8Array {
+  // 1) 去 ID3v2（头部）
+  bytes = stripId3v2(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+
+  // 2) 找 VBR header 位置（Xing / LAME / Info）
+  //    通常出现在第 1 个 MPEG 帧之后（CRC + 32 bytes）
+  //    简化策略：扫描前 1024 字节内的 Xing/LAME/Info 标记
+  const scanLen = Math.min(2048, bytes.length);
+  let vbrStart = -1;
+  let vbrEnd = -1;
+  for (let i = 0; i < scanLen - 4; i++) {
+    if (
+      bytes[i] === 0x58 && bytes[i + 1] === 0x69 && bytes[i + 2] === 0x6e && bytes[i + 3] === 0x67 // 'Xing'
+    ) {
+      vbrStart = i;
+      break;
+    }
+    if (
+      bytes[i] === 0x49 && bytes[i + 1] === 0x6e && bytes[i + 2] === 0x66 && bytes[i + 3] === 0x6f // 'Info'
+    ) {
+      vbrStart = i;
+      break;
+    }
+    if (
+      bytes[i] === 0x4c && bytes[i + 1] === 0x41 && bytes[i + 2] === 0x4d && bytes[i + 3] === 0x45 // 'LAME'
+    ) {
+      vbrStart = i;
+      break;
+    }
+  }
+  if (vbrStart >= 0) {
+    // VBR header 通常 120 bytes（Xing/Info）或可变（LAME encoder tag）
+    // 用相对偏移试探：找到 Xing 后向前 32 字节是 mpeg frame header，再向后 120-200 字节是 VBR
+    // 这里简单做法：截断到 vbrStart 之前的最后一个 MP3 sync byte
+    vbrEnd = vbrStart; // 截断到 VBR header 起点（即不要这个 header）
+    // 往前找最近的 MP3 frame sync byte (0xFFEx)
+    for (let i = vbrEnd - 1; i >= 0; i--) {
+      if (bytes[i] === 0xff && (bytes[i + 1] & 0xe0) === 0xe0) {
+        vbrEnd = i;
+        break;
+      }
+    }
+    if (vbrEnd < vbrStart) {
+      bytes = bytes.subarray(0, vbrEnd);
+    }
+  }
+
+  // 3) 去 ID3v1（末尾 128 字节）
+  bytes = stripId3v1(bytes);
+
+  return bytes;
 }
