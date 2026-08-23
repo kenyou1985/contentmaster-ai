@@ -3488,7 +3488,7 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                   {selectedVoice && ` · 音色：${selectedVoice.name}`}
                 </span>
                 <div className="flex items-center gap-2">
-                  {/* MP3 下载（v2.7+：直接复用 RunningHub 原始 mp3 段拼接，零重编码损失） */}
+                  {/* MP3 下载（合并后） */}
                   <button
                     onClick={async () => {
                       if (!ttsResult) return;
@@ -3504,13 +3504,24 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                         toast.success(`MP3 下载成功 · ${label} (${(blob.size / 1024).toFixed(1)} KB)`, 2500);
                       };
 
+                      // 调试日志：让用户能看到实际下载的字节数和源 URL
+                      console.log('[MP3 下载] mergedMp3Blob 状态:', {
+                        exists: !!ttsResult.mergedMp3Blob,
+                        size: ttsResult.mergedMp3Blob?.size,
+                        type: ttsResult.mergedMp3Blob?.type,
+                        segmentsCount: ttsResult.segments.length,
+                        successSegments: ttsResult.segments.filter(s => s.success).length,
+                      });
+
                       // 主路径 1：TTS 已经合并好 mp3（来自 RunningHub 原始 mp3 段拼接，零重编码损失）
                       if (ttsResult.mergedMp3Blob && ttsResult.mergedMp3Blob.size > 1024) {
                         try {
                           triggerDownload(ttsResult.mergedMp3Blob, '来自 RunningHub 原始 mp3');
+                          appendLog('TTS', `✓ MP3 下载成功 (合并 mp3, ${(ttsResult.mergedMp3Blob.size / 1024).toFixed(1)} KB)`);
                           return;
                         } catch (e) {
                           console.warn('[MP3] 原始 mp3 blob 下载失败，降级', e);
+                          appendLog('WARN', `原始 mp3 blob 下载失败：${e?.message || e}`);
                         }
                       }
 
@@ -3573,6 +3584,45 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                     className="text-[10px] text-green-400 hover:text-green-300 flex items-center gap-1"
                   >
                     <Download size={10} /> 下载 MP3
+                  </button>
+                  {/* 分段 mp3 下载（保底：5 段 mp3 URL 直接下载，由用户用 Audacity 等合并） */}
+                  <button
+                    onClick={async () => {
+                      if (!ttsResult) return;
+                      const successSegs = ttsResult.segments.filter((s) => s.success && s.audioUrl);
+                      if (successSegs.length === 0) {
+                        toast.error('没有可下载的 mp3 段');
+                        return;
+                      }
+                      toast.info(`正在下载 ${successSegs.length} 段 mp3...`, 2000);
+                      for (let i = 0; i < successSegs.length; i++) {
+                        const s = successSegs[i];
+                        try {
+                          // 如果是 blob: URL 直接 fetch；http: URL 也 fetch
+                          const res = await fetch(s.audioUrl);
+                          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                          const blob = await res.blob();
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url;
+                          a.download = `tts_segment_${i + 1}_of_${successSegs.length}.mp3`;
+                          document.body.appendChild(a);
+                          a.click();
+                          document.body.removeChild(a);
+                          setTimeout(() => URL.revokeObjectURL(url), 30000);
+                          // 浏览器多文件下载会被拦截，这里串行延迟触发
+                          await new Promise((r) => setTimeout(r, 600));
+                        } catch (e: any) {
+                          appendLog('ERROR', `分段 mp3 ${i + 1} 下载失败：${e?.message || e}`);
+                        }
+                      }
+                      appendLog('TTS', `✓ 分段 mp3 下载完成（${successSegs.length} 段）`);
+                      toast.success(`分段 mp3 下载完成（${successSegs.length} 段），用 Audacity 拼接`, 4000);
+                    }}
+                    className="text-[10px] text-amber-400 hover:text-amber-300 flex items-center gap-1"
+                    title="下载 5 段原始 mp3 到本地，用 Audacity/ffmpeg 拼接（保底方案）"
+                  >
+                    <Download size={10} /> 下载分段
                   </button>
                   {/* WAV 下载 */}
                   <a

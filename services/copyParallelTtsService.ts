@@ -517,58 +517,29 @@ function stripId3v2(buf: ArrayBuffer): Uint8Array {
 }
 
 /**
- * 完整去元数据：去 ID3v2 + ID3v1 + 末尾 VBR header（Xing/LAME/Info）
- * - 用于"中间段"，保证拼接后只保留第 1 个文件的 VBR header
+ * 完整去元数据（v2.7 简化版）：只去 ID3v2 + ID3v1，保留中间所有 MP3 帧。
+ *
+ * 重要教训（v2.6 → v2.7 修复）：
+ *   旧版试图切掉 Xing/LAME/Info VBR header，结果 `bytes.subarray(0, vbrEnd)`
+ *   把 VBR header **之后**的帧数据也丢了（因为 Xing header 后面通常还有大量帧）。
+ *   这导致拼接后的 mp3 实际只有第一段（VBR header 之前的部分），看起来
+ *   像"只下载了第一段"。
+ *
+ * 正确做法：完全不动 VBR header。
+ *   - VBR header (Xing/LAME) 通常出现在第 1 个 MPEG 帧之后，描述整个文件的 VBR 信息
+ *   - 拼接时重复出现对播放器无害：mp3 是流式帧格式，播放器按 0xFFEx 同步字节解析
+ *     帧数据，VBR header 文本（"Xing"）看起来不像 MP3 帧（第一个字节是 'X' = 0x58，
+ *     不是 0xFF），播放器会跳过
+ *   - 真正会卡播放器的是 ID3v2 tag（含元数据，长度可能几 KB~几 MB）
+ *     和 ID3v1（末尾 128 字节 "TAG" 标记）
+ *
+ * 因此只去 ID3v2（文件头）+ ID3v1（文件尾），保留中间所有数据。
  */
 function stripAllMp3Metadata(bytes: Uint8Array): Uint8Array {
-  // 1) 去 ID3v2（头部）
+  // 1) 去 ID3v2（头部 "ID3" + sync-safe 长度）
   bytes = stripId3v2(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
-
-  // 2) 找 VBR header 位置（Xing / LAME / Info）
-  //    通常出现在第 1 个 MPEG 帧之后（CRC + 32 bytes）
-  //    简化策略：扫描前 1024 字节内的 Xing/LAME/Info 标记
-  const scanLen = Math.min(2048, bytes.length);
-  let vbrStart = -1;
-  let vbrEnd = -1;
-  for (let i = 0; i < scanLen - 4; i++) {
-    if (
-      bytes[i] === 0x58 && bytes[i + 1] === 0x69 && bytes[i + 2] === 0x6e && bytes[i + 3] === 0x67 // 'Xing'
-    ) {
-      vbrStart = i;
-      break;
-    }
-    if (
-      bytes[i] === 0x49 && bytes[i + 1] === 0x6e && bytes[i + 2] === 0x66 && bytes[i + 3] === 0x6f // 'Info'
-    ) {
-      vbrStart = i;
-      break;
-    }
-    if (
-      bytes[i] === 0x4c && bytes[i + 1] === 0x41 && bytes[i + 2] === 0x4d && bytes[i + 3] === 0x45 // 'LAME'
-    ) {
-      vbrStart = i;
-      break;
-    }
-  }
-  if (vbrStart >= 0) {
-    // VBR header 通常 120 bytes（Xing/Info）或可变（LAME encoder tag）
-    // 用相对偏移试探：找到 Xing 后向前 32 字节是 mpeg frame header，再向后 120-200 字节是 VBR
-    // 这里简单做法：截断到 vbrStart 之前的最后一个 MP3 sync byte
-    vbrEnd = vbrStart; // 截断到 VBR header 起点（即不要这个 header）
-    // 往前找最近的 MP3 frame sync byte (0xFFEx)
-    for (let i = vbrEnd - 1; i >= 0; i--) {
-      if (bytes[i] === 0xff && (bytes[i + 1] & 0xe0) === 0xe0) {
-        vbrEnd = i;
-        break;
-      }
-    }
-    if (vbrEnd < vbrStart) {
-      bytes = bytes.subarray(0, vbrEnd);
-    }
-  }
-
-  // 3) 去 ID3v1（末尾 128 字节）
+  // 2) 去 ID3v1（末尾 128 字节 "TAG" 头）
   bytes = stripId3v1(bytes);
-
+  // 3) 不动 VBR header（Xing/LAME/Info）— 见上方注释
   return bytes;
 }
