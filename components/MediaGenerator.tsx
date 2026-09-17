@@ -39,7 +39,7 @@ import {
 } from '../services/characterLibraryService';
 import { CharacterLibrary } from './CharacterLibrary';
 import { VoiceLibrary } from './VoiceLibrary';
-import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, Settings2, FolderOpen, Rocket, Copy, Check, CheckSquare, Square, Users, HardDrive, ListOrdered, ArrowUp, Terminal, Gauge, AlertCircle, Sparkles, Wand2, XCircle, Film, Music, AlertTriangle, ChevronDown, ExternalLink, FileSignature } from 'lucide-react';
+import { Upload, FileText, Image as ImageIcon, Video, Play, Download, Edit2, Save, X, Loader2, Plus, Trash2, RefreshCw, Settings, Settings2, FolderOpen, Rocket, Copy, Check, CheckSquare, Square, Users, HardDrive, ListOrdered, ArrowUp, Terminal, Gauge, AlertCircle, Sparkles, Wand2, XCircle, Film, Music, AlertTriangle, ChevronDown, ExternalLink, FileSignature, Scissors } from 'lucide-react';
 import JSZip from 'jszip';
 import { HistorySelector } from './HistorySelector';
 import CopyBasedPanel from './CopyBasedPanel';
@@ -1891,7 +1891,8 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
     targetShotIds: string[],
     exportDraftName: string,
     taskId: string,
-    taskType: 'oneshot' | 'queue'
+    taskType: 'oneshot' | 'queue',
+    exportTarget: 'remotion' | 'jianying' = 'remotion'
   ) => {
     const targetShots = targetShotIds.map(id => getLiveShot(id)).filter(Boolean) as Shot[];
     if (targetShots.length === 0) {
@@ -2122,20 +2123,32 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       }
     }
 
-    // Step 4: 导出视频（Remotion MP4 合成 — 用户偏好：自动走视频合成而非剪映草稿）
-    setOneClickPipelineProgress('合成视频...');
-    patchTaskProgress(90, '合成视频…');
-    // 取当前最新镜头数据（含音频 URL）
+    // Step 4: 末尾导出（Remotion MP4 合成 或 剪映草稿 —— 由 exportTarget 决定）
     const finalShots = targetShotIds.map(id => getLiveShot(id)).filter(Boolean) as Shot[];
-    appendTerminalLog('Pipeline', `开始合成视频(Remotion): ${exportDraftName}（${finalShots.length} 镜）`);
-    const remotionResult = await performExportToRemotion(finalShots, exportDraftName);
-    appendTerminalLog('Pipeline', `[${taskType === 'oneshot' ? '一键成片' : '队列任务'}] 执行完成`);
+    let finalExportOk: boolean = false;
+    if (exportTarget === 'jianying') {
+      // 一键剪映：跳过 Remotion，直接生成剪映草稿
+      setOneClickPipelineProgress('生成剪映草稿...');
+      patchTaskProgress(90, '生成剪映草稿…');
+      appendTerminalLog('Pipeline', `开始生成剪映草稿: ${exportDraftName}（${finalShots.length} 镜）`);
+      finalExportOk = await performExportToJianying(finalShots, exportDraftName);
+      appendTerminalLog('Pipeline', `[${taskType === 'oneshot' ? '一键成片' : '队列任务'}] 剪映导出完成`);
+    } else {
+      // 默认走 Remotion MP4 合成
+      setOneClickPipelineProgress('合成视频...');
+      patchTaskProgress(90, '合成视频…');
+      appendTerminalLog('Pipeline', `开始合成视频(Remotion): ${exportDraftName}（${finalShots.length} 镜）`);
+      finalExportOk = await performExportToRemotion(finalShots, exportDraftName);
+      appendTerminalLog('Pipeline', `[${taskType === 'oneshot' ? '一键成片' : '队列任务'}] 执行完成`);
+    }
 
-    // 仅在视频合成成功时才显示完成 toast（pipeline 可能中途失败，catch 会显示错误 toast）
-    if (remotionResult !== false) {
+    // 仅在末尾导出成功时才显示完成 toast（pipeline 可能中途失败，catch 会显示错误 toast）
+    if (finalExportOk !== false) {
       setOneClickPipelineProgress('');
       toast.success(
-        oneClickPipelineMode === 'image_audio_only'
+        exportTarget === 'jianying'
+          ? '一键剪映执行完成！'
+          : oneClickPipelineMode === 'image_audio_only'
           ? '一键成片执行完成（未生成视频）'
           : '一键成片执行完成！'
       );
@@ -2255,6 +2268,81 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
       setOneClickRunning(false);
       setOneClickPipelineProgress('');
       // 一键成片结束后自动尝试处理挂机队列（无需再手动点「处理队列」）
+      queueMicrotask(() => {
+        if (!queueRunnerBusyRef.current) {
+          void processOneClickQueue();
+        }
+      });
+    }
+  };
+
+  // 一键剪映 UI 触发：先跑完图片/配音/视频 pipeline，结尾走剪映草稿导出（不走 Remotion MP4）
+  const handleOneClickJianyingPipeline = async () => {
+    if (oneClickRunning) { toast.warning('正在执行中，请稍候'); return; }
+    const selected = shots.filter(s => s.selected);
+    if (selected.length === 0) { toast.error('请先选择要处理的镜头'); return; }
+
+    // 复用同一套前置校验（jimeng SESSION_ID 等）
+    const isJimengImageModel = selectedImageModel.startsWith('jimeng');
+    if (isJimengImageModel && !jimengSessionId?.trim()) {
+      toast.error('即梦图片模型需要填写 SESSION_ID 才能生成图片');
+      return;
+    }
+    const isJimengVideoModel = selectedVideoModel.startsWith('jimeng');
+    if (isJimengVideoModel && !jimengSessionId?.trim()) {
+      toast.error('即梦视频模型需要填写 SESSION_ID 才能生成视频');
+      return;
+    }
+
+    // 重置取消状态
+    oneClickCancelledRef.current = false;
+
+    const taskId = newOneshotTaskId();
+    const draftName = buildPipelineDraftName();
+    setOneClickRunning(true);
+    setOneClickPipelineProgress('准备一键剪映...');
+    appendTerminalLog('Pipeline', `一键剪映任务 ${taskId} 开始`);
+    try {
+      flushSync(() => {
+        setOneClickQueueTasks((prev) => {
+          const stomped = prev.map((t) =>
+            t.type === 'oneshot' && t.status === 'running'
+              ? {
+                  ...t,
+                  status: 'cancelled' as const,
+                  completedAt: tsStr(),
+                  progressNote: '已由新的一键剪映取代',
+                  progressPercent: 100,
+                }
+              : t
+          );
+          const task: OneClickQueueTask = {
+            id: taskId,
+            type: 'oneshot',
+            status: 'running',
+            snapshot: captureEditorSnapshot(),
+            createdAt: tsStr(),
+            progressPercent: 0,
+            progressNote: '准备一键剪映...',
+          };
+          const tasks = [...stomped, task];
+          saveQueueStateAfterMutation(tasks);
+          return tasks;
+        });
+      });
+      await executeOneClickPipelineForTargets(selected.map(s => s.id), draftName, taskId, 'oneshot', 'jianying');
+    } catch (err: any) {
+      if (oneClickCancelledRef.current) {
+        appendTerminalLog('Pipeline', '⛔ 一键剪映已取消');
+        toast.info('一键剪映已取消');
+      } else {
+        appendTerminalLog('Pipeline', `一键剪映执行异常: ${err.message}`);
+        toast.error(`一键剪映执行异常: ${err.message}`);
+      }
+    } finally {
+      setOneClickRunning(false);
+      setOneClickPipelineProgress('');
+      // 一键剪映结束后自动尝试处理挂机队列
       queueMicrotask(() => {
         if (!queueRunnerBusyRef.current) {
           void processOneClickQueue();
@@ -5564,6 +5652,24 @@ export const MediaGenerator: React.FC<MediaGeneratorProps> = ({
           >
             {oneClickRunning ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />}
             {oneClickRunning ? '成片中...' : '一键成片'}
+          </button>
+          {/* 一键剪映：完整 pipeline（生图/配音/视频）+ 末尾剪映草稿导出 */}
+          <button
+            onClick={handleOneClickJianyingPipeline}
+            disabled={
+              oneClickRunning ||
+              imageGeneratingCount + videoGeneratingCount + voiceGeneratingCount > 0 ||
+              tableShots.length === 0
+            }
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-fuchsia-600 to-pink-600 hover:from-fuchsia-500 hover:to-pink-500 text-white text-xs font-semibold rounded-lg shadow-lg transition-all disabled:opacity-50"
+            title="一键剪映：自动按顺序生图 → 配音 → 生视频，完成后直接生成剪映草稿（与一键成片链路一致，仅末尾导出不同）"
+          >
+            {oneClickRunning ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <Scissors size={14} />
+            )}
+            {oneClickRunning ? (oneClickPipelineProgress || '剪映准备中…') : '一键剪映'}
           </button>
           {/* 取消一键成片按钮 */}
           {oneClickRunning && (

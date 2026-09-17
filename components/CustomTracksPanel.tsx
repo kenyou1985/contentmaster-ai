@@ -58,6 +58,32 @@ function downloadFile(filename: string, content: string, mimeType: string) {
   URL.revokeObjectURL(url);
 }
 
+/**
+ * 把字幕数组按指定格式导出下载
+ * - txt: 纯文本（每行一条字幕）
+ * - srt: SRT 字幕（含时间轴，标准剪辑软件/播放器可直接识别）
+ */
+function downloadSubtitleFile(
+  cues: CustomSubtitleCue[],
+  baseName: string,
+  format: 'txt' | 'srt'
+): void {
+  const ts = Date.now();
+  if (format === 'txt') {
+    const text = cues.map((c) => c.text).join('\n');
+    downloadFile(`${baseName}_${ts}.txt`, text, 'text/plain;charset=utf-8');
+  } else {
+    const srt = cues
+      .map((c, i) => {
+        const startTime = formatSrtTime(c.startSec);
+        const endTime = formatSrtTime(c.endSec);
+        return `${i + 1}\n${startTime} --> ${endTime}\n${c.text}\n`;
+      })
+      .join('\n');
+    downloadFile(`${baseName}_${ts}.srt`, srt, 'application/x-subrip;charset=utf-8');
+  }
+}
+
 /** 格式化 SRT 时间（秒 → HH:MM:SS,mmm） */
 function formatSrtTime(sec: number): string {
   const h = Math.floor(sec / 3600);
@@ -107,8 +133,10 @@ export interface CustomTracksState {
   audioUrl?: string;
   audioName?: string;
   audioDurationSec?: number;
-  /** 用户上传的字幕文件内容（解析后的 cues 数组） */
+  /** 当前激活的字幕（可能是原版或AI优化版） */
   subtitleCues: CustomSubtitleCue[];
+  /** 原始 ASR 字幕（在 AI 优化前保存，便于下载原版） */
+  originalSubtitleCues?: CustomSubtitleCue[];
   /** 字幕文件名 */
   subtitleFileName?: string;
   /** 是否启用字幕 */
@@ -275,6 +303,11 @@ function getStoredApiKey(): string | null {
 /** 自动 AI 优化字幕（自动模式，不阻塞 UI） */
 async function runAutoOptimize(
   cues: CustomSubtitleCue[],
+  options: {
+    enableTranslation: boolean;
+    targetLanguage: string;
+    sourceLanguage?: string | null;
+  },
   onProgress: (cur: number, total: number) => void,
   onComplete: (optimizedCues: CustomSubtitleCue[], correctedCount: number) => void,
   onError: (msg: string) => void
@@ -286,7 +319,11 @@ async function runAutoOptimize(
   }
   try {
     const { optimizeSubtitles } = await import('../services/subtitleOptimizer');
-    const result = await optimizeSubtitles(cues, apiKey, onProgress);
+    const result = await optimizeSubtitles(cues, apiKey, onProgress, {
+      enableTranslation: options.enableTranslation,
+      targetLanguage: options.targetLanguage,
+      sourceLanguage: options.sourceLanguage || undefined,
+    });
     if (result.success) {
       onComplete(result.optimizedCues as CustomSubtitleCue[], result.correctedCount || 0);
     } else {
@@ -300,16 +337,25 @@ async function runAutoOptimize(
 /** 在组件内使用的自动优化触发器（非 async，供 try 块内同步调用） */
 function triggerAutoOptimize(
   cues: CustomSubtitleCue[],
+  options: {
+    enableTranslation: boolean;
+    targetLanguage: string;
+    sourceLanguage?: string | null;
+  },
   log: (prefix: string, msg: string) => void,
   onChange: (updater: (prev: CustomTracksState) => CustomTracksState) => void,
   setOptimizing: (v: boolean) => void
 ) {
   runAutoOptimize(
     cues,
+    options,
     (cur, total) => log('ASR', `  AI 优化: ${cur}/${total}`),
     (optimizedCues, correctedCount) => {
       onChange((prev) => ({
         ...prev,
+        // 保存原版（如还未保存）
+        originalSubtitleCues: prev.originalSubtitleCues || prev.subtitleCues,
+        // 用优化版替换当前激活版本
         subtitleCues: optimizedCues,
         subtitleFileName: undefined,
       }));
@@ -385,6 +431,32 @@ export const CustomTracksPanel: React.FC<CustomTracksPanelProps> = ({
       return stored !== null ? stored === 'true' : true; // 默认开启
     } catch { return true; }
   });
+
+  // ── 自动翻译开关（关闭时保留原字幕语言；开启时可自定义目标语言） ──
+  const [autoTranslate, setAutoTranslate] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem('AUTO_TRANSLATE_SUBTITLE');
+      return stored !== null ? stored === 'true' : false; // 默认关闭（保留原语言）
+    } catch { return false; }
+  });
+
+  // ── 目标翻译语言 ────────────────────────────────────
+  const [targetLanguage, setTargetLanguage] = useState<string>(() => {
+    try {
+      return localStorage.getItem('SUBTITLE_TARGET_LANGUAGE') || 'zh';
+    } catch { return 'zh'; }
+  });
+
+  // ── 字幕来源语言（由 ASR 返回） ─────────────────────────
+  const [detectedSourceLanguage, setDetectedSourceLanguage] = useState<string | null>(null);
+
+  // ── 是否已优化过（用于 UI 显示 + 下载菜单） ─────────────────
+  const hasOptimizedVersion = useMemo(() => {
+    if (!state.originalSubtitleCues || state.originalSubtitleCues.length === 0) return false;
+    // 当原版与当前激活版长度一致但内容有差异 → 已优化过
+    if (state.originalSubtitleCues.length !== state.subtitleCues.length) return false;
+    return state.originalSubtitleCues.some((c, i) => c.text !== state.subtitleCues[i].text);
+  }, [state.originalSubtitleCues, state.subtitleCues]);
 
   // ── 字幕编辑面板 ─────────────────────────────────────
   const [subtitleEditOpen, setSubtitleEditOpen] = useState(false);
@@ -578,7 +650,8 @@ async function transcribeViaServer(blobUrl: string, filename: string): Promise<a
   const resp = await fetch(`${baseUrl}/asr/transcribe`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ audioPath: serverPath, audioUrl: serverPath, language: 'zh' }),
+    // 不传 language，让 Whisper 自动检测；用户在前端"自动翻译"开关中决定是否翻译为目标语言
+    body: JSON.stringify({ audioPath: serverPath, audioUrl: serverPath, language: null }),
   });
   return resp.json();
 }
@@ -670,46 +743,68 @@ async function transcribeViaServer(blobUrl: string, filename: string): Promise<a
             log('ASR', `▸ 检测到繁体字幕，正在转换为简体…`);
             try {
               const convertedCues: CustomSubtitleCue[] = await convertCuesTexts<CustomSubtitleCue>(data.cues, 't2s');
+              // 保存 ASR 返回的语言代码（whisper 通常会返回 'zh'/'en' 等）
+              const lang = data.language || null;
+              if (lang) setDetectedSourceLanguage(lang);
               onChange((prev) => ({
                 ...prev,
                 subtitleCues: convertedCues,
+                originalSubtitleCues: convertedCues,  // ASR 原版
                 subtitleFileName: undefined,
                 subtitleEnabled: true,
               }));
-              log('ASR', `✓ Whisper 识别完成：${convertedCues.length} 条字幕（${data.durationSec?.toFixed(1)}s）· 已转简体`);
-              // 自动 AI 优化
+              log('ASR', `✓ Whisper 识别完成：${convertedCues.length} 条字幕（${data.durationSec?.toFixed(1)}s）· 已转简体${lang ? `· 源语言=${lang}` : ''}`);
+              // 自动 AI 优化（按开关 + 翻译设置）
               if (autoOptimize && convertedCues.length > 0) {
-                triggerAutoOptimize(convertedCues, log, onChange, setOptimizingSubtitles);
+                triggerAutoOptimize(
+                  convertedCues,
+                  { enableTranslation: autoTranslate, targetLanguage, sourceLanguage: lang },
+                  log, onChange, setOptimizingSubtitles
+                );
               }
             } catch (convErr: any) {
               // 转换失败保留原文
               log('WARN', `繁简转换失败: ${convErr.message}，保留原始字幕`);
               const rawCues: CustomSubtitleCue[] = data.cues;
+              const lang = data.language || null;
+              if (lang) setDetectedSourceLanguage(lang);
               onChange((prev) => ({
                 ...prev,
                 subtitleCues: rawCues,
+                originalSubtitleCues: rawCues,  // ASR 原版
                 subtitleFileName: undefined,
                 subtitleEnabled: true,
               }));
-              log('ASR', `✓ Whisper 识别完成：${rawCues.length} 条字幕（${data.durationSec?.toFixed(1)}s）`);
+              log('ASR', `✓ Whisper 识别完成：${rawCues.length} 条字幕（${data.durationSec?.toFixed(1)}s）${lang ? `· 源语言=${lang}` : ''}`);
               // 自动 AI 优化
               if (autoOptimize && rawCues.length > 0) {
-                triggerAutoOptimize(rawCues, log, onChange, setOptimizingSubtitles);
+                triggerAutoOptimize(
+                  rawCues,
+                  { enableTranslation: autoTranslate, targetLanguage, sourceLanguage: lang },
+                  log, onChange, setOptimizingSubtitles
+                );
               }
             }
           } else {
-            // 已经是简体，直接写入
+            // 已经是简体（或非中文），直接写入
             const directCues: CustomSubtitleCue[] = data.cues;
+            const lang = data.language || null;
+            if (lang) setDetectedSourceLanguage(lang);
             onChange((prev) => ({
               ...prev,
               subtitleCues: directCues,
+              originalSubtitleCues: directCues,  // ASR 原版
               subtitleFileName: undefined,
               subtitleEnabled: true,
             }));
-            log('ASR', `✓ Whisper 识别完成：${directCues.length} 条字幕（${data.durationSec?.toFixed(1)}s）`);
-            // 自动 AI 优化
+            log('ASR', `✓ Whisper 识别完成：${directCues.length} 条字幕（${data.durationSec?.toFixed(1)}s）${lang ? `· 源语言=${lang}` : ''}`);
+            // 自动 AI 优化（开启翻译时翻译为目标语言；否则仅纠错并保留原语言）
             if (autoOptimize && directCues.length > 0) {
-              triggerAutoOptimize(directCues, log, onChange, setOptimizingSubtitles);
+              triggerAutoOptimize(
+                directCues,
+                { enableTranslation: autoTranslate, targetLanguage, sourceLanguage: lang },
+                log, onChange, setOptimizingSubtitles
+              );
             }
           }
         } else {
@@ -731,7 +826,7 @@ async function transcribeViaServer(blobUrl: string, filename: string): Promise<a
       setAudioStage('idle');
       setAudioProgress(0);
     }
-  }, [state.subtitleCues, state.subtitleFileName, onChange, log, autoOptimize]);
+  }, [state.subtitleCues, state.subtitleFileName, onChange, log, autoOptimize, autoTranslate, targetLanguage]);
 
   const handleRemoveAudio = useCallback(() => {
     onChange((prev) => ({
@@ -766,6 +861,8 @@ async function transcribeViaServer(blobUrl: string, filename: string): Promise<a
       onChange((prev) => ({
         ...prev,
         subtitleCues: finalCues,
+        // 用户手动上传字幕时，清空原版字段（语义上"原版=用户上传版"）
+        originalSubtitleCues: undefined,
         subtitleFileName: file.name,
         subtitleEnabled: true,
       }));
@@ -779,6 +876,7 @@ async function transcribeViaServer(blobUrl: string, filename: string): Promise<a
     onChange((prev) => ({
       ...prev,
       subtitleCues: [],
+      originalSubtitleCues: undefined,
       subtitleFileName: undefined,
     }));
   }, [onChange]);
@@ -852,11 +950,22 @@ async function transcribeViaServer(blobUrl: string, filename: string): Promise<a
       || window.localStorage.getItem('GEMINI_API_KEY')
       || window.localStorage.getItem('OPENLUX_API_KEY')
       || (window as any).localStorage.getItem('OPENAI_API_KEY');
+
+    // 优化前先保存原版（如未保存）
+    if (!state.originalSubtitleCues || state.originalSubtitleCues.length === 0) {
+      onChange((prev) => ({ ...prev, originalSubtitleCues: prev.subtitleCues }));
+    }
+
     setOptimizingSubtitles(true);
-    log('ASR', `▸ AI 优化字幕中（共 ${state.subtitleCues.length} 条）…`);
+    log('ASR', `▸ AI 优化字幕中（共 ${state.subtitleCues.length} 条${autoTranslate ? `，翻译为${targetLanguage}` : '，保留原语言'}）…`);
     try {
+      const { optimizeSubtitles } = await import('../services/subtitleOptimizer');
       const result = await optimizeSubtitles(state.subtitleCues, apiKey, (cur, total) => {
         log('ASR', `  AI 优化: ${cur}/${total}`);
+      }, {
+        enableTranslation: autoTranslate,
+        targetLanguage,
+        sourceLanguage: detectedSourceLanguage || undefined,
       });
       if (result.success) {
         onChange((prev) => ({
@@ -864,7 +973,7 @@ async function transcribeViaServer(blobUrl: string, filename: string): Promise<a
           subtitleCues: result.optimizedCues,
           subtitleFileName: undefined,
         }));
-        log('ASR', `✓ AI 优化完成：${result.optimizedCues.length} 条字幕`);
+        log('ASR', `✓ AI 优化完成：${result.optimizedCues.length} 条字幕（${result.correctedCount || 0} 处修改）`);
       } else {
         log('ASR', `⚠ AI 优化失败: ${result.error}`);
         alert('AI 优化失败: ' + (result.error || '未知错误'));
@@ -875,7 +984,7 @@ async function transcribeViaServer(blobUrl: string, filename: string): Promise<a
     } finally {
       setOptimizingSubtitles(false);
     }
-  }, [state.subtitleCues, onChange, log]);
+  }, [state.subtitleCues, state.originalSubtitleCues, onChange, log, autoTranslate, targetLanguage, detectedSourceLanguage]);
 
   return (
     <div className="space-y-4">
@@ -1167,12 +1276,23 @@ async function transcribeViaServer(blobUrl: string, filename: string): Promise<a
                 : optimizingSubtitles
                   ? '✨ AI 优化中…'
                   : state.subtitleCues.length > 0
-                    ? `${state.subtitleCues.length} 条${state.subtitleFileName ? `（${state.subtitleFileName}）` : '（自动生成）'}`
+                    ? (
+                      <>
+                        {state.subtitleCues.length} 条
+                        {state.subtitleFileName ? `（${state.subtitleFileName}）` : '（自动生成）'}
+                        {hasOptimizedVersion && (
+                          <span className="ml-1 text-emerald-400">· ✨ AI 已优化</span>
+                        )}
+                        {detectedSourceLanguage && (
+                          <span className="ml-1 text-blue-400">· 源语言: {detectedSourceLanguage}</span>
+                        )}
+                      </>
+                    )
                     : '默认 Whisper ASR 自动生成'}
             </span>
           </div>
           {state.subtitleCues.length > 0 && (
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               {/* 自动优化开关 */}
               <label className="flex items-center gap-1 text-[10px] text-slate-400 cursor-pointer select-none">
                 <input
@@ -1186,6 +1306,43 @@ async function transcribeViaServer(blobUrl: string, filename: string): Promise<a
                 />
                 自动优化
               </label>
+              {/* 自动翻译开关（关闭时保留原语言，开启时可指定目标语言） */}
+              <label
+                className="flex items-center gap-1 text-[10px] text-slate-400 cursor-pointer select-none"
+                title="关闭时仅做纠错并保留原语言（英文→英文，日文→日文）；开启时可翻译为指定语言（默认中文）"
+              >
+                <input
+                  type="checkbox"
+                  checked={autoTranslate}
+                  onChange={(e) => {
+                    setAutoTranslate(e.target.checked);
+                    localStorage.setItem('AUTO_TRANSLATE_SUBTITLE', String(e.target.checked));
+                  }}
+                  className="accent-cyan-500"
+                />
+                自动翻译
+              </label>
+              {/* 目标语言选择（仅翻译开启时可点击） */}
+              <select
+                value={targetLanguage}
+                onChange={(e) => {
+                  setTargetLanguage(e.target.value);
+                  localStorage.setItem('SUBTITLE_TARGET_LANGUAGE', e.target.value);
+                }}
+                disabled={!autoTranslate}
+                className="text-[10px] bg-slate-800 border border-slate-600 rounded px-1.5 py-0.5 text-slate-200 disabled:opacity-40 cursor-pointer"
+                title={autoTranslate ? '选择字幕目标语言' : '请先开启"自动翻译"'}
+              >
+                <option value="zh">🇨🇳 简体中文</option>
+                <option value="zh-TW">🇹🇼 繁體中文</option>
+                <option value="en">🇺🇸 English</option>
+                <option value="ja">🇯🇵 日本語</option>
+                <option value="ko">🇰🇷 한국어</option>
+                <option value="es">🇪🇸 Español</option>
+                <option value="fr">🇫🇷 Français</option>
+                <option value="de">🇩🇪 Deutsch</option>
+                <option value="ru">🇷🇺 Русский</option>
+              </select>
               {/* 编辑字幕按钮 */}
               <button
                 onClick={() => setSubtitleEditOpen(!subtitleEditOpen)}
@@ -1194,7 +1351,7 @@ async function transcribeViaServer(blobUrl: string, filename: string): Promise<a
               >
                 <Edit3 size={10} /> {subtitleEditOpen ? '收起编辑' : '编辑字幕'}
               </button>
-              {/* 下载字幕按钮 */}
+              {/* 下载字幕按钮（支持原版 vs 优化版，TXT/SRT 双格式） */}
               <div className="relative">
                 <button
                   onClick={() => setDownloadMenuOpen(!downloadMenuOpen)}
@@ -1202,33 +1359,65 @@ async function transcribeViaServer(blobUrl: string, filename: string): Promise<a
                   type="button"
                 >
                   <Download size={10} /> 下载字幕
+                  {(state.originalSubtitleCues && state.originalSubtitleCues.length > 0) && (
+                    <span className="text-[8px] text-amber-400">•</span>
+                  )}
                 </button>
                 {downloadMenuOpen && (
-                  <div className="absolute right-0 top-full mt-1 bg-slate-800 border border-slate-600 rounded shadow-lg z-10 min-w-[80px]">
+                  <div className="absolute right-0 top-full mt-1 bg-slate-800 border border-slate-600 rounded shadow-lg z-10 min-w-[200px] py-1">
+                    {/* ── 当前激活版本（即当前显示的字幕） ── */}
+                    <div className="px-3 py-1 text-[9px] text-slate-500 border-b border-slate-700">
+                      📌 当前显示（{state.subtitleCues.length} 条）
+                      {hasOptimizedVersion && (
+                        <span className="ml-1 text-emerald-400">· AI 优化版</span>
+                      )}
+                    </div>
                     <button
                       onClick={() => {
-                        const text = state.subtitleCues.map((c) => c.text).join('\n');
-                        downloadFile(`subtitle_${Date.now()}.txt`, text, 'text/plain');
+                        downloadSubtitleFile(state.subtitleCues, 'subtitle_current', 'txt');
                         setDownloadMenuOpen(false);
                       }}
                       className="block w-full text-left px-3 py-1.5 text-[10px] text-slate-300 hover:bg-slate-700"
                     >
-                      TXT 格式
+                      ↓ TXT 格式
                     </button>
                     <button
                       onClick={() => {
-                        const srt = state.subtitleCues.map((c, i) => {
-                          const startTime = formatSrtTime(c.startSec);
-                          const endTime = formatSrtTime(c.endSec);
-                          return `${i + 1}\n${startTime} --> ${endTime}\n${c.text}\n`;
-                        }).join('\n');
-                        downloadFile(`subtitle_${Date.now()}.srt`, srt, 'text/srt');
+                        downloadSubtitleFile(state.subtitleCues, 'subtitle_current', 'srt');
                         setDownloadMenuOpen(false);
                       }}
                       className="block w-full text-left px-3 py-1.5 text-[10px] text-slate-300 hover:bg-slate-700"
                     >
-                      SRT 格式
+                      ↓ SRT 格式（含时间轴）
                     </button>
+
+                    {/* ── 原版 ASR 字幕（如已优化过且原版已保存） ── */}
+                    {state.originalSubtitleCues && state.originalSubtitleCues.length > 0 && (
+                      <>
+                        <div className="px-3 py-1 text-[9px] text-amber-400 border-b border-t border-slate-700 mt-1">
+                          🎙️ 原版 ASR（{state.originalSubtitleCues.length} 条）
+                          <span className="text-slate-500">· 未优化</span>
+                        </div>
+                        <button
+                          onClick={() => {
+                            downloadSubtitleFile(state.originalSubtitleCues!, 'subtitle_original', 'txt');
+                            setDownloadMenuOpen(false);
+                          }}
+                          className="block w-full text-left px-3 py-1.5 text-[10px] text-slate-300 hover:bg-slate-700"
+                        >
+                          ↓ TXT 格式
+                        </button>
+                        <button
+                          onClick={() => {
+                            downloadSubtitleFile(state.originalSubtitleCues!, 'subtitle_original', 'srt');
+                            setDownloadMenuOpen(false);
+                          }}
+                          className="block w-full text-left px-3 py-1.5 text-[10px] text-slate-300 hover:bg-slate-700"
+                        >
+                          ↓ SRT 格式（含时间轴）
+                        </button>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -1283,8 +1472,24 @@ async function transcribeViaServer(blobUrl: string, filename: string): Promise<a
                           log('WARN', `繁简转换失败: ${e.message}`);
                         }
                       }
-                      onChange((prev) => ({ ...prev, subtitleCues: finalCues, subtitleFileName: undefined, subtitleEnabled: true }));
-                      log('ASR', `✓ 重新识别完成：${finalCues.length} 条字幕`);
+                      const lang = data.language || null;
+                      if (lang) setDetectedSourceLanguage(lang);
+                      onChange((prev) => ({
+                        ...prev,
+                        subtitleCues: finalCues,
+                        originalSubtitleCues: finalCues,  // 保存原版
+                        subtitleFileName: undefined,
+                        subtitleEnabled: true,
+                      }));
+                      log('ASR', `✓ 重新识别完成：${finalCues.length} 条字幕${lang ? `· 源语言=${lang}` : ''}`);
+                      // 自动 AI 优化（按翻译开关决定行为）
+                      if (autoOptimize && finalCues.length > 0) {
+                        triggerAutoOptimize(
+                          finalCues,
+                          { enableTranslation: autoTranslate, targetLanguage, sourceLanguage: lang },
+                          log, onChange, setOptimizingSubtitles
+                        );
+                      }
                     } else {
                       log('ASR', `⚠ 识别失败: ${data.error || '未知错误'}`);
                     }
@@ -1471,9 +1676,15 @@ async function transcribeViaServer(blobUrl: string, filename: string): Promise<a
           </div>
         )}
 
-        <div className="text-[10px] text-slate-500 leading-relaxed">
-          💡 未上传字幕时，导出时会自动调用 Remotion 服务侧 Whisper ASR 生成字幕。
-          需要精准字幕？上传 .srt/.vtt/.json 覆盖即可。
+        <div className="text-[10px] text-slate-500 leading-relaxed space-y-0.5">
+          <div>
+            💡 未上传字幕时，导出时会自动调用 Remotion 服务侧 Whisper ASR 生成字幕。
+            需要精准字幕？上传 .srt/.vtt/.json 覆盖即可。
+          </div>
+          <div>
+            🌐 <span className="text-cyan-400">自动翻译关闭</span>时仅做纠错并保留原语言；
+            <span className="text-cyan-400">开启</span>后可翻译为指定目标语言（默认中文）。
+          </div>
         </div>
       </div>
     </div>

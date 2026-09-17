@@ -215,7 +215,8 @@ export async function extractAudioFromVideo(
       return wav1;
     }
   } catch (e1: any) {
-    console.warn(`[audioExtractor] 策略 1 (HTML5 video) 失败: ${e1.message?.slice(0, 200)}`);
+    const e1Msg = e1?.message || e1?.toString?.() || '未知错误';
+    console.warn(`[audioExtractor] 策略 1 (HTML5 video) 失败: ${e1Msg.slice(0, 200)}`);
   }
 
   // ── 策略 0a（推荐）：服务端 ffmpeg 转码（remotion-server 的 /audio/extract）──
@@ -234,7 +235,8 @@ export async function extractAudioFromVideo(
     onProgress?.(1.0);
     return wav0;
   } catch (e0a: any) {
-    console.warn(`[audioExtractor] 策略 0a (服务端) 失败: ${e0a.message?.slice(0, 200)}`);
+    const e0aMsg = e0a?.message || e0a?.toString?.() || '未知错误';
+    console.warn(`[audioExtractor] 策略 0a (服务端) 失败: ${e0aMsg.slice(0, 200)}`);
   }
 
   // ── 策略 0b（兜底）：@ffmpeg/ffmpeg WASM — 浏览器内解码 ──
@@ -251,13 +253,18 @@ export async function extractAudioFromVideo(
     onProgress?.(1.0);
     return wav0;
   } catch (e0: any) {
-    console.warn(`[audioExtractor] 策略 0b (ffmpeg.wasm) 失败: ${e0.message?.slice(0, 200)}`);
+    const errMsg = e0?.message || e0?.toString?.() || '未知错误（异常对象无 message 属性）';
+    console.warn(`[audioExtractor] 策略 0b (ffmpeg.wasm) 失败: ${errMsg.slice(0, 200)}`);
     throw new Error(
       `视频音轨提取失败。所有方法都已尝试：\n` +
       `  - HTML5 video + WebAudio: 浏览器无法解码此视频\n` +
       `  - 服务端 ffmpeg (remotion-server): 失败或服务端未启动\n` +
-      `  - ffmpeg.wasm (32MB 兜底): ${e0.message?.slice(0, 200)}\n` +
-      `请确认视频文件包含音轨，或确认 remotion-server 服务已启动。`
+      `  - ffmpeg.wasm (32MB 兜底): ${errMsg.slice(0, 200)}\n` +
+      `请确认视频文件包含音轨，或确认 remotion-server 服务已启动。\n` +
+      `如果 ffmpeg.wasm 也无法加载（CDN 被墙/网络受限），请尝试：\n` +
+      `  1) 检查浏览器控制台是否有 'Failed to fetch' 或 'CORS' 错误\n` +
+      `  2) 启动本地 remotion-server（./启动剪映导出服务.sh），让服务端 ffmpeg 处理\n` +
+      `  3) 直接上传音频文件（mp3/wav/m4a），跳过视频提取步骤`
     );
   }
 }
@@ -315,14 +322,18 @@ async function getFfmpegInstance(onLog?: (msg: string) => void): Promise<any> {
       });
     }
 
-    // 加载 core（CDN 版本，避免 vite 解析 ffmpeg 包内部动态 import 失败）
+    // 加载 core（多 CDN 回退链，避免单个 CDN 被墙/限速）
     // @ffmpeg/core@0.12.10 UMD 版
-    // 用 unpkg CDN，因为本地 vite 解析 module worker 的 dynamic import 会失败
+    // 用 toBlobURL 跨域代理（解决 CORS）
     const CORE_VERSION = '0.12.10';
-    const CDN_BASE = `https://unpkg.com/@ffmpeg/core@${CORE_VERSION}/dist/umd`;
+    // 多 CDN 源（按优先级排序）
+    const CDN_BASES = [
+      `https://unpkg.com/@ffmpeg/core@${CORE_VERSION}/dist/umd`,
+      `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${CORE_VERSION}/dist/umd`,
+      `https://cdnjs.cloudflare.com/ajax/libs/ffmpeg-core/${CORE_VERSION}/umd`,
+    ];
     const LOCAL_BASE = `/node_modules/@ffmpeg/core/dist/umd`;
 
-    // 用 toBlobURL 跨域代理（解决 CORS）
     const tryLoad = async (base: string): Promise<{ coreURL: string; wasmURL: string }> => {
       const coreURL = await toBlobURLFn(`${base}/ffmpeg-core.js`, 'text/javascript');
       const wasmURL = await toBlobURLFn(`${base}/ffmpeg-core.wasm`, 'application/wasm');
@@ -331,18 +342,38 @@ async function getFfmpegInstance(onLog?: (msg: string) => void): Promise<any> {
 
     let coreURL: string;
     let wasmURL: string;
-    try {
-      console.log(`[audioExtractor]   尝试 CDN: ${CDN_BASE}`);
-      const r = await tryLoad(CDN_BASE);
-      coreURL = r.coreURL;
-      wasmURL = r.wasmURL;
-      console.log(`[audioExtractor]   ✓ CDN core/wasm 已转 Blob URL（绕过 CORS）`);
-    } catch (e: any) {
-      console.warn(`[audioExtractor]   CDN 失败（${e.message?.slice(0, 100)}），回退本地 vite serve: ${LOCAL_BASE}`);
-      const r = await tryLoad(LOCAL_BASE);
-      coreURL = r.coreURL;
-      wasmURL = r.wasmURL;
-      console.log(`[audioExtractor]   ✓ 本地 core/wasm 已转 Blob URL`);
+    let loaded = false;
+    let lastErr: any = null;
+
+    // 依次尝试所有 CDN
+    for (const base of CDN_BASES) {
+      try {
+        console.log(`[audioExtractor]   尝试 CDN: ${base}`);
+        const r = await tryLoad(base);
+        coreURL = r.coreURL;
+        wasmURL = r.wasmURL;
+        console.log(`[audioExtractor]   ✓ CDN 加载成功（绕过 CORS）`);
+        loaded = true;
+        break;
+      } catch (e: any) {
+        lastErr = e;
+        const msg = e?.message || e?.toString?.() || '未知错误';
+        console.warn(`[audioExtractor]   CDN ${base} 失败: ${msg.slice(0, 100)}`);
+      }
+    }
+
+    // 所有 CDN 都失败 → 回退到本地 vite serve
+    if (!loaded) {
+      console.warn(`[audioExtractor]   所有 CDN 都失败（最后错误: ${lastErr?.message?.slice(0, 100) || 'unknown'}），回退本地 vite serve: ${LOCAL_BASE}`);
+      try {
+        const r = await tryLoad(LOCAL_BASE);
+        coreURL = r.coreURL;
+        wasmURL = r.wasmURL;
+        console.log(`[audioExtractor]   ✓ 本地 core/wasm 已转 Blob URL`);
+      } catch (e2: any) {
+        const msg = e2?.message || e2?.toString?.() || '未知错误';
+        throw new Error(`ffmpeg.wasm 加载失败：所有 CDN 不可用且本地文件缺失（${msg.slice(0, 200)}）。建议：1) 检查网络 2) 启动本地 remotion-server 让服务端 ffmpeg 处理`);
+      }
     }
     console.log(`[audioExtractor]   WASM 下载完成，编译中（Web Worker 编译可能需要 5-10 秒）...`);
 

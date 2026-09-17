@@ -332,12 +332,14 @@ function getAsrWorker() {
   return asrWorker;
 }
 
-async function runAsrInWorker(audioPath, language = 'zh') {
+async function runAsrInWorker(audioPath, language = null) {
+  // 不传 language 时让 Whisper 自动检测（推荐做法，避免强制中文误识别英文）
+  const lang = language || null;
   const worker = getAsrWorker();
   const id = asrNextId++;
   return new Promise((resolve, reject) => {
     asrPending.set(id, { resolve, reject });
-    worker.postMessage({ id, audioPath, language });
+    worker.postMessage({ id, audioPath, language: lang });
   });
 }
 
@@ -653,8 +655,13 @@ async function extractUrlsToTempFiles(shots, log = console.log) {
   if (httpUrlItems.length > 0) {
     log(`[extract] 并行下载 ${httpUrlItems.length} 个远程文件...`);
     const t0 = Date.now();
-    await Promise.all(httpUrlItems.map(async ({ val, ext }) => {
-      const idx = filePathMap.size;
+    // ★ 关键修复：预先在同步阶段为每个 item 分配唯一的 idx，
+    //   否则 .map(async ...) 中所有 idx 都会读到 filePathMap.size = 0
+    //   （因为 filePathMap.set 在 await fetch 之后才执行），
+    //   导致 N 个文件被命名为同一个 media_0000.bin、互相覆盖，
+    //   最终 3 个分镜的 imageUrl/audioUrl/imageUrls 都指向最后下载的那一份。
+    const itemsWithIdx = httpUrlItems.map((item, i) => ({ ...item, idx: i }));
+    await Promise.all(itemsWithIdx.map(async ({ val, ext, idx }) => {
       const filePath = join(tempDir, `media_${String(idx).padStart(4, '0')}${ext}`);
       try {
         const ctrl = new AbortController();
@@ -1657,7 +1664,7 @@ app.post('/render/sync', async (req, res) => {
  */
 app.post('/asr/transcribe', async (req, res) => {
   try {
-    const { audioUrl, audioPath, language = 'zh' } = req.body || {};
+    const { audioUrl, audioPath, language = null } = req.body || {};
     // 兼容两种入参：
     //   1. audioUrl: data: URL 直接 inline（不推荐，大文件会被 fetch 切断）
     //   2. audioPath: /tmp/remotion_data_xxx/media_0000.mp3（前端先 /upload-media 拿到的服务端路径）
@@ -1741,6 +1748,8 @@ app.post('/asr/transcribe', async (req, res) => {
         success: true,
         durationSec: result.durationSec ?? 0,
         text: result.text ?? '',
+        // Whisper 检测到的源语言（zh/en/ja 等），用于前端决定是否翻译
+        language: result.language ?? language,
         cues: (result.words ?? []).map((w) => ({
           startSec: (w.startMs ?? 0) / 1000,
           endSec: (w.endMs ?? 0) / 1000,

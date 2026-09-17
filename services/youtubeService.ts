@@ -4,6 +4,13 @@
  */
 
 /**
+ * 默认 GAS API URL（项目内置）
+ * 调用方可通过第二个参数覆盖
+ */
+export const DEFAULT_GAS_API_URL =
+  'https://script.google.com/macros/s/AKfycbylTL8WWoBBcYo5LaXGsIoUiBVxWVFLEcaH4cMuXbnB2UEQ-tsUI6jqYS8tcYT0wxQaqA/exec';
+
+/**
  * 提取YouTube视频ID
  */
 export const extractYouTubeVideoId = (url: string): string | null => {
@@ -54,81 +61,52 @@ const cleanTranscript = (text: string): string => {
 
 /**
  * 通过Google Apps Script API提取YouTube字幕
+ *
+ * 行为：
+ *  1. 如果调用方传入 gasApiUrl，优先使用该 URL；
+ *  2. 否则使用项目内置的 DEFAULT_GAS_API_URL。
+ *
  * @param videoId YouTube视频ID
- * @param gasApiUrl Google Apps Script API URL (用户需要在设置中配置)
+ * @param gasApiUrl 可选，自定义 GAS API URL（不传则用 DEFAULT_GAS_API_URL）
  * @returns 字幕文本
  */
 export const fetchYouTubeTranscript = async (
   videoId: string,
   gasApiUrl?: string
 ): Promise<{ success: boolean; transcript?: string; error?: string }> => {
+  const targetUrl = gasApiUrl || DEFAULT_GAS_API_URL;
+  console.log(`[YouTubeService] 使用 GAS API: ${targetUrl}`);
+
   try {
     console.log(`[YouTubeService] 开始提取视频字幕，视频ID: ${videoId}`);
-    
-    // 如果用户提供了自己的GAS API URL
-    if (gasApiUrl) {
-      console.log(`[YouTubeService] 使用用户配置的GAS API: ${gasApiUrl}`);
-      
-      // 使用 GET 请求（避免 CORS 预检问题）
-      const url = `${gasApiUrl}?videoId=${encodeURIComponent(videoId)}`;
-      const response = await fetch(url, {
-        method: 'GET',
-      });
-      
-      if (!response.ok) {
-        throw new Error(`API请求失败: ${response.status} ${response.statusText}`);
-      }
-      
-      const data = await response.json();
-      
-      if (data.success && data.transcript) {
-        const cleanedTranscript = cleanTranscript(data.transcript);
-        console.log(`[YouTubeService] 字幕提取成功，长度: ${cleanedTranscript.length}字`);
-        return { success: true, transcript: cleanedTranscript };
-      } else {
-        throw new Error(data.error || '字幕提取失败');
-      }
+
+    // 1. 主路径：调用 GAS API（GET，避免 CORS 预检）
+    const url = `${targetUrl}?videoId=${encodeURIComponent(videoId)}`;
+    const response = await fetch(url, {
+      method: 'GET',
+      // GAS 对简单 GET 不要求预检；但保留可读头，方便 GAS 日志
+      headers: { Accept: 'application/json' },
+    });
+
+    if (!response.ok) {
+      throw new Error(`API请求失败: ${response.status} ${response.statusText}`);
     }
-    
-    // 尝试使用默认的公共GAS API（如果用户没有配置）
-    // 注意：这里需要替换为实际的公共GAS API URL
-    console.log(`[YouTubeService] 未配置GAS API，尝试使用youtube-transcript-api库`);
-    
-    // 方案1：使用youtube-transcript-api（需要后端支持）
-    // 这里提供一个简单的实现，实际需要用户部署自己的后端服务
-    const fallbackApiUrl = 'https://your-gas-api-url.com/api/transcript'; // 用户需要替换
-    
-    try {
-      const response = await fetch(fallbackApiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ videoId }),
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        if (data.success && data.transcript) {
-          const cleanedTranscript = cleanTranscript(data.transcript);
-          return { success: true, transcript: cleanedTranscript };
-        }
-      }
-    } catch (fallbackError) {
-      console.warn('[YouTubeService] 公共API调用失败:', fallbackError);
+
+    const data = await response.json();
+
+    if (data?.success && data?.transcript) {
+      const cleanedTranscript = cleanTranscript(data.transcript);
+      console.log(`[YouTubeService] 字幕提取成功，长度: ${cleanedTranscript.length}字`);
+      return { success: true, transcript: cleanedTranscript };
     }
-    
-    // 如果所有方法都失败，返回错误
-    return {
-      success: false,
-      error: '请在设置中配置您的 Google Apps Script API URL。\n\n请参考文档部署您自己的字幕提取服务。',
-    };
-    
+
+    // GAS 返回 success=false 时也抛错，给上层统一处理
+    throw new Error(data?.error || '字幕提取失败（GAS 返回 success=false）');
   } catch (error: any) {
     console.error('[YouTubeService] 字幕提取失败:', error);
     return {
       success: false,
-      error: error.message || '字幕提取失败，请检查网络连接或API配置',
+      error: `${error?.message || '字幕提取失败'}\n\nGAS URL: ${targetUrl}\n如需更换请联系管理员更新 DEFAULT_GAS_API_URL 常量。`,
     };
   }
 };

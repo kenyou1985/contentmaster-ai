@@ -66,6 +66,8 @@ import {
   Link2,
   ClipboardList,
   CheckCircle,
+  Scissors,
+  PartyPopper,
 } from 'lucide-react';
 import { useToast } from './Toast';
 import { VoiceLibrary } from './VoiceLibrary';
@@ -110,6 +112,15 @@ import type {
 } from '../services/remotionRenderTypes';
 // v1.10：复用 remotion 模块的字幕切分工具（支持 sentence/word/none 三种模式）
 import { buildSubtitleCues } from '../remotion/src/compositions/subtitleCues';
+// 一键剪映：把当前面板的素材链路转成剪映草稿
+import {
+  exportJianyingDraft,
+  type JianyingShot,
+} from '../services/jianyingExportService';
+import {
+  getLocalCachePaths,
+  saveMediaToLocalCache,
+} from '../services/localMediaCacheService';
 
 const SCRIPT_MAX_LEN = 8000; // 文案成片文案上限
 
@@ -674,6 +685,17 @@ const CopyBasedPanel: React.FC<{
   const [videoGenerating, setVideoGenerating] = useState<boolean>(false);
   const [videoProgress, setVideoProgress] = useState<number>(0);
   const [videoMessage, setVideoMessage] = useState<string>('');
+
+  // ── 一键剪映（生成剪映草稿）状态 ──
+  const [jianyingExporting, setJianyingExporting] = useState<boolean>(false);
+  const [jianyingProgress, setJianyingProgress] = useState<number>(0);
+  const [jianyingProgressMessage, setJianyingProgressMessage] = useState<string>('');
+  const [jianyingDownloadUrl, setJianyingDownloadUrl] = useState<string>('');
+  const [jianyingDraftPath, setJianyingDraftPath] = useState<string>('');
+  const [jianyingBatchLinks, setJianyingBatchLinks] = useState<
+    Array<{ filename: string; url: string; partLabel: string }>
+  >([]);
+  const jianyingExportCancelledRef = useRef<boolean>(false);
 
   const abortRef = useRef<AbortController | null>(null);
 
@@ -2358,6 +2380,301 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
   ]);
 
   // ──────────────────────────────────────────────
+  // 一键剪映：把当前面板的素材链路转成剪映草稿
+  // - AI 模式：1 个镜头（封面 + 配音 + 字幕）
+  // - 自定义模式：N 个镜头（每项素材一个镜头 + 整段音频轨）
+  // ──────────────────────────────────────────────
+
+  /**
+   * 把 CustomTracksState 转换为 JianyingShot[]
+   *  - 每个视频/图片素材 = 1 个镜头
+   *  - 整段 audioUrl = 整段配音（用于剪映草稿的 audioDurationSec 兜底时长）
+   *  - 字幕文本优先用素材自带 caption；否则用 Whisper 自动生成的 subtitleCues
+   */
+  const buildJianyingShotsFromCustomTracks = useCallback((): JianyingShot[] => {
+    const shots: JianyingShot[] = [];
+    for (const it of customTracks.videoItems) {
+      const dur =
+        (typeof it.overrideDurationSec === 'number' && it.overrideDurationSec > 0
+          ? it.overrideDurationSec
+          : it.kind === 'video' && it.durationSec && it.durationSec > 0
+          ? it.durationSec
+          : 4) || 4;
+      const url = it.url;
+      shots.push({
+        caption: it.caption || '',
+        duration: dur,
+        // 图片 / 视频 二选一（剪映镜头只支持一种 media）
+        imageUrl: it.kind === 'image' ? url : undefined,
+        videoUrl: it.kind === 'video' ? url : undefined,
+        // 整段音频轨 + 时长（剪映会按 audioDurationSec 兜底每个镜头的时长）
+        audioUrl: customTracks.audioUrl,
+        voiceoverAudioUrl: customTracks.audioUrl,
+        audioDurationSec: customTracks.audioDurationSec,
+      });
+    }
+    return shots;
+  }, [customTracks]);
+
+  /**
+   * AI 模式：单镜头（封面 + 配音）
+   */
+  const buildJianyingShotsFromAiMode = useCallback((): JianyingShot[] => {
+    if (!finalCover || !ttsResult) return [];
+    return [
+      {
+        caption: rawCopy || finalCover.title || '',
+        duration: ttsResult.totalDuration || 5,
+        imageUrl: finalCover.url,
+        audioUrl: ttsResult.mergedAudioUrl,
+        voiceoverAudioUrl: ttsResult.mergedAudioUrl,
+        audioDurationSec: ttsResult.totalDuration,
+        audioDurationExact: ttsResult.totalDuration,
+      },
+    ];
+  }, [finalCover, ttsResult, rawCopy]);
+
+  /**
+   * 把镜头中的 HTTP URL / Blob URL 转成 dataURL 并尝试缓存到本地，
+   * 避免剪映导出时遇到临时链接过期 / Blob URL 无法跨进程访问 的问题。
+   * 逻辑参考 MediaGenerator.tsx 的 prepareShotsForExport
+   */
+  const prepareShotsForJianyingExport = useCallback(
+    async (shots: JianyingShot[]): Promise<JianyingShot[]> => {
+      const allUrls: string[] = [];
+      for (const s of shots) {
+        if (s.imageUrl) allUrls.push(s.imageUrl);
+        if (s.videoUrl) allUrls.push(s.videoUrl);
+        if (s.audioUrl) allUrls.push(s.audioUrl);
+        if (s.voiceoverAudioUrl && s.voiceoverAudioUrl !== s.audioUrl) {
+          allUrls.push(s.voiceoverAudioUrl);
+        }
+      }
+
+      // ── Step 1: HTTP URL → 检查本地缓存 ──
+      const httpUrls = allUrls.filter((u) => /^https?:/i.test(u));
+      const cachedPaths = await getLocalCachePaths(httpUrls);
+
+      // ── Step 2: 未缓存的 HTTP URL → 下载 → 转 dataURL → 写本地缓存 ──
+      const newCachedPaths = new Map<string, string>();
+      const pending = httpUrls.filter((u) => !cachedPaths.has(u));
+      if (pending.length > 0) {
+        appendLog('Jianying', `▸ 缓存 ${pending.length} 个远程媒体到本地…`);
+        for (const url of pending) {
+          try {
+            const resp = await fetch(url);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const blob = await resp.blob();
+            const dataUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve(reader.result as string);
+              reader.onerror = reject;
+              reader.readAsDataURL(blob);
+            });
+            const localPath = await saveMediaToLocalCache(url, dataUrl);
+            if (localPath) {
+              newCachedPaths.set(url, localPath);
+              appendLog('Jianying', `  ✓ 已缓存: ${url.slice(0, 60)}`);
+            }
+          } catch (e: any) {
+            appendLog('WARN', `缓存失败 ${url.slice(0, 60)}: ${e.message}`);
+          }
+        }
+      }
+
+      const allLocalPaths = new Map<string, string>();
+      cachedPaths.forEach((p, u) => allLocalPaths.set(u, p));
+      newCachedPaths.forEach((p, u) => allLocalPaths.set(u, p));
+
+      // ── Step 3: Blob URL → 转 dataURL（剪映服务无法访问浏览器 Blob）──
+      const blobUrls = allUrls.filter((u) => u.startsWith('blob:'));
+      const blobDataUrls = new Map<string, string>();
+      if (blobUrls.length > 0) {
+        appendLog('Jianying', `▸ 转 ${blobUrls.length} 个 Blob 媒体为 dataURL…`);
+      }
+      await Promise.all(
+        blobUrls.map(async (u) => {
+          try {
+            const resp = await fetch(u);
+            if (!resp.ok) throw new Error(`Blob fetch HTTP ${resp.status}`);
+            const blob = await resp.blob();
+            const dataUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve(reader.result as string);
+              reader.onerror = reject;
+              reader.readAsDataURL(blob);
+            });
+            blobDataUrls.set(u, dataUrl);
+          } catch (e: any) {
+            appendLog('WARN', `Blob 转 dataURL 失败 ${u.slice(0, 60)}: ${e.message}`);
+          }
+        })
+      );
+
+      // ── Step 4: 替换镜头中的 URL ──
+      const localMediaPaths: Array<{ url: string; localPath: string }> = [];
+      const replaceUrl = (u?: string): string | undefined => {
+        if (!u) return u;
+        if (allLocalPaths.has(u)) {
+          const lp = allLocalPaths.get(u)!;
+          localMediaPaths.push({ url: u, localPath: lp });
+          return lp;
+        }
+        if (u.startsWith('blob:') && blobDataUrls.has(u)) {
+          return blobDataUrls.get(u);
+        }
+        return u;
+      };
+
+      return shots.map((s) => ({
+        ...s,
+        imageUrl: replaceUrl(s.imageUrl),
+        videoUrl: replaceUrl(s.videoUrl),
+        audioUrl: replaceUrl(s.audioUrl),
+        voiceoverAudioUrl: replaceUrl(s.voiceoverAudioUrl),
+      }));
+    },
+    [appendLog]
+  );
+
+  /** 一键剪映主处理函数 */
+  const handleExportJianying = useCallback(async () => {
+    // ── 输入校验 ──
+    let shots: JianyingShot[] = [];
+    if (mode === 'custom') {
+      if (customTracks.videoItems.length === 0) {
+        toast.error('请先上传视频/图片素材', 3000);
+        return;
+      }
+      if (!customTracks.audioUrl) {
+        toast.error('请先上传音频', 3000);
+        return;
+      }
+      shots = buildJianyingShotsFromCustomTracks();
+      if (shots.length === 0) {
+        toast.error('没有可用的镜头', 3000);
+        return;
+      }
+      appendLog('Jianying', `▸ 准备一键剪映（自定义素材 · ${shots.length} 镜头 · 字幕=${customTracks.subtitleEnabled ? `${customTracks.subtitleCues.length} 条` : 'OFF'}）`);
+    } else {
+      if (!finalCover || !ttsResult) {
+        toast.error('请先选定终封面并生成配音', 3000);
+        return;
+      }
+      shots = buildJianyingShotsFromAiMode();
+      appendLog('Jianying', `▸ 准备一键剪映（AI 模式 · 单镜头）`);
+    }
+
+    // ── 初始化导出状态 ──
+    jianyingExportCancelledRef.current = false;
+    setJianyingExporting(true);
+    setJianyingProgress(0);
+    setJianyingProgressMessage('准备导出...');
+    setJianyingDownloadUrl('');
+    setJianyingDraftPath('');
+    setJianyingBatchLinks([]);
+
+    try {
+      // ── 预处理镜头 URL（远程缓存 / Blob → dataURL）──
+      setJianyingProgressMessage('预处理媒体文件...');
+      const preparedShots = await prepareShotsForJianyingExport(shots);
+
+      if (jianyingExportCancelledRef.current) {
+        appendLog('Jianying', '导出已取消');
+        return;
+      }
+
+      // ── 草稿名称（带时间戳避免重名）──
+      const draftName =
+        (mode === 'ai'
+          ? `${(finalCover?.title || 'AI成片').replace(/[\\/:*?"<>|]/g, '_').slice(0, 30)}`
+          : '自定义素材成片') +
+        `_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}_${Date.now().toString().slice(-4)}`;
+
+      const result = await exportJianyingDraft(
+        {
+          draftName,
+          shots: preparedShots,
+          // 自定义模式优先按音频时长作为分辨率基准（竖屏）
+          resolution: '1080x1920',
+          fps: 30,
+          randomTransitions: false,
+          randomVideoEffects: false,
+        },
+        (progress, message) => {
+          if (jianyingExportCancelledRef.current) {
+            appendLog('Jianying', '导出已取消');
+            return;
+          }
+          setJianyingProgress(progress);
+          setJianyingProgressMessage(message || '处理中...');
+        }
+      );
+
+      if (jianyingExportCancelledRef.current) {
+        appendLog('Jianying', '导出已取消');
+        return;
+      }
+
+      if (!result.success) {
+        throw new Error(result.error || '剪映导出失败');
+      }
+
+      // ── 成功：解析结果 ──
+      setJianyingProgress(100);
+      setJianyingProgressMessage('导出完成');
+
+      // 1) 本地模式：有 draft_folder 直接显示路径
+      if (result.draft_folder) {
+        setJianyingDraftPath(result.draft_folder);
+        appendLog('Jianying', `✓ 剪映草稿已生成：${result.draft_folder}（${shots.length} 镜头）`);
+      }
+
+      // 2) 远程 ZIP 模式：显示下载链接
+      const zipUrl = (result.zip_download_url || '').trim();
+      if (zipUrl) {
+        setJianyingDownloadUrl(zipUrl);
+        appendLog('Jianying', `✓ 剪映草稿 ZIP：${zipUrl}`);
+      }
+
+      // 3) 分批导出：展示多个 ZIP 链接
+      if ((result as any)._batched) {
+        const urls: string[] = (result as any)._batchZipUrls || [];
+        const labels: string[] = (result as any)._batchPartLabels || [];
+        const batchLinks = urls
+          .map((u, i) => ({
+            filename: `${draftName}_part${i + 1}.zip`,
+            url: u,
+            partLabel: labels[i] || `Part ${i + 1}`,
+          }))
+          .filter((x) => !!x.url);
+        setJianyingBatchLinks(batchLinks);
+        if (batchLinks.length > 0) {
+          toast.success(`剪映分批导出成功：${shots.length} 镜头（${batchLinks.length} 个 ZIP）`, 5000);
+        }
+      } else {
+        toast.success('剪映草稿导出成功', 3000);
+      }
+    } catch (e: any) {
+      appendLog('ERROR', `剪映导出失败：${e.message}`);
+      toast.error(`剪映导出失败：${e.message}`, 5000);
+    } finally {
+      setJianyingExporting(false);
+    }
+  }, [
+    mode,
+    finalCover,
+    ttsResult,
+    customTracks,
+    rawCopy,
+    toast,
+    appendLog,
+    buildJianyingShotsFromAiMode,
+    buildJianyingShotsFromCustomTracks,
+    prepareShotsForJianyingExport,
+  ]);
+
+  // ──────────────────────────────────────────────
   // 重置
   // ──────────────────────────────────────────────
   const handleReset = useCallback(() => {
@@ -3916,8 +4233,114 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
             </a>
           )}
 
+          {/* ── 一键剪映：分开发按钮 ── */}
+          <div className="border-t border-slate-700/60 pt-3 mt-1 space-y-2">
+            <button
+              onClick={handleExportJianying}
+              disabled={
+                jianyingExporting ||
+                videoGenerating ||
+                (mode === 'ai'
+                  ? !finalCover || !ttsResult
+                  : customTracks.videoItems.length === 0 || !customTracks.audioUrl)
+              }
+              className="w-full px-3 py-2.5 bg-fuchsia-600 hover:bg-fuchsia-500 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-2 disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed transition-all"
+              type="button"
+              title={
+                mode === 'ai'
+                  ? !finalCover
+                    ? '请先选定终封面'
+                    : !ttsResult
+                    ? '请先生成配音'
+                    : '一键生成剪映草稿（本地服务导出到剪映目录 / 远程打包 ZIP 下载）'
+                  : customTracks.videoItems.length === 0
+                  ? '请先上传视频/图片素材'
+                  : !customTracks.audioUrl
+                  ? '请先上传音频'
+                  : '一键生成剪映草稿（本地服务导出到剪映目录 / 远程打包 ZIP 下载）'
+              }
+            >
+              {jianyingExporting ? (
+                <>
+                  <Loader2 size={14} className="animate-spin" /> 导出剪映草稿中…
+                </>
+              ) : (
+                <>
+                  <Scissors size={14} /> 一键剪映（生成剪映草稿）
+                </>
+              )}
+            </button>
+
+            {/* 剪映进度条 */}
+            {jianyingExporting && (
+              <div className="space-y-1">
+                <div className="w-full bg-slate-700 rounded-full h-1.5 overflow-hidden">
+                  <div
+                    className="bg-fuchsia-500 h-full transition-all duration-300"
+                    style={{ width: `${Math.max(0, Math.min(100, jianyingProgress))}%` }}
+                  />
+                </div>
+                <div className="text-[10px] text-slate-400 flex items-center justify-between">
+                  <span className="truncate">{jianyingProgressMessage || '处理中...'}</span>
+                  <span className="ml-2 flex-shrink-0">{Math.round(jianyingProgress)}%</span>
+                </div>
+              </div>
+            )}
+
+            {/* 剪映草稿路径（本地模式） */}
+            {jianyingDraftPath && !jianyingExporting && (
+              <div className="bg-emerald-900/30 border border-emerald-700 rounded p-2 text-[10px] text-emerald-200 space-y-1">
+                <div className="flex items-center gap-1 font-bold">
+                  <PartyPopper size={11} className="text-emerald-400" />
+                  剪映草稿已生成到本地：
+                </div>
+                <div className="font-mono break-all text-emerald-100/90">{jianyingDraftPath}</div>
+                <div className="text-emerald-300/70">
+                  打开剪映 →「草稿」会自动刷新看到；或直接拖入剪映即可继续编辑。
+                </div>
+              </div>
+            )}
+
+            {/* 剪映 ZIP 下载链接（远程模式） */}
+            {jianyingDownloadUrl && !jianyingExporting && (
+              <a
+                href={jianyingDownloadUrl}
+                download={`copybased_jianying_${Date.now()}.zip`}
+                target="_blank"
+                rel="noopener"
+                className="w-full px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs flex items-center justify-center gap-1"
+              >
+                <Download size={12} /> 下载剪映草稿 ZIP
+              </a>
+            )}
+
+            {/* 分批 ZIP 链接列表 */}
+            {jianyingBatchLinks.length > 0 && !jianyingExporting && (
+              <div className="bg-fuchsia-900/20 border border-fuchsia-700/60 rounded p-2 space-y-1">
+                <div className="text-[10px] text-fuchsia-200 font-bold flex items-center gap-1">
+                  <PartyPopper size={11} /> 分批导出（共 {jianyingBatchLinks.length} 个 ZIP，需全部下载后解压到同一目录合并草稿）：
+                </div>
+                {jianyingBatchLinks.map((b) => (
+                  <a
+                    key={b.url}
+                    href={b.url}
+                    download={b.filename}
+                    target="_blank"
+                    rel="noopener"
+                    className="block w-full px-2 py-1.5 bg-fuchsia-700 hover:bg-fuchsia-600 text-white rounded text-[10px] flex items-center gap-1"
+                  >
+                    <Download size={10} /> {b.partLabel} · {b.filename}
+                  </a>
+                ))}
+              </div>
+            )}
+          </div>
+
           <p className="text-[10px] text-slate-500">
             视频导出走 Remotion 渲染服务（端口 18093）。模板/分辨率/字幕/转场/运动均可在「渲染设置」中调整。
+          </p>
+          <p className="text-[10px] text-slate-500">
+            剪映草稿走本地 18091 / Railway 服务（Python 直接写入剪映草稿目录或打包 ZIP）。
           </p>
         </div>
 
