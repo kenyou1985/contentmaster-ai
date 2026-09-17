@@ -10,6 +10,7 @@ import {
 } from '../services/coverDesignProfiles';
 import { COVER_STYLE_PRESETS } from '../services/coverStylePresets';
 import { COVER_TEMPLATES, getCoverTemplate } from '../services/coverTemplatePresets';
+import { extractAnchorsFromText, type ExtractedAnchors } from '../services/anchorExtractor';
 import { useToast } from './Toast';
 import { Copy, Check, Loader2, Upload, Sparkles, Image as ImageIcon, X, Download, Edit3 } from 'lucide-react';
 
@@ -508,6 +509,10 @@ export const CoverDesign: React.FC<CoverDesignProps> = ({
   const [niche, setNiche] = useState<NicheType | null>(null);
   const [nicheModalOpen, setNicheModalOpen] = useState(false);
   const [coreTopic, setCoreTopic] = useState('');
+  /** 全文输入：用于本地启发式提取单句 / 多句锚点 */
+  const [fullText, setFullText] = useState('');
+  /** 提取出的锚点（一句话 + 多句，按钮触发） */
+  const [anchorExtraction, setAnchorExtraction] = useState<ExtractedAnchors | null>(null);
   const [refPreviews, setRefPreviews] = useState<RefImageItem[]>([]);
   const [refLocked, setRefLocked] = useState(false);
   const [rawOut, setRawOut] = useState('');
@@ -638,6 +643,69 @@ export const CoverDesign: React.FC<CoverDesignProps> = ({
   const clearAllRefs = () => {
     setRefPreviews([]);
     setRefLocked(false);
+  };
+
+  /**
+   * 从全文里提取单句/多句锚点：
+   * - 单句 → 可一键"应用到核心观点"
+   * - 多句 → 可一键"应用到多句靶点"（需要先点生成文案产生 bundle）
+   * 全部为本地启发式（无 API）。
+   */
+  const onExtractAnchors = () => {
+    const text = fullText.trim();
+    if (!text) {
+      toast.warning('请先粘贴视频脚本或口播稿');
+      return;
+    }
+    if (text.length < 30) {
+      toast.warning('全文太短（< 30 字），建议至少粘贴 1 段完整叙述');
+      return;
+    }
+    const res = extractAnchorsFromText(text);
+    if (!res.one && !res.multi) {
+      toast.error('未能提取到合适锚点，请检查全文内容或手动填写');
+      return;
+    }
+    setAnchorExtraction(res);
+    toast.success(
+      `已提取：单句 ${res.one ? '✓' : '✗'}｜多句 ${res.multi ? '✓' : '✗'}`
+    );
+  };
+
+  const onClearFullText = () => {
+    setFullText('');
+    setAnchorExtraction(null);
+  };
+
+  /**
+   * 把提取出来的单句锚点填入核心观点输入框。
+   */
+  const applyOneToCoreTopic = () => {
+    if (!anchorExtraction?.one) {
+      toast.warning('单句锚点为空');
+      return;
+    }
+    setCoreTopic(anchorExtraction.one);
+    toast.success('已填入核心观点（请向下滚动点击「生成高转化文案」）');
+  };
+
+  /**
+   * 把提取出来的多句锚点填入 bundle 的 target_phrase_multi（需先生成文案）。
+   */
+  const applyMultiToTarget = () => {
+    if (!anchorExtraction?.multi) {
+      toast.warning('多句锚点为空');
+      return;
+    }
+    if (!bundle) {
+      toast.warning('请先点击「生成高转化文案」拿到文案结构，再来填入多句靶点');
+      return;
+    }
+    setEditedBundle((p) => ({
+      ...(p ?? bundle),
+      target_phrase_multi: anchorExtraction.multi,
+    }));
+    toast.success('已填入多句靶点（VAR 提示词与出图已实时同步）');
   };
 
   const copy = useCallback(
@@ -1517,6 +1585,127 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
         </div>
       </div>
 
+      {/* 全文输入：粘贴脚本/口播稿，本地启发式提取单句 + 多句锚点 */}
+      <div className="rounded-xl border border-cyan-900/40 bg-cyan-950/10 p-5 space-y-4">
+        <h2 className="text-sm font-semibold text-cyan-300 flex items-center gap-2">
+          <span className="w-6 h-6 rounded bg-cyan-500/20 flex items-center justify-center text-xs text-cyan-300">
+            3
+          </span>
+          全文输入（可选 · 自动提取锚点）
+        </h2>
+        <p className="text-xs text-slate-400 leading-relaxed">
+          粘贴完整的视频脚本 / 字幕 / 口播稿，工具会按动作词 / 反转词 / 数字 / 人名 / 悬念词
+          本地启发式打分，自动抽出：
+          <b className="text-amber-300">1 条最佳单句锚点</b>
+          （可一键填入上方「核心观点」），
+          <b className="text-cyan-300">2–3 句多句锚点</b>
+          （可一键填入下方「多句极限靶点」）。无需 API Key。
+        </p>
+        <textarea
+          value={fullText}
+          onChange={(e) => setFullText(e.target.value)}
+          placeholder="例如：今天我们来聊一个被掩盖了 30 年的真相。1995 年的那个冬天，老陈被合伙人坑得倾家荡产，妻子带着孩子离开。他在法庭上喊冤，却换来一句'证据不足'。30 年后，他带着一份尘封的录像带回来了。对方以为一切已经平息，却没想到那个男人，从地狱里爬了出来……"
+          className="w-full min-h-[160px] bg-slate-950/80 border border-slate-800 rounded-lg p-4 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-cyan-500/40 resize-y"
+        />
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            disabled={!fullText.trim()}
+            onClick={onExtractAnchors}
+            className="px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white text-xs font-medium flex items-center gap-1.5"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            从全文提取锚点
+          </button>
+          <button
+            type="button"
+            disabled={!fullText && !anchorExtraction}
+            onClick={onClearFullText}
+            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-300 text-xs"
+          >
+            清空全文
+          </button>
+          <span className="text-[10px] text-slate-500 ml-auto font-mono">
+            {fullText.length} 字 · 中文句子级启发式
+          </span>
+        </div>
+
+        {anchorExtraction && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
+            {/* 单句锚点 */}
+            <div className="rounded-lg border border-amber-500/40 bg-amber-950/30 p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-mono uppercase tracking-wider text-amber-300">
+                  🟡 单句锚点（一句话极限靶点候选）
+                </span>
+                <button
+                  type="button"
+                  disabled={!anchorExtraction.one}
+                  onClick={applyOneToCoreTopic}
+                  className="text-[10px] px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white shrink-0"
+                >
+                  应用到核心观点
+                </button>
+              </div>
+              <p className="text-sm text-slate-100 leading-relaxed">
+                {anchorExtraction.one || (
+                  <span className="text-slate-500 italic">（未提取到合适句子）</span>
+                )}
+              </p>
+            </div>
+            {/* 多句锚点 */}
+            <div className="rounded-lg border border-cyan-500/40 bg-cyan-950/30 p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-mono uppercase tracking-wider text-cyan-300">
+                  🟦 多句锚点（2–3 句多句极限靶点候选）
+                </span>
+                <button
+                  type="button"
+                  disabled={!anchorExtraction.multi || !bundle}
+                  title={!bundle ? '请先点击「生成高转化文案」拿到文案结构' : ''}
+                  onClick={applyMultiToTarget}
+                  className="text-[10px] px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white shrink-0"
+                >
+                  {!bundle ? '需先生成文案' : '应用到多句靶点'}
+                </button>
+              </div>
+              <pre className="text-sm text-slate-100 leading-relaxed whitespace-pre-wrap font-sans">
+                {anchorExtraction.multi || (
+                  <span className="text-slate-500 italic">（未提取到合适句子）</span>
+                )}
+              </pre>
+            </div>
+            {anchorExtraction._debug && anchorExtraction._debug.length > 0 && (
+              <details className="md:col-span-2 text-[10px] text-slate-500">
+                <summary className="cursor-pointer hover:text-slate-300">
+                  调试：候选句打分（前 20 条）
+                </summary>
+                <ol className="mt-2 space-y-0.5 max-h-48 overflow-y-auto bg-slate-950/60 rounded p-2 font-mono">
+                  {anchorExtraction._debug.map((d, i) => (
+                    <li key={i} className="break-words">
+                      <span
+                        className={
+                          d.score >= 8
+                            ? 'text-amber-300 font-bold'
+                            : d.score >= 4
+                              ? 'text-cyan-300'
+                              : d.score >= 0
+                                ? 'text-slate-400'
+                                : 'text-slate-600 line-through'
+                        }
+                      >
+                        [{d.score.toFixed(0)}]
+                      </span>{' '}
+                      {d.sentence}
+                    </li>
+                  ))}
+                </ol>
+              </details>
+            )}
+          </div>
+        )}
+      </div>
+
       <button
         type="button"
         disabled={loadingText || (niche === null && !selectedTemplateId)}
@@ -1567,7 +1756,7 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
           <section className="space-y-4">
             <h2 className="text-sm font-semibold text-emerald-400 flex items-center gap-2">
               <span className="w-6 h-6 rounded bg-emerald-500/20 flex items-center justify-center text-xs text-emerald-300">
-                3
+                4
               </span>
               SEO 标题库 &amp; 长尾标签库
             </h2>
@@ -1762,7 +1951,7 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
           <section className="space-y-4">
             <h2 className="text-sm font-semibold text-emerald-400 flex items-center gap-2">
               <span className="w-6 h-6 rounded bg-emerald-500/20 flex items-center justify-center text-xs text-emerald-300">
-                4
+                5
               </span>
               缩略图设计区
             </h2>
