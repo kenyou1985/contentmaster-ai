@@ -513,6 +513,10 @@ export const CoverDesign: React.FC<CoverDesignProps> = ({
   const [fullText, setFullText] = useState('');
   /** 提取出的锚点（一句话 + 多句，按钮触发） */
   const [anchorExtraction, setAnchorExtraction] = useState<ExtractedAnchors | null>(null);
+  /** LLM 提取锚点中的加载态 */
+  const [llmAnchorExtracting, setLlmAnchorExtracting] = useState(false);
+  /** LLM 原始输出（调试展示） */
+  const [llmAnchorRaw, setLlmAnchorRaw] = useState('');
   const [refPreviews, setRefPreviews] = useState<RefImageItem[]>([]);
   const [refLocked, setRefLocked] = useState(false);
   const [rawOut, setRawOut] = useState('');
@@ -675,6 +679,132 @@ export const CoverDesign: React.FC<CoverDesignProps> = ({
   const onClearFullText = () => {
     setFullText('');
     setAnchorExtraction(null);
+    setLlmAnchorRaw('');
+  };
+
+  /**
+   * LLM 智能提取锚点（调用 streamContentGeneration）：
+   * 从完整视频脚本中提取高 CTR 单句 + 多句锚点。
+   * 全文先走本地启发式（无 API 依赖），LLM 则作为精准兜底。
+   */
+  const onExtractAnchorsByLLM = async () => {
+    const text = fullText.trim();
+    if (!text) {
+      toast.warning('请先粘贴视频脚本或口播稿');
+      return;
+    }
+    if (text.length < 30) {
+      toast.warning('全文太短（< 30 字），建议至少粘贴 1 段完整叙述');
+      return;
+    }
+    if (!apiKey.trim()) {
+      toast.warning('AI 提取需要配置 API Key（可先使用本地提取）');
+      return;
+    }
+    if (provider === 'runninghub') {
+      toast.warning('AI 提取需要 Yunwu 或 Google 文本模型，请切换 API 服务');
+      return;
+    }
+
+    setLlmAnchorExtracting(true);
+    setLlmAnchorRaw('');
+    setAnchorExtraction(null);
+
+    const lang = detectTopicLang(text);
+    const langNote =
+      lang === 'en'
+        ? 'Extract all copy fields in English.'
+        : '文案字段全部使用简体中文输出。';
+
+    const systemPrompt = `You are a YouTube viral hook and CTR expert. Analyze the provided video transcript and extract the highest-CTR single-sentence and multi-sentence hooks.
+
+${langNote}
+
+Output a raw JSON object (no markdown fences, no code blocks, no explanation, no prefix/suffix text) with exactly these 2 keys:
+{
+  "one": "<best single-sentence anchor, 8–25 characters (Chinese) or 5–12 words (English), must contain at least one action verb or question/exclamation mark, maximum punchline impact>",
+  "multi": "<2–3 sentence anchors separated by \\n, same theme as 'one' but layered, first sentence sets scene/contrast, second deepens, third closes with cliff/suspense, total ≤ 120 characters or ≤ 30 words>"
+}
+
+Rules:
+- one: must be a complete sentence (with verb), NOT a keyword list or phrase
+- multi: each line must be a complete sentence, NOT bullet points or fragments
+- Extract directly from the transcript — do NOT invent or paraphrase beyond the source meaning
+- Prefer lines that contain: numbers, person names, action verbs, reversal/contrast words, question/exclamation marks
+- Reject: generic intros ("大家好"), subscription prompts, filler descriptions
+`;
+
+    const userPrompt = `## 视频全文脚本（请从中提取锚点）
+
+${text}`;
+
+    let raw = '';
+    try {
+      await streamContentGeneration(
+        userPrompt,
+        systemPrompt,
+        (chunk) => {
+          raw += chunk;
+          setLlmAnchorRaw(raw);
+        },
+        undefined,
+        { temperature: 0.5, maxTokens: 2048 }
+      );
+    } catch (err: any) {
+      console.error('[CoverDesign] LLM anchor extract failed:', err?.message || err);
+      toast.error('LLM 提取失败：' + (err?.message || '未知错误'));
+      setLlmAnchorExtracting(false);
+      return;
+    }
+
+    // 解析 JSON
+    let parsedOne = '';
+    let parsedMulti = '';
+    try {
+      // 尝试从原始输出中提取 JSON
+      const fences = Array.from(raw.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi));
+      let body = raw;
+      if (fences.length > 0) {
+        body = fences[0][1].trim();
+      }
+      const s = body.indexOf('{');
+      const e = body.lastIndexOf('}');
+      if (s !== -1 && e > s) {
+        const json = JSON.parse(body.slice(s, e + 1));
+        parsedOne = (json.one || '').trim();
+        parsedMulti = (json.multi || '').trim();
+      }
+    } catch {
+      // 解析失败
+    }
+
+    // 若 LLM 未返回有效结果，退化到本地启发式
+    if (!parsedOne && !parsedMulti) {
+      const local = extractAnchorsFromText(text);
+      if (local.one || local.multi) {
+        setAnchorExtraction(local);
+        toast.warning('LLM 未返回有效 JSON，已用本地启发式兜底');
+      } else {
+        toast.error('未能提取到锚点，请检查全文内容');
+      }
+      setLlmAnchorExtracting(false);
+      return;
+    }
+
+    // 多句若含 "\n" 且整体超长，按换行重新切分后验证
+    const multiLines = parsedMulti
+      ? parsedMulti.split(/\r?\n/).map((s: string) => s.trim()).filter(Boolean)
+      : [];
+
+    const result: ExtractedAnchors = {
+      one: parsedOne,
+      multi: multiLines.join('\n'),
+      _debug: [],
+    };
+
+    setAnchorExtraction(result);
+    setLlmAnchorExtracting(false);
+    toast.success('AI 锚点提取完成（单句 ✓ 多句 ' + (multiLines.length > 0 ? `${multiLines.length} 句 ✓` : '✗') + '）');
   };
 
   /**
@@ -1599,7 +1729,7 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
           <b className="text-amber-300">1 条最佳单句锚点</b>
           （可一键填入上方「核心观点」），
           <b className="text-cyan-300">2–3 句多句锚点</b>
-          （可一键填入下方「多句极限靶点」）。无需 API Key。
+          （可一键填入下方「多句极限靶点」）。支持**本地快速提取**（无需 API）和**AI 智能提取**（需 API Key，精准度更高）。
         </p>
         <textarea
           value={fullText}
@@ -1612,10 +1742,23 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
             type="button"
             disabled={!fullText.trim()}
             onClick={onExtractAnchors}
-            className="px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white text-xs font-medium flex items-center gap-1.5"
+            className="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-slate-300 text-xs font-medium flex items-center gap-1.5"
           >
             <Sparkles className="w-3.5 h-3.5" />
-            从全文提取锚点
+            本地快速提取
+          </button>
+          <button
+            type="button"
+            disabled={!fullText.trim() || llmAnchorExtracting}
+            onClick={onExtractAnchorsByLLM}
+            className="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-xs font-medium flex items-center gap-1.5"
+          >
+            {llmAnchorExtracting ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="w-3.5 h-3.5" />
+            )}
+            {llmAnchorExtracting ? 'AI 提取中…' : 'AI 智能提取'}
           </button>
           <button
             type="button"
@@ -1626,7 +1769,7 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
             清空全文
           </button>
           <span className="text-[10px] text-slate-500 ml-auto font-mono">
-            {fullText.length} 字 · 中文句子级启发式
+            {fullText.length} 字 · 本地 {fullText.length > 0 ? '✓' : '—'} · AI {apiKey.trim() ? '✓' : '需 Key'}
           </span>
         </div>
 
@@ -1700,6 +1843,18 @@ Output JSON only. Do NOT output var_*_prompt_en fields.`;
                     </li>
                   ))}
                 </ol>
+              </details>
+            )}
+
+            {/* LLM 原始输出（折叠展示） */}
+            {llmAnchorRaw && (
+              <details className="md:col-span-2 text-[10px] text-slate-500">
+                <summary className="cursor-pointer hover:text-slate-300">
+                  调试：AI 原始输出（{llmAnchorRaw.length} 字符）
+                </summary>
+                <pre className="mt-1 p-2 bg-slate-950/80 rounded overflow-x-auto whitespace-pre-wrap break-words max-h-64 text-slate-400">
+                  {llmAnchorRaw}
+                </pre>
               </details>
             )}
           </div>
