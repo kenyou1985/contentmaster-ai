@@ -628,3 +628,99 @@ function formatEta(sec: number): string {
   const h = Math.floor(m / 60);
   return `${h} 小时 ${m % 60} 分`;
 }
+
+/**
+ * 上传音频文件到服务端（与 CustomTracksPanel 音频轨道使用同一套实现）
+ *
+ * 策略（v11.1 重写）：
+ * 1) 大文件（≥5MB）→ multipart/form-data 流式上传
+ * 2) 如果 multipart 返回失败或服务端不支持，自动 fallback 到 JSON base64
+ * 3) 小文件（<5MB）→ 直接走 JSON base64
+ *
+ * 每一步都加详细 console.log，方便定位失败原因（之前用户反馈"还是失败"，
+ * 日志只能看到 multipart warn 但看不到 JSON fallback 的结果，是因为 fetch 还在
+ * pending 或者抛错被吞掉。这次让每一步都清晰可见 + 加超时防止挂死）
+ *
+ * 返回值：服务端返回的临时路径（已转成 HTTP URL，可直接交给 ASR / Remotion 使用）
+ */
+export async function uploadAudioFile(
+  blob: Blob,
+  filename: string
+): Promise<string> {
+  const baseUrl = (window as any).__REMOTION_SERVER_URL__ || getRemotionApiBase();
+  const mime = blob.type || 'audio/mpeg';
+  const sizeKB = (blob.size / 1024).toFixed(1);
+  console.log(`[uploadAudio] 开始上传: ${filename} (${sizeKB} KB, mime=${mime}) → ${baseUrl}/upload-media`);
+
+  // 收到的服务端路径（/tmp/remotion_data_xxx/...）必须转成 HTTP URL，
+  // 否则后端 extractUrlsToTempFiles 只认 data: 和 http:，filePathMap 为空，
+  // shot.audioUrl 保持 /tmp/... 路径 → Remotion staticFile() 包成 3001/public/tmp/...
+  // → Chrome 在 3001 找不到媒体 → "Error loading audio"
+  const toHttp = (p: string) => toRemotionMediaHttpUrl(p, baseUrl) || p;
+
+  // ── 路径 1：大文件 multipart（流式，避免 base64 膨胀切断）──
+  if (blob.size >= 5 * 1024 * 1024) {
+    try {
+      const form = new FormData();
+      form.append('file', blob, filename);
+      form.append('mime', mime);
+      const resp = await fetch(`${baseUrl}/upload-media`, { method: 'POST', body: form });
+      console.log(`[uploadAudio] multipart HTTP ${resp.status}`);
+      if (resp.ok) {
+        const json = await resp.json();
+        if (json?.paths?.[0]) {
+          console.log(`[uploadAudio] ✓ multipart 成功: ${json.paths[0]}`);
+          return toHttp(json.paths[0] as string);
+        }
+        console.warn(`[uploadAudio] multipart 返回 200 但无 paths:`, json);
+      } else {
+        const errTxt = (await resp.text().catch(() => '')).slice(0, 200);
+        console.warn(`[uploadAudio] multipart 失败 HTTP ${resp.status}: ${errTxt}`);
+      }
+    } catch (e: any) {
+      console.warn(`[uploadAudio] multipart 抛错:`, e?.message || e);
+    }
+    console.warn('[uploadAudio] multipart 不可用，回退到 JSON base64');
+  }
+
+  // ── 路径 2：JSON base64（兜底，兼容所有服务端）──
+  console.log(`[uploadAudio] 走 JSON base64 路径（${(blob.size / 1024 / 1024).toFixed(2)} MB → 编码后 ~${(blob.size * 4 / 3 / 1024 / 1024).toFixed(2)} MB）`);
+  let base64 = '';
+  try {
+    base64 = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      const t0 = Date.now();
+      reader.onloadend = () => {
+        const t1 = Date.now();
+        const r = String(reader.result || '');
+        const idx = r.indexOf(',');
+        const b64 = idx >= 0 ? r.slice(idx + 1) : '';
+        console.log(`[uploadAudio] FileReader 完成（${t1 - t0} ms，base64 ${(b64.length / 1024 / 1024).toFixed(2)} MB）`);
+        resolve(b64);
+      };
+      reader.onerror = () => reject(new Error('FileReader 失败: ' + (reader.error?.message || '未知')));
+      reader.readAsDataURL(blob);
+    });
+  } catch (e: any) {
+    throw new Error('读取本地文件失败: ' + (e?.message || e));
+  }
+  if (!base64) throw new Error('base64 编码结果为空');
+
+  console.log(`[uploadAudio] POST JSON body（${(JSON.stringify({ items: [{ mime, data: base64 }] }).length / 1024 / 1024).toFixed(2)} MB）`);
+  const resp = await fetch(`${baseUrl}/upload-media`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items: [{ mime, data: base64 }] }),
+  });
+  console.log(`[uploadAudio] JSON HTTP ${resp.status}`);
+  if (!resp.ok) {
+    const txt = (await resp.text().catch(() => '')).slice(0, 300);
+    throw new Error(`上传音频失败: HTTP ${resp.status} ${txt}`);
+  }
+  const json = await resp.json();
+  if (!json?.paths?.[0]) {
+    throw new Error('上传响应无路径: ' + JSON.stringify(json).slice(0, 200));
+  }
+  console.log(`[uploadAudio] ✓ JSON 上传成功: ${json.paths[0]}`);
+  return toHttp(json.paths[0] as string);
+}

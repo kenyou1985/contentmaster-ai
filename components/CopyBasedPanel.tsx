@@ -122,7 +122,8 @@ import {
   saveMediaToLocalCache,
 } from '../services/localMediaCacheService';
 
-const SCRIPT_MAX_LEN = 8000; // 文案成片文案上限
+// v11.0：移除文案字数上限（之前 8000 字）；textarea / 视频 ASR / URL 提取都不再截断
+// const SCRIPT_MAX_LEN = 8000; // 已废弃：用户要求完全不限字数
 
 // ── 人物勾选工具 ───────────────────────────
 /**
@@ -138,7 +139,7 @@ function pickCharactersMentionedInTitles(
 ): string[] {
   const mentioned: string[] = [];
   const seen = new Set<string>();
-  // 用所有标题拼接成一个查找源，覆盖 6 套方案不同角度
+  // 用所有标题拼接成一个查找源，覆盖 7 套方案不同角度
   const source = titles.filter(Boolean).join('|');
   if (!source) return [];
 
@@ -176,6 +177,17 @@ const COVER_RATIOS = [
   { id: '4:3', label: '4:3 标屏', w: 1440, h: 1080 },
   { id: '3:4', label: '3:4 海报', w: 1088, h: 1440 },
 ] as const;
+
+/** 固定封面赛道名称（7 种方案模板，对应 A~G）；用于 UI 展示，不依赖 LLM 生成 */
+export const COVER_SCHEME_NAMES: Record<'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G', string> = {
+  A: '场景沉浸',
+  B: '极简底',
+  C: '高反差特写',
+  D: '纵向分屏',
+  E: '信息图/数据牌',
+  F: '人像+大字横幅',
+  G: '长文案/复仇海报',
+};
 
 // Tailwind aspect ratio class（用于封面图容器，匹配生图尺寸）
 const COVER_RATIO_CLASSES: Record<string, string> = {
@@ -369,6 +381,8 @@ interface PersistedState {
   } | null;
   // v1.4 新增：勾选参与封面生成的人物（默认解析时按标题自动勾选；用户可手动调整）
   selectedCharacterNames: string[];
+  // v11.0 新增：本次解析要生成哪几套方案（A~G），用于控制 LLM 输出规模 + 节省 token
+  enabledSchemes?: string[];
   // v1.10 新增：模式开关 + 自定义素材轨道（blob URL 不能序列化，仅持久化字幕文本）
   mode?: 'ai' | 'custom';
   customTracks?: {
@@ -426,8 +440,8 @@ interface CoverImageEntry {
   title: string;
   emoji: string;
   styleTag: string;
-  /** v1.4：所属方案 A~F（封面赛道模板） */
-  schemeId?: 'A' | 'B' | 'C' | 'D' | 'E' | 'F';
+  /** v1.6：所属方案 A~G（封面赛道模板，含长文案/复仇海报） */
+  schemeId?: 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G';
   /** v1.4：方案中文名 */
   schemeName?: string;
   /** 监控用：生成时的封面比例 ID（'16:9' | '9:16' | ...） */
@@ -445,10 +459,100 @@ interface LogEntry {
   message: string;
 }
 
+// ── 方案数 → Prompt 动态构建 ───────────────────────────
+/**
+ * 根据用户选定的方案数 N (1~7)，动态裁剪 COPY_ANALYSIS_PROMPT：
+ *  - 替换硬编码的"7 套"→"{N} 套"
+ *  - 删除超出 N 的方案占位行（G/F/E/...）
+ *  - 删除"- titleOptions[i] → 方案 X"说明
+ *  - 删除"方案 G 专属铁律"段落（仅当 count < 7 时）
+ *
+ * 目的：让 LLM 只输出 N 套方案，节省 token、缩短延迟、并允许用户灵活控制规模。
+ *
+ * @param count 用户选定的方案数（1~7），> 7 时返回原 prompt 不做裁剪
+ * @param basePrompt 原始 COPY_ANALYSIS_PROMPT（从 constants.ts 导入）
+ * @returns 裁剪后的 prompt
+ */
+function buildAnalysisPrompt(count: number, basePrompt: string): string {
+  if (!Number.isFinite(count) || count >= 7) return basePrompt;
+
+  const schemeChars = ['A', 'B', 'C', 'D', 'E', 'F', 'G'] as const;
+  const lastChar = schemeChars[Math.max(0, Math.min(count, 7) - 1)];
+  const safeCount = Math.max(1, Math.min(count, 7));
+
+  let p = basePrompt;
+
+  // ── 1) 替换硬编码的"7"为动态 count ──
+  p = p.replace(/输出\s*\*\*7\s*套/g, `输出 **${safeCount} 套`);
+  p = p.replace(/7\s*套方案/g, `${safeCount} 套方案`);
+  p = p.replace(/对应\s*A~G\s*方案/g, `对应 A~${lastChar} 方案`);
+  p = p.replace(/严禁输出少于\s*7\s*套/g, `严禁输出少于 ${safeCount} 套`);
+  p = p.replace(/7\s*条 prompt 必须彼此差异巨大/g, `${safeCount} 条 prompt 必须彼此差异巨大`);
+  p = p.replace(
+    /【7\s*套风格标签池（必须 7 种不同）】/g,
+    `【${safeCount} 套风格标签池（必须 ${safeCount} 种不同）】`
+  );
+
+  // ── 2) 删除 titleOptions 模板中超出 count 的方案行 ──
+  // 单行格式（C~G）：{ "schemeId": "X", "schemeName": "...", "...": "..." },
+  // 多行格式（A, B 是多行兜底）：从 "schemeId": "X" 到 "coverDescriptionZh": "..." 结束
+  for (let i = 7; i > safeCount; i--) {
+    const ch = schemeChars[i - 1];
+    // 单行简略格式（C~G 用此写法）
+    const reSingle = new RegExp(
+      `\\s*\\{\\s*"schemeId":\\s*"${ch}",\\s*"schemeName":\\s*"[^"]+",\\s*"\\.\\.\\.":\\s*"\\.\\.\\."\\s*\\},?`,
+      'g'
+    );
+    p = p.replace(reSingle, '');
+    // 多行完整格式（A, B 是多行；本应删不到，但兜底兼容）
+    const reMulti = new RegExp(
+      `\\s*\\{\\s*"schemeId":\\s*"${ch}",[\\s\\S]*?"coverDescriptionZh":\\s*"[^"]*"\\s*\\},?`,
+      'g'
+    );
+    p = p.replace(reMulti, '');
+  }
+
+  // ── 3) 删除"方案对应关系"列表中超出 count 的方案说明 ──
+  // - titleOptions[3] → 方案 D（纵向分屏）: ...
+  for (let i = safeCount; i < 7; i++) {
+    const ch = schemeChars[i];
+    const re = new RegExp(`\\s*- titleOptions\\[${i}\\] → 方案 ${ch}[^\\n]*\\n?`, 'g');
+    p = p.replace(re, '');
+  }
+
+  // ── 4) 删除"方案 G 专属铁律"段落（仅当 count < 7 时） ──
+  if (safeCount < 7) {
+    const startMarker = '**⭐⭐⭐ 方案 G 专属铁律';
+    const startIdx = p.indexOf(startMarker);
+    if (startIdx >= 0) {
+      // 下一段以 "\n\n【" 或 "\n\n#" 开头
+      const afterStart = p.slice(startIdx);
+      const nextSectionMatch = afterStart.match(/\n\n(?=【|\[|#)/);
+      if (nextSectionMatch && nextSectionMatch.index !== undefined) {
+        const endIdx = startIdx + nextSectionMatch.index;
+        p = p.slice(0, startIdx) + p.slice(endIdx);
+      } else {
+        // 兜底：截到字符串末尾
+        p = p.slice(0, startIdx);
+      }
+    }
+  }
+
+  return p;
+}
+
 const CopyBasedPanel: React.FC<{
   apiKey: string;
   runningHubApiKey: string;
-}> = ({ apiKey, runningHubApiKey }) => {
+  /**
+   * v11.1：组件变体
+   *  - 'full'（默认）：完整的文案成片（输入文案 → 封面 → 配音 → 导出 MP4）
+   *  - 'cover-only'：仅显示输入文案 + 生成 7 套封面方案，隐藏配音 / 导出模块
+   *                    用于独立"封面"模块入口（底部导航栏的"封面"菜单）
+   */
+  variant?: 'full' | 'cover-only';
+}> = ({ apiKey, runningHubApiKey, variant = 'full' }) => {
+  const isCoverOnly = variant === 'cover-only';
   const toast = useToast();
   const initial = useMemo(() => loadPersisted(), []);
 
@@ -497,10 +601,10 @@ const CopyBasedPanel: React.FC<{
     toast.info(`正在识别视频文案：${file.name}（Whisper ASR）...`, { autoClose: 3000 });
     try {
       const result = await transcribeVideoFile(file);
-      const trimmed = result.text.slice(0, SCRIPT_MAX_LEN);
-      setRawCopy(trimmed);
+      // v11.0：解除 8000 字上限，与 textarea 一致（用户可粘贴/转写任意长度文案）
+      setRawCopy(result.text);
       setNeedsVideoUpload(false);
-      toast.success(`✓ 已转写 ${trimmed.length} 字（${file.name}）`, { autoClose: 4000 });
+      toast.success(`✓ 已转写 ${result.text.length} 字（${file.name}）`, { autoClose: 4000 });
     } catch (e: any) {
       const msg = e instanceof ExtractError
         ? `[${e.code}] ${e.message}`
@@ -531,8 +635,8 @@ const CopyBasedPanel: React.FC<{
     toast.info('正在下载并转写视频文案...', { autoClose: 3000 });
     try {
       const result = await transcribeVideoFromUrl(url);
-      const trimmed = result.text.slice(0, SCRIPT_MAX_LEN);
-      setRawCopy(trimmed);
+      // v11.0：解除 8000 字上限，与 textarea 一致
+      setRawCopy(result.text);
       setNeedsVideoUpload(false);
       setVideoUrlInput('');
       toast.success(`✓ 已转写 ${trimmed.length} 字（视频直链）`, { autoClose: 4000 });
@@ -562,8 +666,8 @@ const CopyBasedPanel: React.FC<{
     toast.info('正在提取文案（抖音 / 头条）...', { autoClose: 2000 });
     try {
       const result = await extractScriptFromUrl(raw);
-      const trimmed = result.text.slice(0, SCRIPT_MAX_LEN);
-      setRawCopy(trimmed);
+      // v11.0：解除 8000 字上限，与 textarea 一致（用户可粘贴/提取任意长度文案）
+      setRawCopy(result.text);
       const sourceLabel =
         result.source === 'author-desc' ? '作者手写文案' :
         result.source === 'asr' ? 'Whisper ASR 转写' :
@@ -615,17 +719,57 @@ const CopyBasedPanel: React.FC<{
   );
   const [characterRefs, setCharacterRefs] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // v2.2 / v11.1：手动上传音频的 input ref（label 包裹 input 在某些浏览器
+  // 点击不触发 file picker，改用 button + ref 模式更可靠）
+  const audioInputRef = useRef<HTMLInputElement>(null);
 
   /** 比例 */
   const [coverRatio, setCoverRatio] = useState<CoverRatioId>(
     (initial.coverRatio as CoverRatioId) ?? '16:9'
   );
 
+  /** v11.0：本次解析要生成哪几套方案（A~G），默认全选 7 个。
+   *  - 用户通过「方案选择器」勾选哪些方案参与生成
+   *  - 持久化到 localStorage，刷新页面保留 */
+  const [enabledSchemes, setEnabledSchemes] = useState<Set<'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G'>>(() => {
+    const storedArr = initial.enabledSchemes;
+    if (Array.isArray(storedArr) && storedArr.length >= 1 && storedArr.length <= 7) {
+      const valid = storedArr.filter((s): s is 'A'|'B'|'C'|'D'|'E'|'F'|'G' =>
+        ['A','B','C','D','E','F','G'].includes(s)
+      );
+      if (valid.length >= 1) return new Set(valid as ('A'|'B'|'C'|'D'|'E'|'F'|'G')[]);
+    }
+    return new Set(['A', 'B', 'C', 'D', 'E', 'F', 'G'] as ('A'|'B'|'C'|'D'|'E'|'F'|'G')[]);
+  });
+  const schemeCount = enabledSchemes.size;
+
+  /** 动态裁剪后的 LLM Prompt（按 enabledSchemes 即时裁剪） */
+  const dynamicAnalysisPrompt = useMemo(
+    () => buildAnalysisPrompt(schemeCount, COPY_ANALYSIS_PROMPT),
+    [schemeCount]
+  );
+
+  /** 切换单个方案的勾选状态 */
+  const toggleScheme = (k: 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G') => {
+    setEnabledSchemes((prev) => {
+      const next = new Set(prev);
+      if (next.has(k)) {
+        if (next.size <= 1) return prev; // 至少保留 1 个
+        next.delete(k);
+      } else {
+        next.add(k);
+      }
+      // 立即记录日志（用 next 而非闭包中的 prev）
+      appendLog('STAGE', `方案调整：${[...next].join('')}（下次解析生效）`);
+      return next;
+    });
+  };
+
   /** 绘图模型 */
   const [coverImageModel, setCoverImageModel] = useState<'gpt-image-2' | 'gpt-image-2-c' | 'gemini-flash'>('gpt-image-2');
 
   /** v1.4：参与封面生成的人物名单（按名字勾选；不勾选的人物不出现在画面里）
-   *  默认：解析完成后按"6 套标题中出现过的人名"自动勾选，用户可手动调整 */
+   *  默认：解析完成后按"7 套标题中出现过的人名"自动勾选，用户可手动调整 */
   const [selectedCharacterNames, setSelectedCharacterNames] = useState<string[]>(
     Array.isArray(initial.selectedCharacterNames)
       ? (initial.selectedCharacterNames as string[]).filter((s) => typeof s === 'string')
@@ -794,6 +938,7 @@ const CopyBasedPanel: React.FC<{
       generatedCovers: coversArr,
       ttsResult: ttsPersist,
       selectedCharacterNames,
+      enabledSchemes: Array.from(enabledSchemes),
       mode,
       // 仅持久化字幕文本与时长；blob URL 不可序列化，重新上传即可
       customTracks: {
@@ -832,6 +977,7 @@ const CopyBasedPanel: React.FC<{
     generatedCovers,
     ttsResult,
     selectedCharacterNames,
+    enabledSchemes,
     mode,
     customTracks,
   ]);
@@ -996,8 +1142,9 @@ const CopyBasedPanel: React.FC<{
     setAnalyzing(true);
     setAnalysisError(null);
     setAnalysisResult(null);
-    // 默认选中前 3 个方案（A/B/C 对比性最强）；让用户能批量生成
-    setSelectedIndices(new Set([0, 1, 2]));
+    // 默认选中前 min(schemeCount, 3) 个方案（A/B/C 对比性最强）；让用户能批量生成
+    const defaultSelCount = Math.min(schemeCount, 3);
+    setSelectedIndices(new Set(Array.from({ length: defaultSelCount }, (_, i) => i)));
     setFinalCoverIndex(null);
     setEditedTitles({});
     setLockedCoverIndices(new Set());
@@ -1006,16 +1153,21 @@ const CopyBasedPanel: React.FC<{
     setTtsResult(null);
     setVideoUrl('');
     try {
-      appendLog('PARSE', '调用 GPT-5.6-Luna 解析 6 套方案（预计 15~60s，max_tokens=8192）...');
-      // v1.5：用对象形式传参：开启超时 180s / 1 次重试 / 上限 6000 字
-      const r = await analyzeCopyWithLlm(apiKey, rawCopy, COPY_ANALYSIS_PROMPT, {
+      appendLog(
+        'PARSE',
+        `调用 GPT-5.6-Luna 解析 ${schemeCount} 套方案（预计 15~90s，max_tokens=16384，不再截断原文）...`
+      );
+      // v1.6：用对象形式传参：开启超时 180s / 1 次重试 / **不截断原文**（用户要求保留完整文案，避免丢关键信息）
+      // v11.0：使用按 schemeCount 动态裁剪的 prompt（buildAnalysisPrompt 在 useMemo 算好）
+      const r = await analyzeCopyWithLlm(apiKey, rawCopy, dynamicAnalysisPrompt, {
         onLog: (msg) => {
           // 把 [文案解析] / [文案解析] ⚠... 这类前缀去掉，UI 简洁
           appendLog('PARSE', msg.replace(/^\[文案解析\]\s*/, ''));
         },
         timeoutMs: 180_000,
         retries: 1,
-        maxInputChars: 6000,
+        maxTokens: 16384, // 7 套方案需要较大值避免 JSON 截断
+        // 不再传 maxInputChars → 默认 0 = 不截断
         onDiagnostics: (diag) => {
           // 把诊断信息（finish_reason / usage）也写到日志，方便排查「LLM 返回为空」
           if (!diag.ok) {
@@ -1069,7 +1221,7 @@ const CopyBasedPanel: React.FC<{
     } finally {
       setAnalyzing(false);
     }
-  }, [apiKey, rawCopy, toast, appendLog, parallelTtsEnabled]);
+  }, [apiKey, rawCopy, toast, appendLog, parallelTtsEnabled, schemeCount, dynamicAnalysisPrompt]);
 
   // ──────────────────────────────────────────────
   // 角色参考图
@@ -1157,11 +1309,11 @@ const CopyBasedPanel: React.FC<{
   };
 
   // ──────────────────────────────────────────────
-  // 生成封面（单套）— 6 种不同排版方案（复用封面赛道 A~F 模板）
+  // 生成封面（单套）— 7 种不同排版方案（复用封面赛道 A~G 模板，含长文案/复仇海报）
   // ──────────────────────────────────────────────
 
   /**
-   * 6 种不同的封面排版设计（与封面赛道 A~F 一一对应）
+   * 7 种不同的封面排版设计（与封面赛道 A~G 一一对应，含长文案/复仇海报 G）
    * - 不同排版≠相同 4 色 + 上下排列
    * - 每种布局：决定颜色组合、字号对比、元素位置、强调方式
    * - 复用 services/coverSchemePresets 的 hint 文案
@@ -1245,6 +1397,19 @@ const CopyBasedPanel: React.FC<{
         '关键词 1-2 个：人名 + 职位/节目名作为角标',
       extraDetails: '电影海报 / 演播室字体 / 印章感',
     },
+    {
+      id: 'G_longcopy_poster',
+      schemeId: 'G' as const,
+      name: '排版 G · 长文案/复仇海报',
+      colors: '主文字 #FFFFFF 白 + 关键词 #FFD400 警示黄 + 高亮人名 #B91C1C 暗血红，背景深色 + 暗角胶片颗粒',
+      description:
+        '9:16 竖屏复仇故事卡片海报（Reddit/TikTok 病毒小说卡片风）：主角半身正面/3/4 侧脸特写居于画面下半部中央（主角性别/年龄/气质必须从文案内容动态识别，禁止硬编码女性或任何特定性别），主体周围点缀烛光/破碎镜面/匕首等氛围元素；上半部排版 5–9 行 ALL-CAPS 英文长文案（**这是方案 G 的核心 —— 必须是完整的故事情节叙述，采用"第一视角叙事 + 对话引用 + 悬念结尾"的复仇故事卡片结构**，而非单纯的一行标题；故事结构示例：①开场"WHEN MY HUSBAND & M.I.L HEARD THE DOCTOR SAY I HAD 3 DAYS LEFT..." ②冲突"MY MIL SMIRKED: \"3 DAYS? PERFECT. I\'M TAKING THE HOUSE.\"" ③反转"AFTER THEY LEFT, I CALLED MY FATHER." ④悬念"HE SAID: \"I\'VE BEEN WAITING FOR THIS CALL.\""），每行 4–10 词，电影海报字体（粗体、大写、紧凑、尖锐切角），关键人名与动作动词亮黄 #FFD400 或暗血红 #B91C1C 高亮、其余亮白 #F8FAFC，行间紧凑、字号自上而下可逐级微缩；对话引用用英文双引号 " " 包裹；文案末行下方加斜切的暗血红或纯黑实色矩形条带，里面写故事型续写钩子（如「"I\'VE BEEN WAITING FOR THIS CALL."」「"CANCEL HIS ACQUISITION DEAL…"」）；底部 1/4 处再加一条暗红或纯黑实色横条压一句全新的续写悬念（不超过 12 个英文单词，如「THE ENDING WAS INCREDIBLY SATISFYING.」）；边缘做旧噪点 + 暗角 + 胶片颗粒；整体 Reddit / TikTok 复仇故事卡片海报质感。',
+      composition:
+        '上半部（约 60% 画面高度）：5–9 行 ALL-CAPS 长文案堆叠（每行 4–10 词，**完整的故事叙述**——开场/冲突/反转/悬念四段式，电影海报字体，关键人名/动词亮黄或暗血红高亮、其余白色）；下半部（约 40% 画面高度）：主角半身特写（动态识别性别/年龄/气质）；底部 1/4：暗血红或纯黑实色横条 + 一句全新续写悬念；整体暗角 + 胶片颗粒。',
+      emphasis:
+        '关键人名/动作动词用亮黄 #FFD400 或暗血红 #B91C1C 双重高亮；对话用英文双引号包裹；故事型续写钩子用斜切条带强调；底部条带再压一句短句',
+      extraDetails: 'Reddit / TikTok 复仇故事卡片海报 / 暗角 + 胶片颗粒 / 电影海报字体 / IMDb-Criterion 风',
+    },
   ] as const;
 
   /**
@@ -1311,20 +1476,21 @@ const CopyBasedPanel: React.FC<{
       // 抽取 1-2 个关键词（人名 / 数字 / 反转词）
       const keywords = extractKeywords(option.title);
 
-      // 按 schemeId 选排版：A~F 与封面赛道 6 方案模板一一对应
+      // 按 schemeId 选排版：A~G 与封面赛道 7 方案模板一一对应（含长文案/复仇海报 G）
       // 兼容旧数据（无 schemeId）则按 optionIdx 取模
-      const schemeKey = (option.schemeId || ['A', 'B', 'C', 'D', 'E', 'F'][optionIdx % 6]) as
+      const schemeKey = (option.schemeId || ['A', 'B', 'C', 'D', 'E', 'F', 'G'][optionIdx % 7]) as
         | 'A'
         | 'B'
         | 'C'
         | 'D'
         | 'E'
-        | 'F';
+        | 'F'
+        | 'G';
       const layout =
         COVER_LAYOUT_VARIANTS.find((v) => v.schemeId === schemeKey) ||
-        COVER_LAYOUT_VARIANTS[optionIdx % 6];
+        COVER_LAYOUT_VARIANTS[optionIdx % 7];
 
-      // 按方案 A~F 的"对应关系"映射 single-character / multi-character 提示
+      // 按方案 A~G 的"对应关系"映射 single-character / multi-character 提示
       // 若勾选多人物 → 强调"双人对峙/群像/分屏构图"
       // 若只勾选 1 位 → 用单人模板（不再误加多人）
       const isMulti = filteredCharacters.length >= 2;
@@ -1342,7 +1508,7 @@ const CopyBasedPanel: React.FC<{
         .join('\n');
 
       // 关键 1：把完整标题嵌入 prompt，强制 AI 显示完整文字
-      // 关键 2：使用「排版方案」机制（6 种方案 6 种排版），与封面赛道 A~F 一一对应
+      // 关键 2：使用「排版方案」机制（7 种方案 7 种排版），与封面赛道 A~G 一一对应
       // 关键 3（v1.4）：只描述用户勾选的人物，未勾选的人物不会出现在画面里
       // 关键 4（v1.6）：复用封面模版赛道的"高 CTR 字体爆炸式排版 DNA"，
       //                 与 CoverDesign 的 prompt 1:1 对齐，确保文案成片封面与封面模版效果一致
@@ -1367,13 +1533,32 @@ YouTube 高 CTR 封面必须做到以下 7 点：
 - 【字体排版】按上述 7 大铁律（巨粗 + 分色块 + 错位 + 黑描边 + 半透明底板）
 - 【点击率元素】红色箭头 / 黄色高亮圈 / 红黄警示条 / 夸张表情`;
 
+      /** 检测封面标题语言：英文 → 强制英文 ALL-CAPS；中文 → 简体中文；其它语言 → 原文照搬 */
+      const detectTitleLang = (s: string): 'en' | 'zh' | 'other' => {
+        const t = (s || '').trim();
+        if (!t) return 'other';
+        const hasCJK = /[\u4e00-\u9fff]/.test(t);
+        const hasLatin = /[A-Za-z]/.test(t);
+        if (hasLatin && !hasCJK) return 'en';
+        if (hasCJK && !hasLatin) return 'zh';
+        if (hasCJK && hasLatin) return 'zh';
+        return 'other';
+      };
+      const titleLang = detectTitleLang(option.title);
+      const onImageTextRule =
+        titleLang === 'en'
+          ? `Mandatory: all on-image text must be English only; the title "${option.title}" MUST appear in ALL-CAPS as multi-line stacked text (split into 2–4 color blocks using {white #FFFFFF, red #FF1744, yellow #FFD600, blue #00D4FF}); do NOT translate to Chinese, do NOT replace with other languages.`
+          : titleLang === 'zh'
+          ? `Mandatory: 画面所有中文文字使用简体中文（不再硬性繁体化）；标题"${option.title}"必须**完整、一字不漏**地按用户原文语言出现在画面上，分色块（白/红/黄/蓝四色）承载，禁止简化、禁止拆分成几个无关词、禁止翻译成其它语言。`
+          : `Mandatory: 画面文字保持用户原文语言；标题"${option.title}"必须**完整、一字不漏**地出现在画面上，分色块（白/红/黄/蓝四色）承载，禁止简化、禁止拆分成几个无关词。`;
+
       const fullPrompt = `${option.coverPromptEn}
 
-=== CRITICAL · 必须在画面上完整显示以下中文标题（一字不漏，禁止简化、禁止拆分成几个词）===
-|TEXT (display exactly): "${option.title}"
+=== CRITICAL · 必须在画面上完整显示以下封面标题（一字不漏，禁止简化、禁止拆分成几个词；语言 = ${titleLang === 'en' ? '英文' : titleLang === 'zh' ? '中文' : '原文语言'}）===
+|TEXT (display exactly, in ${titleLang === 'en' ? 'English ALL-CAPS' : titleLang === 'zh' ? 'Simplified Chinese' : 'the source language'}): "${option.title}"
 |===
 
-=== ${layout.name}（方案 ${schemeKey}：${option.schemeName || layout.name}，position ${optionIdx + 1} of 6，必须与其它 5 种方案不同！）===
+=== ${layout.name}（方案 ${schemeKey}：${option.schemeName || layout.name}，position ${optionIdx + 1} of 7，必须与其它 6 种方案不同！）===
 【${layout.description}】
 
 【颜色组合（严格按此执行，禁止 4 色堆叠）】：${layout.colors}
@@ -1400,9 +1585,9 @@ ${
 }
 ===
 
-=== ⭐ MANDATORY · High-CTR Thumbnail Enforcement（与封面模版赛道 1:1 对齐）===
+=== ⭐ MANDATORY · High-CTR Thumbnail Enforcement（与封面模版赛道 1:1 对齐；语言匹配用户文案）===
 YouTube thumbnail, ${currentRatio.id} aspect ratio, bold readable main title, high CTR composition.
-Mandatory: all Chinese on-image text must be in Traditional Chinese script only (繁體中文); no simplified Chinese forms; no English or other languages.
+${onImageTextRule}
 Mandatory: the title "${option.title}" MUST appear on the image verbatim, split into 2-4 color blocks using {white #FFFFFF, red #FF1744, yellow #FFD600, blue #00D4FF}; each block bold weight 900, 6-10px black outline, slight tilt (-3° to +5°), semi-transparent black plate behind.
 Mandatory: include at least one high-CTR visual accent — bright red arrow, yellow highlight ring, or red-yellow warning strip.===`;
 
@@ -1635,7 +1820,7 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
               styleKeywords: [],
               coverPromptEn: '',
               coverDescriptionZh: '手动上传',
-              schemeId: ['A', 'B', 'C', 'D', 'E', 'F'][idx % 6] as 'A' | 'B' | 'C' | 'D' | 'E' | 'F',
+              schemeId: ['A', 'B', 'C', 'D', 'E', 'F', 'G'][idx % 7] as 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G',
               schemeName: '手动上传',
             };
             const entry: CoverImageEntry = {
@@ -2689,6 +2874,7 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
     setLockedCoverIndices(new Set());
     setCoverErrors(new Map());
     setCoverRatio('16:9');
+    setEnabledSchemes(new Set(['A', 'B', 'C', 'D', 'E', 'F', 'G'] as ('A'|'B'|'C'|'D'|'E'|'F'|'G')[]));
     setTtsResult(null);
     setTtsError(null);
     setTtsProgress(null);
@@ -2707,6 +2893,8 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
   return (
     <div className="space-y-4">
       {/* ═══════════════ 模式切换 ═══════════════ */}
+      {/* v11.1：cover-only 模式下隐藏模式切换 UI（封面模块只走 AI 模式） */}
+      {!isCoverOnly && (
       <div className="flex items-center gap-1 bg-slate-900/70 border border-slate-700 rounded-lg p-1 w-fit">
         <button
           onClick={() => setMode('ai')}
@@ -2731,20 +2919,24 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
           <ImageIcon size={14} /> 自定义素材成片
         </button>
       </div>
+      )}
 
       {/* ═══════════════ 顶部 ═══════════════ */}
-      {mode === 'ai' ? (
+      {/* v11.1：cover-only 模式下强制走 AI 模式（封面模块不需要自定义素材功能） */}
+      {(mode === 'ai' || isCoverOnly) ? (
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* ───────────── 左栏：文案输入 + 角色参考图 ───────────── */}
         <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700 space-y-4">
           <div className="flex items-center gap-2">
             <Sparkles size={18} className="text-emerald-400" />
-            <h3 className="text-lg font-bold text-emerald-300">文案输入</h3>
+            <h3 className="text-lg font-bold text-emerald-300">{isCoverOnly ? '封面生成' : '文案输入'}</h3>
             <span className="text-xs text-slate-500">
-              一段文案 → 一张封面 → 一段配音 → 一镜到底视频
+              {isCoverOnly
+                ? '一段文案 → 7 种封面方案（场景沉浸/极简底/高反差特写/纵向分屏/信息图/人像+大字/长文案复仇海报）'
+                : '一段文案 → 一张封面 → 一段配音 → 一镜到底视频'}
             </span>
             <span className="ml-auto text-[10px] text-emerald-500/70 bg-emerald-500/10 px-2 py-0.5 rounded">
-              v1.2 · 锁定封面 / 标题编辑 / 4 色文字特效 / 语音库 / Remotion 导出
+              {isCoverOnly ? 'v11.1 · 封面模块 · 7 套方案对比' : 'v1.2 · 锁定封面 / 标题编辑 / 4 色文字特效 / 语音库 / Remotion 导出'}
             </span>
           </div>
 
@@ -2798,19 +2990,15 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
             </div>
             <textarea
               value={rawCopy}
-              onChange={(e) => setRawCopy(e.target.value.slice(0, SCRIPT_MAX_LEN))}
+              onChange={(e) => setRawCopy(e.target.value)}
               disabled={analyzing}
               rows={10}
               className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-emerald-500 resize-y min-h-[200px]"
               placeholder="粘贴抖音/今日头条链接，点击右上「提取文案」自动导入；或直接粘贴需要做成视频的文案/口播稿...建议 300-3000 字，系统会切 5 段并行配音。"
             />
             <div className="flex items-center justify-between mt-1">
-              <span
-                className={`text-[10px] ${
-                  charCount > SCRIPT_MAX_LEN * 0.9 ? 'text-amber-400' : 'text-slate-500'
-                }`}
-              >
-                {charCount} / {SCRIPT_MAX_LEN}
+              <span className="text-[10px] text-slate-500">
+                当前 <span className={charCount >= 50 ? 'text-emerald-400 font-semibold' : 'text-amber-400'}>{charCount}</span> 字 · 字数不限（按需粘贴完整文案/口播稿）
               </span>
               <button
                 onClick={handleReset}
@@ -2921,6 +3109,74 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
             </p>
           </div>
 
+          {/* v11.0：方案选择器（A~G 勾选），控制一次解析生成哪些方案
+              - 点击方案按钮切换勾选状态（最少保留 1 个）
+              - 全选/全不选快捷操作
+              - 实际传给 LLM 的 prompt 会按勾选数量动态裁剪 */}
+          <div className="bg-slate-900/50 border border-emerald-700/40 rounded-lg p-2.5">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2">
+                <SettingsIcon size={14} className="text-emerald-400" />
+                <span className="text-xs text-slate-300 font-semibold">
+                  一次生成 <span className="text-emerald-300 font-bold">{schemeCount}</span> 套方案
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setEnabledSchemes(new Set(['A','B','C','D','E','F','G'] as ('A'|'B'|'C'|'D'|'E'|'F'|'G')[]))}
+                  className="text-[10px] px-2 py-0.5 rounded bg-emerald-600/20 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-600/40 transition-colors"
+                >
+                  全选
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEnabledSchemes(new Set(['A'] as ('A'|'B'|'C'|'D'|'E'|'F'|'G')[]))}
+                  className="text-[10px] px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-400 hover:bg-slate-700 transition-colors"
+                >
+                  全不选
+                </button>
+                <span className="text-[10px] text-slate-500 font-mono ml-1">
+                  已选 {enabledSchemes.size}/7
+                </span>
+              </div>
+            </div>
+            {/* 7 个方案按钮：方案名 + 描述，类似模版选择器风格 */}
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {(
+                [
+                  { k: 'A' as const, label: 'A', desc: '场景沉浸' },
+                  { k: 'B' as const, label: 'B', desc: '极简底' },
+                  { k: 'C' as const, label: 'C', desc: '高反差特写' },
+                  { k: 'D' as const, label: 'D', desc: '纵向分屏' },
+                  { k: 'E' as const, label: 'E', desc: '信息图/数据牌' },
+                  { k: 'F' as const, label: 'F', desc: '人像+大字横幅' },
+                  { k: 'G' as const, label: 'G', desc: '长文案/复仇海报' },
+                ] as const
+              ).map(({ k, label, desc }) => {
+                const on = enabledSchemes.has(k);
+                return (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => toggleScheme(k)}
+                    className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] border transition-all font-medium ${
+                      on
+                        ? 'bg-emerald-600/30 border-emerald-500/50 text-emerald-200'
+                        : 'bg-slate-900/60 border-slate-700 text-slate-500 hover:border-slate-600'
+                    }`}
+                    title={on ? `取消勾选 方案${label}（${desc}）` : `勾选 方案${label}（${desc}）`}
+                  >
+                    {on ? <Check size={11} className="text-emerald-400 flex-shrink-0" /> : null}
+                    <span className={on ? 'text-emerald-200' : ''}>方案{label}</span>
+                    <span className="text-slate-500">·</span>
+                    <span className={on ? 'text-emerald-300/80' : 'text-slate-600'}>{desc}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           <button
             onClick={handleAnalyze}
             disabled={analyzing || rawCopy.trim().length < 50}
@@ -2933,7 +3189,7 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
               </>
             ) : (
               <>
-                <Wand2 size={18} /> 智能解析 → 生成 6 套方案
+                <Wand2 size={18} /> 智能解析 → 生成 {schemeCount} 套方案
               </>
             )}
           </button>
@@ -3099,11 +3355,11 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
             </div>
           </div>
 
-          {/* 6 套方案（多选） */}
+          {/* 多套方案（多选） */}
           {analysisResult && (
             <div>
               <div className="text-[10px] text-slate-500 mb-1">
-                点击卡片多选（已选 {selectedIndices.size} / 6）· 标题可直接编辑 · 封面可锁定不重新生成 · 每条方案按封面赛道 A~F 6 种构图方向差异化（场景沉浸/极简底/高反差特写/纵向分屏/信息图数据牌/人像+大字横幅）
+                点击卡片多选（已选 {selectedIndices.size} / {liveTitleOptions.length}）· 标题可直接编辑 · 封面可锁定不重新生成 · 每条方案按封面赛道差异化（{liveTitleOptions.length >= 7 ? '场景沉浸/极简底/高反差特写/纵向分屏/信息图数据牌/人像+大字横幅/长文案复仇海报' : `本次解析生成 ${liveTitleOptions.length} 套 A~${['A','B','C','D','E','F','G'][Math.max(0, liveTitleOptions.length - 1)]}`}）
               </div>
               <div className="grid grid-cols-1 gap-2">
                 {liveTitleOptions.map((opt, idx) => {
@@ -3135,7 +3391,7 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                           type="button"
                         >
                           <span className="text-sm font-bold text-amber-300 shrink-0">
-                            {opt.emoji} 方案{opt.schemeId || ['A', 'B', 'C', 'D', 'E', 'F'][idx % 6]} · {opt.styleTag}
+                            {opt.emoji} 方案{opt.schemeId || ['A', 'B', 'C', 'D', 'E', 'F', 'G'][idx % 7]} · {COVER_SCHEME_NAMES[opt.schemeId as keyof typeof COVER_SCHEME_NAMES] || COVER_SCHEME_NAMES[['A', 'B', 'C', 'D', 'E', 'F', 'G'][idx % 7] as keyof typeof COVER_SCHEME_NAMES]}
                           </span>
                           <div className="flex items-center gap-1 flex-wrap">
                             {isFinal && (
@@ -3228,12 +3484,12 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                         </div>
                       </div>
 
-                      {/* 方案标识（封面赛道 A~F 模板） */}
+                      {/* 方案标识（封面赛道 A~G 模板，含长文案/复仇海报 G） */}
                       <div className="text-[10px] text-slate-400 flex items-center gap-1.5 mt-0.5">
                         <span className="px-1.5 py-0.5 bg-slate-800 rounded font-mono font-bold">
-                          VAR {opt.schemeId || ['A', 'B', 'C', 'D', 'E', 'F'][idx % 6]}
+                          VAR {opt.schemeId || ['A', 'B', 'C', 'D', 'E', 'F', 'G'][idx % 7]}
                         </span>
-                        <span className="text-slate-500">{opt.schemeName || ''}</span>
+                        <span className="text-slate-500">{COVER_SCHEME_NAMES[opt.schemeId as keyof typeof COVER_SCHEME_NAMES] || COVER_SCHEME_NAMES[['A', 'B', 'C', 'D', 'E', 'F', 'G'][idx % 7] as keyof typeof COVER_SCHEME_NAMES]}</span>
                       </div>
 
                       {/* 标题可编辑 */}
@@ -3315,7 +3571,7 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                                 <Loader2 size={20} className="animate-spin mb-1" />
                                 <span className="font-semibold">正在生成封面...</span>
                                 <span className="text-[10px] text-slate-300 mt-0.5">
-                                  {opt.styleTag}
+                                  {COVER_SCHEME_NAMES[opt.schemeId as keyof typeof COVER_SCHEME_NAMES] || COVER_SCHEME_NAMES[['A', 'B', 'C', 'D', 'E', 'F', 'G'][idx % 7] as keyof typeof COVER_SCHEME_NAMES]}
                                 </span>
                               </div>
                             )}
@@ -3604,7 +3860,8 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
 
       {/* ═══════════════ 中部：5 段并行配音 ═══════════════ */}
       {/* v2.1：始终显示，无需等解析完成；只要文案够长（≥50 字）就可配音 */}
-      {rawCopy.trim().length >= 50 && (
+      {/* v11.1：cover-only 模式下隐藏配音模块（独立"封面"模块入口不提供配音） */}
+      {!isCoverOnly && rawCopy.trim().length >= 50 && (
         <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700 space-y-4">
           <div className="flex items-center gap-2 flex-wrap">
             <Mic size={18} className="text-purple-400" />
@@ -3663,62 +3920,82 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                   </button>
                 </div>
               ) : (
-                <label className="ml-auto cursor-pointer px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-purple-300 rounded text-xs flex items-center gap-1">
+                <>
+                  {/* v11.1：把 <label> + hidden <input> 改成 button + ref，避免点击 label 不触发 file picker */}
+                  <button
+                    onClick={() => audioInputRef.current?.click()}
+                    type="button"
+                    className="ml-auto cursor-pointer px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-purple-300 rounded text-xs flex items-center gap-1 transition-colors"
+                  >
+                    <Plus size={12} /> 选择音频文件
+                  </button>
                   <input
+                    ref={audioInputRef}
                     type="file"
                     accept="audio/*"
                     className="hidden"
                     onChange={async (e) => {
                       const file = e.target.files?.[0];
                       if (!file) return;
+                      // v11.2：手动上传音频不再依赖服务端 /upload-media
+                      //   之前调 uploadAudioFile 上传，但服务端对大文件（≥18MB）始终返回 HTTP 500
+                      //   实际上手动音频只需要本地 blob 即可：
+                      //     - 显示文件名 → 直接用 file.name
+                      //     - 渲染时使用 → URL.createObjectURL(file) 本地 blob URL
+                      //     - Remotion 渲染时 prepareShotsForRender 会自动把 blob 转 data URL
+                      //       并通过 uploadInlineDataUrlsToServer 上传到服务端（那时才需要服务端）
+                      appendLog('TTS', `✓ 手动音频已选择：${file.name}（${(file.size / 1024 / 1024).toFixed(2)} MB）`);
                       try {
-                        const baseUrl =
-                          (window as any).__REMOTION_SERVER_URL__ || getRemotionApiBase();
-                        const fd = new FormData();
-                        fd.append('file', file, file.name);
-                        const up = await fetch(`${baseUrl}/upload-media`, {
-                          method: 'POST',
-                          body: fd,
-                        });
-                        const json = await up.json();
-                        if (!json.success || !json.paths?.[0]) throw new Error(json.error || '上传失败');
-                        // v2.3：上传成功后立即同步设置 ttsResult，让「导出 MP4」按钮可用
-                        // 不再需要先点"5 段并行配音"按钮一次
-                        try {
-                          const blob = file;
-                          const durationSec = await getAudioBlobDuration(blob);
-                          const url = URL.createObjectURL(blob);
-                          const readyResult: ParallelTtsResult = {
-                            mergedAudioUrl: url,
-                            mergedAudioBlob: blob,
-                            totalDuration: durationSec,
-                            segments: [
-                              {
-                                index: 0,
-                                text: rawCopy.trim(),
-                                audioUrl: url,
-                                duration: durationSec,
-                                success: true,
-                              },
-                            ],
-                          };
-                          setTtsResult(readyResult);
-                          setTtsError(null);
-                          appendLog('TTS', `✓ 手动音频就绪，时长 ${durationSec.toFixed(1)} 秒；可直接「导出 MP4」`);
-                        } catch (dErr: any) {
-                          appendLog('WARN', `手动音频解码失败：${dErr?.message || dErr}（仍可点击「5 段并行配音」激活）`);
-                        }
-                        setUploadedFullAudio(json.paths[0]);
+                        const durationSec = await getAudioBlobDuration(file);
+                        const url = URL.createObjectURL(file);
+                        const readyResult: ParallelTtsResult = {
+                          mergedAudioUrl: url,
+                          mergedAudioBlob: file,
+                          totalDuration: durationSec,
+                          segments: [
+                            {
+                              index: 0,
+                              text: rawCopy.trim(),
+                              audioUrl: url,
+                              duration: durationSec,
+                              success: true,
+                            },
+                          ],
+                        };
+                        setTtsResult(readyResult);
+                        setTtsError(null);
+                        appendLog('TTS', `✓ 手动音频就绪，时长 ${durationSec.toFixed(1)} 秒；可直接「导出 MP4」`);
+                        setUploadedFullAudio(file.name);
                         setUploadedFullAudioBlob(file);
-                        toast.success('✓ 手动音频已上传，可直接「导出 MP4」');
-                      } catch (err: any) {
-                        toast.error(`上传失败：${err.message}`);
+                        toast.success('✓ 手动音频已就绪，可直接「导出 MP4」');
+                      } catch (dErr: any) {
+                        // v11.2：解码失败也要把音频设置好（不依赖音频时长也能用）
+                        appendLog('WARN', `手动音频解码失败：${dErr?.message || dErr}（仍可点击「5 段并行配音」激活）`);
+                        const url = URL.createObjectURL(file);
+                        const readyResult: ParallelTtsResult = {
+                          mergedAudioUrl: url,
+                          mergedAudioBlob: file,
+                          totalDuration: 0,
+                          segments: [
+                            {
+                              index: 0,
+                              text: rawCopy.trim(),
+                              audioUrl: url,
+                              duration: 0,
+                              success: true,
+                            },
+                          ],
+                        };
+                        setTtsResult(readyResult);
+                        setTtsError(null);
+                        setUploadedFullAudio(file.name);
+                        setUploadedFullAudioBlob(file);
+                        toast.warning(`手动音频已就绪，但时长探测失败：${dErr?.message || dErr}`);
                       }
                       e.target.value = '';
                     }}
                   />
-                  <Plus size={12} /> 选择音频文件
-                </label>
+                </>
               )}
             </div>
           </div>
@@ -3979,7 +4256,10 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
       )}
 
       {/* ═══════════════ 底部：导出 + Remotion 设置 + 终端日志 ═══════════════ */}
+      {/* v11.1：cover-only 模式下隐藏"导出"和"Remotion 设置"部分，仅保留终端日志 */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {!isCoverOnly && (
+          <>
         {/* 导出 */}
         <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700 space-y-3">
           <div className="flex items-center gap-2">
@@ -4013,7 +4293,7 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
                 </button>
               </div>
               <div className="text-slate-300 truncate" title={finalCover.title}>
-                {finalCover.emoji} [{finalCover.styleTag}] {finalCover.title}
+                {finalCover.emoji} [{finalCover.schemeId ? COVER_SCHEME_NAMES[finalCover.schemeId] || COVER_SCHEME_NAMES.A : COVER_SCHEME_NAMES.A}] {finalCover.title}
               </div>
               {/* 实际显示终封面图片（v2.7：跳过 AI 场景的关键，让用户立即看到上传的图） */}
               <div
@@ -4343,6 +4623,8 @@ Mandatory: include at least one high-CTR visual accent — bright red arrow, yel
             剪映草稿走本地 18091 / Railway 服务（Python 直接写入剪映草稿目录或打包 ZIP）。
           </p>
         </div>
+          </>
+        )}
 
         {/* 终端日志 */}
         <div className="lg:col-span-2 bg-slate-900 p-3 rounded-xl border border-slate-700 space-y-2">
