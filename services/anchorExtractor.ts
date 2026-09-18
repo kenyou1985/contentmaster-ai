@@ -19,6 +19,8 @@ export interface ExtractedAnchors {
   one: string;
   /** 2–3 句多句锚点（按原文出现顺序，"\n" 分隔） */
   multi: string;
+  /** 复仇故事长文案锚点（一段完整的复仇故事戏剧性铺垫） */
+  revenge: string;
   /** 调试信息（每个候选句的得分） */
   _debug?: Array<{ sentence: string; score: number }>;
 }
@@ -131,6 +133,66 @@ function isNearDuplicate(a: string, b: string, lang: 'zh' | 'en'): boolean {
 }
 
 /**
+ * 提取复仇故事长文案：从全文中寻找戏剧性的复仇故事铺垫段落
+ * 特征：包含"某人说X然后...我/他/她做了Y...等待这通电话/时机已到"等复仇叙事结构
+ */
+function extractRevengeStory(
+  text: string,
+  scored: Array<{ sentence: string; score: number }>,
+  lang: 'zh' | 'en'
+): string {
+  // 复仇故事关键词模式（用于识别戏剧性复仇铺垫段落）
+  const revengePatterns = lang === 'zh'
+    ? [
+        /[我他她]给?[他她我]打?[了个]?电话[，,]?[他她说 Dad|爹|父亲|爸][：:].{0,30}等?待?这?[通个]?电话/g,
+        /[我他她]说?[：:][ Dad|爹|父亲|爸|先生|老板][：:].{0,50}时机[已到成熟准备就绪]/g,
+        /[我他她]拨通了[电话][，][他她说].{0,50}[已到来了]/g,
+        /[我他她]等待[这这一刻已很久了]/g,
+        /[30三十]+[年岁]+[冤狱归来|牢狱归来|出狱]/g,
+        /[他们她]以为[我他她].{0,30}[没想到|万万没想到]/g,
+        /[他们她]不知道[我他她].{0,30}[已经|早就]/g,
+      ]
+    : [
+        /I CALLED (MY |THE )?[A-Z][a-z]+(\.|,|"|\s).{0,100}(IT'S TIME|THE TIME|HAS COME|HE'S WAITING|SHE'S WAITING)/gi,
+        /AFTER (THEY|SHE|HE|IT) LEFT, I CALLED.{0,100}(I'VE BEEN WAITING|THE TIME HAS COME)/gi,
+        /WHEN (THEY|SHE|HE|IT) (HEARD|SAW|FOUND OUT).{0,100}(THEY DIDN'T KNOW|I HAD|HE HAD|SHE HAD).{0,100}(BUT WHAT THEY)/gi,
+        /AFTER\s+\d+\s+(YEARS?|DAYS?|MONTHS?).{0,200}(HE'S BACK|SHE'S BACK|I'M BACK|REVENGE)/gi,
+        /[A-Z][a-z]+\s+(THOUGHT|BELIEVED|KNEW).{0,50}(BUT|WHAT THEY DIDN'T).{0,50}(KNOW|REALIZE)/gi,
+      ];
+
+  for (const pattern of revengePatterns) {
+    const match = text.match(pattern);
+    if (match && match[0].length >= 50) {
+      return match[0].trim();
+    }
+  }
+
+  // 如果没有匹配到特定模式，尝试从高得分句子中构建复仇叙事
+  // 找包含"等"、"时"、"后"等时间顺序词的戏剧性句子组合
+  const dramaticSentences = scored
+    .filter(({ sentence, score }) => {
+      if (score < 2) return false;
+      const timeWords = lang === 'zh'
+        ? /[后时等当]/.test(sentence)
+        : /(after|when|then|before|now|finally|what they didn't)/i.test(sentence);
+      return timeWords;
+    })
+    .slice(0, 3);
+
+  if (dramaticSentences.length >= 2) {
+    // 按原文顺序重组
+    const positions = dramaticSentences.map((s) => ({
+      s: s.sentence,
+      idx: text.indexOf(s.sentence),
+    }));
+    positions.sort((a, b) => a.idx - b.idx);
+    return positions.map((p) => p.s).join(lang === 'zh' ? '。' : '. ');
+  }
+
+  return '';
+}
+
+/**
  * 从全文中提取单句 + 多句锚点。
  * @param text 完整视频脚本/口播稿/字幕
  */
@@ -178,6 +240,7 @@ export function extractAnchorsFromText(text: string): ExtractedAnchors {
   return {
     one: bestOne,
     multi: bestMulti,
+    revenge: extractRevengeStory(trimmed, sorted, lang),
     _debug: debug.slice(0, 20),
   };
 }

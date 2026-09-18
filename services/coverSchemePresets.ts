@@ -1,10 +1,10 @@
 /**
- * 封面赛道 6 方案模板（A~F）
+ * 封面赛道 7 方案模板（A~G）
  *
  * 来源：components/CoverDesign.tsx 的 system / user 拼接（prompt 1:1）
  * 用途：
- *   - CopyBasedPanel 复用此 6 套方案生成封面（不再只有 3 套）
- *   - CoverDesign 复用 6 套 A~F 构图方向（保持行为一致）
+ *   - CopyBasedPanel 复用此 7 套方案生成封面（不再只有 3 套 / 6 套）
+ *   - CoverDesign 复用 7 套 A~G 构图方向（保持行为一致）
  *
  * 每条方案对应 YouTube 高 CTR 缩略图的一种差异化构图方向：
  *   A：场景沉浸（全景 + 主体居中）
@@ -13,11 +13,12 @@
  *   D：纵向分屏（上下分割）
  *   E：信息图/数据牌（中央巨型字牌 + 主体剪影）
  *   F：人像+大字横幅（半身特写 + 横幅）
+ *   G：长文案/复仇海报（9:16 竖屏 + 多行 ALL-CAPS 长文案 + 主角半身特写 + 底部条带续写悬念）
  */
 
 export interface CoverSchemeHint {
-  /** 方案 ID（A/B/C/D/E/F） */
-  id: 'A' | 'B' | 'C' | 'D' | 'E' | 'F';
+  /** 方案 ID（A/B/C/D/E/F/G） */
+  id: 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G';
   /** 中文标签（方案名） */
   name: string;
   /** 英文标签（用于日志/UI） */
@@ -71,10 +72,17 @@ export const COVER_SCHEME_HINTS: CoverSchemeHint[] = [
     emoji: '🏆',
     hint: '人像+大字横幅：主角半身或头像特写 + 巨型姓名/称呼横幅（底色荧光或印章感）；角标职位/节目名/期数；字体大写紧凑，海报式或演播室字体感；适合明星/专家/主讲人封面。',
   },
+  {
+    id: 'G',
+    name: '长文案/复仇海报',
+    label: 'VAR G · 长文案/复仇海报',
+    emoji: '🗡️',
+    hint: '9:16 竖屏复仇故事卡片海报：上半部 5–9 行 ALL-CAPS 英文长文案（每行 4–8 词，电影海报字体，关键人名/动词亮黄 #FFD400 或暗血红 #B91C1C 高亮、其余亮白 #F8FAFC），文案末行下方加斜切条带写续写钩子；下半部主角半身特写（主角性别/年龄/气质从文案内容动态识别，禁止硬编码女性或任何特定性别）；底部 1/4 处再加一条暗红/纯黑实色横条压一句全新续写悬念；暗角 + 胶片颗粒；整体 Reddit/TikTok 复仇故事卡片海报质感。',
+  },
 ];
 
 /**
- * 渲染「6 个差异化方案方向」给 LLM（用于 COPY_ANALYSIS_PROMPT 的 user 段拼接）
+ * 渲染「7 个差异化方案方向」给 LLM（用于 COPY_ANALYSIS_PROMPT 的 user 段拼接）
  */
 export function renderSchemeHintsForLlm(): string {
   return COVER_SCHEME_HINTS.map(
@@ -84,7 +92,7 @@ export function renderSchemeHintsForLlm(): string {
 }
 
 /**
- * 渲染「6 个差异化方案方向」给 LLM（system 段拼接，简短版）
+ * 渲染「7 个差异化方案方向」给 LLM（system 段拼接，简短版）
  */
 export function renderSchemeHintsShortForLlm(): string {
   return COVER_SCHEME_HINTS.map((s) => `${s.id} ${s.name}`).join(' / ');

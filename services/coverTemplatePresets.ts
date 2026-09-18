@@ -16,6 +16,8 @@ export interface CoverTemplatePreset {
   schemeEHint: string;
   /** F 方案：人像 + 大字横幅 — 给模型的构图方向 */
   schemeFHint: string;
+  /** G 方案：长文案 / 复仇故事海报 — 给模型的构图方向 */
+  schemeGHint: string;
   /** 模板说明文案 */
   desc: string;
 }
@@ -41,6 +43,8 @@ export const COVER_TEMPLATES: CoverTemplatePreset[] = [
       '信息图风格：中央巨型「VS」对阵牌 + 两侧队徽 + 角标红黄牌、控球率柱状对比，标题横压顶部。',
     schemeFHint:
       '当家球星半身特写 + 大字姓名横幅（底色荧光）+ 角标球衣号+位置，整体 ESPN 演播室字体感。',
+    schemeGHint:
+      '长文案海报 G：9:16 竖屏，主体人物半身正面 / 3/4 侧脸特写置于画面下半部中央（**主角的性别、年龄、气质需根据核心议题 / 文案内容动态识别并匹配，禁止锁定为某个性别**；单束顶光或侧逆光、冷峻或惊讶表情、可戴墨镜或耳环等点缀元素），主体周围可点缀烛光 / 破碎镜面 / 匕首等氛围元素；上半部排版 5–9 行 ALL-CAPS 英文长文案（一段完整故事钩子，每行 4–8 词，全部大写），主关键词用亮黄色（#FFD400）或亮红色高亮、其余白色，关键句下方加红色横压矩形条带；底部 1/4 处一条深红色或纯黑色实色横条放一句悬念续写（如「AND THEN HE SAID…」「WAITING FOR THIS CALL」），整体 Reddit/TikTok 复仇故事卡片海报质感。',
   },
   {
     id: 'basketball',
@@ -61,6 +65,8 @@ export const COVER_TEMPLATES: CoverTemplatePreset[] = [
       '信息图风格：中央计分板（比分+节次+剩余时间），两侧球员头像+球队 LOGO，Hook 字横压顶部。',
     schemeFHint:
       '当家球星持球半身 + 球衣号巨型字牌（涂鸦描边）+ 角落「ALL-STAR」「MVP」徽章贴。',
+    schemeGHint:
+      '长文案海报 G：9:16 竖屏，涂鸦墙与霓虹街灯作为背景氛围，**主角**（性别 / 年龄 / 气质由核心议题动态识别）持球半身或侧脸特写居于画面下半部中央；上半部多行 ALL-CAPS 英文长文案（每行 4–8 词），关键动词亮橙或亮红、其余白色，下方加斜切条带写续写钩子；底部 1/4 处一条亮紫色实色横条压一句「AND THE FINAL SHOT WAS…」式悬念，街头故事海报感。',
   },
   {
     id: 'sports_focus',
@@ -81,6 +87,8 @@ export const COVER_TEMPLATES: CoverTemplatePreset[] = [
       '中央大数据雷达/折线面板 + 四周赛事小窗 + Hook 字横压顶部 + 「LIVE」红色角标闪烁。',
     schemeFHint:
       '评论员头像特写 + 大字姓名牌 + 角标节目名+期数，专业演播室字体（无衬线粗体）。',
+    schemeGHint:
+      '长文案海报 G：9:16 竖屏，演播室深色蓝红配色，**主角**（性别 / 年龄 / 气质由核心议题动态识别）半身特写居于画面下半部中央（手持麦克风 / 戴耳机 / 侧脸轮廓光等道具自由搭配）；上半部多行 ALL-CAPS 英文长文案（每行 4–8 词，字体无衬线粗体），关键数字与名字亮红或亮黄、其余白色，下方加红蓝条带写续写钩子；底部 1/4 处一条 ESPN 红条压一句「AND THEN THE STATS PROVED…」式悬念。',
   },
   {
     id: 'movie_ent',
@@ -101,6 +109,8 @@ export const COVER_TEMPLATES: CoverTemplatePreset[] = [
       '信息图风格：中央巨大「IMDb 9.2 ★」「票房破亿」字牌 + 上方明星剪影 + 角落档期/上映日角标。',
     schemeFHint:
       '演员半身特写 + 巨型姓名横幅（剧组字体）+ 角标角色名+导演署名，电影海报字体（大写、紧凑）。',
+    schemeGHint:
+      '长文案海报 G：9:16 竖屏，电影海报式构图，**主角**（性别 / 年龄 / 气质由核心议题动态识别）半身特写置于画面下半部中央（戏剧光、单束顶光、轮廓光勾边）；上半部多行 ALL-CAPS 英文长文案（电影海报字体，大写、紧凑、有尖锐切角，每行 4–8 词），关键动词与片名亮金或亮红、其余白色，下方斜切条带写续写钩子；底部 1/4 处一条暗红或暗金实色横条压一句「AND THE ENDING WAS…」式悬念；暗角与胶片颗粒，整体 IMDb / Netflix 故事卡片海报质感。',
   },
   {
     id: 'science_mystery',
@@ -141,6 +151,8 @@ export const COVER_TEMPLATES: CoverTemplatePreset[] = [
       '信息图 E：中央巨型"X 年归来的复仇者"或"X 个致命真相"数字 + 上下人名档案栏 + 上方文字横压复仇金句 + 角标『REVENGE FILE』『档案号 001』徽章。',
     schemeFHint:
       '人像 + 大字横幅 F：主角半身正脸特写（冷峻眼神/刀疤/墨镜任意一项）+ 巨型复仇金句横幅（暗血红底斜切）+ 角标人物名+身份（"前合伙人""原配""前狱友"），电影海报字体（大写、紧凑、有尖锐切角）。',
+    schemeGHint:
+      '【复仇长文案海报·核心方案 G】9:16 竖屏复仇故事卡片海报：画面下半部中央放置**主角**半身正面 / 3/4 侧脸特写（**主角的性别 / 年龄 / 气质必须从核心议题/复仇文案中识别并匹配，禁止锁定为某个性别**；单束顶光或侧逆光、暗金背景、冷峻或惊讶表情、可戴墨镜或耳环等点缀元素，绝对禁止儿童化或可爱卡通风格）；主体周围可点缀烛光 / 破碎镜面 / 匕首等氛围元素；上半部 5–9 行 ALL-CAPS 英文长文案（**这才是方案 G 的核心 —— 必须是完整的故事情节叙述，采用"第一视角叙事 + 对话引用 + 悬念结尾"的复仇故事卡片结构，而非单纯的一行标题**；故事结构示例：①"WHEN MY HUSBAND & M.I.L HEARD..." ②"THEY LAUGHED: \"YOU\'RE NOT IMPORTANT...\"" ③"AFTER THEY LEFT, I PICKED UP MY PHONE..." ④"HE SAID: \"I\'VE BEEN WAITING FOR THIS CALL.\""），每行 4–10 词，电影海报字体（粗体、大写、紧凑、尖锐切角），关键人物名与动作动词用亮黄色（#FFD400）或暗血红（#B91C1C）高亮、其余文字为亮白（#F8FAFC），行间紧凑、字号自上而下可逐级微缩；文案最末 1 行下方加一条斜切的暗血红或纯黑实色矩形条带，里面写故事型续写钩子（如「"I\'VE BEEN WAITING FOR THIS CALL."」「"CANCEL HIS ACQUISITION DEAL…"」）；底部 1/4 处再加一条暗红或纯黑实色横条压一句全新的续写悬念（不超过 12 个英文单词，如「THE ENDING WAS INCREDIBLY SATISFYING.」）；边缘做旧噪点 + 暗角 + 胶片颗粒；整体 Reddit / TikTok 复仇故事卡片海报质感、IMDb / Criterion 电影海报字体，绝对禁止儿童化或可爱化风格。',
   },
 ];
 

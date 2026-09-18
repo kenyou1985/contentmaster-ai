@@ -13,12 +13,12 @@ import { cleanExpiredAndOversizedCache } from './services/videoCacheService';
 const LazyMediaGenerator = lazy(() => import('./components/MediaGenerator').then(m => ({ default: m.MediaGenerator })));
 const LazyOneClickDubbing = lazy(() => import('./components/OneClickDubbing').then(m => ({ default: m.OneClickDubbing })));
 const LazyDigitalHumanPanel = lazy(() => import('./components/DigitalHumanPanel').then(m => ({ default: m.DigitalHumanPanel })));
-const LazyCoverDesign = lazy(() => import('./components/CoverDesign').then(m => ({ default: m.CoverDesign })));
 const LazyYouTubeMonitor = lazy(() => import('./components/YouTubeMonitor').then(m => ({ default: m.YouTubeMonitor })));
 const LazyChannelGenerator = lazy(() => import('./components/ChannelGenerator').then(m => ({ default: m.ChannelGenerator })));
+const LazyCoverPanel = lazy(() => import('./components/CoverPanel').then(m => ({ default: m.CoverPanel })));
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'generate' | 'tools' | 'media' | 'dubbing' | 'digitalHuman' | 'cover' | 'monitor' | 'channel'>('generate');
+  const [activeTab, setActiveTab] = useState<'generate' | 'tools' | 'media' | 'dubbing' | 'digitalHuman' | 'monitor' | 'channel' | 'cover'>('generate');
   const toast = useToast();
 
   // 应用启动时清理过期和过大的视频缓存
@@ -241,11 +241,6 @@ const App: React.FC = () => {
           </div>
         </Suspense>
         <Suspense fallback={<TabSkeleton />}>
-          <div className={activeTab === 'cover' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'cover'}>
-            <LazyCoverDesign apiKey={apiKey} provider={provider} toast={toast} />
-          </div>
-        </Suspense>
-        <Suspense fallback={<TabSkeleton />}>
           <div className={activeTab === 'monitor' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'monitor'}>
             <LazyYouTubeMonitor />
           </div>
@@ -270,6 +265,14 @@ const App: React.FC = () => {
             >
               <LazyChannelGenerator apiKey={apiKey} provider={provider} toast={toast} />
             </ErrorBoundary>
+          </div>
+        </Suspense>
+        <Suspense fallback={<TabSkeleton />}>
+          <div className={activeTab === 'cover' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'cover'}>
+            {/* v11.1：独立"封面"模块入口（输入文案 + 生成 7 种封面方案）
+                - 复用 CopyBasedPanel 的核心代码（variant='cover-only'）
+                - 隐藏配音 / MP4 导出等成片相关功能 */}
+            <LazyCoverPanel apiKey={apiKey} runningHubApiKey={runningHubApiKey} />
           </div>
         </Suspense>
       </Layout>

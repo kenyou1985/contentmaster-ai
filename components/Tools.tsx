@@ -156,8 +156,8 @@ export const Tools: React.FC<ToolsProps> = ({ toast }) => {
   const handleDetectOnly = async () => {
     if (!inputText.trim()) {
       toastMsg('请输入文本', 'error');
-      return;
-    }
+        return;
+      }
     setRunningDetection(true);
     appendTerminal('AI 检测中...');
     try {
@@ -201,7 +201,7 @@ export const Tools: React.FC<ToolsProps> = ({ toast }) => {
         setBeforeReport(before);
         appendTerminal(`本地后处理完成：${report.score} 分（${getVerdictLabel(report.verdict)}）`);
         toastMsg('本地后处理完成', 'success');
-      } else {
+        } else {
         const onProgress = (stage: string, message: string) => {
           appendTerminal(`[${stage}] ${message}`);
         };
@@ -261,7 +261,7 @@ export const Tools: React.FC<ToolsProps> = ({ toast }) => {
       setAfterReport(result.after || null);
       appendTerminal(`再洗完成：${result.after?.score} 分`);
       toastMsg(`再洗完成（${result.after?.score} 分）`, 'success');
-    } catch (e: any) {
+        } catch (e: any) {
       appendTerminal(`再洗异常：${e?.message || e}`);
       toastMsg('再洗失败', 'error');
     } finally {
@@ -291,10 +291,10 @@ export const Tools: React.FC<ToolsProps> = ({ toast }) => {
       setAfterReport(newReport);
       appendTerminal(`单句再人化完成，新得分：${newReport.score}`);
       toastMsg('单句已重写', 'success');
-    } catch (e: any) {
+        } catch (e: any) {
       appendTerminal(`单句再人化异常：${e?.message || e}`);
       toastMsg('单句再人化失败', 'error');
-    } finally {
+        } finally {
       setRehumanizingIdx(null);
     }
   };
@@ -314,12 +314,12 @@ export const Tools: React.FC<ToolsProps> = ({ toast }) => {
   const handleExport = () => {
     if (!outputText) return;
     const blob = new Blob([outputText], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
     a.download = `humanized-${Date.now()}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+      a.click();
+      URL.revokeObjectURL(url);
     toastMsg('已导出 .txt', 'success');
   };
 
@@ -350,21 +350,21 @@ export const Tools: React.FC<ToolsProps> = ({ toast }) => {
         <div className="flex items-center gap-2">
           <div className="bg-emerald-500/10 p-1.5 rounded-lg border border-emerald-500/30">
             <PenTool className="w-4 h-4 text-emerald-400" />
-          </div>
+           </div>
           <div>
             <h2 className="text-base font-semibold text-slate-100">AI 洗稿 / 人化</h2>
             <p className="text-xs text-slate-500">LLM 改写 + 10+ 项本地后处理 + AI 检测评分</p>
-          </div>
+                </div>
         </div>
         <div className="flex items-center gap-2">
-          <button
+                    <button
             onClick={handleClear}
             className="px-3 py-1.5 text-xs rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1.5 transition-colors"
             title="清空输入输出"
           >
             <Trash2 className="w-3.5 h-3.5" /> 清空
-          </button>
-        </div>
+                    </button>
+              </div>
       </div>
 
       {/* ─── YouTube 字幕提取 ───────────────────────────────────────── */}
@@ -375,23 +375,23 @@ export const Tools: React.FC<ToolsProps> = ({ toast }) => {
           <span className="text-slate-600">（支持 https://youtu.be/... 或 youtube.com/watch?v=...）</span>
         </div>
         <div className="flex gap-2">
-          <input
+                 <input
             type="text"
             value={youtubeInput}
             onChange={(e) => setYoutubeInput(e.target.value)}
             placeholder="粘贴 YouTube 链接..."
             className="flex-1 bg-slate-900/70 border border-slate-700 rounded-md px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20"
           />
-          <button
+             <button
             onClick={handleExtractYouTube}
             disabled={isExtractingTranscript}
             className="px-3 py-1.5 text-xs rounded-md bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 border border-rose-500/40 flex items-center gap-1.5 transition-colors disabled:opacity-50"
           >
             {isExtractingTranscript ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Youtube className="w-3.5 h-3.5" />}
             {isExtractingTranscript ? '提取中...' : '提取字幕'}
-          </button>
-        </div>
-      </div>
+             </button>
+         </div>
+       </div>
 
       {/* ─── 选项面板 ──────────────────────────────────────────────── */}
       <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-3 space-y-3">
@@ -403,7 +403,7 @@ export const Tools: React.FC<ToolsProps> = ({ toast }) => {
             </label>
             <div className="grid grid-cols-4 gap-1">
               {REWRITE_LEVELS.map(lv => (
-                <button
+              <button
                   key={lv.id}
                   onClick={() => setLevel(lv.id)}
                   disabled={isWorking}
@@ -415,10 +415,10 @@ export const Tools: React.FC<ToolsProps> = ({ toast }) => {
                   title={lv.desc}
                 >
                   {lv.label}
-                </button>
+              </button>
               ))}
             </div>
-          </div>
+        </div>
           <div className="space-y-1.5">
             <label className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider flex items-center gap-1">
               <Type className="w-3 h-3" /> 写作风格
@@ -449,7 +449,7 @@ export const Tools: React.FC<ToolsProps> = ({ toast }) => {
               ))}
             </select>
           </div>
-        </div>
+      </div>
 
         {/* 保留词 + 隐私模式 */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -464,8 +464,8 @@ export const Tools: React.FC<ToolsProps> = ({ toast }) => {
               placeholder="专有名词 / 术语，用 , 或 换行 分隔"
               disabled={isWorking}
               className="w-full bg-slate-900/70 border border-slate-700 rounded-md px-2 py-1.5 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500/50 disabled:opacity-50"
-            />
-          </div>
+          />
+        </div>
           <div className="flex items-end">
             <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer select-none">
               <input
@@ -481,7 +481,7 @@ export const Tools: React.FC<ToolsProps> = ({ toast }) => {
             </label>
           </div>
         </div>
-      </div>
+            </div>
 
       {/* ─── 主网格：输入 + 输出 ──────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -497,12 +497,12 @@ export const Tools: React.FC<ToolsProps> = ({ toast }) => {
                 <span className={`ml-2 ${getScoreColor(beforeReport.score)}`}>
                   · AI 评分 {beforeReport.score}
                 </span>
-              )}
-            </span>
+                  )}
+                </span>
           </div>
-          <textarea
-            value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
+              <textarea
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
             placeholder="粘贴需要洗稿 / 人化的文本，或先从上方 YouTube 提取字幕..."
             disabled={isWorking}
             className="w-full h-72 bg-slate-900/70 border border-slate-700 rounded-lg p-3 text-sm text-slate-200 placeholder-slate-600 resize-none focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 disabled:opacity-50"
@@ -514,7 +514,7 @@ export const Tools: React.FC<ToolsProps> = ({ toast }) => {
           <div className="flex items-center justify-between text-xs text-slate-400">
             <span className="font-semibold flex items-center gap-1">
               <Sparkles className="w-3 h-3 text-emerald-400" /> 改写后
-            </span>
+                  </span>
             <span className="text-slate-500">
               {outputText.replace(/\s+/g, '').length} 字
               {charDiff && (
@@ -528,7 +528,7 @@ export const Tools: React.FC<ToolsProps> = ({ toast }) => {
                 </span>
               )}
             </span>
-          </div>
+            </div>
           {outputText ? (
             <SentenceHeatmap
               text={outputText}
@@ -538,7 +538,7 @@ export const Tools: React.FC<ToolsProps> = ({ toast }) => {
               lang={targetLang === 'auto' ? 'auto' : (targetLang as any)}
             />
           ) : (
-            <textarea
+              <textarea
               value=""
               readOnly
               placeholder="改写后的文本会出现在这里..."
@@ -547,33 +547,33 @@ export const Tools: React.FC<ToolsProps> = ({ toast }) => {
           )}
           {outputText && (
             <div className="flex flex-wrap gap-2">
-              <button
+            <button
                 onClick={handleCopy}
                 className="px-2.5 py-1 text-xs rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1.5 transition-colors"
-              >
+            >
                 <Copy className="w-3 h-3" /> 复制
-              </button>
-              <button
+            </button>
+            <button
                 onClick={handleExport}
                 className="px-2.5 py-1 text-xs rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1.5 transition-colors"
-              >
+            >
                 <Download className="w-3 h-3" /> 导出 .txt
-              </button>
-              <button
+            </button>
+            <button
                 onClick={handleNinjaAgain}
                 disabled={isWorking}
                 className="px-2.5 py-1 text-xs rounded-md bg-purple-600/20 hover:bg-purple-600/40 text-purple-300 border border-purple-500/40 flex items-center gap-1.5 transition-colors disabled:opacity-50"
               >
                 <RefreshCw className="w-3 h-3" /> 再洗一遍（Ninja）
-              </button>
+            </button>
             </div>
           )}
-        </div>
-      </div>
+            </div>
+          </div>
 
       {/* ─── 操作按钮 ─────────────────────────────────────────────── */}
       <div className="flex flex-wrap gap-2">
-        <button
+              <button
           onClick={handleHumanize}
           disabled={isWorking || !inputText.trim()}
           className="px-4 py-2 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold flex items-center gap-2 shadow-lg shadow-emerald-500/20 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
@@ -588,8 +588,8 @@ export const Tools: React.FC<ToolsProps> = ({ toast }) => {
         >
           {runningDetection ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Brain className="w-3.5 h-3.5" />}
           仅检测 AI 度
-        </button>
-      </div>
+              </button>
+          </div>
 
       {/* ─── AI 检测报告面板 ───────────────────────────────────────── */}
       {(beforeReport || afterReport) && (
@@ -603,7 +603,7 @@ export const Tools: React.FC<ToolsProps> = ({ toast }) => {
               {beforeReport && (
                 <span className={`text-xs ${getScoreColor(beforeReport.score)}`}>
                   原文 {beforeReport.score} 分
-                </span>
+              </span>
               )}
               {afterReport && (
                 <span className={`text-xs ${getScoreColor(afterReport.score)}`}>
@@ -613,30 +613,30 @@ export const Tools: React.FC<ToolsProps> = ({ toast }) => {
               {beforeReport && afterReport && (afterReport.score - beforeReport.score) !== 0 && (
                 <span className={`text-xs ${afterReport.score > beforeReport.score ? 'text-emerald-400' : 'text-rose-400'}`}>
                   ({afterReport.score > beforeReport.score ? '+' : ''}{afterReport.score - beforeReport.score})
-                </span>
+                    </span>
               )}
             </span>
             {showReport ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-          </button>
+                    </button>
           {showReport && (afterReport || beforeReport) && (
             <ReportPanel report={afterReport || beforeReport!} before={beforeReport} after={afterReport} />
-          )}
-        </div>
-      )}
+                  )}
+                    </div>
+                  )}
 
       {/* ─── 终端日志 ─────────────────────────────────────────────── */}
       <div className="bg-slate-950/80 border border-slate-800 rounded-xl overflow-hidden">
         <div className="px-3 py-1.5 border-b border-slate-800/80 flex items-center gap-2 text-[10px] uppercase tracking-wider text-slate-500">
           <Eye className="w-3 h-3" /> 终端日志
-        </div>
+            </div>
         <div
           ref={terminalRef}
           className="p-3 max-h-40 overflow-y-auto text-[11px] text-slate-400 font-mono whitespace-pre-wrap leading-relaxed"
         >
           {terminalLog}
-        </div>
-      </div>
-    </div>
+            </div>
+                  </div>
+                  </div>
   );
 };
 
@@ -655,8 +655,8 @@ interface HeatmapProps {
 const SentenceHeatmap: React.FC<HeatmapProps> = ({ text, sentences, onRehumanize, rehumanizingIdx, lang }) => {
   // 若没有 sentence 数据，直接展示纯文本
   if (!sentences || sentences.length === 0) {
-    return (
-      <textarea
+                        return (
+                <textarea
         value={text}
         readOnly
         className="w-full h-72 bg-slate-900/40 border border-slate-800 rounded-lg p-3 text-sm text-slate-200 resize-none"
@@ -664,7 +664,7 @@ const SentenceHeatmap: React.FC<HeatmapProps> = ({ text, sentences, onRehumanize
     );
   }
 
-  return (
+                  return (
     <div className="w-full h-72 bg-slate-900/40 border border-slate-800 rounded-lg p-3 text-sm text-slate-200 overflow-y-auto leading-relaxed">
       {sentences.map((s, idx) => (
         <span
@@ -675,9 +675,9 @@ const SentenceHeatmap: React.FC<HeatmapProps> = ({ text, sentences, onRehumanize
         >
           {s.text}
           {rehumanizingIdx === idx && <Loader2 className="w-3 h-3 inline ml-1 animate-spin" />}
-        </span>
-      ))}
-    </div>
+              </span>
+                    ))}
+                  </div>
   );
 };
 
@@ -705,30 +705,30 @@ const ReportPanel: React.FC<{ report: DetectorReport; before?: DetectorReport | 
     <div className="p-4 space-y-4 border-t border-slate-800/80">
       {/* 总分 + 置信区间 */}
       <div className="flex flex-wrap items-center gap-4">
-        <div>
+                  <div>
           <div className="text-[10px] text-slate-500 uppercase">总分</div>
           <div className={`text-3xl font-bold ${getScoreColor(report.score)}`}>
             {report.score}
             <span className="text-sm text-slate-500 ml-1">/ 100</span>
-          </div>
-        </div>
+                          </div>
+                        </div>
         <div>
           <div className="text-[10px] text-slate-500 uppercase">置信区间</div>
           <div className="text-sm text-slate-300">
             {report.confidenceInterval.lower} ~ {report.confidenceInterval.upper}
-          </div>
-        </div>
-        <div>
+                    </div>
+                  </div>
+                  <div>
           <div className="text-[10px] text-slate-500 uppercase">判定</div>
           <div className={`text-sm font-semibold ${getScoreColor(report.score)}`}>
             {getVerdictLabel(report.verdict)}
-          </div>
-        </div>
+                            </div>
+                          </div>
         <div>
           <div className="text-[10px] text-slate-500 uppercase">语言</div>
           <div className="text-sm text-slate-300">{report.language === 'zh' ? '中文' : 'English'}</div>
-        </div>
-      </div>
+                    </div>
+                  </div>
 
       {/* 指标网格（含权重占比与对总分的贡献） */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
@@ -762,41 +762,41 @@ const ReportPanel: React.FC<{ report: DetectorReport; before?: DetectorReport | 
               <div className="flex items-center justify-between gap-1">
                 <div className="text-[10px] text-slate-500 truncate">{m.label}</div>
                 <div className="text-[9px] text-slate-600 shrink-0">权重 {(w * 100).toFixed(0)}%</div>
-              </div>
+                            </div>
               <div className="flex items-center gap-2 mt-0.5">
                 <div className="text-base font-bold text-slate-200">{v}</div>
                 <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
                   <div className={`h-full ${getScoreBgColor(barValue)}`} style={{ width: `${barValue}%` }} />
-                </div>
-              </div>
+                          </div>
+                        </div>
               <div className="flex items-center justify-between mt-1">
                 <div className="text-[9px] text-slate-600">→ 贡献 {contrib.toFixed(1)} 分</div>
                 <div className="text-[9px] text-slate-600">{m.format ? '' : '正向'}</div>
-              </div>
-            </div>
+                    </div>
+                  </div>
           );
         })}
-      </div>
+                  </div>
 
       {/* 句子级均分的单独贡献卡（权重最高） */}
       <div className="bg-slate-900/50 border border-slate-800 rounded-lg p-3">
         <div className="flex items-center justify-between">
-          <div>
+                  <div>
             <div className="text-[10px] text-slate-500 uppercase">句子级均分（最重权重）</div>
             <div className="text-sm text-slate-300 mt-0.5">
               {report.sentences.length > 0
                 ? `共 ${report.sentences.length} 句，平均分 ${(report.sentences.reduce((s, r) => s + r.score, 0) / report.sentences.length).toFixed(1)}`
                 : '—'}
-            </div>
-          </div>
+                      </div>
+                          </div>
           <div className="text-right">
             <div className="text-[10px] text-slate-500">权重 {(report.weights?.sentenceAvg * 100).toFixed(0)}%</div>
             <div className="text-sm font-semibold text-emerald-400">
               → 贡献 {((report as any).sentenceAvgContribution ?? 0).toFixed(1)} 分
+                      </div>
+                    </div>
+                  </div>
             </div>
-          </div>
-        </div>
-      </div>
 
       {/* AI 短语 */}
       {report.foundAiPhrases.length > 0 && (
@@ -806,14 +806,14 @@ const ReportPanel: React.FC<{ report: DetectorReport; before?: DetectorReport | 
             {report.foundAiPhrases.slice(0, 12).map((p, i) => (
               <span key={i} className="px-2 py-0.5 text-[11px] rounded bg-rose-500/10 text-rose-300 border border-rose-500/30">
                 {p}
-              </span>
+                            </span>
             ))}
             {report.foundAiPhrases.length > 12 && (
               <span className="px-2 py-0.5 text-[11px] text-slate-500">+{report.foundAiPhrases.length - 12} 更多</span>
             )}
-          </div>
-        </div>
-      )}
+                </div>
+                </div>
+                            )}
 
       {/* 建议 */}
       {report.recommendations.length > 0 && (
@@ -827,9 +827,9 @@ const ReportPanel: React.FC<{ report: DetectorReport; before?: DetectorReport | 
               </li>
             ))}
           </ul>
-        </div>
+       </div>
       )}
-
+       
       {/* Top AI 句 */}
       {report.topAiSentences.length > 0 && (
         <details className="text-xs">
@@ -844,7 +844,7 @@ const ReportPanel: React.FC<{ report: DetectorReport; before?: DetectorReport | 
             ))}
           </ol>
         </details>
-      )}
+       )}
     </div>
   );
 };

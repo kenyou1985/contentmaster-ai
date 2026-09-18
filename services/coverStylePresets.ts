@@ -112,6 +112,12 @@ export const COVER_STYLE_PRESETS: CoverStylePreset[] = [
     promptEn:
       'Minimalist flat illustration, clean simple design, tidy composition, generous negative space, low detail, soft low-saturation palette, Morandi tones, unified color scheme, black outlines, simplified geometric shapes, smooth lines, refined premium look, modern internet-style illustration,',
   },
+  {
+    id: 'revenge_long',
+    label: '复仇长文案（Long-form Revenge Story Poster）',
+    promptEn:
+      'Vertical 9:16 revenge-story poster thumbnail (Reddit/TikTok viral novel-style): bottom half holds a protagonist whose gender / age / body type / mood is DYNAMICALLY inferred from the actual long-form English copy rendered above — never hard-coded to any single gender. If the protagonist is an adult female, you may add descriptors like voluptuous / curvy / hourglass / sensual, but only when they match her persona (do not force sexualized labels onto characters they do not fit). If the protagonist is adult male, use descriptors like strong jawline / tailored suit / cold stare. If the protagonist is non-human or unclear, describe what is literally on screen. ABSOLUTELY NO child-like, cute, chibi, or cartoon character — this applies to every gender. Frame the protagonist with chiaroscuro top-light or rim light, dark cinematic background with warm gold/black/blood-red palette, cinematic film grain, vignette; top half stacks 5–9 ALL-CAPS English lines (4–8 words each, tight leading, movie-poster font with sharp angled cuts), key verbs and proper nouns highlighted in vivid yellow (#FFD400) or blood-red (#B91C1C), remaining text in clean white (#F8FAFC); one tilted blood-red or solid-black bar wraps the punchline; a final solid bar across the bottom 1/4 holds a continuation cliffhanger line; overall Reddit viral-novel card poster look, sharp readable text, high contrast, dark moody atmosphere.',
+  },
 ];
 
 /** 媒体生成 / 一键动画分镜 下拉共用（id 与 localStorage 一致） */

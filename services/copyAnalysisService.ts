@@ -3,7 +3,7 @@
  * 文案成片模块 · 文案解析服务
  *
  * 输入：用户原始文案（一段文本）
- * 输出：6 套「标题 + 封面提示词 + 人物信息」方案（JSON，封面赛道 A~F）
+ * 输出：7 套「标题 + 封面提示词 + 人物信息」方案（JSON，封面赛道 A~G，含长文案/复仇海报 G）
  *
  * 复用：openlux.ai /v1/chat/completions（与 yunwuService.polishTextForTtsSpeech 同源）
  */
@@ -108,18 +108,20 @@ export interface AnalyzeOptions {
   model?: string;
   /** 失败时回调（用于打印诊断日志） */
   onDiagnostics?: (diag: AnalyzeDiagnostics) => void;
-  /** 输入文案最大长度（超过则截断；默认 6000 字） */
+  /** 输入文案最大长度（超过则截断；默认 0 = 不截断，传 0 表示完全不限） */
   maxInputChars?: number;
+  /** 最大生成 tokens 数（默认 16384，7 套方案需要较大值避免 JSON 截断） */
+  maxTokens?: number;
 }
 
 /**
  * 调用云雾 chat 解析文案
- * v1.5 增强：
- *  - max_tokens 4096 → 8192（适配 6 套方案）
+ * v1.6 增强：
+ *  - max_tokens 4096 → 8192（适配 7 套方案 + 长 coverPromptEn）
  *  - 加诊断信息（finish_reason / usage / 原始响应长度）
  *  - 自动重试 1 次（失败/空响应）
  *  - 超时 90s → 180s
- *  - 超长 input 自动截断（默认 6000 字）
+ *  - **默认不再截断原文**（maxInputChars 默认 0，调用方可显式传 > 0 才截断；用户要求保留完整文案）
  */
 export async function analyzeCopyWithLlm(
   apiKey: string,
@@ -139,7 +141,10 @@ export async function analyzeCopyWithLlm(
   const timeoutMs = opts.timeoutMs ?? 180_000;
   const retries = opts.retries ?? 1;
   const model = opts.model ?? 'gpt-5.6-luna';
-  const maxInputChars = opts.maxInputChars ?? 6000;
+  // 默认 0 = 不截断（用户明确要求不要截断文案，保留原文关键信息）
+  const maxInputChars = opts.maxInputChars ?? 0;
+  // 默认 16384 = 7 套方案需要较大值避免 JSON 截断
+  const maxTokens = opts.maxTokens ?? 16384;
 
   onLog?.('[文案解析] 调用 LLM 解析文案...');
   if (!apiKey?.trim()) {
@@ -150,10 +155,11 @@ export async function analyzeCopyWithLlm(
     throw new Error('文案过短（少于 50 字），请输入至少 300 字以获得最佳效果');
   }
 
-  // v1.5：超长文案截断（避免 input 超大导致 LLM 拒答 / 超时）
+  // v1.6：默认不再截断文案（用户明确要求保留完整原文，不丢任何关键信息）。
+  // 仅当调用方显式传入 maxInputChars > 0 时才截断；默认传 0 表示不截断。
   let inputText = trimmed;
   let clippedChars = 0;
-  if (trimmed.length > maxInputChars) {
+  if (maxInputChars > 0 && trimmed.length > maxInputChars) {
     const half = Math.floor(maxInputChars / 2);
     inputText = `${trimmed.slice(0, half)}\n\n……（中间内容已省略，共省略 ${
       trimmed.length - maxInputChars
@@ -194,7 +200,7 @@ export async function analyzeCopyWithLlm(
             { role: 'user', content: userMsg },
           ],
           temperature: 0.5,
-          max_tokens: 8192, // v1.5：4096 → 8192，适配 6 套方案 + 长 coverPromptEn
+          max_tokens: maxTokens, // v1.6：4096 → 8192 → 16384（7 套方案需要较大值避免 JSON 截断）
         }),
         signal: ac.signal,
       });
@@ -334,12 +340,12 @@ function parseAnalysisJson(raw: string): CopyAnalysisResult {
   }
 
   // 校验 + 默认值
-  // v1.4：支持 6 套方案（A~F），兼容旧版 3 套
+  // v1.6：支持 7 套方案（A~G，含长文案/复仇海报），兼容旧版 3/6 套
   const titleOptionsRaw: any[] = Array.isArray(obj.titleOptions) ? obj.titleOptions : [];
-  // 上限 6 套（A~F），向下兼容旧 3 套
-  const titleOptions: CopyTitleOption[] = titleOptionsRaw.slice(0, 6).map((t: any, i: number) => {
+  // 上限 7 套（A~G），向下兼容旧 3 套 / 6 套
+  const titleOptions: CopyTitleOption[] = titleOptionsRaw.slice(0, 7).map((t: any, i: number) => {
     // schemeId/schemeName 优先读 LLM 输出，否则按 i 映射
-    const schemeId = String(t.schemeId || ['A', 'B', 'C', 'D', 'E', 'F'][i] || 'A').toUpperCase();
+    const schemeId = String(t.schemeId || ['A', 'B', 'C', 'D', 'E', 'F', 'G'][i] || 'A').toUpperCase();
     const schemeNameMap: Record<string, string> = {
       A: '场景沉浸',
       B: '极简底',
@@ -347,6 +353,7 @@ function parseAnalysisJson(raw: string): CopyAnalysisResult {
       D: '纵向分屏',
       E: '信息图/数据牌',
       F: '人像+大字横幅',
+      G: '长文案/复仇海报',
     };
     const schemeName = String(t.schemeName || schemeNameMap[schemeId] || '场景沉浸');
     const defaultEmojiMap: Record<string, string> = {
@@ -356,9 +363,29 @@ function parseAnalysisJson(raw: string): CopyAnalysisResult {
       D: '📐',
       E: '📊',
       F: '🏆',
+      G: '🗡️',
     };
+    // styleTag 永远显示中文（即使英文输入）：用默认池按 schemeId 映射，忽略 LLM 返回的英文值
+    const styleTagMap: Record<string, CopyTitleStyle> = {
+      A: '震惊悬念',
+      B: '冲突博弈',
+      C: '洞察揭示',
+      D: '悬念层层递进',
+      E: '强对抗',
+      F: '人性透视',
+      G: '震惊悬念',
+    };
+    // 仅当 LLM 返回的是中文风格标签（如「震惊悬念」「冲突博弈」等已知值）时才采用
+    // 英文值一律忽略，保持中文默认
+    const allowedStyleTags = new Set([
+      '震惊悬念', '冲突博弈', '洞察揭示', '悬念层层递进', '强对抗', '人性透视',
+    ]);
+    const incomingStyleTag = String(t.styleTag || '').trim();
+    const finalStyleTag = allowedStyleTags.has(incomingStyleTag)
+      ? incomingStyleTag
+      : (styleTagMap[schemeId] || '震惊悬念');
     return {
-      styleTag: (t.styleTag || '震惊悬念') as CopyTitleStyle,
+      styleTag: finalStyleTag as CopyTitleStyle,
       emoji: String(t.emoji || defaultEmojiMap[schemeId] || '✨'),
       title: String(t.title || '').trim(),
       styleKeywords: Array.isArray(t.styleKeywords)
@@ -366,7 +393,7 @@ function parseAnalysisJson(raw: string): CopyAnalysisResult {
         : [],
       coverPromptEn: String(t.coverPromptEn || '').trim(),
       coverDescriptionZh: String(t.coverDescriptionZh || '').trim(),
-      schemeId: schemeId as 'A' | 'B' | 'C' | 'D' | 'E' | 'F',
+      schemeId: schemeId as 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G',
       schemeName,
     };
   });

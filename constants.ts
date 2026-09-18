@@ -4065,26 +4065,39 @@ export function applyTopicCountToPrompt(prompt: string, count: number): string {
 /**
  * 文案成片 · 文案解析 Prompt
  * 输入：用户原始文案（任意长度）
- * 输出：JSON 格式的 3 套「标题+封面提示词+人物信息」方案
+ * 输出：JSON 格式的 7 套「标题+封面提示词+人物信息」方案
  */
 export const COPY_ANALYSIS_PROMPT = `
 # 角色
-你是 YouTube 爆款视频策划 + 视觉设计双料专家。请对用户提供的「一段文案/口播稿」进行深度解析，输出 **6 套不同的「标题+封面+人物」方案**，供用户选择。
+你是 YouTube 爆款视频策划 + 视觉设计双料专家。请对用户提供的「一段文案/口播稿」进行深度解析，输出 **7 套不同的「标题+封面+人物」方案**，供用户选择。
 
 # 核心要求
 1. **不修改用户原文**：文案作为素材保留，**禁止改写、扩写、删减**；
-2. **基于原文主题**：6 套方案都从原文出发，主题保持一致，但切入角度不同；
+2. **基于原文主题**：7 套方案都从原文出发，主题保持一致，但切入角度不同；
 3. **三段式爆款标题**：标题包含「人物 + 冲突 + 钩子」，25-40 字，含真实人物名（来自原文）；
-4. **强情绪风格**：6 套方案使用 6 种不同构图方向（场景沉浸 / 极简底 / 高反差特写 / 纵向分屏 / 信息图数据牌 / 人像+大字横幅），对应 A~F 方案，每条 coverPromptEn 必须严格按其方案方向写，不能只是色调变体；
-5. **封面提示词**：英文文生图 prompt，**完整、一字不漏地把中文标题写进画面**（禁止简化、禁止缩减、禁止拆分成几个无关词）；
+4. **强情绪风格**：7 套方案使用 7 种不同构图方向（场景沉浸 / 极简底 / 高反差特写 / 纵向分屏 / 信息图数据牌 / 人像+大字横幅 / **长文案复仇海报**），对应 A~G 方案，每条 coverPromptEn 必须严格按其方案方向写，不能只是色调变体；
+5. **封面提示词**：英文文生图 prompt，**完整、一字不漏地把封面标题写进画面**（禁止简化、禁止缩减、禁止拆分成几个无关词）；
 6. **⭐ 字体爆炸式排版 DNA（最重要）**：YouTube 高 CTR 封面 = 巨粗字体 + 分色块（白/红/黄/蓝四色）+ 错位排版 + 黑色厚描边 + 半透明黑底板 + 点击率元素（红色箭头/黄色高亮圈/红黄警示条）；文字总占画面 40-55%。每条 coverPromptEn 必须显式包含「TYPOGRAPHY (must follow 7-point explosive layout DNA)」段落，详见下文模板。
+
+# 🌐 语言感知铁律（最重要！覆盖所有标题 / 封面提示词 / 画面文字）
+**严格遵守用户输入文案的语言，不要强制使用任何特定语言**：
+- 输入文案是中文（简体/繁体均可） → 标题、人物角色、画面文字全部用**简体中文**输出；画面上要渲染的中文使用**简体中文**（不要再强行繁体化）
+- 输入文案是英文 → 标题、人物角色、画面文字全部用**英文**输出；画面文字用英文 ALL-CAPS 多行堆叠（**绝对禁止用中文代替英文，禁止出现任何中文字符**）
+- 输入文案是中英混合 → 以占多数的语言为准，画面文字与该语言一致
+- coverPromptEn 模板中所有"Chinese / 繁体中文"的硬编码指令需要根据实际语言**动态替换**
+
+**⚠️ 语言一致性铁律（强制执行）**：
+- 检测方法：扫描用户输入的前 200 字，统计中文字符数与英文字符数；英文占比 ≥ 60% 视为英文输入
+- 英文输入时，下文所有"标题（25-40 字）"改为"标题（10-25 词）"；所有"中文描述"改为"英文描述"；所有"中文 Hook"改为"英文 Hook"
+- 英文输入时，**严禁在 JSON 任何字段混入中文字符**（人名/机构名若必须保留，按用户原文照搬）
+- 英文输入时，coverPromptEn 中的画面文字指令必须明确"ALL text on image MUST be in English, do NOT use Chinese characters"
 
 # 输出格式（严格 JSON）
 {
-  "summary": "1-2 句话，告诉用户这段文案讲述什么（中文）",
+  "summary": "1-2 句话，告诉用户这段文案讲述什么（与用户输入语言一致；中文输入 → 中文；英文输入 → English）",
   "characters": [
     {
-      "name": "人物姓名（所有在文案中出现的真实人物都要列）",
+      "name": "人物姓名（所有在文案中出现的真实人物都要列；与用户输入语言一致）",
       "title": "身份/职位（如：台北市长 / 高雄市长 / 美国总统 / 央视主持人）",
       "role": "在本期内容中的角色（主人物 / 对手 / 受访者 / 背景人物 / 评论者 ...）",
       "visualDescription": "视觉特征描述（衣着、表情、场景、光线），用于 AI 生图必须具体可执行",
@@ -4105,10 +4118,10 @@ export const COPY_ANALYSIS_PROMPT = `
       "schemeName": "场景沉浸",
       "emoji": "🎬",
       "styleTag": "震惊悬念",
-      "title": "三段式爆款标题（25-40 字，含人物名）",
+      "title": "三段式爆款标题（中文输入：25-40 字含人物名；**英文输入：10-25 words 含人物名，必须 ALL-CAPS 悬念感**）",
       "styleKeywords": ["暗色调", "强光", "特写", "新闻感", "震撼"],
-      "coverPromptEn": "英文文生图 prompt，按方案 A 构图（场景沉浸），必须显式包含 'TEXT: 「完整中文标题一字不漏」' 让模型知道要画哪些文字",
-      "coverDescriptionZh": "中文封面描述（10-15 字）"
+      "coverPromptEn": "英文文生图 prompt，按方案 A 构图（场景沉浸），必须显式包含 'TEXT: 「完整封面标题一字不漏」' 让模型知道要画哪些文字（**中文文案用中文，英文文案用英文 ALL-CAPS**）",
+      "coverDescriptionZh": "封面描述（中文输入：10-15 字；**英文输入：10-15 words English description**）"
     },
     {
       "schemeId": "B",
@@ -4123,11 +4136,12 @@ export const COPY_ANALYSIS_PROMPT = `
     { "schemeId": "C", "schemeName": "高反差特写", "...": "..." },
     { "schemeId": "D", "schemeName": "纵向分屏", "...": "..." },
     { "schemeId": "E", "schemeName": "信息图/数据牌", "...": "..." },
-    { "schemeId": "F", "schemeName": "人像+大字横幅", "...": "..." }
+    { "schemeId": "F", "schemeName": "人像+大字横幅", "...": "..." },
+    { "schemeId": "G", "schemeName": "长文案/复仇海报", "...": "..." }
   ]
 }
 
-# 🔥 6 套方案铁律（核心）
+# 🔥 7 套方案铁律（核心）
 【方案对应关系】
 - titleOptions[0] → 方案 A（场景沉浸）：全景/中景展现宏大场景，主体居中，顶部或底部巨型横幅标题
 - titleOptions[1] → 方案 B（极简/单色底）：纯净渐变背景，主体三分线下移或一侧，巨型主标题单独占左下或底部
@@ -4135,16 +4149,30 @@ export const COPY_ANALYSIS_PROMPT = `
 - titleOptions[3] → 方案 D（纵向分屏）：上下分屏构图，上半部主体画面，下半部数据牌/信息条，中线光束分割
 - titleOptions[4] → 方案 E（信息图/数据牌）：中央巨型数字/VS 对阵牌 + 主体剪影 + 四角角标，Hook 字横压顶部
 - titleOptions[5] → 方案 F（人像+大字横幅）：主角半身 + 巨型姓名/称呼横幅 + 角标职位/节目名
+- titleOptions[6] → 方案 G（长文案/复仇海报）：**9:16 竖屏复仇故事卡片海报**，主角半身特写居于画面下半部中央（**主角性别/年龄/气质必须从文案内容动态识别，禁止锁定女性或任何特定性别**），上半部排版 5–9 行 ALL-CAPS **英文长文案**（**这才是方案 G 的核心 —— 必须是完整的故事情节叙述，而非单纯的一行标题；采用"第一视角叙事 + 对话引用 + 悬念结尾"的故事型卡片风格**），每行 4–10 词，电影海报字体（粗体、大写、紧凑、尖锐切角），关键人名与动作动词用亮黄 #FFD400 或暗血红 #B91C1C 高亮、其余亮白 #F8FAFC；文案末行下方加斜切的暗血红/纯黑实色条带写续写钩子（**故事型条带写法**："AND THEN HE SAID..." / "WAITING FOR THIS CALL." / "CANCEL HIS ACQUISITION DEAL..." 之类的对话钩子）；底部 1/4 处再加一条暗红/纯黑实色横条压一句全新的续写悬念（如"THE ENDING WAS INCREDIBLY SATISFYING."）；暗角 + 胶片颗粒；整体 Reddit / TikTok 复仇故事卡片海报质感。
+
+**⭐⭐⭐ 方案 G 专属铁律（长文案故事情节型卡片 —— 与方案 A~F 截然不同）⭐⭐⭐**：
+- 方案 G 的核心是「**画面上半部直接渲染一段完整的复仇/反转故事叙述**，而非一行标题」
+- 这段故事叙述**必须**满足以下结构：
+  ① **第一视角 / 第二视角叙事开头**："WHEN MY HUSBAND & M.I.L HEARD..." / "I TRIED TO INTRODUCE MYSELF TO..." / "MY BOSS FIRED ME AFTER 15 YEARS..."
+  ② **冲突 / 侮辱 / 背叛场景**："THEY LAUGHED: 'YOU'RE NOT IMPORTANT...'" / "MY MIL SMIRKED: 'PERFECT. I'M TAKING THE HOUSE.'"
+  ③ **转折 / 反杀铺垫**："AFTER THEY LEFT, I CALLED MY FATHER..." / "I SMILED, PICKED UP MY PHONE, AND SAID..."
+  ④ **悬念钩子结尾**："HE SAID: 'I'VE BEEN... WAITING FOR THIS CALL.'" / "CANCEL HIS ACQUISITION DEAL..." / "THE ENDING WAS INCREDIBLY SATISFYING."
+- **画面文字语言**：英文输入 → 整段 ALL-CAPS 英文（连标点符号也照搬输入）；中文输入 → 改为简洁的中文长句（约 5-9 行，每行 8-16 字），同样采用"开场 → 冲突 → 反转 → 悬念"的四段式
+- **对话引用**必须用英文双引号 " " 包裹（不要用单引号 ' '）；如："HE SAID: \"I'VE BEEN WAITING FOR THIS CALL.\""
+- **底部悬念条带**：必须写一句全新的、与故事结尾呼应的悬念句（不超过 12 词，ALL-CAPS），位于画面底部 1/4 的暗红/纯黑横条上
+- **故事连贯性**：5–9 行文字必须形成完整的故事链，不能是断裂的句子堆砌
 
 【每条 coverPromptEn 铁律】
-1. **必须严格按对应方案的构图写**：A 不能写成 B 的画面，B 不能写成 C 的画面；6 条 prompt 必须彼此差异巨大（不只是调色或微调）
-2. **必须完整包含中文标题**（一字不漏，禁止简化）
+1. **必须严格按对应方案的构图写**：A 不能写成 B 的画面，B 不能写成 C 的画面；7 条 prompt 必须彼此差异巨大（不只是调色或微调）
+2. **必须完整包含封面标题**（一字不漏，禁止简化）— 中文标题用中文，英文标题用英文
 3. **必须显式标注 'TEXT: 「...」'** 让模型识别需要画文字
 4. **强调 'do NOT summarize, do NOT shorten'** 防止 AI 简化
-5. **必须指出文字位置**（顶部/底部/中央横幅）和样式（粗体白字+黑描边）
+5. **必须指出文字位置**（顶部/底部/中央横幅）和样式（粗体 + 黑描边 + 分色块）
+6. **方案 G 专属**：必须在画面上**完整渲染**一段长文案（不要缩写），且主角描述必须与文案内容中识别出的主角一致（不要硬塞女性化标签）
 
-【6 套风格标签池（必须 6 种不同）】
-🔥 震惊悬念 / ⚔️ 冲突博弈 / 💡 洞察揭示 / 🌊 悬念层层递进 / ⚡ 强对抗 / 🎭 人性透视
+【7 套风格标签池（必须 7 种不同）】
+🔥 震惊悬念 / ⚔️ 冲突博弈 / 💡 洞察揭示 / 🌊 悬念层层递进 / ⚡ 强对抗 / 🎭 人性透视 / 🗡️ 长篇复仇
 
 # 🔥 人物提取铁律（characters 数组）
 1. **必须列出文案中所有真实人物**（姓名为真实姓名，不可省略或用代称替代主人物）
@@ -4163,7 +4191,7 @@ export const COPY_ANALYSIS_PROMPT = `
 # 🔥 封面提示词铁律（coverPromptEn）— 这是最关键的部分
 **❌ 错误示范**：不要让 AI 在画面上只显示几个无关的关键词（如「三线围堵」），这是**严重的简化错误**！
 **❌ 错误示范 2**：让 AI 只在画面上写一行细瘦白色小字，没有排版冲击力 → 封面无点击率！
-**✅ 正确示范**：必须让 AI 用 YouTube 爆款缩略图的"字体爆炸式排版 DNA"显示完整中文标题。模板如下（请严格遵循结构，标题部分用真实标题替换，并按对应方案方向写构图）：
+**✅ 正确示范**：必须让 AI 用 YouTube 爆款缩略图的"字体爆炸式排版 DNA"显示完整封面标题（语言匹配用户文案）。模板如下（请严格遵循结构，标题部分用真实标题替换，并按对应方案方向写构图）：
 
 # ⭐ 字体爆炸式排版 DNA（必读，写入每条 coverPromptEn）
 
@@ -4190,25 +4218,25 @@ YouTube 高 CTR 封面 = **人物/场景** + **字体爆炸式排版**。字体�
 - **【字体排版】** 巨粗+分色块+错位+黑描边+半透明底板（按 7 大铁律）
 - **【点击率元素】** 红色箭头、黄色高亮圈、红黄警示条、人物表情夸张
 
-# ✅ coverPromptEn 模板（请严格遵循，标题部分用真实标题替换）
+# ✅ coverPromptEn 模板（请严格遵循，标题部分用真实标题替换，并按对应方案方向写构图；语言匹配用户文案）
 
-"A cinematic YouTube thumbnail, ultra-realistic photograph, 16:9 aspect ratio, 8K resolution.
-[构图·按对应方案 A/B/C/D/E/F]：方案 A 描述场景全景 + 主体居中；方案 B 描述主体三分线下移或一侧；方案 C 描述紧贴主体面部 75-85%；方案 D 描述上下分屏构图；方案 E 描述中央巨型数据牌 + 主体剪影；方案 F 描述主角半身 + 巨型横幅]
-[人物描述]：人物视觉描述 + 主导情绪 + 眼睛直视镜头。
+"A cinematic YouTube thumbnail, ultra-realistic photograph, 9:16 aspect ratio, 8K resolution.
+[构图·按对应方案 A/B/C/D/E/F/G]：方案 A 描述场景全景 + 主体居中；方案 B 描述主体三分线下移或一侧；方案 C 描述紧贴主体面部 75-85%；方案 D 描述上下分屏构图；方案 E 描述中央巨型数据牌 + 主体剪影；方案 F 描述主角半身 + 巨型横幅；**方案 G 描述 9:16 竖屏长文案海报：上半部多行 ALL-CAPS 长文案堆叠，下半部主角半身特写，底部黑色/暗红实色条带压续写悬念**]
+[人物描述]：人物视觉描述 + 主导情绪 + 眼睛直视镜头（**性别/年龄/气质必须严格匹配文案内容中识别出的主角，禁止硬编码女性或任何特定性别**）。
 [光线]：cinematic lighting, 85mm lens, shallow depth of field, dramatic rim light on the subject.
 [配色]：scene uses cinematic dark palette; typography uses 4-color block palette (#FFFFFF pure white, #FF1744 intense red, #FFD600 warning yellow, #00D4FF electric blue).
 **TYPOGRAPHY (must follow 7-point explosive layout DNA)**:
 - Title must occupy 18-28% of frame height, bold weight 900, 6-10px thick black outline.
 - Title MUST be split into 2-4 color blocks: each block uses one of {white, red, yellow, blue}; blocks are slightly tilted (-3° to +5°), overlapping each other for layered stacked effect.
 - Each block sits on a semi-transparent black plate (rgba(0,0,0,0.65)) for readability against any background.
-- Use Traditional Chinese script only; no simplified forms, no English or other languages.
+- **画面文字语言 = 用户文案语言**：中文文案 → 画面用简体中文；英文文案 → 画面用英文 ALL-CAPS（**禁止互相替换**）。
 [点击率元素]：bright red arrow (#FF1744) pointing at the subject's face OR key element; yellow highlight ring (#FFD600) around critical word; red-yellow diagonal warning strip across one corner.
-[文字位置·按方案]：方案 A 在顶部 1/3 横幅 / 方案 B 在画面左下 70% 宽度 / 方案 C 在中央重叠于主体 / 方案 D 在上半部巨型横幅 / 方案 E 横压顶部 / 方案 F 巨型横幅居中。
-**OVERLAY TEXT (must be EXACTLY these Chinese characters, do NOT summarize, do NOT shorten, do NOT split into unrelated words)**:
-Top banner color block 1 (white): '完整中文标题第一部分（如主谓宾）'
-Top banner color block 2 (red): '完整中文标题人名/数字/反转词部分'
-Top banner color block 3 (yellow): '完整中文标题钩子词/关键词部分'
-Bottom strip color block (blue): '副标题或一句话钩子（如数字/反问/警示）'
+[文字位置·按方案]：方案 A 在顶部 1/3 横幅 / 方案 B 在画面左下 70% 宽度 / 方案 C 在中央重叠于主体 / 方案 D 在上半部巨型横幅 / 方案 E 横压顶部 / 方案 F 巨型横幅居中 / **方案 G 上半部 5–9 行长文案 + 底部 1/4 黑色/暗红实色条带压续写悬念**。
+**OVERLAY TEXT (must be EXACTLY these characters in the user's source language, do NOT summarize, do NOT shorten, do NOT translate, do NOT split into unrelated words)**:
+Top banner color block 1 (white): '完整标题第一部分（用用户文案原语言）'
+Top banner color block 2 (red): '完整标题人名/数字/反转词部分（用用户文案原语言）'
+Top banner color block 3 (yellow): '完整标题钩子词/关键词部分（用用户文案原语言）'
+Bottom strip color block (blue): '副标题或一句话钩子（如数字/反问/警示，用用户文案原语言）'
 Composition: text occupies 40-55% of frame, character face occupies 30-45% (or scene occupies 40-55% if no character).
 Style: photojournalistic, dramatic, Breaking News mood, high CTR YouTube thumbnail aesthetic, 8K resolution."
 
@@ -4216,11 +4244,12 @@ Style: photojournalistic, dramatic, Breaking News mood, high CTR YouTube thumbna
 - 严禁输出 markdown 代码块
 - 严禁在 title 中加入「#」「-」「数字序号」前缀
 - 严禁重复某个事件，杜撰原文没有的内容
-- 严禁输出少于 6 套方案
-- 严禁 6 条 prompt 彼此雷同（只是换色调不换构图）
+- 严禁输出少于 7 套方案
+- 严禁 7 条 prompt 彼此雷同（只是换色调不换构图）
 - **严禁在封面提示词中只写几个无关关键词代替完整标题**（这是常见错误！）
 - **严禁只写一行细瘦小字，没有分色块/巨粗/错位（这是普通封面，不是爆款封面！）**
 - **严禁在 characters 中漏掉原文中明确出现的真实人物姓名**（即使用户文案中两人对话也都必须列出）
+- **严禁强制把用户文案语言翻译成另一种语言**（中文文案不要硬翻英文，英文文案不要硬翻中文）
 
 # 输入文案
 请基于下方 input 字段的文案进行解析。

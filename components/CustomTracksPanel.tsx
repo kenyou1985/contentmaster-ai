@@ -42,7 +42,7 @@ import {
   extractAudioFromVideo,
   prewarmFfmpeg,
 } from '../services/audioExtractor';
-import { getRemotionApiBase, toRemotionMediaHttpUrl } from '../services/remotionExportService';
+import { getRemotionApiBase, uploadAudioFile } from '../services/remotionExportService';
 import { optimizeSubtitles } from '../services/subtitleOptimizer';
 
 // ── 字幕辅助函数 ──────────────────────────────────────────
@@ -576,62 +576,6 @@ function blobUrlToDataUrl(blobUrl: string): Promise<string> {
       reader.readAsDataURL(blob);
     });
   });
-}
-
-/**
- * 把 Blob 上传到 /upload-media → 返回服务端路径
- *
- * 兼容新旧服务端实现：
- * - 新服务端（多 part 支持）：优先用 multipart/form-data 流式上传，零 base64 膨胀
- * - 旧服务端（只 JSON）：发送 { items: [{ mime, data: base64 }] }
- *
- * 选择策略：
- * - 大文件（≥5MB）→ multipart（避免 Railway 代理切断）
- * - 小文件       → JSON（兼容性最好）
- */
-async function uploadAudioFile(blob: Blob, filename: string): Promise<string> {
-  const baseUrl = (window as any).__REMOTION_SERVER_URL__ || getRemotionApiBase();
-  const mime = blob.type || 'audio/mpeg';
-
-  // 收到的服务端路径（/tmp/remotion_data_xxx/...）必须转成 HTTP URL，
-  // 否则后端 extractUrlsToTempFiles 只认 data: 和 http:，filePathMap 为空，
-  // shot.audioUrl 保持 /tmp/... 路径 → Remotion staticFile() 包成 3001/public/tmp/...
-  // → Chrome 在 3001 找不到媒体 → "Error loading audio"
-  const toHttp = (p: string) => toRemotionMediaHttpUrl(p, baseUrl) || p;
-
-  // 大文件：multipart
-  if (blob.size >= 5 * 1024 * 1024) {
-    const form = new FormData();
-    form.append('file', blob, filename);
-    form.append('mime', mime);
-    const resp = await fetch(`${baseUrl}/upload-media`, { method: 'POST', body: form });
-    if (resp.ok) {
-      const json = await resp.json();
-      if (json?.paths?.[0]) return toHttp(json.paths[0] as string);
-    }
-    // 旧服务端没有 multipart 路径；回退到下面 JSON 流程
-    console.warn('[ASR] multipart 上传不被服务端支持，回退到 JSON');
-  }
-
-  // 默认/小文件：JSON base64（兼容所有服务端）
-  const base64 = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(String(reader.result).split(',')[1] || '');
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
-  const resp = await fetch(`${baseUrl}/upload-media`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ items: [{ mime, data: base64 }] }),
-  });
-  if (!resp.ok) {
-    const txt = await resp.text().catch(() => '');
-    throw new Error(`上传音频失败: HTTP ${resp.status} ${txt.slice(0, 200)}`);
-  }
-  const json = await resp.json();
-  if (!json?.paths?.[0]) throw new Error('上传响应无路径: ' + JSON.stringify(json).slice(0, 120));
-  return toHttp(json.paths[0] as string);
 }
 
 /**

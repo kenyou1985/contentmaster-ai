@@ -1,12 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   Settings, Cpu, PenTool, Layout as LayoutIcon, ExternalLink, Zap,
-  Video, ImagePlus, Rss, Mic, Youtube, User, MoreHorizontal, PlusSquare,
+  Video, Rss, Mic, Youtube, User, MoreHorizontal, PlusSquare, ImageIcon,
 } from 'lucide-react';
 import { ApiProvider } from '../types';
 import { YUNWU_MODELS, GOOGLE_MODELS, RUNNINGHUB_MODELS } from '../services/geminiService';
 
-type TabId = 'generate' | 'tools' | 'media' | 'dubbing' | 'digitalHuman' | 'cover' | 'monitor' | 'channel';
+type TabId = 'generate' | 'tools' | 'media' | 'dubbing' | 'digitalHuman' | 'monitor' | 'channel' | 'cover';
 
 interface TabConfig {
   id: TabId;
@@ -23,9 +23,11 @@ const TABS: TabConfig[] = [
   { id: 'media', label: '成片', icon: <Video size={18} />, color: 'text-slate-400', activeColor: 'bg-emerald-600 text-white', showOnBottom: true },
   { id: 'dubbing', label: '配音', icon: <Mic size={18} />, color: 'text-slate-400', activeColor: 'bg-emerald-600 text-white', showOnBottom: true },
   { id: 'digitalHuman', label: '数字人', icon: <User size={18} />, color: 'text-slate-400', activeColor: 'bg-blue-600 text-white', showOnBottom: true },
-  { id: 'cover', label: '封面', icon: <ImagePlus size={18} />, color: 'text-slate-400', activeColor: 'bg-emerald-600 text-white', showOnBottom: false },
   { id: 'monitor', label: '监控', icon: <Rss size={18} />, color: 'text-slate-400', activeColor: 'bg-emerald-600 text-white', showOnBottom: false },
   { id: 'channel', label: '频道', icon: <Youtube size={18} />, color: 'text-slate-400', activeColor: 'bg-emerald-600 text-white', showOnBottom: false },
+  // v11.1：独立"封面"模块入口（输入文案 + 生成 7 套封面方案）
+  // 放在"频道"右边（MORE_TABS 内），与"频道"在同一菜单分组
+  { id: 'cover', label: '封面', icon: <ImageIcon size={18} />, color: 'text-slate-400', activeColor: 'bg-emerald-600 text-white', showOnBottom: false },
 ];
 
 const BOTTOM_TABS = TABS.filter(t => t.showOnBottom);
